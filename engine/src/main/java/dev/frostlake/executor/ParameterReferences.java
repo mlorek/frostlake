@@ -159,6 +159,42 @@ public final class ParameterReferences {
         return references;
     }
 
+    /**
+     * Whether an expression body reads one of the parameters inside a subquery of its own, where the account binds the
+     * parameter ahead of the subquery's columns: {@code (SELECT MAX(val) FROM val)} reads the parameter VAL, not the
+     * table's column (live-verified). A body the grammar does not read reads none.
+     *
+     * @param body  the body: an expression
+     * @param names the parameters' canonical names
+     * @return whether a subquery of the body reads a parameter
+     */
+    public static boolean readInSubquery(final String body, final List<String> names) {
+        final ParseTree tree = parsed(body);
+        if (tree == null || names.isEmpty()) {
+            return false;
+        }
+        final List<String> folded = new ArrayList<String>();
+        for (final String name : names) {
+            folded.add(name.toUpperCase(Locale.ROOT));
+        }
+        return readUnder(tree, folded, false);
+    }
+
+    private static boolean readUnder(final ParseTree node, final List<String> names, final boolean inSubquery) {
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final List<int[]> found = new ArrayList<int[]>();
+            collect(node, names, found);
+            return inSubquery && !found.isEmpty();
+        }
+        final boolean below = inSubquery || node instanceof FrostlakeParser.SelectStatementContext;
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (readUnder(node.getChild(i), names, below)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** The body's parse tree: a query's where it is one, an expression's otherwise, null where it is neither. */
     private static ParseTree parsed(final String body) {
         try {

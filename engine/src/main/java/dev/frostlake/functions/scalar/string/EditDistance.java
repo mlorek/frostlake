@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.string;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.values.CodePointText;
 
@@ -71,11 +72,11 @@ public class EditDistance extends TextArgumentFunction {
         if (value instanceof Double || value instanceof Float) {
             exact = BigDecimal.valueOf(((Number) value).doubleValue());
         } else if (value instanceof Number) {
-            exact = new BigDecimal(value.toString());
+            exact = DecimalText.parse(value.toString());
         } else {
             final String text = value.toString().trim();
             try {
-                exact = new BigDecimal(text);
+                exact = DecimalText.parse(text);
             } catch (final NumberFormatException notANumber) {
                 throw new RuntimeException("Numeric value '" + value + "' is not recognized");
             }

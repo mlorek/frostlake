@@ -71,6 +71,12 @@ final class SecurableKinds {
         if (type.MATERIALIZED() != null) {
             return "MATERIALIZED_VIEW";
         }
+        if (type.DYNAMIC() != null) {
+            return "DYNAMIC_TABLE";
+        }
+        if (type.EVENT() != null) {
+            return "EVENT_TABLE";
+        }
         if (type.securableKind() == null) {
             throw new RuntimeException(SqlCompilationError.inline("Object type or Class '"
                 + type.getText().toUpperCase(Locale.ROOT) + "' does not exist or not authorized."));

@@ -26,6 +26,7 @@ import dev.frostlake.executor.udf.JavaScriptIdentifiers;
 import dev.frostlake.executor.udf.RoutineImports;
 import dev.frostlake.executor.udf.TemporaryObjectStatements;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.CreationGrants;
 import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
@@ -46,6 +47,7 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.TypeCategory;
 import dev.frostlake.types.VariantType;
 
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -72,6 +74,8 @@ import java.util.Set;
  * via the {@code ddl} back-reference.
  */
 public class CreateRoutineHandler implements CommandHandler {
+
+    private static final String UNSUPPORTED_SNOWSCRIPT_RETURN = "Unsupported return type for Snowscript UDF: ";
 
     /** The external function options a parenthesized list follows: HEADERS = (…) and CONTEXT_HEADERS = (…). */
     private static final Set<String> EXTERNAL_FUNCTION_LISTS = new HashSet<String>(Arrays.asList("HEADERS",
@@ -184,7 +188,8 @@ public class CreateRoutineHandler implements CommandHandler {
                 }
             }
         }
-        final String integrationName = ExternalFunctions.requireFunctionIntegration(catalog, integration);
+        final String integrationName = ExternalFunctions.requireFunctionIntegration(catalog,
+            queryExecutor.getSecurityManager(), integration);
         if (ctx.STRING_LITERAL() == null) {
             throw new RuntimeException(SqlCompilationError.of("Missing option(s): [AS]"));
         }
@@ -207,9 +212,11 @@ public class CreateRoutineHandler implements CommandHandler {
                 logger.trace("No existing function with matching signature to replace: {}", qualifiedName);
             }
         }
-        function.setOwner(FutureGrants.ownerOfNewRoutine(catalog, "FUNCTION", schema, function.getName(),
-            function.getParameters()));
+        final CreationGrants grantsOfNew = FutureGrants.ofNewRoutine(catalog, "FUNCTION", schema,
+            function.getName(), function.getParameters());
+        function.setOwner(grantsOfNew.owner());
         schema.addFunction(function);
+        grantsOfNew.apply();
         logger.trace("Created external function: {}", qualifiedName);
         return null;
     }
@@ -268,6 +275,8 @@ public class CreateRoutineHandler implements CommandHandler {
             functionImports(ctx), hasImportsOption(ctx), hasPackagesOption(ctx));
         if (functionLanguage(ctx) == UdfLanguage.JAVA) {
             JavaPackages.requireSupported(writtenPackages(ctx));
+        } else if (functionLanguage(ctx) == UdfLanguage.SCALA) {
+            JavaPackages.requireSupportedForScala(writtenPackages(ctx));
         }
         final RoutineEnvironments environments = new RoutineEnvironments(catalog, queryExecutor);
         final RoutineEnvironment environment = environments.read(ctx.functionOption(), functionLanguage(ctx), false,
@@ -292,6 +301,13 @@ public class CreateRoutineHandler implements CommandHandler {
         if (functionLanguage(ctx) == UdfLanguage.SQL && !namesService(ctx)) {
             BindsInDefinition.rejectInBody(queryExecutor,
                 ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null);
+        }
+        // A Snowscript UDF returns neither a table nor a semi-structured value; the account says so before it reads
+        // what the body holds (live-verified).
+        if (!namesService(ctx) && functionLanguage(ctx) == UdfLanguage.SQL && ctx.bodyDefinition() != null
+                && RoutineBodyCompiler.readsAsSnowscript(queryExecutor,
+                    ddl.extractBodyDefinition(ctx.bodyDefinition()))) {
+            rejectSnowscriptReturnType(ctx);
         }
         // Compile the body first, as Snowflake does: a SQL UDF whose body does not parse is rejected at CREATE
         // time. Deliberately OUTSIDE the try below — a compilation error is not an "already exists" condition
@@ -408,6 +424,8 @@ public class CreateRoutineHandler implements CommandHandler {
             }
             // A handler its imports hold compiled for a newer Java than the runtime reads is refused here.
             RoutineBodyCompiler.requireReadableHandlerClass(function, queryExecutor);
+            RoutineBodyCompiler.requireImportedTableHandler(function, queryExecutor);
+            RoutineBodyCompiler.requireImportedHandlerMethod(function, queryExecutor);
             if (comment != null) function.setComment(comment);
             function.setMemoizable(memoizable);
             function.setEnvironment(environment);
@@ -419,6 +437,8 @@ public class CreateRoutineHandler implements CommandHandler {
 
             String grantsKept = null;
             if (orReplace) {
+                // OR REPLACE replaces a function of its own lifetime alone.
+                schema.requireFunctionLifetimeFree(function);
                 if (!ctx.copyGrants().isEmpty()) {
                     // COPY GRANTS: the replaced overload's privileges are kept for the new one (live-verified).
                     // They are set aside before the overload goes, which takes its privileges with it.
@@ -438,9 +458,11 @@ public class CreateRoutineHandler implements CommandHandler {
                     logger.trace("No existing function with matching signature to replace: {}", qualifiedName);
                 }
             }
-            function.setOwner(FutureGrants.ownerOfNewRoutine(catalog, "FUNCTION", schema, function.getName(),
-                function.getParameters()));
+            final CreationGrants grantsOfNew = FutureGrants.ofNewRoutine(catalog, "FUNCTION", schema,
+                function.getName(), function.getParameters());
+            function.setOwner(grantsOfNew.owner());
             schema.addFunction(function);
+            grantsOfNew.apply();
             if (function.isAggregate()) {
                 catalog.noteAggregateFunction(function.getName());
             }
@@ -597,109 +619,22 @@ public class CreateRoutineHandler implements CommandHandler {
         // As for a function: an overload that would compete with an existing one is refused.
         schema.requireUnambiguousProcedure(procedureName, parameters);
 
-        validateRoutineProperties(procedureLanguage.name(), functionRuntimeVersion(ctx), functionHandler(ctx),
-            functionImports(ctx), hasImportsOption(ctx), hasPackagesOption(ctx));
-        if (procedureLanguage == UdfLanguage.JAVA) {
-            JavaPackages.requireSupported(writtenPackages(ctx));
-        }
         final RoutineEnvironments environments = new RoutineEnvironments(catalog, queryExecutor);
-        final RoutineEnvironment environment = environments.read(ctx.functionOption(), procedureLanguage, true,
-            ctx.bodyDefinition() != null, orReplace ? replacedProcedurePath(schema, procedureName, argumentTypes) : null);
-        requireBody(ctx, procedureLanguage, true);
-        rejectDecfloatInHandlerSignature(ctx, procedureLanguage, true, procedureName, parameters);
-        rejectRepeatedSignatureNames(ctx);
-        rejectServiceOptions(ctx);
-
-        // Compile the body first, as Snowflake does: a LANGUAGE SQL procedure whose body is not a scripting
-        // block is rejected at CREATE time. Deliberately OUTSIDE the try below — a compilation error is not an
-        // "already exists" condition and must never be swallowed by IF NOT EXISTS.
-        RoutineBodyCompiler.compileProcedureBody(queryExecutor, procedureLanguage,
-            ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null,
-            parameterNames(ctx.parameterList()));
+        // Deliberately OUTSIDE the try below — a compilation error is not an "already exists" condition and must
+        // never be swallowed by IF NOT EXISTS.
+        final RoutineEnvironment environment = checkedProcedureEnvironment(ctx, procedureLanguage, procedureName,
+            parameters, environments, orReplace ? replacedProcedurePath(schema, procedureName, argumentTypes) : null);
 
         try {
-            final DataType returnType;
-            final List<Parameter> procReturnColumns = new ArrayList<>();
-            if (ctx.returnType() == null) {
-                throw new RuntimeException("RETURNS clause is required for CREATE PROCEDURE");
-            } else if (ctx.returnType().TABLE() != null) {
-                returnType = StringType.VARCHAR;
-                // RETURNS TABLE(col TYPE, ...): keep the declared columns — they name the result of a
-                // CALL and of a TABLE(proc(...)) FROM source, exactly as Snowflake names them, a quoted
-                // name as written.
-                procReturnColumns.addAll(declaredReturnColumns(ctx));
-            } else if (ctx.returnType().dataTypeName() != null) {
-                returnType = columnParser.parseRoutineDataType(ctx.returnType().dataTypeName(),
-                    ctx.returnType().typeParameters());
-            } else {
-                throw new RuntimeException("Invalid return type in CREATE PROCEDURE");
-            }
-
-            final String body = ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null;
-
-            final String language = procedureLanguage.name();
-            final String handler = functionHandler(ctx);
-            final String runtimeVersion = functionRuntimeVersion(ctx);
-
-            // A repeated property is legal and the last one written wins (live-verified).
-            List<String> packages = null;
-            String comment = null;
-            NullHandling nullHandling = NullHandling.CALLED_ON_NULL_INPUT;
-            Volatility volatility = Volatility.VOLATILE;
-            for (final FrostlakeParser.FunctionOptionContext opt : ctx.functionOption()) {
-                if (opt.packagesClause() != null) {
-                    packages = new ArrayList<>();
-                    final FrostlakeParser.StringLiteralListContext named = opt.packagesClause().stringLiteralList();
-                    if (named != null) {
-                        for (final TerminalNode stringLiteral : named.STRING_LITERAL()) {
-                            packages.add(ddl.extractStringLiteral(stringLiteral));
-                        }
-                    }
-                } else if (opt.commentClause() != null) {
-                    comment = ddl.extractComment(opt.commentClause());
-                } else if (opt.nullHandlingClause() != null) {
-                    nullHandling = opt.nullHandlingClause().CALLED() != null ? NullHandling.CALLED_ON_NULL_INPUT
-                        : NullHandling.RETURNS_NULL_ON_NULL_INPUT;
-                } else if (opt.volatilityClause() != null) {
-                    volatility = opt.volatilityClause().IMMUTABLE() != null ? Volatility.IMMUTABLE : Volatility.VOLATILE;
-                }
-            }
-
-            final boolean procedureReturnsTable = ctx.returnType().TABLE() != null;
-            requireJavaScriptTypes(language, procedureReturnsTable, returnType, parameters);
-            requireJavaScriptNames(language, procedureName, parameters);
-
-            final Procedure procedure = new Procedure(procedureName, parameters, returnType, body, language, handler, runtimeVersion, packages);
-            procedure.setTemporary(TemporaryObjectStatements.isTemporary(ctx));
-            procedure.setReturnSized(Boolean.valueOf(ctx.returnType().typeParameters() != null));
-            procedure.setReturnNotNull(ctx.returnType().NOT() != null);
-            procedure.setSecure(ctx.SECURE() != null);
-            procedure.setReturnsTable(procedureReturnsTable);
-            procedure.setReturnColumns(procReturnColumns);
-            procedure.setNullHandling(nullHandling.getSqlText());
-            procedure.setVolatility(volatility.name());
-            procedure.setEnvironment(environment);
-
-            if (hasImportsOption(ctx)) {
-                procedure.setImports(RoutineImports.canonical(functionImports(ctx), catalog));
-                if (procedureLanguage == UdfLanguage.JAVA) {
-                    RoutineBodyCompiler.requireImportedHandler(handler, false, functionImports(ctx), body,
-                        runtimeVersion, procedureName, queryExecutor);
-                }
-            }
-
-            if (comment != null) {
-                procedure.setComment(comment);
-            }
-
-            if (!ctx.executeAsClause().isEmpty()) {
-                procedure.setExecuteAs(executeAsText(ctx.executeAsClause(0)));
-            }
-
-            RoutineBodyCompiler.compileProcedureBody(procedure);
+            final Procedure procedure = builtProcedure(ctx, procedureLanguage, procedureName, parameters, environment);
+            final String handler = procedure.getHandler();
+            final String body = procedure.getBody();
+            final String runtimeVersion = procedure.getRuntimeVersion();
 
             String grantsKept = null;
             if (orReplace) {
+                // OR REPLACE replaces a procedure of its own lifetime alone.
+                schema.requireProcedureLifetimeFree(procedure);
                 if (!ctx.copyGrants().isEmpty()) {
                     // COPY GRANTS: the replaced overload's privileges are kept for the new one (live-verified).
                     // They are set aside before the overload goes, which takes its privileges with it.
@@ -719,9 +654,11 @@ public class CreateRoutineHandler implements CommandHandler {
                     logger.trace("No existing procedure with matching signature to replace: {}", qualifiedName);
                 }
             }
-            procedure.setOwner(FutureGrants.ownerOfNewRoutine(catalog, "PROCEDURE", schema, procedure.getName(),
-                procedure.getParameters()));
+            final CreationGrants grantsOfNew = FutureGrants.ofNewRoutine(catalog, "PROCEDURE", schema,
+                procedure.getName(), procedure.getParameters());
+            procedure.setOwner(grantsOfNew.owner());
             schema.addProcedure(procedure);
+            grantsOfNew.apply();
             keepHandlerClasses(environments, ctx, handler, body, runtimeVersion);
             if (grantsKept != null) {
                 GrantNames.takeBack(catalog, "PROCEDURE", grantsKept, true);
@@ -734,6 +671,152 @@ public class CreateRoutineHandler implements CommandHandler {
             logger.debug("Procedure already exists (IF NOT EXISTS): {}", qualifiedName);
         }
         return null;
+    }
+
+    /**
+     * The procedure a CALL defines for itself, judged and compiled as CREATE PROCEDURE judges and compiles one, and
+     * kept by no schema: it takes no privilege to create, and runs with the rights of the role that calls it
+     * (Snowflake's CALL with an anonymous procedure).
+     *
+     * @param ctx the definition, read as the CREATE PROCEDURE it is
+     * @return the procedure, for its CALL alone
+     */
+    public Procedure anonymousProcedure(final FrostlakeParser.CreateStatementContext ctx) {
+        RoutineStatementRules.judge(ctx);
+        final UdfLanguage procedureLanguage = functionLanguage(ctx);
+        rejectVectorSignature(ctx, procedureLanguage, true, hasMemoizableOption(ctx));
+        if (hasMemoizableOption(ctx)) {
+            requireMemoizableLanguage(procedureLanguage.name());
+            throw memoizableScalarOnly();
+        }
+        final String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
+        final String procedureName = parts[parts.length - 1];
+        final List<Parameter> parameters = parseParameters(ctx);
+        final RoutineEnvironment environment = checkedProcedureEnvironment(ctx, procedureLanguage, procedureName,
+            parameters, new RoutineEnvironments(catalog, queryExecutor), null);
+        final Procedure procedure = builtProcedure(ctx, procedureLanguage, procedureName, parameters, environment);
+        procedure.setExecuteAs("CALLER");
+        return procedure;
+    }
+
+    /**
+     * What a procedure's definition is judged by after its name and its schema, up to its body's compilation, and the
+     * environment its handler runs in.
+     */
+    private RoutineEnvironment checkedProcedureEnvironment(final FrostlakeParser.CreateStatementContext ctx,
+                                                           final UdfLanguage procedureLanguage,
+                                                           final String procedureName,
+                                                           final List<Parameter> parameters,
+                                                           final RoutineEnvironments environments,
+                                                           final String replacedPath) {
+        validateRoutineProperties(procedureLanguage.name(), functionRuntimeVersion(ctx), functionHandler(ctx),
+            functionImports(ctx), hasImportsOption(ctx), hasPackagesOption(ctx));
+        if (procedureLanguage == UdfLanguage.JAVA) {
+            JavaPackages.requireSupported(writtenPackages(ctx));
+        } else if (procedureLanguage == UdfLanguage.SCALA) {
+            JavaPackages.requireSupportedForScala(writtenPackages(ctx));
+        }
+        final RoutineEnvironment environment = environments.read(ctx.functionOption(), procedureLanguage, true,
+            ctx.bodyDefinition() != null, replacedPath);
+        requireBody(ctx, procedureLanguage, true);
+        rejectDecfloatInHandlerSignature(ctx, procedureLanguage, true, procedureName, parameters);
+        rejectRepeatedSignatureNames(ctx);
+        rejectServiceOptions(ctx);
+
+        // Compile the body first, as Snowflake does: a LANGUAGE SQL procedure whose body is not a scripting
+        // block is rejected at CREATE time.
+        RoutineBodyCompiler.compileProcedureBody(queryExecutor, procedureLanguage,
+            ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null,
+            parameterNames(ctx.parameterList()));
+        return environment;
+    }
+
+    /** The procedure a definition describes, its handler checked and its body compiled, kept by no schema yet. */
+    private Procedure builtProcedure(final FrostlakeParser.CreateStatementContext ctx,
+                                     final UdfLanguage procedureLanguage, final String procedureName,
+                                     final List<Parameter> parameters, final RoutineEnvironment environment) {
+        final DataType returnType;
+        final List<Parameter> procReturnColumns = new ArrayList<>();
+        if (ctx.returnType() == null) {
+            throw new RuntimeException("RETURNS clause is required for CREATE PROCEDURE");
+        } else if (ctx.returnType().TABLE() != null) {
+            returnType = StringType.VARCHAR;
+            // RETURNS TABLE(col TYPE, ...): keep the declared columns — they name the result of a
+            // CALL and of a TABLE(proc(...)) FROM source, exactly as Snowflake names them, a quoted
+            // name as written.
+            procReturnColumns.addAll(declaredReturnColumns(ctx));
+        } else if (ctx.returnType().dataTypeName() != null) {
+            returnType = columnParser.parseRoutineDataType(ctx.returnType().dataTypeName(),
+                ctx.returnType().typeParameters());
+        } else {
+            throw new RuntimeException("Invalid return type in CREATE PROCEDURE");
+        }
+
+        final String body = ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null;
+
+        final String language = procedureLanguage.name();
+        final String handler = functionHandler(ctx);
+        final String runtimeVersion = functionRuntimeVersion(ctx);
+
+        // A repeated property is legal and the last one written wins (live-verified).
+        List<String> packages = null;
+        String comment = null;
+        NullHandling nullHandling = NullHandling.CALLED_ON_NULL_INPUT;
+        Volatility volatility = Volatility.VOLATILE;
+        for (final FrostlakeParser.FunctionOptionContext opt : ctx.functionOption()) {
+            if (opt.packagesClause() != null) {
+                packages = new ArrayList<>();
+                final FrostlakeParser.StringLiteralListContext named = opt.packagesClause().stringLiteralList();
+                if (named != null) {
+                    for (final TerminalNode stringLiteral : named.STRING_LITERAL()) {
+                        packages.add(ddl.extractStringLiteral(stringLiteral));
+                    }
+                }
+            } else if (opt.commentClause() != null) {
+                comment = ddl.extractComment(opt.commentClause());
+            } else if (opt.nullHandlingClause() != null) {
+                nullHandling = opt.nullHandlingClause().CALLED() != null ? NullHandling.CALLED_ON_NULL_INPUT
+                    : NullHandling.RETURNS_NULL_ON_NULL_INPUT;
+            } else if (opt.volatilityClause() != null) {
+                volatility = opt.volatilityClause().IMMUTABLE() != null ? Volatility.IMMUTABLE : Volatility.VOLATILE;
+            }
+        }
+
+        final boolean procedureReturnsTable = ctx.returnType().TABLE() != null;
+        requireJavaScriptTypes(language, procedureReturnsTable, returnType, parameters);
+        requireJavaScriptNames(language, procedureName, parameters);
+
+        final Procedure procedure = new Procedure(procedureName, parameters, returnType, body, language, handler,
+            runtimeVersion, packages);
+        procedure.setTemporary(TemporaryObjectStatements.isTemporary(ctx));
+        procedure.setReturnSized(Boolean.valueOf(ctx.returnType().typeParameters() != null));
+        procedure.setReturnNotNull(ctx.returnType().NOT() != null);
+        procedure.setSecure(ctx.SECURE() != null);
+        procedure.setReturnsTable(procedureReturnsTable);
+        procedure.setReturnColumns(procReturnColumns);
+        procedure.setNullHandling(nullHandling.getSqlText());
+        procedure.setVolatility(volatility.name());
+        procedure.setEnvironment(environment);
+
+        if (hasImportsOption(ctx)) {
+            procedure.setImports(RoutineImports.canonical(functionImports(ctx), catalog));
+            if (procedureLanguage == UdfLanguage.JAVA) {
+                RoutineBodyCompiler.requireImportedHandler(handler, false, functionImports(ctx), body,
+                    runtimeVersion, procedureName, queryExecutor);
+                RoutineBodyCompiler.requireImportedHandlerMethod(procedure, queryExecutor);
+            }
+        }
+
+        if (comment != null) {
+            procedure.setComment(comment);
+        }
+
+        if (!ctx.executeAsClause().isEmpty()) {
+            procedure.setExecuteAs(executeAsText(ctx.executeAsClause(0)));
+        }
+
+        RoutineBodyCompiler.compileProcedureBody(procedure, queryExecutor);
+        return procedure;
     }
 
     /** The declared {@code LANGUAGE} of a routine; {@link UdfLanguage#SQL} when the clause is absent. */
@@ -1011,7 +1094,7 @@ public class CreateRoutineHandler implements CommandHandler {
         }
         function.setEnvironment(environment);
         function.setAggregate(ctx.AGGREGATE() != null);
-        RoutineBodyCompiler.compileFunctionBody(function);
+        RoutineBodyCompiler.compileFunctionBody(function, queryExecutor);
     }
 
 
@@ -1071,7 +1154,8 @@ public class CreateRoutineHandler implements CommandHandler {
             }
             return;
         }
-        RoutineImports.validate(imports, catalog, queryExecutor);
+        RoutineImports.validate(imports, catalog, queryExecutor,
+            queryExecutor.getEngineConfig().isStageFileUrlEnabled());
         if (runtimeVersion == null && VERSIONED_RUNTIMES.contains(lang)) {
             throw new RuntimeException("Property 'runtime_version' must be specified");
         }
@@ -1262,6 +1346,24 @@ public class CreateRoutineHandler implements CommandHandler {
      * timestamp flavours, BINARY, VARIANT, OBJECT, ARRAY and GEOGRAPHY are taken (live-verified).
      * MEMOIZABLE's own language refusal comes first, which is why this runs after it.
      */
+    /** Refuses what a Snowscript UDF cannot return, a type by its whole spelling. */
+    private void rejectSnowscriptReturnType(final FrostlakeParser.CreateStatementContext ctx) {
+        if (ctx.returnType() == null) {
+            return;
+        }
+        if (ctx.returnType().TABLE() != null) {
+            throw new RuntimeException(UNSUPPORTED_SNOWSCRIPT_RETURN + "TABLE return type");
+        }
+        if (ctx.returnType().dataTypeName() == null) {
+            return;
+        }
+        final DataType returned = columnParser.parseRoutineDataType(ctx.returnType().dataTypeName(),
+            ctx.returnType().typeParameters());
+        if (returned.getCategory() == TypeCategory.SEMI_STRUCTURED) {
+            throw new RuntimeException(UNSUPPORTED_SNOWSCRIPT_RETURN + returned);
+        }
+    }
+
     /**
      * A SQL table function must declare its columns: {@code RETURNS TABLE ()} is refused at CREATE, counting
      * the columns its query body produces — {@code Mismatch between declared return signature column count (0)

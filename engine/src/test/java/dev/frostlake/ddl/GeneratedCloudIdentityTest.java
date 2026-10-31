@@ -30,6 +30,7 @@ import java.util.regex.Pattern;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * The identity an account generates for an integration or a storage location that assumes a cloud role: DESCRIBE
@@ -41,15 +42,24 @@ public class GeneratedCloudIdentityTest extends BaseDatabaseTest {
     private static final String USER_ARN = "arn:aws:iam::\\d{12}:user/\\S+";
     private static final String EXTERNAL_ID = "[A-Z0-9]+_SFCRole=\\d+_[A-Za-z0-9+/]{27}=";
     private static final String SERVICE_ACCOUNT = "\\S+@\\S+\\.iam\\.gserviceaccount\\.com";
+    private static final String TENANT = "a123b4c5-1234-123a-a12b-1a23b45678c9";
+    private static final String CONSENT_URL = "https://login\\.microsoftonline\\.com/" + TENANT
+        + "/oauth2/authorize\\?client_id=[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}&response_type=code";
+    private static final String APPLICATION_NAME = "(?=[a-z0-9]{0,12}snowflake)[a-z0-9]{21}_\\d{13}";
     private static final Pattern JSON_KEY = Pattern.compile("\"([A-Z_]+)\":");
     private static final Pattern JSON_TEXT = Pattern.compile("\"([A-Z_]+)\":\"([^\"]*)\"");
 
     @Override
+    protected void setupTest() {
+        assumeFalse(isLiveSnowflake(), "integrations and external volumes are not created on the live account");
+    }
+
+    @Override
     protected void teardownTest() {
-        for (final String name : new String[] {"gci_api", "gci_gg", "gci_glue", "gci_glue2", "gci_sns"}) {
+        for (final String name : new String[] {"gci_api", "gci_gg", "gci_glue", "gci_glue2", "gci_sns", "gci_azq"}) {
             engine.executeQuery("DROP INTEGRATION IF EXISTS " + name);
         }
-        for (final String name : new String[] {"gci_vol", "gci_vol_g"}) {
+        for (final String name : new String[] {"gci_vol", "gci_vol_g", "gci_vol_az"}) {
             engine.executeQuery("DROP EXTERNAL VOLUME IF EXISTS " + name);
         }
     }
@@ -214,5 +224,31 @@ public class GeneratedCloudIdentityTest extends BaseDatabaseTest {
         assertEquals("[NAME, STORAGE_PROVIDER, STORAGE_BASE_URL, STORAGE_ALLOWED_LOCATIONS,"
             + " STORAGE_GCP_SERVICE_ACCOUNT, ENCRYPTION_TYPE, ENCRYPTION_KMS_KEY_ID]", keys(google).toString());
         assertMatches(SERVICE_ACCOUNT, member(google, "STORAGE_GCP_SERVICE_ACCOUNT"));
+    }
+
+    @Test
+    public void anAzureTenantShowsTheApplicationItConsentsTo() {
+        engine.executeQuery("CREATE NOTIFICATION INTEGRATION gci_azq TYPE = QUEUE"
+            + " NOTIFICATION_PROVIDER = AZURE_STORAGE_QUEUE ENABLED = TRUE"
+            + " AZURE_STORAGE_QUEUE_PRIMARY_URI = 'https://flident.queue.core.windows.net/q1'"
+            + " AZURE_TENANT_ID = '" + TENANT + "'");
+        final Map<String, String> queue = properties("DESC NOTIFICATION INTEGRATION gci_azq");
+        assertEquals("[ENABLED, USE_PRIVATELINK_ENDPOINT, AZURE_STORAGE_QUEUE_PRIMARY_URI, AZURE_CONSENT_URL,"
+            + " AZURE_MULTI_TENANT_APP_NAME, DIRECTION, COMMENT]", queue.keySet().toString());
+        assertEquals("false", queue.get("USE_PRIVATELINK_ENDPOINT"));
+        assertEquals("INBOUND", queue.get("DIRECTION"));
+        assertMatches(CONSENT_URL, queue.get("AZURE_CONSENT_URL"));
+        assertMatches(APPLICATION_NAME, queue.get("AZURE_MULTI_TENANT_APP_NAME"));
+        engine.executeQuery("CREATE OR REPLACE EXTERNAL VOLUME gci_vol_az STORAGE_LOCATIONS = ((NAME = 'a1'"
+            + " STORAGE_PROVIDER = 'AZURE' STORAGE_BASE_URL = 'azure://flident.blob.core.windows.net/c1/'"
+            + " AZURE_TENANT_ID = '" + TENANT + "'))");
+        final String azure = properties("DESCRIBE EXTERNAL VOLUME gci_vol_az").get("STORAGE_LOCATION_1");
+        assertEquals("[NAME, STORAGE_PROVIDER, STORAGE_BASE_URL, STORAGE_ALLOWED_LOCATIONS, AZURE_TENANT_ID,"
+            + " AZURE_MULTI_TENANT_APP_NAME, AZURE_CONSENT_URL, ENCRYPTION_TYPE, ENCRYPTION_KMS_KEY_ID]",
+            keys(azure).toString());
+        assertEquals(queue.get("AZURE_MULTI_TENANT_APP_NAME"), member(azure, "AZURE_MULTI_TENANT_APP_NAME"));
+        assertEquals(queue.get("AZURE_CONSENT_URL"), member(azure, "AZURE_CONSENT_URL"));
+        assertEquals("NONE", member(azure, "ENCRYPTION_TYPE"));
+        assertEquals("", member(azure, "ENCRYPTION_KMS_KEY_ID"));
     }
 }

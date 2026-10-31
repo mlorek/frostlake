@@ -17,7 +17,11 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.AggregateResultTypes;
+import dev.frostlake.executor.expressions.ColumnReferenceCollectWalk;
+import dev.frostlake.executor.expressions.ColumnReferenceExpression;
+import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.RowExpression;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.operators.Operator;
 import dev.frostlake.executor.operators.StageOperator;
@@ -35,6 +39,7 @@ import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.WidthlessStringType;
 
@@ -127,11 +132,27 @@ final class PivotUnpivotExecutor {
                 final String valueAlias = pvCtx.identifier() != null ? ParseTreeText.getIdentifier(pvCtx.identifier())
                     : null;
                 if (pvCtx.literal() == null) {
+                    final Expression written = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(
+                        pvCtx.booleanExpr()));
+                    if (written instanceof RowExpression) {
+                        // A row is matched to the FOR column as an equality no row can take, refused unplaced:
+                        // IN ((1, 2)) over a VARCHAR column (live-verified).
+                        final ExpressionEvaluator typer = new ExpressionEvaluator(null, executor.getFunctionRegistry(),
+                            executor.getCatalog(), executor);
+                        throw new RuntimeException(SqlCompilationError.at(0, -1,
+                            "Invalid argument types for function '=': (" + typer.argumentTypeText(written) + ", "
+                                + SqlTypeNames.canonical(table.getColumn(pivotColumn).getDataType()) + ")"));
+                    }
+                    if (readsColumnsOf(written, table)) {
+                        // A value naming the relation's columns is no constant: each row meets its own value of it,
+                        // and one row may meet several — IN (id, 2) puts the row whose id is 2 in both columns
+                        // (live-verified).
+                        pivotValues.add(PivotValue.fromRow(written, valueAlias));
+                        continue;
+                    }
                     // A constant written as an expression names its column as the plan prints it: TRUE::BOOLEAN is
                     // CAST(TRUE AS BOOLEAN), NOT FALSE is NOT(FALSE), +2 is UNARY PLUS(2) (live-verified).
-                    pivotValues.add(PivotValue.computed(
-                        ExpressionEvaluator.parse(ParseTreeText.getOriginalText(pvCtx.booleanExpr())),
-                        evaluateConstant(pvCtx.booleanExpr()), valueAlias));
+                    pivotValues.add(PivotValue.computed(written, evaluateConstant(pvCtx.booleanExpr()), valueAlias));
                     continue;
                 }
                 pivotValues.add(PivotValue.written(pvCtx.literal(), literalValue(pvCtx.literal()), valueAlias));
@@ -139,8 +160,12 @@ final class PivotUnpivotExecutor {
             rejectRepeatedColumns(inList.pivotValueList(), pivotValues);
         } else if (inList.ANY() != null) {
             // Dynamic pivot: the distinct values of the FOR column in their own order — ascending, or as the
-            // ORDER BY inside ANY says — with the rows holding none last, or first when descending.
-            final boolean descending = !inList.orderItem().isEmpty() && inList.orderItem(0).DESC() != null;
+            // ORDER BY inside ANY says — with the rows holding none where that key's NULLS clause, or else the
+            // session's DEFAULT_NULL_ORDERING, puts NULLs (live-verified).
+            final FrostlakeParser.OrderItemContext key = inList.orderItem().isEmpty() ? null : inList.orderItem(0);
+            final boolean descending = key != null && key.DESC() != null;
+            final boolean nullsFirst = SessionNullOrdering.nullsFirst(!descending,
+                key == null ? null : ValueComparisons.nullsFirstFlag(key));
             final Map<Object, Object> distinct = new LinkedHashMap<>();
             boolean anyNull = false;
             for (final Row row : rowsForAny) {
@@ -159,13 +184,13 @@ final class PivotUnpivotExecutor {
                     return descending ? -order : order;
                 }
             });
-            if (anyNull && descending) {
+            if (anyNull && nullsFirst) {
                 pivotValues.add(PivotValue.read(null));
             }
             for (final Object value : ordered) {
                 pivotValues.add(PivotValue.read(value));
             }
-            if (anyNull && !descending) {
+            if (anyNull && !nullsFirst) {
                 pivotValues.add(PivotValue.read(null));
             }
         } else if (inList.selectStatement() != null) {
@@ -212,12 +237,16 @@ final class PivotUnpivotExecutor {
         requireAggregable(aggFuncName, aggregated);
         final DataType pivotedType = pivotColumnType(aggFuncName, aggregated, aggregateText, table,
             inList.pivotValueList() != null);
+        boolean rowValued = false;
         for (final PivotValue pivotValue : pivotValues) {
             resultColumns.add(withPolicy(new ResultSetColumn(pivotValue.name(aggregateAlias), pivotedType, null),
                 pivotedPolicy));
+            rowValued |= pivotValue.readsRow();
         }
         final Table shape = executor.resultSetToTable(
             new ResultSet(renamed(resultColumns, renamedColumns), new ArrayList<Row>()), relationName);
+        final ExpressionEvaluator rowEvaluator = rowValued
+            ? new ExpressionEvaluator(table, executor.getFunctionRegistry(), executor.getCatalog(), executor) : null;
         final Operator stage = new StageOperator("PIVOT[" + aggFuncName + "(" + aggColumn + ") FOR " + pivotColumn
                 + (inList.ANY() != null ? " IN (ANY)" : "") + "]") {
             @Override
@@ -253,6 +282,19 @@ final class PivotUnpivotExecutor {
                         groupBuckets = new HashMap<>();
                         groups.put(groupKey, groupBuckets);
                         groupKeyDisplayValues.put(groupKey, rawKey);
+                    }
+                    if (rowEvaluator != null) {
+                        for (int i = 0; i < pivotValues.size(); i++) {
+                            if (pivotValues.get(i).holds(pivotCell, row, rowEvaluator)) {
+                                List<Row> bucket = groupBuckets.get(Integer.valueOf(i));
+                                if (bucket == null) {
+                                    bucket = new ArrayList<>();
+                                    groupBuckets.put(Integer.valueOf(i), bucket);
+                                }
+                                bucket.add(row);
+                            }
+                        }
+                        continue;
                     }
                     final Object cellKey = ValueComparisons.canonicalGroupKeyValue(pivotCell);
                     Integer column = columnOf.get(cellKey);
@@ -568,6 +610,21 @@ final class PivotUnpivotExecutor {
             renamedColumns.add(i < names.size() ? new ResultSetColumn(names.get(i), column.getDataType()) : column);
         }
         return renamedColumns;
+    }
+
+    /** Whether a PIVOT value reads columns, every one of which the pivoted relation has. */
+    private static boolean readsColumnsOf(final Expression value, final Table table) {
+        final ColumnReferenceCollectWalk walk = new ColumnReferenceCollectWalk();
+        value.accept(walk);
+        if (walk.references().isEmpty()) {
+            return false;
+        }
+        for (final ColumnReferenceExpression reference : walk.references()) {
+            if (reference.getColumnName() == null || !table.hasColumn(reference.getColumnName())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** Evaluate a constant expression (the PIVOT DEFAULT ON NULL value) with no row context. */

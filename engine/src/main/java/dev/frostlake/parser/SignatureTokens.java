@@ -177,7 +177,8 @@ final class SignatureTokens {
                 return malformedNumber(token.getStopIndex() + 1);
             }
             if (type == FrostlakeLexer.HEX_NUMBER || type == FrostlakeLexer.MULTI_POINT_NUMBER
-                    || type == FrostlakeLexer.CARET || type == FrostlakeParser.DOLLAR) {
+                    || type == FrostlakeLexer.CARET || type == FrostlakeParser.DOLLAR || type == FrostlakeParser.BAR
+                    || type == FrostlakeParser.AMP) {
                 // 0x with its hexadecimal digits is one token to the account, and a symbol to this reading; so is
                 // the caret, a token of one character as the bar and the ampersand are.
                 tokens.add(made(SYMBOL, start, token.getStopIndex()));

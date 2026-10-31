@@ -16,9 +16,9 @@
 
 package dev.frostlake.jdbc;
 
-import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.http.ColumnData;
 import dev.frostlake.http.ResultSetData;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.ClientValueText;
 import dev.frostlake.values.TemporalText;
@@ -67,7 +67,8 @@ public class DatabaseResultSet extends AbstractFrostlakeResultSet {
 
     /**
      * A wire cell. JSON has no NaN or infinity, so the wire spells a FLOAT's as a string: it is the double it names,
-     * which getObject answers and getString spells NaN, inf and -inf, as the account's driver does (live-verified).
+     * which getObject answers and getString spells NaN, Infinity and -Infinity, as the account's driver does
+     * (live-verified).
      */
     @Override
     protected Object cell(final int row, final int column) {
@@ -104,9 +105,8 @@ public class DatabaseResultSet extends AbstractFrostlakeResultSet {
             return ClientValueText.booleanText(((Boolean) value).booleanValue());
         }
         if (value instanceof Number && isApproximateColumn(column)) {
-            // A FLOAT's text is Snowflake's own width — ten significant digits growing to fifteen —
-            // and not the JSON wire's spelling; the in-process driver answers the same way.
-            return SharedFunctionHelpers.floatText(((Number) value).doubleValue());
+            // A FLOAT's text is Java's own of its double, as the in-process driver spells it.
+            return ClientValueText.approximateText(((Number) value).doubleValue());
         }
         if (value instanceof BigDecimal) {
             // The digits in place, never BigDecimal's scientific 1E-8 / 0E-20 — see ClientValueText.
@@ -129,7 +129,7 @@ public class DatabaseResultSet extends AbstractFrostlakeResultSet {
         }
         if (value instanceof String && "DECFLOAT".equalsIgnoreCase(typeName(column))) {
             // A DECFLOAT crosses the wire as its text; the client reads the BigDecimal of it, as the account's does.
-            return new BigDecimal((String) value);
+            return DecimalText.parse((String) value);
         }
         if (value instanceof Number && !(value instanceof Double) && isApproximateColumn(column)) {
             // The wire parses every JSON fraction as a BigDecimal to keep NUMBER exact; a FLOAT column's
@@ -151,7 +151,7 @@ public class DatabaseResultSet extends AbstractFrostlakeResultSet {
         }
         if (value instanceof Number && !(value instanceof BigDecimal) && "DECIMAL".equalsIgnoreCase(typeName(column))) {
             // A file transfer's size is the client's own DECIMAL, read as the BigDecimal its metadata names.
-            return new BigDecimal(value.toString());
+            return DecimalText.parse(value.toString());
         }
         if (value instanceof Number && !(value instanceof BigDecimal)
                 && !(value instanceof Double) && isWholeNumberColumn(column)) {

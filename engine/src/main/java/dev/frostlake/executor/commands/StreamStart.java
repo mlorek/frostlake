@@ -207,12 +207,20 @@ final class StreamStart {
     void forDynamicTable(final Stream stream, final Schema home, final DynamicTable dynamicTable,
                          final FrostlakeParser.StreamPointContext point, final boolean showInitialRows) {
         final List<List<Object>> image = new ArrayList<>();
-        if (dynamicTable.getLastRefreshedTime() != null) {
-            for (final Row row : queryExecutor.dynamicTableRows(home, dynamicTable)) {
-                image.add(new ArrayList<>(row.getValues()));
+        final DynamicTableRefresh seenLast = dynamicTable.getLastRefreshedTime() == null ? null
+            : dynamicTable.lastRefresh();
+        if (seenLast != null && seenLast.getRowIds() != null) {
+            // The last refresh's rows, by identity, so a later refresh's update pairs as one (see StreamManager).
+            image.addAll(seenLast.getRows());
+            stream.setRefreshImage(image, seenLast.getRowIds());
+        } else {
+            if (dynamicTable.getLastRefreshedTime() != null) {
+                for (final Row row : queryExecutor.dynamicTableRows(home, dynamicTable)) {
+                    image.add(new ArrayList<>(row.getValues()));
+                }
             }
+            stream.setRefreshImage(image);
         }
-        stream.setRefreshImage(image);
         if (point != null) {
             if (point.timeTravelPoint().STREAM() != null) {
                 final Stream source = sourceStream(point);
@@ -252,8 +260,9 @@ final class StreamStart {
         if (seen == null || last == null) {
             throw QueryExecutor.timeTravelUnavailable(dynamicTable.getName());
         }
-        stream.setRefreshImage(seen.getRows());
-        queryExecutor.getStreamManager().catchUpDynamicTableStream(stream, stream.getSourceTableName(), last.getRows());
+        stream.setRefreshImage(seen.getRows(), seen.getRowIds());
+        queryExecutor.getStreamManager().catchUpDynamicTableStream(stream, stream.getSourceTableName(), last.getRows(),
+            last.getRowIds());
     }
 
     /** The stream a {@code STREAM => '<name>'} point names, refused with the name as written when missing. */

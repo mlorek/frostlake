@@ -72,6 +72,13 @@ One suite per `*.json` file:
 case-insensitive; anything numeric compares as a number rounded to 10 significant digits
 (`2` == `2.000000`, `3.500000` == `3.5`); everything else is an exact trimmed string.
 
+**Semi-structured cells.** A VARIANT, OBJECT or ARRAY column's cell is read once before normalizing: a cell
+that is a JSON string compares as the string's content (`a`, not `"a"`). Anything else compares as the text the
+transport handed over, so an array or object keeps its layout. A query's array or object arrives compact; an
+array or object that a Snowflake Scripting `RETURN` answers (a SQL procedure's `CALL`, an anonymous block) arrives
+laid out across lines even at `JSON_INDENT = 0`, `{\n"a": 1\n}`, as the account's driver hands it back, and the
+suites record it that way.
+
 **Update-count derivation.** Frostlake and Snowflake report DML counts as a result grid
 (`number of rows inserted` …). When the transport has no out-of-band count, a runner derives it
 from that grid: single row, all columns named `number of …` → count = first cell. A JDBC transport

@@ -33,6 +33,9 @@ import org.antlr.v4.runtime.tree.TerminalNode;
  * are part of the sentence the account produces, so they are part of this one too: a client that
  * matches on the account's wording sees the same text here.
  *
+ * <p>A driver's cancel or query timeout ends the whole request instead, which answers as a statement alone does,
+ * {@code SQL execution canceled} (live-verified).
+ *
  * <p>Only a failure DURING EXECUTION is spelled this way. A script whose text will not parse is
  * refused as a whole before any of it runs, with an ordinary syntax error that names no statement,
  * and a request carrying a single statement answers with that statement's own error unadorned.
@@ -101,8 +104,45 @@ public final class MultiStatementFailure extends RuntimeException {
             return failure;
         }
         final Token start = failing.getStart();
-        return new MultiStatementFailure(sentence(failing, failure, LeadingCommentOffset.rebase(origin,
-            start.getLine(), start.getCharPositionInLine())), failure);
+        return new MultiStatementFailure(sentence(statementText(failing), failure,
+            LeadingCommentOffset.rebase(origin, start.getLine(), start.getCharPositionInLine())), failure);
+    }
+
+    /**
+     * As {@link #wrappingInRequest(FrostlakeParser.SqlScriptContext, FrostlakeParser.StatementContext,
+     * RuntimeException, boolean)}, for the statements before one the request still holds past {@code tree}: those
+     * are named as statements of several however few {@code tree} holds (see WholeStatementReading).
+     *
+     * @param tree the parsed request
+     * @param failing the statement that failed
+     * @param failure what it failed with
+     * @param topLevel whether this is the request's own script rather than a nested one
+     * @param moreFollow whether the request holds a statement past {@code tree}
+     * @return the exception to throw
+     */
+    public static RuntimeException wrappingInRequest(final FrostlakeParser.SqlScriptContext tree,
+            final FrostlakeParser.StatementContext failing, final RuntimeException failure,
+            final boolean topLevel, final boolean moreFollow) {
+        if (moreFollow && topLevel && !(failure instanceof MultiStatementFailure) && !canceled(failure)
+                && failing != null && failing.getStart() != null) {
+            final Token start = failing.getStart();
+            return new MultiStatementFailure(sentence(statementText(failing), failure,
+                LeadingCommentOffset.rebase(start.getLine(), start.getCharPositionInLine())), failure);
+        }
+        return wrapping(tree, failing, failure, topLevel, true);
+    }
+
+    /**
+     * The failure of a request's statement this grammar could not read, which the account reads whole and refuses as
+     * it compiles (see WholeStatementReading): the helper's sentence naming it as quoted, at its place.
+     *
+     * @param quoted the statement as the sentence quotes it
+     * @param at its line and position in the request
+     * @param failure its own refusal
+     * @return the exception to throw
+     */
+    public static RuntimeException ofStatement(final String quoted, final int[] at, final RuntimeException failure) {
+        return new MultiStatementFailure(sentence(quoted, failure, at), failure);
     }
 
     private static RuntimeException wrapping(final FrostlakeParser.SqlScriptContext tree,
@@ -115,22 +155,28 @@ public final class MultiStatementFailure extends RuntimeException {
         // The statement's place in its text; in the request, a comment that opens the request not counted.
         final int[] at = inRequest ? LeadingCommentOffset.rebase(start.getLine(), start.getCharPositionInLine())
             : new int[] {start.getLine(), start.getCharPositionInLine()};
-        return new MultiStatementFailure(sentence(failing, failure, at), failure);
+        return new MultiStatementFailure(sentence(statementText(failing), failure, at), failure);
     }
 
     /** Whether a failure is one of a statement among several, not yet named as such. */
     private static boolean names(final FrostlakeParser.SqlScriptContext tree,
             final FrostlakeParser.StatementContext failing, final RuntimeException failure) {
-        return !(failure instanceof MultiStatementFailure) && tree != null && tree.flowChain() != null
-            && tree.flowChain().size() >= 2 && failing != null && failing.getStart() != null;
+        return !(failure instanceof MultiStatementFailure) && !canceled(failure) && tree != null
+            && tree.flowChain() != null && tree.flowChain().size() >= 2 && failing != null
+            && failing.getStart() != null;
     }
 
-    /** The account's sentence for {@code failing} at its place, carrying its own error inside. */
-    private static String sentence(final FrostlakeParser.StatementContext failing,
-            final RuntimeException failure, final int[] at) {
+    /** Whether a failure is a cancel's — the driver's, its query timeout's, or SYSTEM$CANCEL_QUERY's. */
+    private static boolean canceled(final RuntimeException failure) {
+        return failure instanceof StatementCanceledException
+            && ((StatementCanceledException) failure).getCode() == StatementCanceledException.CANCEL_CODE;
+    }
+
+    /** The account's sentence for the statement quoted at its place, carrying its own error inside. */
+    private static String sentence(final String quoted, final RuntimeException failure, final int[] at) {
         final String inner = failure.getMessage() != null ? failure.getMessage() : failure.toString();
         return "JavaScript execution error: Uncaught Execution of multiple statements failed on statement \""
-            + statementText(failing) + "\" (at line " + at[0] + ", position " + at[1] + ").\n"
+            + quoted + "\" (at line " + at[0] + ", position " + at[1] + ").\n"
             + inner
             + " in " + HELPER + " at '    throw `Execution of multiple statements failed on statement"
             + " {0} (at line {1}, position {2}).`.replace('{1}', LINES[i])' position 4\n"

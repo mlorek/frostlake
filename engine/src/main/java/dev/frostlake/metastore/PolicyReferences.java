@@ -84,9 +84,27 @@ public final class PolicyReferences {
                     table.setJoinPolicyName(repointed(table.getJoinPolicyName(), from, to));
                 }
             }
-            if (covers(kind, PolicyKind.ROW_ACCESS)) {
-                for (final View view : schema.getViews()) {
+            // A view's attachments go along as a table's do (live-verified: a schema's clone names its own copies of
+            // the policies a view of it carries).
+            for (final View view : schema.getViews()) {
+                if (covers(kind, PolicyKind.ROW_ACCESS)) {
                     view.setRowAccessPolicyName(repointed(view.getRowAccessPolicyName(), from, to));
+                }
+                if (covers(kind, PolicyKind.AGGREGATION)) {
+                    view.setAggregationPolicyName(repointed(view.getAggregationPolicyName(), from, to));
+                }
+                if (covers(kind, PolicyKind.JOIN)) {
+                    view.setJoinPolicyName(repointed(view.getJoinPolicyName(), from, to));
+                }
+                if (view.hasResolvedColumns()) {
+                    for (final TableColumn column : view.getResolvedColumns()) {
+                        if (covers(kind, PolicyKind.MASKING)) {
+                            column.setMaskingPolicyName(repointed(column.getMaskingPolicyName(), from, to));
+                        }
+                        if (covers(kind, PolicyKind.PROJECTION)) {
+                            column.setProjectionPolicyName(repointed(column.getProjectionPolicyName(), from, to));
+                        }
+                    }
                 }
             }
         }
@@ -114,6 +132,27 @@ public final class PolicyReferences {
                 view.setRowAccessPolicyName(completed(view.getRowAccessPolicyName(), schema));
             }
         }
+    }
+
+    /**
+     * Whether an attachment names one policy: its full name, completed where the relation holding it lives, is the
+     * policy's own - in the policy's schema, by exactly its name. A namesake in another schema, or a quoted name
+     * differing only in case, is another policy, which the attachment does not hold (live-verified).
+     *
+     * @param catalog    the catalog
+     * @param attached   the name the relation records, or null for none
+     * @param where      the schema of the relation holding the attachment
+     * @param home       the policy's schema
+     * @param policyName the policy's own name
+     * @return whether the attachment is to that policy
+     */
+    public static boolean names(final Catalog catalog, final String attached, final Schema where, final Schema home,
+                                final String policyName) {
+        if (attached == null || home == null) {
+            return false;
+        }
+        final String[] name = QualifiedName.parse(completed(attached, where)).parts();
+        return name.length == 3 && name[2].equals(policyName) && home(catalog, name) == home;
     }
 
     /**

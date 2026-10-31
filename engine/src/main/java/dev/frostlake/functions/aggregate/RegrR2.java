@@ -16,58 +16,23 @@
 
 package dev.frostlake.functions.aggregate;
 
-import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
-import java.util.List;
-
-/** REGR_R2(y, x) — coefficient of determination (R squared) over non-null (y, x) pairs (y dependent, x independent). See {@link RegrAccumulator}. */
-public class RegrR2 extends AggregateFunction {
-    public RegrR2() { super("REGR_R2", NumericType.DOUBLE); }
-
-    @Override
-    public Accumulator createAccumulator() { return new RegrAccumulator(RegrKind.R2); }
-
-    @Override
-    public Object evaluate(final List<Object> args) { return null; }
-
-    @Override
-    public int getMinArgCount() { return 2; }
-    @Override
-    public int getMaxArgCount() { return 2; }
-
-    /**
-     * REGR_R2 squares both of its inputs, so it reports the same internal multiplication the moment
-     * aggregates do and names the OFFENDING type on both sides whichever position it arrived in: live
-     * {@code REGR_R2(o, n)} and {@code REGR_R2(n, o)} are each "Invalid argument types for
-     * function '*': (OBJECT, OBJECT)". The rest of the REGR family is deliberately NOT declared —
-     * {@code REGR_COUNT}, {@code REGR_AVGX} and {@code REGR_SXX} ACCEPT an OBJECT in the y position
-     * live, and {@code REGR_SLOPE} / {@code REGR_INTERCEPT} / {@code REGR_AVGY} / {@code REGR_SYY}
-     * fail through a desugared TO_DOUBLE plan Frostlake does not have.
-     */
-    @Override
-    public SemiStructuredRejection semiStructuredRejection(final int position) {
-        return SemiStructuredRejection.MULTIPLY_OPERANDS;
-    }
-
-    /**
-     * A BOOLEAN, a temporal or a BINARY argument is refused at compile time in the multiplication's
-     * name with the type twice — "Invalid argument types for function '*': (DATE, DATE)" — exactly as
-     * a semi-structured one is: live reaches its internal sum of squares first (live-verified).
-     */
-    @Override
-    public SemiStructuredRejection temporalRejection(final int position) {
-        return SemiStructuredRejection.MULTIPLY_OPERANDS;
+/**
+ * REGR_R2(y, x) — coefficient of determination (R squared) over non-null (y, x) pairs (y dependent, x independent). See
+ * {@link RegrAccumulator}. REGR_R2 squares both of its inputs, so it reports the same internal multiplication the
+ * moment aggregates do and names the OFFENDING type on both sides whichever position it arrived in: live {@code
+ * REGR_R2(o, n)} and {@code REGR_R2(n, o)} are each "Invalid argument types for function '*': (OBJECT, OBJECT)", and a
+ * BOOLEAN, a temporal, a BINARY or a VECTOR is listed twice the same way (live-verified).
+ */
+public class RegrR2 extends StatisticalAggregate {
+    public RegrR2() {
+        super("REGR_R2", NumericType.DOUBLE, 2, SemiStructuredRejection.MULTIPLY_OPERANDS);
     }
 
     @Override
-    public SemiStructuredRejection booleanRejection(final int position) {
-        return SemiStructuredRejection.MULTIPLY_OPERANDS;
-    }
-
-    @Override
-    public SemiStructuredRejection binaryRejection(final int position) {
-        return SemiStructuredRejection.MULTIPLY_OPERANDS;
+    public Accumulator createAccumulator() {
+        return new RegrAccumulator(RegrKind.R2);
     }
 }

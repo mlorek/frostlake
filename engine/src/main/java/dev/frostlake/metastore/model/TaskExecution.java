@@ -30,6 +30,12 @@ public class TaskExecution {
     private final String scheduledFrom;
     /** Which attempt of its graph run the run belongs to: 1, or one more for each retry of the graph run. */
     private final int attempt;
+    /** The id of the query that ran the task's statement, or null when none is known. */
+    private String queryId;
+    /** The code of the error the run failed with, as text, or null. */
+    private String errorCode;
+    /** The user the run was scheduled by: who ran EXECUTE TASK, or who resumed the task. */
+    private String scheduledByUser;
 
     public TaskExecution(final LocalDateTime scheduledTime, final LocalDateTime startTime,
                        final LocalDateTime endTime, final TaskExecutionState state, final String errorMessage, final int rowsAffected) {
@@ -76,6 +82,49 @@ public class TaskExecution {
         this.rowsAffected = rowsAffected;
         this.scheduledFrom = trigger.reported();
         this.attempt = attempt;
+    }
+
+    /**
+     * Records the query that ran the task's statement, as TASK_HISTORY reports it: its id, the code of the error it
+     * failed with, and the user the run was scheduled by.
+     *
+     * @param ranQueryId    the query's id, or null
+     * @param failureCode   the error's code as text, or null for a run that succeeded
+     * @param scheduledBy   the user the run was scheduled by, or null
+     * @return this run
+     */
+    public TaskExecution ranAs(final String ranQueryId, final String failureCode, final String scheduledBy) {
+        this.queryId = ranQueryId;
+        this.errorCode = failureCode;
+        this.scheduledByUser = scheduledBy;
+        return this;
+    }
+
+    /**
+     * The id of the query that ran the task's statement.
+     *
+     * @return the id, or null when none is known
+     */
+    public String getQueryId() {
+        return queryId;
+    }
+
+    /**
+     * The code of the error the run failed with, as TASK_HISTORY's ERROR_CODE tells it.
+     *
+     * @return the code as text, or null
+     */
+    public String getErrorCode() {
+        return errorCode;
+    }
+
+    /**
+     * The user the run was scheduled by, as SCHEDULED_BY_USER tells it.
+     *
+     * @return the user's name, or null
+     */
+    public String getScheduledByUser() {
+        return scheduledByUser;
     }
 
     /**

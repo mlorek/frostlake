@@ -210,6 +210,17 @@ public class Database extends SqlObject {
      * Clone this database with a new name
      */
     public Database clone(final String newName) {
+        return clone(newName, CloneContent.DEFAULT);
+    }
+
+    /**
+     * Clone this database with a new name, copying what the CLONE clause asks for beyond its own objects.
+     *
+     * @param newName the clone's name
+     * @param content what the clause asks for (see CloneContent)
+     * @return the clone
+     */
+    public Database clone(final String newName, final CloneContent content) {
         final Database clonedDb = new Database(newName);
         clonedDb.setComment(this.getComment());
         clonedDb.getParameters().copyFrom(parameters);
@@ -244,7 +255,7 @@ public class Database extends SqlObject {
                 // PUBLIC the new database starts with. Copying PUBLIC's tables and views alone left the
                 // cloned database without PUBLIC's functions, procedures, sequences, streams, tasks,
                 // stages, file formats and policies, and its tables without their policies.
-                final Schema clonedSchema = schema.clone();
+                final Schema clonedSchema = schema.clone(content);
                 clonedDb.registerSchema(schemaName, clonedSchema);
                 clonedFrom.add(schema);
                 clonedTo.add(clonedSchema);
@@ -271,9 +282,9 @@ public class Database extends SqlObject {
     /**
      * Clone a schema within this database
      */
-    public Schema cloneSchema(final String sourceName, final String targetName) {
+    public Schema cloneSchema(final String sourceName, final String targetName, final CloneContent content) {
         final Schema sourceSchema = schemaExact(sourceName);
-        final Schema clonedSchema = sourceSchema.clone();
+        final Schema clonedSchema = sourceSchema.clone(content);
         clonedSchema.rename(targetName);
         addSchema(clonedSchema);
         repointClonedAttachments(sourceSchema, clonedSchema);
@@ -283,9 +294,10 @@ public class Database extends SqlObject {
     /**
      * Clone a schema from this database to another database
      */
-    public Schema cloneSchemaTo(final String sourceName, final Database targetDb, final String targetName) {
+    public Schema cloneSchemaTo(final String sourceName, final Database targetDb, final String targetName,
+                                final CloneContent content) {
         final Schema sourceSchema = schemaExact(sourceName);
-        final Schema clonedSchema = sourceSchema.clone();
+        final Schema clonedSchema = sourceSchema.clone(content);
         clonedSchema.rename(targetName);
         targetDb.addSchema(clonedSchema);
         repointClonedAttachments(sourceSchema, clonedSchema);

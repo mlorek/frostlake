@@ -36,6 +36,8 @@ import org.antlr.v4.runtime.Token;
  *   LAG(ABS(n IGNORE NULLS)) OVER (ORDER BY n)   'IGNORE' then the first ')'
  *   LAG(IGNORE NULLS) OVER (ORDER BY n)          'NULLS' then the call's ')'
  *   FIRST_VALUE(n IGNORE) OVER (ORDER BY n)      'IGNORE' then the call's ')'
+ *   LAG(n IGNORE x) OVER (ORDER BY n)            'IGNORE' alone, and LAG(n RESPECT x) the RESPECT
+ *   FIRST_VALUE(ABS(n IGNORE NULLS)) OVER (...)  'IGNORE' then FIRST_VALUE's ')', LAST_VALUE alike
  *   FIRST_VALUE(n IGNORE NULLS, 1) OVER (...)    ',' then the call's ')'
  * </pre>
  *
@@ -146,10 +148,11 @@ final class InsideNullTreatmentLines {
                 }
                 return lines;
             }
-            if (!nulls && at + 1 != close) {
-                return null;
-            }
             lines.add(SyntaxErrorListener.sentence(word));
+            if (!nulls && at + 1 != close) {
+                // A word that neither NULLS nor the call's parenthesis follows is named alone: LAG(n IGNORE x).
+                return lines;
+            }
             lines.addAll(CallTokenGroups.linesAfter(nulls
                 ? CallTokenGroups.blanked(sql, start, spoken.get(at + 1).getStopIndex() + 1, CLOSED_CALL)
                 : CallTokenGroups.blanked(sql, word.getStartIndex(), word.getStopIndex() + 1, ""), word));
@@ -170,7 +173,13 @@ final class InsideNullTreatmentLines {
         for (int g = open.size() - 2; g >= 0; g--) {
             final int around = kindOf(spoken, open.get(g).intValue());
             if (around == TREATED_INSIDE) {
-                return null;
+                // FIRST_VALUE and LAST_VALUE around it are read as closed at the word, so their own parenthesis is
+                // the next one named, whatever stands between: FIRST_VALUE(ABS(n IGNORE NULLS) + 1).
+                final int aroundClose = CallTokenGroups.closeOf(spoken, open.get(g).intValue());
+                if (aroundClose >= 0) {
+                    lines.add(SyntaxErrorListener.sentence(spoken.get(aroundClose)));
+                }
+                return lines;
             }
             if (around == TREATED_AFTER) {
                 // Read as closed with the call around it, the first parenthesis after the word closes nothing.

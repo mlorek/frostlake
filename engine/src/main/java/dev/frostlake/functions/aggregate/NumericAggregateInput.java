@@ -17,12 +17,11 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.executor.NumericConversionException;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.ApproximateValues;
 import dev.frostlake.values.VariantValue;
 
 import tools.jackson.databind.JsonNode;
-
-import java.math.BigDecimal;
 
 /**
  * One value on its way INTO a numeric aggregate, converted the way live converts it — which for text
@@ -100,7 +99,7 @@ public final class NumericAggregateInput {
         if (value instanceof CharSequence) {
             final String text = value.toString();
             try {
-                return new BigDecimal(text.trim()).doubleValue();
+                return DecimalText.parse(text.trim()).doubleValue();
             } catch (final NumberFormatException notNumeric) {
                 throw new NumericConversionException(
                     "Numeric value '" + text + "' is not recognized");
@@ -109,7 +108,7 @@ public final class NumericAggregateInput {
         // Everything else is a family live refuses before a row is read; left on the old reading so a
         // compile-time refusal is not replaced by a row-time one that live never says.
         try {
-            return new BigDecimal(String.valueOf(value).trim()).doubleValue();
+            return DecimalText.parse(String.valueOf(value).trim()).doubleValue();
         } catch (final NumberFormatException notNumeric) {
             return 0.0;
         }
@@ -141,7 +140,7 @@ public final class NumericAggregateInput {
         }
         if (node.isTextual()) {
             try {
-                return new BigDecimal(node.asText().trim()).doubleValue();
+                return DecimalText.parse(node.asText().trim()).doubleValue();
             } catch (final NumberFormatException notNumeric) {
                 throw failedCast(node);
             }

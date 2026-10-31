@@ -147,6 +147,11 @@ final class MergeCompilation {
         if (!unknown.isEmpty()) {
             throw new RuntimeException(SqlCompilationError.of(both.unknownFunctionSentence(unknown)));
         }
+        // A user's function the role may not use is refused as the statement compiles, whether or not a row reaches
+        // the call, as it is in an UPDATE's SET.
+        for (final ParserRuleContext expression : ordered) {
+            requireUsableFunctions(readSourceOnly.contains(expression) ? sourceOnly : both, expression);
+        }
         // Only a BOOLEAN is a predicate, and the ON's own type is judged ahead of every argument type (live-verified).
         judgePredicate(both, ctx.booleanExpr());
         for (final ParserRuleContext expression : ordered) {
@@ -156,7 +161,7 @@ final class MergeCompilation {
         grouped.addAll(setValues);
         grouped.addAll(matchedConditions);
         for (final ParserRuleContext expression : grouped) {
-            if (executor.holdsAggregate(expression)) {
+            if (executor.holdsAggregateOver(expression, merged, bothAliases)) {
                 throw new RuntimeException(SqlCompilationError.of(
                     "[PSEUDOCOLUMN(VOL_ID)] is not a valid group by expression"));
             }
@@ -180,6 +185,21 @@ final class MergeCompilation {
             if (SqlCompilationError.isCompilationError(unjudged.getMessage())) {
                 throw unjudged;
             }
+        } finally {
+            ExpressionSource.end(displaced);
+        }
+    }
+
+    /** The USAGE of every user's function one expression calls, at its place; every other kind waits for its phase. */
+    private void requireUsableFunctions(final ExpressionEvaluator scope, final ParserRuleContext expression) {
+        final SourcePosition displaced = ExpressionSource.beginNested(new SourcePosition(
+            expression.getStart().getLine(), expression.getStart().getCharPositionInLine()));
+        try {
+            scope.validateFunctionNames(ExpressionEvaluator.parse(executor.getOriginalText(expression)));
+        } catch (final PrivilegeRefusal refused) {
+            throw refused;
+        } catch (final RuntimeException otherKind) {
+            // Judged in its own phase, in the order live ranks the kinds.
         } finally {
             ExpressionSource.end(displaced);
         }
@@ -237,7 +257,7 @@ final class MergeCompilation {
             if (clause.INSERT() == null) {
                 continue;
             }
-            int columns = target.getColumns().size();
+            int columns = VirtualColumns.writtenCount(target);
             if (clause.mergeInsertColumnList() != null) {
                 columns = clause.mergeInsertColumnList().mergeInsertColumn().size();
                 for (final FrostlakeParser.MergeInsertColumnContext column
@@ -293,6 +313,7 @@ final class MergeCompilation {
             throw new RuntimeException(SqlCompilationError.invalidIdentifier(at.getStart().getLine(),
                 at.getStart().getCharPositionInLine(), column.toUpperCase(Locale.ROOT)), unknown);
         }
+        VirtualColumns.refuseTarget(target, column);
     }
 
     private String insertColumnName(final FrostlakeParser.MergeInsertColumnContext column) {

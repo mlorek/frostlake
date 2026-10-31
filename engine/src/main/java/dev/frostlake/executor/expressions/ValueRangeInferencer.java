@@ -17,12 +17,15 @@
 package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.ExpressionEvaluator;
+import dev.frostlake.executor.FromlessDual;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SelectItemAccessors;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
@@ -88,10 +91,17 @@ final class ValueRangeInferencer {
 
     /** The account's bound on the rows a SUM may accumulate: ten to the twelfth, measured at the flip. */
     private static final BigDecimal ACCUMULATED_ROWS = BigDecimal.TEN.pow(12);
+    /** The least value a FROM-less SUM is tagged as holding: past SB4, the eight bytes it sums in. */
+    private static final BigDecimal SUM_ACCUMULATOR = BigDecimal.valueOf(2147483648L);
+    /** The least value a FROM-less AVG is tagged as holding: past SB8, the sixteen bytes it averages in. */
+    private static final BigDecimal AVG_ACCUMULATOR = new BigDecimal("9223372036854775808");
 
-    /** The calls a constant passes through and stays one — see {@link #foldsAsConstant}. */
+    /**
+     * The calls a constant passes through and stays one — see {@link #foldsAsConstant}. TO_DECFLOAT among them:
+     * {@code f(TO_DECFLOAT('2.5'))} over a NUMBER parameter whose body is {@code x + 1} is [SB1] (live-verified).
+     */
     private static final Set<String> CONSTANT_FOLDING_CALLS = new HashSet<>(Arrays.asList(
-        "CONCAT", "UPPER", "TO_VARIANT"));
+        "CONCAT", "UPPER", "TO_VARIANT", "TO_DECFLOAT"));
 
     /** The conversions into an exact number, whose interval {@link #convertedRange} reads. */
     private static final Set<String> NUMERIC_CONVERSIONS = new HashSet<>(Arrays.asList(
@@ -264,6 +274,11 @@ final class ValueRangeInferencer {
                 // Nothing but an untyped NULL: the empty interval, as the bare word is.
                 return ValueRange.EMPTY;
             }
+            // An earlier select item's alias is told by the aliased expression's interval.
+            final ValueRange aliased = visitor.outputAliasRange((ColumnReferenceExpression) expr);
+            if (aliased != null) {
+                return aliased;
+            }
             final ValueRange read = visitor.declaredColumnRange((ColumnReferenceExpression) expr);
             // A view's column is told at its declared width, except to an aggregate over it.
             final ValueRange declared = aggregateDepth > 0 ? read
@@ -345,6 +360,12 @@ final class ValueRangeInferencer {
     }
 
     private ValueRange binaryRange(final BinaryOperationExpression binary) {
+        // A difference of two dates is a count of days the account tags by its declared NUMBER(9,0) alone, [SB4],
+        // whatever the dates hold, a NULL date beside the other included (live-verified).
+        if (binary.getOperator() == BinaryOperator.SUBTRACT && isDate(visitor.inferStaticType(binary.getLeft()))
+                && isDate(visitor.inferStaticType(binary.getRight()))) {
+            return null;
+        }
         // A bare NULL operand makes every row NULL whatever the operator, and the account tags that
         // as an empty interval: n10_2 % NULL and NULL / n10_2 are [SB1], not the dividend's width.
         if (isBareNull(binary.getLeft()) || isBareNull(binary.getRight())) {
@@ -843,10 +864,12 @@ final class ValueRangeInferencer {
                 // A SUM over a value nothing may be computed from keeps its interval as it is: live tags
                 // SUM over a derived REDUCE column by the accumulator's width, and AVG by its declared one.
                 final ValueRange summed = firstArgument(args);
-                return aggregated(summed != null && summed.isOpaqueToComputation() ? summed : accumulated(summed),
+                return aggregated(fromlessAccumulator(call,
+                    summed != null && summed.isOpaqueToComputation() ? summed : accumulated(summed), SUM_ACCUMULATOR),
                     false);
             case "AVG":
-                return aggregated(accumulated(args.isEmpty() ? null : computedFrom(args.get(0))), false);
+                return aggregated(fromlessAccumulator(call,
+                    accumulated(args.isEmpty() ? null : computedFrom(args.get(0))), AVG_ACCUMULATOR), false);
             case "MIN":
                 // One end of the argument's interval is the answer only where the statistics give it: under a
                 // grouping key or a filter each MIN may be any value the interval holds.
@@ -1494,13 +1517,18 @@ final class ValueRangeInferencer {
      * by that value — {@code '5'::NUMBER} is [SB1], {@code '127.5'::NUMBER} and
      * {@code 127.5::FLOAT::NUMBER} [SB2], {@code TRY_TO_DECIMAL('x', 10, 2)} a NULL's [SB1] — where the
      * same conversion over a column keeps the declared width. A conversion that fails does not fold:
-     * {@code ''::NUMBER} is [SB16]. Which operands count as constants is {@link #foldsAsConstant}.
+     * {@code ''::NUMBER} is [SB16]. Nor does a BOOLEAN's: {@code TRUE::NUMBER} is [SB16] and
+     * {@code TRUE::NUMBER(5,1)} [SB4] (live-verified). Which operands count as constants is
+     * {@link #foldsAsConstant}.
      */
     private ValueRange foldedConversion(final Expression conversion, final List<Expression> operands) {
         for (final Expression operand : operands) {
             if (!foldsAsConstant(operand) && !isPi(operand)) {
                 return null;
             }
+        }
+        if (!operands.isEmpty() && visitor.inferStaticType(operands.get(0)) instanceof BooleanType) {
+            return null;
         }
         if (exactScale(visitor.inferStaticType(conversion)) == null) {
             return null;
@@ -1533,7 +1561,7 @@ final class ValueRangeInferencer {
             return false;
         }
         try {
-            new BigDecimal(String.valueOf(((LiteralExpression) operands.get(0)).getValue()).trim());
+            DecimalText.parse(String.valueOf(((LiteralExpression) operands.get(0)).getValue()).trim());
             return true;
         } catch (final NumberFormatException noNumber) {
             return false;
@@ -1986,6 +2014,20 @@ final class ValueRangeInferencer {
 
     private ValueRange firstArgument(final List<Expression> args) {
         return args == null || args.isEmpty() ? null : infer(args.get(0));
+    }
+
+    /**
+     * A FROM-less select's SUM or AVG, which no table's statistics bound, tagged at least as wide as the accumulator
+     * it is computed in: SUM(NULL) and SUM(1) are SB8, AVG(NULL) and AVG(1) SB16, where over a table, even an empty
+     * one, SUM(NULL) is SB1 (live-verified).
+     */
+    private ValueRange fromlessAccumulator(final FunctionCallExpression call, final ValueRange range,
+                                           final BigDecimal least) {
+        if (range == null || !(visitor.getTable() instanceof FromlessDual)) {
+            return range;
+        }
+        final Integer scale = exactScale(visitor.inferStaticType(call));
+        return scale == null ? range : range.including(least.movePointLeft(scale.intValue()));
     }
 
     private static ValueRange accumulated(final ValueRange addend) {

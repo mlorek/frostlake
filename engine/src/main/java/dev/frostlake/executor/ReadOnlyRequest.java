@@ -20,10 +20,13 @@ import dev.frostlake.functions.SystemFunctionNames;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlCharStream;
+import dev.frostlake.security.SessionSettings;
 
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
@@ -40,7 +43,9 @@ import java.util.Set;
  *
  * <p>The judgement is of the request's own text. What a statement reaches while it runs — the text a block
  * hands to EXECUTE IMMEDIATE, the body of a procedure — is held to the same rule as it runs, under
- * {@link #enter}: a statement that is none of the four is refused there.
+ * {@link #enter}: a statement that is none of the four is refused there, and so is a sequence's NEXTVAL a function's
+ * body moves ({@link #requireNoSequenceMove}). The bodies the text's names stand for are followed by
+ * {@link ReadOnlyBodies}, which needs the catalog.
  */
 public final class ReadOnlyRequest {
 
@@ -104,6 +109,26 @@ public final class ReadOnlyRequest {
     }
 
     /**
+     * Refuses a sequence's NEXTVAL a read-only request reaches while it runs — in a SQL function's body, which the
+     * request's own text does not show — before the sequence moves; returns quietly outside such a request.
+     */
+    public static void requireNoSequenceMove() {
+        if (DEPTH.get()[0] > 0) {
+            throw new RuntimeException(PREFIX + "NEXTVAL moves a sequence.");
+        }
+    }
+
+    /**
+     * Whether a failure's message is a read-only request's refusal, which a body it was raised in passes on as it is.
+     *
+     * @param message the failure's message
+     * @return whether it is one
+     */
+    public static boolean isRefusal(final String message) {
+        return message != null && message.startsWith(PREFIX);
+    }
+
+    /**
      * Refuses a statement a read-only request reaches while it runs, when it is no reading statement;
      * returns quietly outside such a request.
      *
@@ -124,11 +149,18 @@ public final class ReadOnlyRequest {
                 }
             }
         }
-        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
-        lexer.removeErrorListeners();
-        final CommonTokenStream stream = new CommonTokenStream(lexer);
-        stream.fill();
-        for (final Token token : stream.getTokens()) {
+        return tokenRefusal(sql);
+    }
+
+    /**
+     * Why a text reaches a write by what it calls, whatever statement holds it: a NEXTVAL, a TO_QUERY, a system
+     * function that acts on the server.
+     *
+     * @param sql the text
+     * @return the refusal, or null when the text calls none of them
+     */
+    static String tokenRefusal(final String sql) {
+        for (final Token token : tokens(sql)) {
             final int type = token.getType();
             final String text = token.getText();
             if (type == FrostlakeLexer.NEXTVAL || type == FrostlakeLexer.QUOTED_IDENTIFIER
@@ -147,6 +179,50 @@ public final class ReadOnlyRequest {
             }
         }
         return null;
+    }
+
+    /**
+     * The names a text holds, each as the catalog keeps it: a bare word folded to upper case, a quoted one as
+     * written between its quotes, and a text that reads as an identifier reference, the way IDENTIFIER() reads
+     * it, by its last part — a session variable's value too, {@code IDENTIFIER($v)}. Every word counts, keywords too,
+     * since an object may carry such a name.
+     *
+     * @param sql     the text
+     * @param session the settings of the session the text runs in, whose variables it may read, or null
+     * @return the names, in the order the text holds them
+     */
+    static List<String> names(final String sql, final SessionSettings session) {
+        final List<String> names = new ArrayList<>();
+        for (final Token token : tokens(sql)) {
+            final String text = token.getText();
+            if (token.getType() == FrostlakeLexer.SESSION_VAR_REF) {
+                final Object value = session == null ? null : session.variable(text.substring(1));
+                if (value instanceof String && SqlIdentifiers.isIdentifierReference((String) value)) {
+                    final String[] parts = SqlIdentifiers.canonicalTextParts(((String) value).trim());
+                    names.add(parts[parts.length - 1]);
+                }
+            } else if (token.getType() == FrostlakeLexer.QUOTED_IDENTIFIER) {
+                final String[] parts = SqlIdentifiers.canonicalTextParts(text);
+                names.add(parts[parts.length - 1]);
+            } else if (token.getType() == FrostlakeLexer.STRING_LITERAL && text.length() >= 2) {
+                final String content = text.substring(1, text.length() - 1).replace("''", "'");
+                if (SqlIdentifiers.isIdentifierReference(content)) {
+                    final String[] parts = SqlIdentifiers.canonicalTextParts(content.trim());
+                    names.add(parts[parts.length - 1]);
+                }
+            } else if (!text.isEmpty() && (Character.isLetter(text.charAt(0)) || text.charAt(0) == '_')) {
+                names.add(text.toUpperCase(Locale.ROOT));
+            }
+        }
+        return names;
+    }
+
+    private static List<Token> tokens(final String sql) {
+        final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
+        lexer.removeErrorListeners();
+        final CommonTokenStream stream = new CommonTokenStream(lexer);
+        stream.fill();
+        return stream.getTokens();
     }
 
     /** A query (SELECT / WITH, however wrapped), EXPLAIN, SHOW or DESCRIBE — nothing else reads only. */

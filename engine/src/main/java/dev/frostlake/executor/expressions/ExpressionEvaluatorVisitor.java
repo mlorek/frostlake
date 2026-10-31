@@ -18,6 +18,7 @@ package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.AmbiguousColumnException;
 import dev.frostlake.executor.AmbiguousOverload;
+import dev.frostlake.executor.AutoRefreshStatus;
 import dev.frostlake.executor.ClusteringStatistics;
 import dev.frostlake.executor.ColumnLengthException;
 import dev.frostlake.executor.ConnectByExpander;
@@ -33,11 +34,15 @@ import dev.frostlake.executor.NamedArguments;
 import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.executor.ParameterReferences;
 import dev.frostlake.executor.ProceduralExecutor;
+import dev.frostlake.executor.ProcedureTokenCalls;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.ReadOnlyRequest;
 import dev.frostlake.executor.RelationShapeOnly;
 import dev.frostlake.executor.SearchPath;
+import dev.frostlake.executor.SelectItemAccessors;
 import dev.frostlake.executor.SessionVariableUse;
 import dev.frostlake.executor.SetOperations;
+import dev.frostlake.executor.SideEffectFunctions;
 import dev.frostlake.executor.SignedStorageWidth;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
@@ -63,21 +68,29 @@ import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.SystemFunctionArity;
 import dev.frostlake.functions.SystemFunctionNames;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.WholeNumbers;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.functions.scalar.ExtractionPathSyntax;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.functions.scalar.SysConnectByPath;
+import dev.frostlake.functions.scalar.WholeNumberArgument;
+import dev.frostlake.functions.scalar.WholeNumberSlots;
 import dev.frostlake.functions.scalar.context.CarriedRoleName;
 import dev.frostlake.functions.scalar.context.GetDdl;
+import dev.frostlake.functions.scalar.conversion.ToNumber;
 import dev.frostlake.functions.scalar.conversion.ToUuid;
 import dev.frostlake.functions.scalar.datetime.DateDifferenceWidths;
+import dev.frostlake.functions.scalar.datetime.DateShiftAmount;
 import dev.frostlake.functions.scalar.datetime.DateUnitVocabulary;
 import dev.frostlake.functions.scalar.datetime.LastDay;
 import dev.frostlake.functions.scalar.datetime.PlannedDateAdd;
 import dev.frostlake.functions.scalar.datetime.PlannedDateDiff;
 import dev.frostlake.functions.scalar.file.StageUrlFunction;
+import dev.frostlake.functions.scalar.math.DecfloatRounding;
+import dev.frostlake.functions.scalar.math.FloatScaleRounding;
 import dev.frostlake.functions.scalar.math.RoundingModeNames;
 import dev.frostlake.functions.scalar.string.Concat;
+import dev.frostlake.functions.scalar.string.Repeat;
 import dev.frostlake.functions.scalar.string.Search;
 import dev.frostlake.functions.table.TagReferencesFunction;
 import dev.frostlake.functions.window.WindowFunctionArity;
@@ -92,6 +105,7 @@ import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.RelationSlot;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Sequence;
+import dev.frostlake.metastore.model.StoredRead;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamSourceType;
 import dev.frostlake.metastore.model.Table;
@@ -105,9 +119,11 @@ import dev.frostlake.task.TaskOnlyFunctions;
 import dev.frostlake.task.UserTaskCancellation;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.BinaryType;
+import dev.frostlake.types.BinaryWidthSpelling;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.FileType;
 import dev.frostlake.types.GeoTypes;
 import dev.frostlake.types.GeographyType;
@@ -224,6 +240,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     private final Map<ColumnReferenceExpression, Object> multiTableRefMemo =
         new IdentityHashMap<ColumnReferenceExpression, Object>();
     private static final Object MULTI_TABLE_DYNAMIC = new Object();
+    /** The widest NUMBER's precision, which a value the plan knows no interval of is tagged by. */
+    private static final int WIDEST_PRECISION = 38;
     private static final Object MULTI_TABLE_MISS = new Object();
     // The ordinary call each written lone-star call splices into over the CURRENT relations (see
     // splicedLoneStar): the star's columns are the same on every row, so the spliced call is built once and
@@ -255,8 +273,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     private Set<String> outputScopeNames;
     private Set<String> enclosingQualifiers;
     private Map<String, Table> groupedRelations;
+    /** Whether the row read is a grouped query's (see {@link #setOverGroupedRows}). */
+    private boolean overGroupedRows;
     /** The static types of the query's SELECT output aliases, keyed by upper-cased name, or null. */
     private Map<String, DataType> outputAliasTypes;
+    /** The intervals the aliased items' values lie in, keyed as the types are, or null. */
+    private Map<String, ValueRange> outputAliasRanges;
     /** Whether the strict walk applies the ROW rule at each operation it reaches (see validateStrictArgumentsWithRows). */
     private boolean rowRuleInWalk;
     /** POSITION's IN test while the strict walk is inside it, exempt from the ROW rule; null elsewhere. */
@@ -270,6 +292,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     private Map<String, DataType> scriptNameTypes;
     // Whether a bind variable reads as a parameter of its declared type, not as the value a statement binds.
     private boolean bindsAsParameters;
+    /** The NOT nodes read as IS NOT TRUE, by identity (see PerGroupNegations). */
+    private Set<Expression> notTrueNegations = Collections.emptySet();
     // The scalar subqueries whose one column projects a constant wrapped into a VARIANT, by identity; see
     // isUncheckedConstant.
     private final Set<SubqueryExpression> uncheckedConstantSubqueries =
@@ -395,6 +419,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         return ROW_DRAWS.get()[0];
     }
 
+    /** Counts a value drawn afresh for every row, so a subquery that drew it is evaluated again for each one. */
+    void drawnAfresh() {
+        ROW_DRAWS.get()[0]++;
+    }
+
     public void setLateralContext(final Map<String, Object> lateralContext) {
         this.lateralContext = lateralContext;
     }
@@ -411,6 +440,15 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     /** See {@code ExpressionEvaluator.setBindsAsParameters}. */
     public void setBindsAsParameters(final boolean parameters) {
         this.bindsAsParameters = parameters;
+    }
+
+    /**
+     * The NOT nodes read as IS NOT TRUE, a NULL operand passing (see PerGroupNegations).
+     *
+     * @param negations the nodes, by identity
+     */
+    public void setNotTrueNegations(final Set<Expression> negations) {
+        this.notTrueNegations = negations;
     }
 
     /** Whether a bind variable reads as a parameter of its declared type, whose value no plan can bound. */
@@ -451,6 +489,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                                     final List<Table> allTables) {
         if (base != this.declaredTypeBase) {
             typeInferencer.clearMemo();
+            splitPartsReadEmpty.clear();
         }
         this.declaredTypeBase = base;
         this.declaredTypeAliasToTable = aliasToTable;
@@ -463,6 +502,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             // miss verdicts and static-type verdicts no longer apply.
             multiTableRefMemo.clear();
             typeInferencer.clearMemo();
+            splitPartsReadEmpty.clear();
         }
         if (allTables != this.multiTableAllTables || aliasToTable != this.multiTableAliasToTable) {
             loneStarSplices.clear();
@@ -553,9 +593,18 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                     + "' dropped, cannot read from stream '" + stream.getName() + "' in line {3} position {4}.");
             }
         }
-        // A stream "has data" when it has unconsumed change records — NOT when a same-named table has
-        // rows (streams aren't stored as tables). Mirrors Snowflake SYSTEM$STREAM_HAS_DATA.
-        return stream.getUnconsumedCount() > 0;
+        // A view stream whose view's tables were replaced under their names is re-bound to them, and holds nothing
+        // from before (see StreamSources.rebind); one whose table is gone fails as its view does.
+        StreamSources.rebind(queryExecutor.getCatalog(), stream);
+        queryExecutor.requireViewStreamExpands(stream);
+        if (stream.getSourceType() == StreamSourceType.VIEW
+                && StreamSources.missingBaseOf(queryExecutor.getCatalog(), stream) != null) {
+            // The changes it holds of tables replaced under their names are out of its reach (live-verified).
+            return false;
+        }
+        // A stream "has data" when it lists changes or its tables took a version past its offset (Stream#hasData),
+        // NOT when a same-named table has rows (streams aren't stored as tables).
+        return stream.hasData();
     }
 
     @Override
@@ -606,8 +655,13 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         final String name = varName.toUpperCase(Locale.ROOT);
         final SecurityManager sm = queryExecutor.getSecurityManager();
         if (sm != null) {
+            if (sm.getSessionContext().isDecfloatSessionVariable(name)) {
+                // A variable a SET gave a DECFLOAT is one, whatever its decimal value would read as.
+                return NumericType.DECFLOAT;
+            }
             return sm.getSessionContext().isSessionVariable(name)
-                ? SessionValueTypes.of(sm.getSessionContext().getSessionVariable(name)) : null;
+                ? SessionValueTypes.of(sm.getSessionContext().getSessionVariable(name),
+                    sm.getSessionContext().getSessionVariablePrecision(name)) : null;
         }
         return SessionValueTypes.of(queryExecutor.getSessionVariables().get(name));
     }
@@ -647,6 +701,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
         final ProceduralExecutor procedural = queryExecutor.getProceduralExecutor();
         final DataType declared = procedural == null ? null : procedural.getDeclaredVariableType(varName);
+        final boolean holdsNull = declared != null && procedural.hasVariable(varName)
+            && procedural.getVariable(varName) == null;
+        if (holdsNull && (declared instanceof GeographyType || declared instanceof GeometryType)) {
+            // A geography or a geometry holding NULL is bound as an OBJECT (live-verified).
+            return ObjectType.OBJECT;
+        }
         if (!(declared instanceof StringType) || declared instanceof UuidType) {
             return declared;
         }
@@ -654,9 +714,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return WidthlessStringType.WIDTHLESS;
         }
         final Object held = procedural.hasVariable(varName) ? procedural.getVariable(varName) : null;
-        if (held == null && procedural.hasVariable(varName) && procedural.bindsIntoBlockExpression()) {
+        if (holdsNull && procedural.bindsIntoBlockExpression()) {
             return WidthlessStringType.WIDTHLESS;
         }
+
         if (!(held instanceof String)) {
             return declared;
         }
@@ -698,6 +759,15 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if (carried != null && (carried.isEmpty() || !(columns.get(0).getStaticType() instanceof DateTimeType))) {
                 subqueryRanges.put(expr, carried);
             }
+            if (columns.get(0).getStaticType() == null) {
+                // An item the shape cannot type may read the outer row through a derived table or a common table
+                // expression of the subquery's own, (SELECT c + o.k FROM (SELECT 1 AS c)): it is typed with the outer
+                // names in scope, as live types it (live-verified).
+                final DataType correlated = correlatedSubqueryType(expr);
+                if (correlated != null) {
+                    return correlated;
+                }
+            }
             return columns.get(0).getStaticType();
         } catch (final MultiColumnScalarSubqueryException refused) {
             throw refused;
@@ -724,10 +794,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     private DataType correlatedSubqueryType(final SubqueryExpression expr) {
         final List<ResultSet> results;
         LateConstantRefusal.beginProbe();
+        final Map<String, Object> outerNames = correlationNamesContext();
         final ExpressionEvaluatorVisitor enclosingScope = SubqueryCompilation.beginScope(this);
         try {
-            results = queryExecutor.executeWithLateralContext(expr.getSubquery(),
-                subqueryEvaluator.outerNamesContext());
+            results = queryExecutor.executeWithLateralContext(expr.getSubquery(), outerNames);
         } catch (final RuntimeException undetermined) {
             return null;
         } finally {
@@ -750,6 +820,22 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             subqueryRanges.put(expr, carried);
         }
         return columns.get(0).getStaticType();
+    }
+
+    /**
+     * The outer names a correlated subquery's shape is planned with: this scope's, and those of every query around
+     * it, a nearer scope's name shadowing a farther one's. So a subquery two levels down whose aggregate select list
+     * reads the outermost query, {@code (SELECT (SELECT MAX(x) + t.n FROM o) FROM o)}, is typed from t's column, as
+     * live types it (live-verified).
+     */
+    private Map<String, Object> correlationNamesContext() {
+        final List<ExpressionEvaluatorVisitor> enclosing = SubqueryCompilation.enclosingScopes(this);
+        final Map<String, Object> names = new HashMap<>();
+        for (int i = enclosing.size() - 1; i >= 0; i--) {
+            names.putAll(enclosing.get(i).subqueryEvaluator.outerNamesContext());
+        }
+        names.putAll(subqueryEvaluator.outerNamesContext());
+        return names;
     }
 
     /** The operators whose operand types live checks, each spelled as its argument-type sentence names it. */
@@ -1536,7 +1622,18 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     /** The ROW type of a subquery selecting more than one column, or null for one column or an unplannable one. */
     public String multiColumnRowText(final SubqueryExpression subquery) {
         final String text = subqueryRowTypeText(subquery);
-        return text != null && text.startsWith("ROW(") ? text : null;
+        if (text != null) {
+            return text.startsWith("ROW(") ? text : null;
+        }
+        // A subquery whose one item is a ROW is that ROW, typed as the query of its members would be:
+        // a = (SELECT (1, 2)) is refused as '=': (NUMBER(38,0), ROW(NUMBER(1,0), NUMBER(1,0))) (live-verified).
+        final String members = queryExecutor == null ? null
+            : SelectItemAccessors.rowMembersQuery(queryExecutor.subqueryStatement(subquery.getSubquery()));
+        if (members == null) {
+            return null;
+        }
+        final String row = subqueryRowTypeText(new SubqueryExpression(members));
+        return row != null && row.startsWith("ROW(") ? row : null;
     }
 
     /** How many columns a subquery selects, read from its planned shape; 0 when it cannot be planned on its own. */
@@ -1659,6 +1756,13 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (typed instanceof RowExpression) {
             // A ROW is named by its values' types and has no storage of its own (live-verified).
             return strictArgTypeText(typed) + "[UNKNOWN]";
+        }
+        if (typed instanceof CastExpression
+                && UntypedNullFold.isUntypedNull(((CastExpression) typed).getExpression())
+                && ("GEOGRAPHY".equals(((CastExpression) typed).getTargetBaseName())
+                    || "GEOMETRY".equals(((CastExpression) typed).getTargetBaseName()))) {
+            // NULL cast to a geography or a geometry is a VARIANT to SYSTEM$TYPEOF (live-verified).
+            return "VARIANT[LOB]";
         }
         final DataType declared = inferStaticType(typed);
         final DataType planned = planReportedType(typed, declared);
@@ -2098,8 +2202,16 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if ("NEXTVAL".equals(op)) {
                 final Sequence sequence = resolveSequence(expr.getTableName());
                 if (sequence != null) {
-                    // A plan asked for moves no sequence: the value it would draw is only looked at.
-                    return QueryExecutor.planningOnly() ? sequence.peekNextValue() : sequence.nextVal();
+                    // A plan asked for moves no sequence, and neither does a read of a shape - a view's or a
+                    // function's at CREATE - nor a query that reads no row of its FROM, a view's body under it
+                    // included (live-verified): the value it would draw is only looked at.
+                    if (QueryExecutor.planningOnly() || RelationShapeOnly.isActive()
+                            || QueryExecutor.planningUnreadQuery()) {
+                        return sequence.peekNextValue();
+                    }
+                    // A request a client asked to only read moves no sequence, whatever body draws it.
+                    ReadOnlyRequest.requireNoSequenceMove();
+                    return sequence.nextVal();
                 }
             }
         }
@@ -2117,10 +2229,13 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             && ("NEXTVAL".equalsIgnoreCase(columnName) || "CURRVAL".equalsIgnoreCase(columnName));
         // A quoted name the relations do not carry is echoed with its quotes where it needs them, as live
         // echoes '"v"' for a quoted lower-case name over a column V.
+        // A qualified name echoes its parts as a resolved reference spells them: '"`A`".B' for a backticked qualifier.
         final String spelled = expr.getPositionalOrdinal() > 0
             ? "$" + expr.getPositionalOrdinal() : sequenceRead ? expr.getWrittenName()
             : expr.getWrittenName() != null && !expr.isQualified() && !expr.getWrittenName().equals(expr.getColumnName())
-                && expr.getWrittenName().startsWith("\"") ? expr.getWrittenName() : String.valueOf(expr);
+                && expr.getWrittenName().startsWith("\"") ? expr.getWrittenName()
+            : expr.isQualified() && expr.getWrittenName() != null && expr.getWrittenName().indexOf('`') >= 0
+                ? expr.getWrittenName() : String.valueOf(expr);
         throw new RuntimeException(at != null
             ? SqlCompilationError.invalidIdentifier(at.getLine(), at.getCharPositionInLine(), spelled)
             : SqlCompilationError.invalidIdentifier(spelled));
@@ -2256,6 +2371,15 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             text.append(i > 0 ? ", " : "").append(strictText(elements.get(i)));
         }
         return text.toString();
+    }
+
+    /**
+     * Whether the result context holds an expression's value under its canonical form: a grouping key or a
+     * select-list output that a HAVING or a QUALIFY reads, or a dimension a super-group row rolled up and reads as
+     * NULL - a unary operation, a CASE, a cast and a path access are matched as an operation and a call are.
+     */
+    private boolean resultHolds(final Expression expr) {
+        return resultContext != null && resultContext.containsKey(canonicalPrintOf(expr));
     }
 
     public Object visitBinaryOperation(final BinaryOperationExpression expr) {
@@ -2549,13 +2673,20 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
     }
 
+    /**
+     * Whether each SPLIT_PART part judged so far reads as the empty text on every row (see judgeFractionalSplitPart),
+     * by node identity: the plan judges a part once, by its statistics, whichever row is read.
+     */
+    private final Map<Expression, Boolean> splitPartsReadEmpty = new IdentityHashMap<Expression, Boolean>();
+
     /** Whether each call read so far is a math function over a DECFLOAT (see decfloatMath). */
     private final Map<FunctionCallExpression, Boolean> decfloatMathCalls =
         new IdentityHashMap<FunctionCallExpression, Boolean>();
 
-    /** Whether a call is SQRT, CBRT, LN, LOG, EXP, POWER or SQUARE with a DECFLOAT argument. */
+    /** Whether a call is SQRT, CBRT, LN, LOG, EXP, POWER, SQUARE, DIV0 or DIV0NULL with a DECFLOAT argument. */
     private boolean isDecfloatMathCall(final String funcName, final FunctionCallExpression expr) {
-        if (!TypeInferencer.DECFLOAT_MATH.contains(funcName)) {
+        if (!TypeInferencer.DECFLOAT_MATH.contains(funcName)
+                && !(DECFLOAT_DIVISIONS.contains(funcName) && expr.getArguments().size() == 2)) {
             return false;
         }
         Boolean decfloat = decfloatMathCalls.get(expr);
@@ -2576,6 +2707,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * answer NULL.
      */
     private static Object decfloatMath(final String funcName, final List<Object> args) {
+        if (DECFLOAT_DIVISIONS.contains(funcName)) {
+            return decfloatDiv0("DIV0NULL".equals(funcName), args.get(0), args.get(1));
+        }
         for (final Object arg : args) {
             if (arg == null) {
                 return null;
@@ -2598,6 +2732,26 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             default:
                 return DecfloatMath.power(first, decfloatOperand(args.get(1)));
         }
+    }
+
+    /** The divisions that answer 0 for a zero divisor, DECFLOATs over a DECFLOAT operand (see decfloatDiv0). */
+    private static final Set<String> DECFLOAT_DIVISIONS = new HashSet<String>(Arrays.asList("DIV0", "DIV0NULL"));
+
+    /**
+     * DIV0 or DIV0NULL over a DECFLOAT, in DECFLOAT's terms: the quotient of {@code /} to 38 significant digits, so
+     * {@code DIV0(DECFLOAT '1', 3)} is 3.3333333333333333333333333333333333333e-1 as {@code DECFLOAT '1' / 3} is,
+     * and a zero divisor answers a plain 0, a DECFLOAT having no scale to pad it to. A NULL dividend is NULL; a NULL
+     * divisor is NULL to DIV0 and 0 to DIV0NULL, as over a NUMBER (see Div0).
+     */
+    private static Object decfloatDiv0(final boolean nullDivisorToZero, final Object dividend, final Object divisor) {
+        if (dividend == null) {
+            return null;
+        }
+        if (divisor == null) {
+            return nullDivisorToZero ? BigDecimal.ZERO : null;
+        }
+        final BigDecimal right = decfloatOperand(divisor);
+        return right.signum() == 0 ? BigDecimal.ZERO : Decfloats.divide(decfloatOperand(dividend), right);
     }
 
     /** The operators that keep a DECFLOAT operand's type. */
@@ -2834,13 +2988,19 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         // is evaluated without the plan-time walk, and -IFF(TRUE, TRUE, FALSE) must still be the
         // positioned compile-time sentence there rather than a row-time complaint.
         rejectUnaryOperandFamilies(expr);
+        if (resultHolds(expr)) {
+            return DeferredFault.read(resultContext.get(canonicalPrintOf(expr)));
+        }
         switch (expr.getOperator()) {
             case NOT:
                 final Object operand = expr.getOperand().accept(this);
                 // NOT UNKNOWN is UNKNOWN (three-valued logic). A STRING converts strictly, like the
                 // binary logical operators — 'x' is a row-time refusal rather than a truthiness.
                 final Boolean strict = strictBooleanOrNull(operand);
-                if (strict == null) return null;
+                if (strict == null) {
+                    // A HAVING's NOT over a per-group subquery's aggregate is the anti join it decorrelates into.
+                    return notTrueNegations.contains(expr) ? Boolean.TRUE : null;
+                }
                 return !strict.booleanValue();
             case NEGATE:
                 final Object negOperand = expr.getOperand().accept(this);
@@ -3338,7 +3498,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (written instanceof RowExpression || written.getNameExpression() != null) {
             return result;
         }
-        return inDeclaredOrder(written, typedStructuredGet(written, result));
+        return inDeclaredOrder(written, typedMapKeys(written, typedStructuredGet(written, result)));
     }
 
     /**
@@ -3439,7 +3599,142 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 throw StructuredLeaf.missingField(undeclared);
             }
         }
-        return StructuredLeaf.typed(result, typeInferencer.structuredGetType(funcName, call));
+        final DataType memberType = typeInferencer.structuredGetType(funcName, call);
+        return heldToDeclaredLength(StructuredLeaf.typed(result, memberType), memberType);
+    }
+
+    /**
+     * An OBJECT_INSERT that updates a structured OBJECT's field casts its value to the field's declared type, as the
+     * account does: '5' into a NUMBER field is 5, 'zz' is refused as no number, 2.7 is 3, and 5 into a VARCHAR field
+     * is '5' (live-verified). Null for any other call, and for one whose value is already that cast.
+     */
+    private FunctionCallExpression coercedStructuredInsert(final FunctionCallExpression call) {
+        final List<Expression> arguments = call.getArguments();
+        if (!StructuredFunctionTypes.updates(arguments)) {
+            return null;
+        }
+        final DataType objectType = typeInferencer.infer(arguments.get(0));
+        final Object key = TypeInferencer.constantKey(arguments.get(1));
+        if (!(objectType instanceof StructuredObjectType) || !(key instanceof String)) {
+            return null;
+        }
+        final StructuredField field = ((StructuredObjectType) objectType).field((String) key);
+        final Expression value = arguments.get(2);
+        if (field == null || value instanceof CastExpression
+                && ((CastExpression) value).getDeclaredTarget() == field.getDataType()
+                || value instanceof FoldedConstantExpression
+                && ((FoldedConstantExpression) value).getDeclaredType() == field.getDataType()) {
+            return null;
+        }
+        // The cast names the field's type in full, its precision and length with it. The bare name put 12345 into a
+        // NUMBER(3,0) field, 'toolong' into a VARCHAR(2) one and the 41 digits of 1e40 into an INT one, each of which
+        // the cast to the structured type refuses, as does a write of the result to a column of that type.
+        final DataType fieldType = field.getDataType();
+        final String targetText = fieldType instanceof NumericType
+            || fieldType instanceof StringType && !(fieldType instanceof UuidType)
+            ? SqlTypeNames.canonical(fieldType) : fieldType.toString();
+        final List<Expression> rewritten = new ArrayList<>(arguments);
+        rewritten.set(2, new CastExpression(value, targetText, false, fieldType, CastFieldsModifier.NONE));
+        final FunctionCallExpression coerced = new FunctionCallExpression(call.getFunctionName(), rewritten);
+        coerced.setPosition(call.getPosition());
+        return coerced;
+    }
+
+    /**
+     * A MAP_INSERT into a structured MAP of numbers or texts casts its value to the map's value type, as the account
+     * does: '5' into a NUMBER map is 5, 'x' is refused as no number, 2.25 into NUMBER(3,1) is 2.3, and 5 into a VARCHAR
+     * map is '5' (live-verified). Null for any other call, for a NULL value, and for one whose value is already that
+     * cast.
+     */
+    private FunctionCallExpression coercedMapInsert(final FunctionCallExpression call) {
+        final List<Expression> arguments = call.getArguments();
+        if (arguments.size() < 3 || !(typeInferencer.infer(arguments.get(0)) instanceof MapType)) {
+            return null;
+        }
+        final DataType valueType = ((MapType) typeInferencer.infer(arguments.get(0))).getValueType();
+        final Expression value = arguments.get(2);
+        if (!(valueType instanceof NumericType || valueType instanceof StringType && !(valueType instanceof UuidType))
+                || isNullLiteral(value) || value instanceof CastExpression
+                && ((CastExpression) value).getDeclaredTarget() == valueType
+                || value instanceof FoldedConstantExpression
+                && ((FoldedConstantExpression) value).getDeclaredType() == valueType) {
+            return null;
+        }
+        final List<Expression> rewritten = new ArrayList<>(arguments);
+        rewritten.set(2, new CastExpression(value, SqlTypeNames.canonical(valueType), false, valueType,
+            CastFieldsModifier.NONE));
+        final FunctionCallExpression coerced = new FunctionCallExpression(call.getFunctionName(), rewritten);
+        coerced.setPosition(call.getPosition());
+        return coerced;
+    }
+
+    /**
+     * A MAP_CAT of two maps of other types casts the second to the first's, whose type the result has: a FLOAT map's
+     * 1.5 joins a NUMBER map as 2 (live-verified). Null for any other call, and for maps of one type already.
+     */
+    private FunctionCallExpression coercedMapCat(final FunctionCallExpression call) {
+        final List<Expression> arguments = call.getArguments();
+        if (arguments.size() != 2) {
+            return null;
+        }
+        final DataType first = typeInferencer.infer(arguments.get(0));
+        final DataType second = typeInferencer.infer(arguments.get(1));
+        if (!(first instanceof MapType) || !(second instanceof MapType)
+                || ((MapType) first).getValueType() == null || first.toString().equals(second.toString())
+                || arguments.get(1) instanceof CastExpression
+                && ((CastExpression) arguments.get(1)).getDeclaredTarget() == first) {
+            return null;
+        }
+        final List<Expression> rewritten = new ArrayList<>(arguments);
+        rewritten.set(1, new CastExpression(arguments.get(1), first.toString(), false, first,
+            CastFieldsModifier.NONE));
+        final FunctionCallExpression coerced = new FunctionCallExpression(call.getFunctionName(), rewritten);
+        coerced.setPosition(call.getPosition());
+        return coerced;
+    }
+
+    /**
+     * A structured value's member as it is read, held to the length its type declares: an element longer than that -
+     * ARRAY_APPEND holds none to it - is refused as it is read, {@code ARRAY_APPEND(['a']::ARRAY(VARCHAR(2)),
+     * 'toolong')[1]} being "String 'toolong' is too long and would be truncated" (live-verified).
+     *
+     * @param typed      the member, typed
+     * @param memberType the member's declared type
+     * @return the member
+     */
+    private static Object heldToDeclaredLength(final Object typed, final DataType memberType) {
+        if (typed instanceof String && memberType instanceof StringType && !(memberType instanceof UuidType)
+                && ((StringType) memberType).getMaxLength() > 0
+                && CodePointText.length((String) typed) > ((StringType) memberType).getMaxLength()) {
+            throw new ColumnLengthException(((StringType) memberType).getMaxLength(), (String) typed);
+        }
+        return typed;
+    }
+
+    /**
+     * The OBJECT_INSERT {@link #coercedStructuredInsert} rewrote, its value cast to the field's type once and then
+     * inserted. A value the field cannot hold is refused in the cast's own words, the field's nullability in them and
+     * outside any DML sentence: {@code Number out of representable range: type FIXED[SB2](3,0){nullable}, value 12345}
+     * whether a SELECT, an INSERT … SELECT or a CTAS computes it (live-verified).
+     */
+    private Object structuredInsert(final FunctionCallExpression coerced) {
+        final CastExpression fieldCast = (CastExpression) coerced.getArguments().get(2);
+        final DataType fieldType = fieldCast.getDeclaredTarget();
+        final Object value = fieldCast.getExpression().accept(this);
+        final Object held;
+        try {
+            held = fieldType instanceof NumericType && value != null
+                ? ValueCaster.castValue(value, fieldCast.getTargetType(), true) : castEvaluated(fieldCast, value);
+        } catch (final StructuredElementRefusal refused) {
+            throw refused;
+        } catch (final RuntimeException refused) {
+            throw new StructuredElementRefusal(refused.getMessage());
+        }
+        final List<Expression> arguments = new ArrayList<>(coerced.getArguments());
+        arguments.set(2, new FoldedConstantExpression(held, fieldType));
+        final FunctionCallExpression bound = new FunctionCallExpression(coerced.getFunctionName(), arguments);
+        bound.setPosition(coerced.getPosition());
+        return bound.accept(this);
     }
 
     private Object evaluateFunctionCall(final FunctionCallExpression written) {
@@ -3457,6 +3752,24 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (REDRAWN_PER_ROW.contains(funcName)) {
             ROW_DRAWS.get()[0]++;
         }
+        if ("OBJECT_INSERT".equals(funcName) && expr.getNameExpression() == null) {
+            final FunctionCallExpression coerced = coercedStructuredInsert(expr);
+            if (coerced != null) {
+                return structuredInsert(coerced);
+            }
+        }
+        if ("MAP_INSERT".equals(funcName) && expr.getNameExpression() == null) {
+            final FunctionCallExpression coerced = coercedMapInsert(expr);
+            if (coerced != null) {
+                return structuredInsert(coerced);
+            }
+        }
+        if ("MAP_CAT".equals(funcName) && expr.getNameExpression() == null) {
+            final FunctionCallExpression coerced = coercedMapCat(expr);
+            if (coerced != null) {
+                return coerced.accept(this);
+            }
+        }
         if (SysConnectByPath.NAME.equals(funcName) && expr.getNameExpression() == null && holdsConnectByPaths()) {
             return connectByPath(expr);
         }
@@ -3473,6 +3786,27 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             // A quoted part keeps its case: IDENTIFIER('"mixedCase"') reaches "mixedCase", and
             // IDENTIFIER('mixedCase') does not (live-verified).
             identifierParts = Arrays.asList(SqlIdentifiers.identifierReferenceParts(resolved.toString()));
+            // While an EXPLAIN compiles, a call of a procedure's token runs nothing, a table procedure's too.
+            if (QueryExecutor.planningOnly() && ProcedureTokenCalls.namesProcedure(resolved.toString())) {
+                return null;
+            }
+            if (queryExecutor != null && ProcedureTokenCalls.callsForValue(queryExecutor, resolved.toString())) {
+                // A procedure's SYSTEM$REFERENCE token runs the procedure, the call its value (see
+                // ProcedureTokenCalls); a read of the relation's shape alone runs nothing, as CREATE VIEW reads it.
+                if (RelationShapeOnly.isActive()) {
+                    return null;
+                }
+                final List<Object> values = new ArrayList<>();
+                for (final Expression argument : expr.getArguments()) {
+                    values.add(argument.accept(this));
+                }
+                return ProcedureTokenCalls.value(queryExecutor, resolved.toString(), values, expr.getArgumentNames(),
+                    expr.getPosition() == null ? null : ExpressionSource.resolve(expr.getPosition()));
+            }
+            if (SqlIdentifiers.isIssuedReference(resolved.toString())) {
+                // A function's SYSTEM$REFERENCE token calls the function it stands for (live-verified).
+                funcName = identifierParts.get(identifierParts.size() - 1);
+            }
         }
 
         // HAVING/QUALIFY: an aggregate/window function that matches a precomputed SELECT-list
@@ -3765,12 +4099,27 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 textTemporalArguments(argValues);
             }
             decfloatTextArguments(funcName, func, expr, argValues);
+            if (ORDERING_CONDITIONALS.contains(funcName)) {
+                try {
+                    rejectOrderedTextPastFold(expr, argValues);
+                } catch (final RuntimeException pastFold) {
+                    throw orderingFailure(funcName, pastFold);
+                }
+            }
             if ("WIDTH_BUCKET".equals(funcName)) {
                 decfloatWholeArguments(expr, argValues);
             }
             final String variantTarget = variantConversionTarget(funcName, expr, argValues);
             if (variantTarget != null) {
                 VariantTemporalCasts.requireReachable(argValues.get(0), variantTarget);
+                // TO_DATE and TO_TIME over a number a stored row's element holds take it as the cast does (see
+                // VariantRowElements).
+                final Object element = ("DATE".equals(variantTarget) || "TIME".equals(variantTarget))
+                    && storedReadOf(expr.getArguments().get(0)) == StoredRead.ELEMENT
+                    ? VariantRowElements.converted(argValues.get(0), variantTarget) : null;
+                if (element != null) {
+                    argValues.set(0, element);
+                }
             }
             if (("TO_VARCHAR".equals(funcName) || "TO_CHAR".equals(funcName)) && argValues.size() == 1) {
                 final String intervalText = intervalTextAsDeclared(expr.getArguments().get(0), argValues.get(0));
@@ -3797,8 +4146,36 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if (DATE_SHIFT_NAMES.contains(funcName) && argValues.size() == 3 && expr.getArguments().size() == 3) {
                 convertVariantShiftArgument(expr, argValues);
             }
+            if ((DATE_SHIFT_NAMES.contains(funcName) && argValues.size() == 3
+                    || "ADD_MONTHS".equals(funcName) && argValues.size() == 2)
+                    && expr.getArguments().size() == argValues.size()) {
+                requireFixedShiftAmount(funcName, expr, argValues);
+            }
+            requireFittingWholeNumbers(funcName, expr, argValues);
+            if ("SPLIT_PART".equals(funcName) && readsEmptySplitPart(expr, argValues)) {
+                requireFittingFractionalPart(expr.getArguments().get(2), argValues.get(2));
+                return "";
+            }
             if ("OBJECT_PICK".equals(funcName) && argValues.size() == 2 && expr.getArguments().size() == 2) {
                 pickKeysByType(expr, argValues);
+            }
+            if (("GET".equals(funcName) || "MAP_CONTAINS_KEY".equals(funcName)) && argValues.size() == 2
+                    && expr.getArguments().size() == 2) {
+                // A NUMBER key reads the member its number names, whatever scale it was written with.
+                final int map = "GET".equals(funcName) ? 0 : 1;
+                if (typeInferencer.infer(expr.getArguments().get(map)) instanceof MapType
+                        && argValues.get(1 - map) instanceof Number) {
+                    argValues.set(1 - map, mapKeyText((Number) argValues.get(1 - map)));
+                }
+            }
+            if ("GET".equals(funcName) && argValues.size() == 2 && expr.getArguments().size() == 2
+                    && (argValues.get(1) instanceof Double || argValues.get(1) instanceof Float)) {
+                // A FLOAT index names no element unless it is written out, which the plan reads as the number it
+                // writes: GET(a, 1::FLOAT) is NULL where GET(a, 1e0) is the second element (live-verified).
+                final BigDecimal writtenIndex = writtenNumber(expr.getArguments().get(1));
+                if (writtenIndex != null) {
+                    argValues.set(1, writtenIndex);
+                }
             }
             if (StructuredElementRule.elementPosition(funcName) >= 0) {
                 castStructuredElement(funcName, expr, argValues);
@@ -3809,6 +4186,37 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if (isDecfloatMathCall(funcName, expr)) {
                 return decfloatMath(funcName, argValues);
             }
+            if ("REPEAT".equals(funcName) && argValues.size() == 2 && argValues.get(0) != null
+                    && argValues.get(1) instanceof Number && !(argValues.get(1) instanceof Double)
+                    && !(argValues.get(1) instanceof Float)) {
+                // The product's type is read off the count's declared one, which the call's values cannot say.
+                Repeat.requireProductFits(argValues, declaredPrecision(expr.getArguments().get(1)),
+                    isNullableArgument(expr.getArguments().get(1)));
+            }
+            if (DECFLOAT_NARROWING_CALLS.contains(funcName) && !argValues.isEmpty()
+                    && argValues.get(0) instanceof BigDecimal && isDecfloatTyped(expr.getArguments().get(0))) {
+                narrowDecfloatArgument(argValues);
+            }
+            if (func instanceof DecfloatRounding && !argValues.isEmpty() && argValues.get(0) instanceof Number
+                    && !(argValues.get(0) instanceof Double) && isDecfloatTyped(expr.getArguments().get(0))) {
+                // A DECFLOAT has no declared width for NUMBER's scale span to exceed (see RoundedValue).
+                return atDeclaredScale(funcName, expr, ((DecfloatRounding) func).evaluateDecfloat(argValues));
+            }
+            if (func instanceof FloatScaleRounding && argValues.size() == 2 && expr.getArguments().size() == 2
+                    && (argValues.get(0) == null || argValues.get(0) instanceof Number)
+                    && (argValues.get(1) == null || argValues.get(1) instanceof Number)
+                    && NumericType.isApproximate(typeInferencer.infer(expr.getArguments().get(1)))) {
+                // A FLOAT scale rounds in FLOAT arithmetic to the scale's own value (see FloatScaleRounding).
+                return ((FloatScaleRounding) func).evaluateFloatScale(argValues);
+            }
+            for (int position = 0; position < argValues.size() && position < expr.getArguments().size(); position++) {
+                if (func.holdsDeclaredWidth(position)) {
+                    requireDeclaredBinaryWidth(funcName, expr.getArguments().get(position), argValues.get(position));
+                }
+            }
+            // A TO_NUMBER of a column that can be NULL prints its type {nullable} in a range refusal (see ToNumber).
+            final BuiltInFunction called = func instanceof ToNumber && !argValues.isEmpty()
+                && isNullableArgument(expr.getArguments().get(0)) ? ((ToNumber) func).overNullableSource() : func;
             try {
                 // DECODE and NVL2 are conditionals that do NOT short-circuit, so their branch cast
                 // belongs here rather than at the short-circuit exit — the rule is the conditional's,
@@ -3816,7 +4224,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 // built-in.
                 final Object evaluated = zeroIfNullConverted(funcName, expr,
                     atDeclaredScale(funcName, expr,
-                        func.evaluate(approximateRoundingArgs(funcName, expr,
+                        called.evaluate(approximateRoundingArgs(funcName, expr,
                             readsVariantJsonNull(func, funcName)
                                 ? argValues : VariantJsonNulls.asScalarArgs(argValues)),
                             comparingCollation(funcName, expr))));
@@ -3831,17 +4239,17 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 final String unreadable = func instanceof NumericArgumentFunction
                     ? unreadableTextArgument(argValues) : null;
                 if (unreadable != null) {
-                    throw new RuntimeException(unreadable);
+                    throw orderingFailure(funcName, new RuntimeException(unreadable));
                 }
                 if (mismatch instanceof NumberFormatException) {
-                    throw mismatch;
+                    throw orderingFailure(funcName, (NumberFormatException) mismatch);
                 }
                 throw unorderableArguments(expr, funcName);
             } catch (final RuntimeException failed) {
                 if (variantTarget != null) {
                     throw VariantTemporalCasts.failure(argValues.get(0), variantTarget);
                 }
-                throw failed;
+                throw orderingFailure(funcName, failed);
             }
         }
 
@@ -3861,6 +4269,13 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             }
             if ("SYSTEM$GET_TAG_ALLOWED_VALUES".equals(funcName) && RelationShapeOnly.isActive()) {
                 // A view over the tag's list is created whatever tag it names; the reader is refused.
+                return null;
+            }
+            if ("SYSTEM$SET_RETURN_VALUE".equals(funcName) && queryExecutor.insideOwnersRightsProcedure()) {
+                throw SideEffectFunctions.ownersRightsRefusal(funcName);
+            }
+            if ("SYSTEM$PIPE_FORCE_RESUME".equals(funcName) && RelationShapeOnly.isActive()) {
+                // A view over it is created whatever pipe it names, and resumes none (live-verified).
                 return null;
             }
             try {
@@ -4289,7 +4704,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      */
     private void rememberDecfloatMembers(final String funcName, final List<Expression> args,
                                          final List<Object> argValues) {
-        if (!UUID_MEMBER_FUNCTIONS.contains(funcName) || args.size() != argValues.size()) {
+        if ((!UUID_MEMBER_FUNCTIONS.contains(funcName) && !DECFLOAT_VARIANT_READERS.contains(funcName))
+                || args.size() != argValues.size()) {
             return;
         }
         for (int i = 0; i < args.size(); i++) {
@@ -4299,6 +4715,16 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             }
         }
     }
+
+    /**
+     * The functions that read their argument as a VARIANT, so a DECFLOAT handed to one arrives as the VARIANT that
+     * remembers its type: TYPEOF(DECFLOAT '1') is DECFLOAT, TO_JSON(DECFLOAT '1.5') is "1.5", and IS_DECIMAL,
+     * IS_INTEGER, IS_DOUBLE and IS_REAL of a DECFLOAT are all FALSE (live-verified).
+     */
+    private static final Set<String> DECFLOAT_VARIANT_READERS = new HashSet<>(Arrays.asList(
+        "TYPEOF", "TO_JSON", "IS_ARRAY", "IS_BINARY", "IS_BOOLEAN", "IS_CHAR", "IS_DATE", "IS_DATE_VALUE", "IS_DECIMAL",
+        "IS_DOUBLE", "IS_INTEGER", "IS_NULL_VALUE", "IS_OBJECT", "IS_REAL", "IS_TIME", "IS_TIMESTAMP_LTZ",
+        "IS_TIMESTAMP_NTZ", "IS_TIMESTAMP_TZ", "IS_VARCHAR"));
 
     /** Whether argument {@code i} of a constructor becomes a member of the value it builds. */
     private static boolean isMemberPosition(final String funcName, final int i) {
@@ -4346,14 +4772,16 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (udf == null || udf.isTableFunction()) {
             return null;
         }
+        requireUsableFunction(call, udf);
         final DataType declared = udf.getReturnType();
         final String body = inlinedBodyText(udf);
         if (body == null || !enterUdfTyping()) {
             return declared;
         }
         try {
-            // A text constant is folded into the body, so txt_add('5') over a body a + 1 is typed as '5' + 1 is.
-            final Expression folded = textConstantInlined(udf, call, body);
+            // A text constant is folded into the body, so txt_add('5') over a body a + 1 is typed as '5' + 1 is. The
+            // bare word NULL is not: the body reads it at the parameter's type (see UdfParameterTypes).
+            final Expression folded = textConstantInlined(udf, call, body, false);
             final DataType bodyType = folded != null ? inferStaticType(folded) : inlinedBodyScope(udf, call, false)
                 .inferStaticType(ExpressionEvaluator.parse(parametersBound(udf, call, body)));
             return bodyType != null ? bodyType : declared;
@@ -4361,6 +4789,57 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return declared;
         } finally {
             leaveUdfTyping();
+        }
+    }
+
+    /**
+     * Refuses a call of a user's function the acting role may not use as the statement compiles: a statement that
+     * names the function is refused whether or not a row reaches the call - over no rows, in a CASE or IFF branch no
+     * row takes, as an unread item of a derived table or a CTE - as the call itself refuses it, asking USAGE on the
+     * overload it runs. A built-in of the name answers before a user's function does, and a call that cannot tell
+     * its overload is left to the row that runs it.
+     *
+     * @param call the call
+     */
+    void requireUsableUserFunction(final FunctionCallExpression call) {
+        if (catalog == null || queryExecutor == null || call.getFunctionName() == null
+                || call.getNameExpression() != null || !mayCallUserFunction(call)) {
+            return;
+        }
+        final boolean qualified = call.getNameParts() != null && call.getNameParts().size() > 1;
+        final String name = call.getFunctionName().toUpperCase(Locale.ROOT);
+        // A built-in of any kind answers to its own name before a user's function does.
+        if (!qualified && functionRegistry != null && (functionRegistry.hasFunction(name)
+                || functionRegistry.hasBuiltInAggregateFunction(name) || functionRegistry.hasTableFunction(name))) {
+            return;
+        }
+        final Function udf = staticallyResolvedUdf(call);
+        if (udf != null && !udf.isTableFunction()) {
+            requireUsableFunction(call, udf);
+        }
+    }
+
+    /**
+     * Asks USAGE on the overload a call of a user's function runs, where the call is typed (see
+     * {@link #requireUsableUserFunction}).
+     *
+     * @param call the call
+     * @param udf  the overload it runs
+     */
+    private void requireUsableFunction(final FunctionCallExpression call, final Function udf) {
+        if (queryExecutor == null) {
+            return;
+        }
+        final List<String> parts = call.getNameParts() != null
+            ? call.getNameParts() : Arrays.asList(call.getFunctionName());
+        final Schema home;
+        try {
+            home = functionSchemaOf(parts);
+        } catch (final RuntimeException unresolved) {
+            return;
+        }
+        if (home != null) {
+            queryExecutor.requireRoutinePrivilege(Privilege.USAGE, home, udf);
         }
     }
 
@@ -4385,9 +4864,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return null;
         }
         try {
-            final Expression folded = textConstantInlined(udf, call, body);
-            return folded != null ? inferStaticRange(folded)
-                : inlinedBodyScope(udf, call, true).inferStaticRange(ExpressionEvaluator.parse(body));
+            final Expression folded = textConstantInlined(udf, call, body, true);
+            if (folded != null) {
+                return inferStaticRange(folded);
+            }
+            return inlinedBodyScope(udf, call, true)
+                .inferStaticRange(ExpressionEvaluator.parse(constantsBound(udf, call, body)));
         } catch (final RuntimeException undetermined) {
             return null;
         } finally {
@@ -4401,10 +4883,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * parameter unconverted, so the account folds the constant into the body: over {@code a::NUMBER},
      * {@code txt_p('5')} and {@code txt_p('5' || '0')} are [SB1] as {@code '5'::NUMBER} is,
      * {@code txt_p(NULL)} is a NULL's [SB1] and {@code txt_p('123456')} [SB4], where
-     * {@code txt_p(n::VARCHAR)} keeps the declared width (live-verified).
+     * {@code txt_p(n::VARCHAR)} keeps the declared width (live-verified). The bare word NULL folds for the interval
+     * alone, {@code nullsFold}: the call's type reads it at the parameter's type.
      */
     private Expression textConstantInlined(final Function udf, final FunctionCallExpression call,
-                                           final String body) {
+                                           final String body, final boolean nullsFold) {
         final Expression parsed = ExpressionEvaluator.parse(body);
         if (call.getArguments().size() != udf.getParameters().size() || parsed instanceof SubqueryExpression) {
             // A query is read where it stands: nothing is substituted into it.
@@ -4416,7 +4899,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             final Parameter parameter = udf.getParameters().get(i);
             final Expression argument = call.getArguments().get(i);
             foldsText |= parameter.getDataType() instanceof StringType
-                && (UntypedNullFold.isUntypedNull(argument) || valueRangeInferencer.foldsAsConstant(argument));
+                && (nullsFold && UntypedNullFold.isUntypedNull(argument)
+                    || !UntypedNullFold.isUntypedNull(argument) && valueRangeInferencer.foldsAsConstant(argument));
             arguments.put(parameter.getName().toUpperCase(Locale.ROOT), argument);
         }
         return foldsText ? substitutedBody(parsed, arguments) : null;
@@ -4449,6 +4933,49 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             standIns.add("CAST(NULL AS " + SqlTypeNames.routineType(effective) + ")");
         }
         return ParameterReferences.bound(body, names, standIns);
+    }
+
+    /**
+     * A query body that reads a relation, as a call's interval reads it: each reference to a parameter whose argument
+     * is a constant bound to that constant, at the type the parameter reads it at, so the parameter wins over a
+     * same-named column of the body. {@code MAX(id)} over a table with a column ID reads the parameter's 12345,
+     * [SB2], not the column's values, and {@code SUM(value)} over a FLATTEN of a NUMBER parameter given 1.25::FLOAT
+     * sums ones, [SB8] (live-verified). Any other parameter is left for the body's scope to read; any other body is
+     * returned as it is.
+     */
+    private String constantsBound(final Function udf, final FunctionCallExpression call, final String body) {
+        final String query = sqlBodyText(udf);
+        if (udf.getParameters().isEmpty() || queryExecutor == null || !queryExecutor.isQueryStatement(query)
+                || queryExecutor.fromlessSingleItem(query) != null) {
+            return body;
+        }
+        final List<String> names = new ArrayList<>();
+        final List<String> standIns = new ArrayList<>();
+        for (int i = 0; i < udf.getParameters().size() && i < call.getArguments().size(); i++) {
+            final Expression argument = call.getArguments().get(i);
+            if (!signedConstant(argument)) {
+                continue;
+            }
+            final Parameter parameter = udf.getParameters().get(i);
+            final DataType effective = UdfParameterTypes.effective(parameter.getDataType(),
+                typeInferencer.infer(argument));
+            if (effective != null) {
+                names.add(parameter.getName());
+                standIns.add("CAST(" + AstPrinterVisitor.print(argument) + " AS " + SqlTypeNames.routineType(effective)
+                    + ")");
+            }
+        }
+        return ParameterReferences.bound(body, names, standIns);
+    }
+
+    /** Whether an argument is a constant, a signed one included: {@code -12345} as {@code 12345} is. */
+    private boolean signedConstant(final Expression argument) {
+        if (argument instanceof UnaryOperationExpression) {
+            final UnaryOperationExpression unary = (UnaryOperationExpression) argument;
+            return (unary.getOperator() == UnaryOperator.NEGATE || unary.getOperator() == UnaryOperator.PLUS)
+                && signedConstant(unary.getOperand());
+        }
+        return valueRangeInferencer.foldsAsConstant(argument);
     }
 
     /** The text a call of a SQL function runs, trimmed: what its frame holds when it ends at a semicolon. */
@@ -4515,7 +5042,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             final Parameter parameter = udf.getParameters().get(i);
             final Expression argument = i < call.getArguments().size() ? call.getArguments().get(i) : null;
             final DataType supplied = argument != null ? typeInferencer.infer(argument) : null;
-            final DataType effective = UdfParameterTypes.effective(parameter.getDataType(), supplied);
+            final DataType effective = argument != null && UntypedNullFold.isUntypedNull(argument)
+                ? UdfParameterTypes.ofNullArgument(parameter.getDataType(), parameter.isUnsized())
+                : UdfParameterTypes.effective(parameter.getDataType(), supplied);
             final TableColumn column = new TableColumn(parameter.getName(), effective, true,
                 null, false, false, false);
             // A declared parameter type is authoritative, so the resolver trusts it.
@@ -4532,14 +5061,16 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     /**
      * The interval a parameter reads its argument at: the argument's own where it arrives as an exact
      * number, and otherwise its conversion's into the parameter, which folds for a constant — {@code '5'}
-     * into a NUMBER(10,2) is the one value 5. A parameter that is no exact number carries none.
+     * into a NUMBER(10,2) is the one value 5, and so is a DECFLOAT's 1.5 into a NUMBER the one value 2. A
+     * parameter that is no exact number carries none.
      */
     private ValueRange argumentInterval(final Expression argument, final DataType supplied,
                                         final DataType effective) {
         if (!(effective instanceof NumericType) || NumericType.isApproximate(effective)) {
             return null;
         }
-        if (supplied instanceof NumericType && !NumericType.isApproximate(supplied)) {
+        if (supplied instanceof NumericType && !NumericType.isApproximate(supplied)
+                && !NumericType.isDecfloat(supplied)) {
             return inferStaticRange(argument);
         }
         return inferStaticRange(new CastExpression(argument, SqlTypeNames.canonical(effective), false,
@@ -4925,7 +5456,6 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return;
         }
         final List<String> parts = udfNameParts(call);
-        final String name = parts.get(parts.size() - 1);
         final String upper = call.getFunctionName().toUpperCase(Locale.ROOT);
         if (parts.size() == 1 && (functionRegistry.hasFunction(upper) || functionRegistry.hasAggregateFunction(upper)
                 || upper.startsWith("SYSTEM$") || WindowFunctionNames.handles(upper)
@@ -4938,9 +5468,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             throw new RuntimeException(SqlCompilationError.of(unknownFunctionSentence(call)));
         }
         final List<String> written = call.getArgumentNames();
+        // The function is named as the call writes it: TEST_SCHEMA.F for a call with its schema (live-verified).
         throw new RuntimeException(positionedArgumentTypes(call, "named arguments ["
             + NamedArguments.listed(candidates.isEmpty() ? new ArrayList<Parameter>() : candidates.get(0).getParameters(),
-                written) + "] do not match any signature for function " + name));
+                written) + "] do not match any signature for function " + spelledFunctionName(call)));
     }
 
     /**
@@ -4963,7 +5494,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
         List<Parameter> widest = overloads.get(0).getParameters();
         for (final Function overload : overloads) {
-            if (NamedArguments.fit(overload.getParameters(), written)) {
+            final int[] targets = NamedArguments.targets(overload.getParameters(), written);
+            if (targets != null && bindsByName(overload.getParameters(), targets, call.getArguments())) {
                 return;
             }
             if (overload.getParameters().size() > widest.size()) {
@@ -4972,6 +5504,31 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
         throw arityMismatch("named arguments [" + NamedArguments.listed(widest, written)
             + "] do not match any signature for function " + spelledFunctionName(call), call);
+    }
+
+    /**
+     * Whether a named call's arguments bind to the parameters they fill by the structured binding rule a positional
+     * call's do (see {@link #rejectStructuredUdfArgument}): an overload of {@code nsf(o OBJECT(x VARCHAR))} takes
+     * {@code o => {'x': 'a'}::OBJECT(x VARCHAR)} and no other shape, a plain OBJECT or ARRAY for a structured parameter
+     * none either, and a call no overload takes so is refused as named arguments that match no signature
+     * (live-verified).
+     */
+    private boolean bindsByName(final List<Parameter> params, final int[] targets, final List<Expression> args) {
+        for (int i = 0; i < targets.length && i < args.size(); i++) {
+            if (args.get(i) instanceof SpreadExpression) {
+                return true;
+            }
+            DataType argType = null;
+            try {
+                argType = typeInferencer.infer(args.get(i));
+            } catch (final RuntimeException untyped) {
+                argType = null;
+            }
+            if (!StructuredTypes.bindsAsArgument(argType, params.get(targets[i]).getDataType())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -5002,6 +5559,19 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             }
             seen.add(argumentName);
         }
+    }
+
+    /**
+     * Whether a call's argument is echoed in the plan's form: a cast is, {@code CAST('2024-01-01' AS DATE)} for
+     * {@code '2024-01-01'::DATE} (live-verified), but not a NULL cast to a type, which is how a block writes out a
+     * variable holding NULL.
+     */
+    private static boolean echoesItsPlan(final Expression argument) {
+        if (!(argument instanceof CastExpression)) {
+            return false;
+        }
+        final Expression operand = ((CastExpression) argument).getExpression();
+        return !(operand instanceof LiteralExpression && ((LiteralExpression) operand).getType() == LiteralType.NULL);
     }
 
     /**
@@ -5039,9 +5609,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
         final String name = parts.get(parts.size() - 1);
         if (args.size() > widest) {
+            // A cast argument as the plan prints it, CAST(x AS T), written :: or not (live-verified). A NULL cast to a
+            // type is the form a block writes a variable holding NULL in, which the echo names as the block wrote it.
             final StringBuilder echo = new StringBuilder(name).append('(');
             for (int i = 0; i < args.size(); i++) {
-                echo.append(i == 0 ? "" : ", ").append(strictText(args.get(i)));
+                echo.append(i == 0 ? "" : ", ").append(echoesItsPlan(args.get(i))
+                    ? strictPlanText(args.get(i)) : strictText(args.get(i)));
             }
             throw arityMismatch("too many arguments for function [" + echo.append(')') + "] expected " + widest
                 + ", got " + args.size(), call);
@@ -5296,12 +5869,15 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 ? ((NumericType) typed).getScale() : -1);
             typedCallScales.put(call, scale);
         }
-        final BigDecimal held = value instanceof BigDecimal ? (BigDecimal) value : new BigDecimal(value.toString());
+        final BigDecimal held = value instanceof BigDecimal ? (BigDecimal) value : DecimalText.parse(value.toString());
         return scale.intValue() > held.scale() ? held.setScale(scale.intValue()) : value;
     }
 
     @Override
     public Object visitCaseExpression(final CaseExpression expr) {
+        if (resultHolds(expr)) {
+            return DeferredFault.read(resultContext.get(canonicalPrintOf(expr)));
+        }
         // The chosen branch is converted to the branches' folded type, the same exit the short-circuit
         // conditionals take — a CASE is one of them, written as a clause rather than a call.
         for (final WhenClause when : expr.getWhenClauses()) {
@@ -5328,11 +5904,17 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         rejectIllegalVectorCast(expr);
         rejectShapedSourceCast(expr);
         rejectStructuredTextCastSource(expr);
+        // A geospatial target's sentence outranks TRY_CAST's about its argument types, whatever the source: TRY_CAST(1
+        // AS GEOGRAPHY) is "invalid type [TRY_CAST(1)] for parameter 'TO_GEOGRAPHY'" (live-verified).
+        rejectGeoCastTarget(expr);
         rejectNonStringTryCastSource(expr);
         rejectUncastableSource(expr);
         rejectNonObjectCastSource(expr);
         rejectIntervalCastSource(expr);
         rejectIllegalStructuredCast(expr);
+        if (resultHolds(expr)) {
+            return DeferredFault.read(resultContext.get(canonicalPrintOf(expr)));
+        }
         return castEvaluated(expr, expr.getExpression().accept(this));
     }
 
@@ -5413,6 +5995,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         VariantTemporalCasts.requireReachable(value, variantTarget);
         if (!VariantTemporalCasts.isTemporal(variantTarget)) {
             return convertToDeclaredTarget(expr, value);
+        }
+        // A number a stored row's element or path holds converts by its own rule (see VariantRowElements).
+        final Object element = storedReadOf(expr.getExpression()) == StoredRead.ELEMENT
+            ? VariantRowElements.converted(value, variantTarget) : null;
+        if (element != null) {
+            return convertToDeclaredTarget(expr, element);
         }
         try {
             return convertToDeclaredTarget(expr, value);
@@ -5516,10 +6104,30 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (target == null && !StructuredTypes.isStructured(elementType)) {
             return;
         }
+        final Object added = argValues.get(position);
+        if ((added instanceof Double || added instanceof Float) && elementType instanceof NumericType
+                && !NumericType.isApproximate(elementType) && !NumericType.isDecfloat(elementType)
+                && Double.isFinite(((Number) added).doubleValue())) {
+            // An element is held to its scale and to thirty-eight digits, not to its precision - 12345 goes into an
+            // ARRAY(NUMBER(3,0)) - but a double past them is refused naming the element's declared width:
+            // 1e40 is "Number out of representable range: type FIXED[SB2](3,0){not null}, value 1e+40" (live-verified).
+            final NumericType number = (NumericType) elementType;
+            final BigDecimal exact = new BigDecimal(((Number) added).doubleValue());
+            if (NumericRangeRefusal.exceeds(exact, 38, Math.max(0, number.getScale()))) {
+                throw new StructuredElementRefusal(NumericRangeRefusal.typedDouble(
+                    SignedStorageWidth.tagOfPrecision(number.getPrecision()), number.getPrecision(),
+                    number.getScale(), false, exact));
+            }
+        }
         try {
             // A structured element is converted to its type as a cast converts it (see StructuredElementRule).
-            argValues.set(position, target == null ? StructuredCast.forColumn(argValues.get(position), elementType)
-                : castValue(argValues.get(position), target));
+            final Object element = target == null ? StructuredCast.forColumn(argValues.get(position), elementType)
+                : castValue(argValues.get(position), target);
+            // A text is not held to the element's declared length: ARRAY_APPEND(['a']::ARRAY(VARCHAR(2)), 'toolong')
+            // is ["a","toolong"], still typed ARRAY(VARCHAR(2)), and a CTAS stores it (live-verified).
+            // A DECFLOAT is added as the member that keeps its type, as ARRAY_CONSTRUCT adds one.
+            argValues.set(position, NumericType.isDecfloat(elementType) && element instanceof BigDecimal
+                ? DecfloatTextNode.variantOf((BigDecimal) element) : element);
         } catch (final StructuredElementRefusal refused) {
             throw refused;
         } catch (final RuntimeException refused) {
@@ -5568,6 +6176,147 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         } catch (final RuntimeException unread) {
             throw VariantTemporalCasts.failure(value, "TIMESTAMP_NTZ");
         }
+    }
+
+    /**
+     * The amount of DATEADD and its aliases, or ADD_MONTHS's count of months, read as the fixed-point count its unit
+     * takes (live-verified): a FLOAT no such count holds is refused in the cast's words, its nullability read from
+     * the argument (see {@link DateShiftAmount#requireFixedCount}), and a VARIANT holding NaN or an infinity in the
+     * VARIANT's cast's, the value as the VARIANT prints it: "Number out of representable range: type FIXED, value
+     * NaN".
+     *
+     * @param funcName  the call's name, upper-cased
+     * @param call      the call
+     * @param argValues its evaluated arguments, the amount second
+     */
+    private void requireFixedShiftAmount(final String funcName, final FunctionCallExpression call,
+                                         final List<Object> argValues) {
+        final Object amount = argValues.get(1);
+        if (amount instanceof VariantValue) {
+            final JsonNode held = ((VariantValue) amount).node();
+            if (held.isNumber() && !Double.isFinite(held.doubleValue())) {
+                throw new RuntimeException("Number out of representable range: type FIXED, value "
+                    + Double.toString(held.doubleValue()));
+            }
+            return;
+        }
+        if (!(amount instanceof Double || amount instanceof Float)) {
+            return;
+        }
+        final IntervalUnit unit = "ADD_MONTHS".equals(funcName) ? IntervalUnit.MONTH
+            : DateUnitVocabulary.intervalUnit(argValues.get(0));
+        if (unit != null) {
+            DateShiftAmount.requireFixedCount(((Number) amount).doubleValue(), unit,
+                mayBeNull(call.getArguments().get(1)));
+        }
+    }
+
+    /**
+     * A FLOAT given where a function reads a whole number fits the fixed-point slot the function reads it through, or
+     * is refused in that slot's words with the argument's nullability spelled in (live-verified; see
+     * {@link WholeNumberSlots}): {@code SUBSTR('abcdef', f)} over a nullable FLOAT column holding inf is "Number out
+     * of representable range: type FIXED[SB8](18,0){nullable}, value inf".
+     *
+     * @param funcName  the call's name, upper-cased
+     * @param call      the call
+     * @param argValues its evaluated arguments
+     */
+    private void requireFittingWholeNumbers(final String funcName, final FunctionCallExpression call,
+                                            final List<Object> argValues) {
+        if (call.getArguments().size() != argValues.size() || argValues.isEmpty()
+                || WholeNumberSlots.readsAScale(funcName)
+                    && (argValues.get(0) instanceof Double || argValues.get(0) instanceof Float
+                        || call.getArguments().size() == 2 && !isDecfloatTyped(call.getArguments().get(0))
+                            && NumericType.isApproximate(typeInferencer.infer(call.getArguments().get(1))))) {
+            // A FLOAT input, or a FLOAT scale beside an input other than a DECFLOAT, rounds in FLOAT arithmetic, with
+            // no fixed-point slot to fit.
+            return;
+        }
+        if ("REPEAT".equals(funcName) && argValues.size() == 2 && argValues.get(0) != null
+                && (argValues.get(1) instanceof Double || argValues.get(1) instanceof Float)) {
+            // REPEAT's FLOAT count is read as the characters it asks for (see Repeat).
+            WholeNumberArgument.requireFittingFloat(((Number) argValues.get(1)).doubleValue()
+                * CodePointText.length(SharedFunctionHelpers.textOf(argValues.get(0))), WholeNumberArgument.PART,
+                mayBeNull(call.getArguments().get(1)));
+        }
+        for (int i = 0; i < argValues.size(); i++) {
+            final String slot = WholeNumberSlots.slotOf(funcName, i);
+            if (slot != null && (argValues.get(i) instanceof Double || argValues.get(i) instanceof Float)) {
+                WholeNumberArgument.requireFittingFloat(argValues.get(i), slot,
+                    WholeNumberSlots.alwaysNullable(funcName) || mayBeNull(call.getArguments().get(i)));
+            }
+        }
+        if ("SPLIT_PART".equals(funcName) && argValues.size() == 3 && argValues.get(0) != null
+                && argValues.get(1) != null && isExactWhole(argValues.get(2))) {
+            // An exact part past 32 bits the plan could not know is refused as the row is read, in its own type:
+            // "Number out of representable range: type FIXED[SB4](38,0){nullable}, value 3000000000" (live-verified).
+            final BigInteger whole = WholeNumbers.decimalOf(argValues.get(2)).setScale(0, RoundingMode.HALF_UP)
+                .toBigInteger();
+            final DataType declared = inferStaticType(call.getArguments().get(2));
+            if (whole.bitLength() > 31 && declared instanceof NumericType && !NumericType.isApproximate(declared)
+                    && ((NumericType) declared).getScale() <= 0) {
+                throw new RuntimeException("Number out of representable range: type FIXED[SB4]("
+                    + ((NumericType) declared).getPrecision() + "," + ((NumericType) declared).getScale()
+                    + "){nullable}, value " + whole);
+            }
+        }
+    }
+
+    /** Whether a value is an exact number: no FLOAT, no text. */
+    private static boolean isExactWhole(final Object value) {
+        return value instanceof BigDecimal || value instanceof BigInteger || value instanceof Long
+            || value instanceof Integer;
+    }
+
+    /**
+     * Whether an argument may be NULL, as a refusal's type spells it, {@code {nullable}} or {@code {not null}}: a
+     * literal other than NULL and a column declared NOT NULL may not, a cast or a sign may as what it reads does, an
+     * arithmetic operation as either operand does, and COALESCE, NVL and IFNULL only as every argument does; anything
+     * else may (live-verified for a cast literal, the columns, an addition and COALESCE).
+     *
+     * @param argument the argument
+     * @return whether it may be NULL
+     */
+    private boolean mayBeNull(final Expression argument) {
+        if (argument instanceof LiteralExpression) {
+            return ((LiteralExpression) argument).getType() == LiteralType.NULL;
+        }
+        if (argument instanceof ColumnReferenceExpression) {
+            // A derived relation's column may be NULL as the projection that made it judged its item, so a column of
+            // (SELECT 'inf'::FLOAT n) is {not null} (live-verified).
+            final TableColumn declared = resolveDeclaredColumn((ColumnReferenceExpression) argument);
+            if (declared != null && declared.getValuesNullable() != null) {
+                return declared.getValuesNullable().booleanValue();
+            }
+            return declared == null || declared.isNullable();
+        }
+        if (argument instanceof CastExpression) {
+            return ((CastExpression) argument).isTryMode() || mayBeNull(((CastExpression) argument).getExpression());
+        }
+        if (argument instanceof UnaryOperationExpression) {
+            final UnaryOperationExpression unary = (UnaryOperationExpression) argument;
+            return unary.getOperator() != UnaryOperator.NEGATE && unary.getOperator() != UnaryOperator.PLUS
+                || mayBeNull(unary.getOperand());
+        }
+        if (argument instanceof BinaryOperationExpression) {
+            final BinaryOperationExpression binary = (BinaryOperationExpression) argument;
+            final BinaryOperator operator = binary.getOperator();
+            final boolean arithmetic = operator == BinaryOperator.ADD || operator == BinaryOperator.SUBTRACT
+                || operator == BinaryOperator.MULTIPLY || operator == BinaryOperator.DIVIDE
+                || operator == BinaryOperator.MODULO;
+            return !arithmetic || mayBeNull(binary.getLeft()) || mayBeNull(binary.getRight());
+        }
+        if (argument instanceof FunctionCallExpression) {
+            final String name = ((FunctionCallExpression) argument).getFunctionName().toUpperCase(Locale.ROOT);
+            if ("COALESCE".equals(name) || "NVL".equals(name) || "IFNULL".equals(name)) {
+                for (final Expression each : ((FunctionCallExpression) argument).getArguments()) {
+                    if (!mayBeNull(each)) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
     }
 
     /**
@@ -5745,6 +6494,14 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             // A DECFLOAT cast to VARIANT is TO_VARIANT of it, the string of its text (see rememberDecfloatMembers).
             return applyStructuredTarget(expr, DecfloatTextNode.variantOf((BigDecimal) value));
         }
+        if (value instanceof BigDecimal && "VARIANT".equalsIgnoreCase(String.valueOf(expr.getTargetType()).trim())
+                && ((BigDecimal) value).scale() > 0 && ((BigDecimal) value).stripTrailingZeros().scale() <= 0
+                && functionRegistry != null && functionRegistry.getFunction("TO_VARIANT") != null) {
+            // A whole number out of a scaled NUMBER cast to VARIANT is TO_VARIANT of it: its text drops the zeros of
+            // its scale, 100 out of a NUMBER(10,2), where its kind keeps them, DECIMAL (live-verified).
+            return applyStructuredTarget(expr,
+                functionRegistry.getFunction("TO_VARIANT").evaluate(Collections.singletonList(value)));
+        }
         if ((value instanceof Double || value instanceof Float)
                 && "VARIANT".equalsIgnoreCase(String.valueOf(expr.getTargetType()).trim())) {
             // A double cast to VARIANT is TO_VARIANT of it, and keeps the same origin rule.
@@ -5776,20 +6533,23 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return applyStructuredTarget(expr, value);
         }
         if (value instanceof Boolean && "DECFLOAT".equals(castTargetKind(expr.getTargetType()))) {
-            // A BOOLEAN cast to a DECFLOAT is 1 or 0, as TO_DECFLOAT reads it (live: CAST(TRUE AS DECFLOAT) is 1).
-            return applyStructuredTarget(expr, Double.valueOf(((Boolean) value).booleanValue() ? 1.0 : 0.0));
+            // A BOOLEAN cast to a DECFLOAT is 1 or 0, as TO_DECFLOAT reads it (live: CAST(TRUE AS DECFLOAT) is 1): the
+            // exact DECFLOAT, so arithmetic over it is DECFLOAT arithmetic.
+            return applyStructuredTarget(expr, ((Boolean) value).booleanValue() ? BigDecimal.ONE : BigDecimal.ZERO);
         }
-        if (value instanceof Boolean && "NUMBER".equals(castTargetKind(expr.getTargetType()))) {
-            // A BOOLEAN cast to an EXACT number is the unscaled 1 or 0 typed NUMBER(2,0) whatever
-            // width the cast spells — live prints 1, not 1.0, for TRUE::NUMBER(5,1) — so the declared
-            // pair is not applied to it (see the inferencer's cast rule for the declared type).
-            return applyStructuredTarget(expr, ValueCaster.castValue(value, "NUMBER(2,0)",
-                isNullableArgument(expr.getExpression())));
+        if (value instanceof BigDecimal && "NUMBER".equals(castTargetKind(expr.getTargetType()))
+                && isDecfloatTyped(expr.getExpression())) {
+            // A DECFLOAT the NUMBER has no room for names the conversion, not the NUMBER's slot (see Decfloats).
+            final NumericType declared = TypeInferencer.numberTargetWithParameters(expr.getTargetType());
+            final NumericType number = declared != null ? declared
+                : (NumericType) TypeInferencer.typeForName(expr.getTargetType());
+            Decfloats.toNumber((BigDecimal) value, number.getPrecision() > 0 ? number.getPrecision() : 38,
+                Math.max(0, number.getScale()));
         }
         // The source's nullability travels with the value: an out-of-range number prints it as part of
         // the type it could not fit, and this is the only frame that still holds the source expression.
         final Object converted = ValueCaster.castValue(value, expr.getTargetType(),
-            isNullableArgument(expr.getExpression()));
+            isNullableArgument(expr.getExpression()), recursiveStepPrecision(expr.getExpression()));
         // A cast to a width-declared BINARY holds the bytes to it as the string cast holds its text:
         // TO_BINARY('ABCDEF', 'HEX')::BINARY(2) is "Binary value 'ABCDEF' is too long and would be truncated", where
         // TO_BINARY('ABCD', 'HEX')::BINARY(2) passes (live-verified). The width was never read.
@@ -5842,8 +6602,42 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return true;
         }
         final DataType type = typeInferencer.infer(wrapped);
-        return (type instanceof NumericType || type instanceof BooleanType) && isLiteralConstant(wrapped)
-            && !gainsScale(wrapped);
+        return (type instanceof NumericType || type instanceof BooleanType)
+            && (isLiteralConstant(wrapped) || readsLiteralConstant(wrapped)) && !gainsScale(wrapped);
+    }
+
+    /**
+     * Whether an expression reads a derived relation's column a FROM-less select's number or boolean literal made
+     * (see TableColumn#isLiteralConstant), on a side no outer join extends with NULLs: live folds the literal
+     * through the relation as it folds a wrap written in place.
+     */
+    private boolean readsLiteralConstant(final Expression expression) {
+        if (!(expression instanceof ColumnReferenceExpression)) {
+            return false;
+        }
+        final ColumnReferenceExpression reference = (ColumnReferenceExpression) expression;
+        final TableColumn resolved = resolveDeclaredColumn(reference);
+        if (resolved == null || !resolved.isLiteralConstant()) {
+            return false;
+        }
+        final Table joined = joinedRelation();
+        final Table owner = resolveDeclaredOwner(reference);
+        return joined == null || owner == null || !joined.getJoinedRelations().isNullExtended(owner);
+    }
+
+    /**
+     * Whether a select item of a FROM-less select is a number or boolean literal, which a derived relation built from
+     * the result hands on as one (see TableColumn#isLiteralConstant).
+     *
+     * @param expr a select item
+     * @return true for such an item
+     */
+    public boolean projectsLiteralConstant(final Expression expr) {
+        if (!(table instanceof FromlessDual) || !isLiteralConstant(expr) || gainsScale(expr)) {
+            return false;
+        }
+        final DataType type = typeInferencer.infer(expr);
+        return type instanceof NumericType || type instanceof BooleanType;
     }
 
     /**
@@ -6876,7 +7670,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 if (windowedAggregate != null
                         && functionRegistry.getFunction(window.getFunctionName()) == null) {
                     final FunctionCallExpression proxy = new FunctionCallExpression(
-                        window.getFunctionName(), window.getArguments());
+                        window.getFunctionName(), window.getArguments(), window.isDistinct(), false);
                     proxy.setPosition(window.getPosition());
                     // A windowed star — SUM(*) OVER (), COUNT(t.* EXCLUDE (a)) OVER () — expands
                     // exactly as the plain one, qualifier and filters included; only a LONE star does
@@ -6969,8 +7763,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                             argCount), call);
                     }
                 }
-                // A block's logging statement is no function, over no rows either.
-                if (SystemFunctionNames.isLoggingStatement(funcName)) {
+                // A block's logging or event statement is no function, over no rows either.
+                if (SystemFunctionNames.isScriptingStatement(funcName)) {
                     throw SystemFunctionNames.unknownLoggingFunction(funcName);
                 }
                 // The SYSTEM$ family lives outside the registry and is judged from its own
@@ -7006,6 +7800,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                     rejectNonBooleanArgumentInStrictFunction(funcName, call.getArguments(), call);
                     rejectStrictArgumentFamilies(funcName, call.getArguments(), call);
                     rejectGetDdlArguments(funcName, call);
+                    rejectCalledGetDdlArguments(call);
                     rejectIncomparableCallOperands(funcName, call);
                     rejectTimeInLastDay(funcName, call.getArguments());
                     rejectUnknownDateUnit(funcName, call.getArguments());
@@ -7079,6 +7874,13 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             }
             validateStrictArguments(((BinaryOperationExpression) expr).getLeft());
             validateStrictArguments(((BinaryOperationExpression) expr).getRight());
+            if (COMPARISON_OPERATOR_NAMES.containsKey(((BinaryOperationExpression) expr).getOperator())
+                    || isArithmeticOperator(((BinaryOperationExpression) expr).getOperator())) {
+                rejectOverScaledText(((BinaryOperationExpression) expr).getLeft(),
+                    ((BinaryOperationExpression) expr).getRight());
+                rejectOverScaledText(((BinaryOperationExpression) expr).getRight(),
+                    ((BinaryOperationExpression) expr).getLeft());
+            }
             if (COMPARISON_OPERATOR_NAMES.containsKey(((BinaryOperationExpression) expr).getOperator())) {
                 final BinaryOperationExpression comparison = (BinaryOperationExpression) expr;
                 if (comparison.isSimpleCaseTest()) {
@@ -7105,6 +7907,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                     ((InExpression) expr).isNot());
                 for (final Expression value : ((InExpression) expr).getValues()) {
                     rejectIncomparableOperands(((InExpression) expr).getValue(), value);
+                    rejectOverScaledText(value, ((InExpression) expr).getValue());
+                    rejectOverScaledText(((InExpression) expr).getValue(), value);
                 }
             }
             if (((InExpression) expr).hasSubquery()) {
@@ -7162,6 +7966,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             rejectIllegalVectorCast((CastExpression) expr);
             rejectShapedSourceCast((CastExpression) expr);
             rejectStructuredTextCastSource((CastExpression) expr);
+            rejectGeoCastTarget((CastExpression) expr);
             rejectNonStringTryCastSource((CastExpression) expr);
             // The operand's own argument types compile before the conversion takes its type:
             // CAST(IFF(g, 1, 2) AS DATE) over a VARCHAR g is IFF's refusal, not the cast's (live-verified).
@@ -7179,18 +7984,40 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
         if (expr instanceof ObjectAccessExpression) {
             // Colon path access is GET sugar: a declared-VARCHAR base is a compile error even when
-            // the input has zero rows, so the plan-time walk enforces it too.
-            rejectStringBaseInPathAccess((ObjectAccessExpression) expr);
-            validateStrictArguments(((ObjectAccessExpression) expr).getBase());
+            // the input has zero rows, so the plan-time walk enforces it too. So is a path to a field a
+            // structured OBJECT does not declare, whatever rows the statement reads (live-verified).
+            final ObjectAccessExpression path = (ObjectAccessExpression) expr;
+            rejectStringBaseInPathAccess(path);
+            validateStrictArguments(path.getBase());
+            final DataType pathBase = typeInferencer.infer(path.getBase());
+            requireDeclaredFields(pathBase, path.getPathParts());
+            if (pathBase instanceof MapType && ((MapType) pathBase).getKeyType() instanceof NumericType
+                    && !path.getPathParts().isEmpty()) {
+                // A path names a NUMBER-keyed MAP's key as text, which such a map does not take (live-verified).
+                throw new RuntimeException(SqlCompilationError.of("Function GET cannot be used with arguments of types "
+                    + strictArgTypeText(path.getBase()) + " and VARCHAR(" + path.getPathParts().get(0).length() + ")"));
+            }
             return;
         }
         if (expr instanceof ArrayAccessExpression) {
-            // A subscript is GET sugar too, refused over the same bases.
-            rejectStringBaseInSubscript((ArrayAccessExpression) expr);
-            validateStrictArguments(((ArrayAccessExpression) expr).getArray());
-            validateStrictArguments(((ArrayAccessExpression) expr).getIndex());
-            rejectNullIndexOfArray(((ArrayAccessExpression) expr).getArray(),
-                ((ArrayAccessExpression) expr).getIndex());
+            // A subscript is GET sugar too, refused over the same bases, and a field name a structured
+            // OBJECT does not declare is refused whatever rows the statement reads (live-verified).
+            final ArrayAccessExpression subscript = (ArrayAccessExpression) expr;
+            rejectStringBaseInSubscript(subscript);
+            validateStrictArguments(subscript.getArray());
+            validateStrictArguments(subscript.getIndex());
+            rejectNullIndexOfArray(subscript.getArray(), subscript.getIndex());
+            rejectOffLimitsIndexOfArray(subscript.getArray(), subscript.getIndex());
+            final DataType baseType = typeInferencer.infer(subscript.getArray());
+            if (baseType instanceof StructuredObjectType && subscript.getIndex() instanceof LiteralExpression
+                    && ((LiteralExpression) subscript.getIndex()).getType() == LiteralType.STRING
+                    && ((LiteralExpression) subscript.getIndex()).getValue() != null) {
+                requireDeclaredFields(baseType, Collections.singletonList(
+                    String.valueOf(((LiteralExpression) subscript.getIndex()).getValue())));
+            }
+            if (baseType instanceof MapType) {
+                requireMapKey((MapType) baseType, subscript.getArray(), subscript.getIndex(), "GET", false);
+            }
             return;
         }
         if (expr instanceof LikeAnyAllExpression) {
@@ -7582,6 +8409,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (positions == null) {
             return;
         }
+        if ("ARRAY_REMOVE".equals(funcName) && args.size() == 2
+                && typeInferencer.infer(args.get(0)) instanceof StructuredArrayType) {
+            // A structured ARRAY's elements are of a type, and the value is judged against it instead.
+            requireElementFamily((StructuredArrayType) typeInferencer.infer(args.get(0)), args.get(1));
+            return;
+        }
         for (final int position : positions) {
             if (position >= args.size()) {
                 continue;
@@ -7852,9 +8685,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     /** Runs the BOOLEAN-rejecting, BINARY-requiring, MAP-requiring and TO_CHAR-format rules. */
     private void rejectStrictArgumentFamilies(final String funcName, final List<Expression> args,
                                               final Expression call) {
-        rejectArgumentTypes(funcName, args, BOOLEAN_REJECTING_ARGS, new Class<?>[] {BooleanType.class});
+        rejectArgumentTypes(funcName, args, BOOLEAN_REJECTING_ARGS, new Class<?>[] {BooleanType.class}, call);
         rejectArgumentTypes(funcName, args, BINARY_STRICT_ARGS,
-            new Class<?>[] {StringType.class, NumericType.class, BooleanType.class, DateTimeType.class});
+            new Class<?>[] {StringType.class, NumericType.class, BooleanType.class, DateTimeType.class}, null);
+        rejectNonNumberBitAggregateArgument(funcName, args, call);
         rejectNonMapArgumentInStrictFunction(funcName, args);
         rejectObjectInArrayPosition(funcName, args, call);
         rejectUntypedNullMapArgument(funcName, args);
@@ -7877,6 +8711,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         // family — TRUNC(d, d) is "Date/time component [TO_CHAR(TT.D) ]…", not "(DATE, DATE)".
         rejectNonLiteralTruncUnit(funcName, args);
         rejectUntruncatableOperand(funcName, args);
+        rejectNonIndexOfVariant(funcName, args, call);
         rejectArrayFunctionArgument(funcName, args, call);
         rejectSemiStructuredArgument(funcName, args, call);
         rejectNullIfZeroFamilies(funcName, args, call);
@@ -7902,6 +8737,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         rejectFractionalSplitPart(funcName, args, call);
         if ("GET".equals(funcName) && args.size() == 2) {
             rejectNullIndexOfArray(args.get(0), args.get(1));
+            rejectOffLimitsIndexOfArray(args.get(0), args.get(1));
         }
     }
 
@@ -8017,16 +8853,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     /**
-     * SPLIT_PART's part is a whole number, judged while the statement compiles and over a table with no row too.
-     * A BOOLEAN, a date, a time or a timestamp there is no part: "Invalid argument types for function
-     * 'SPLIT_PART': (VARCHAR(5), VARCHAR(1), BOOLEAN)", placed at the call, and so is a BINARY. An exact NUMBER
-     * with a fraction — a literal, a NUMBER(4,2) column, a cast to one, {@code 1 + 0.6} — is refused, echoed as the
-     * plan prints it: "argument 3 to function SPLIT_PART needs to be an integer, found: 'T.N'". What is computed
-     * from literals is computed first: a whole number written with a fraction ({@code 2.0}, {@code 1.5 + 0.5},
-     * {@code 2::NUMBER(4,1)}) is read, and a NULL ({@code NULL::NUMBER(4,2)}, {@code NULLIF(1.6, 1.6)}) answers
-     * NULL; so is the one whole value a column's statistics leave an expression ({@code n * 100} over a column
-     * holding 0.02 alone). A FLOAT, a text and a VARIANT are read too, each rounded when the row is read
-     * (live-verified).
+     * SPLIT_PART's part, judged once a statement by what the plan knows of its value, while the statement compiles and
+     * over a table with no row too. A BOOLEAN, a date, a time or a timestamp there is no part: "Invalid argument types
+     * for function 'SPLIT_PART': (VARCHAR(5), VARCHAR(1), BOOLEAN)", placed at the call, and so is a BINARY. A whole
+     * part past 32 bits is refused where the plan knows it (see {@link #rejectWideSplitPart}), and a FLOAT, a text and
+     * a VARIANT are rounded when the row is read. An exact NUMBER with a fraction in its type is judged by
+     * {@link #judgeFractionalSplitPart} (live-verified).
      *
      * @param funcName the call's name, upper-cased
      * @param args     its arguments
@@ -8034,7 +8866,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      */
     private void rejectFractionalSplitPart(final String funcName, final List<Expression> args,
                                            final Expression call) {
-        if (!"SPLIT_PART".equals(funcName) || args.size() != 3) {
+        if (!"SPLIT_PART".equals(funcName) || args.size() != 3 || splitPartsReadEmpty.containsKey(args.get(2))) {
             return;
         }
         final Expression part = args.get(2);
@@ -8043,42 +8875,390 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             throw new RuntimeException(positionedArgumentTypes(call, "Invalid argument types for function '"
                 + funcName + "': (" + strictArgTypeList(args) + ")"));
         }
-        if (!(type instanceof NumericType) || NumericType.isApproximate(type) || ((NumericType) type).getScale() <= 0) {
+        boolean readsEmpty = false;
+        if (type instanceof NumericType && !NumericType.isApproximate(type)) {
+            final BigDecimal written = writtenNumber(part);
+            if (((NumericType) type).getScale() <= 0 || written != null && written.stripTrailingZeros().scale() <= 0) {
+                rejectWideSplitPart(args, part, written);
+            } else {
+                readsEmpty = judgeFractionalSplitPart(args, part, type, written);
+            }
+        }
+        splitPartsReadEmpty.put(part, Boolean.valueOf(readsEmpty));
+    }
+
+    /**
+     * SPLIT_PART's exact part with a fraction in its type. A value the plan knows is folded: one with a fraction is
+     * refused, "argument 3 to function SPLIT_PART needs to be an integer, found: 'T.N'", and a whole one names its
+     * part. The plan knows a literal ({@code 1.6}), what is computed from literals ({@code 1 + 0.6}, while
+     * {@code 1.5 * 2} is 3), a scalar subquery it folds ({@code (SELECT 1.6)}, {@code (SELECT MAX(n) FROM t)} its
+     * statistics answer), the one value a table's statistics leave an expression over its columns ({@code n * 2} over
+     * a column holding 1.6 alone, two such rows too) and a cast of a FLOAT or a text column holding one value. A
+     * division folds only to an exact quotient ({@code 4 / 2}, {@code n / 1} over that column; {@code 2 / 3} does
+     * not), and a ROUND never does. Any other part is read where the row is, and there every value of its type names
+     * no part, a whole one too: over rows that differ, {@code n}, {@code i::NUMBER(4,2)} and {@code i / 2} answer the
+     * empty text on every row. The echo is the plan's, {@code n * 1} the cast it makes,
+     * {@code CAST(T.N AS NUMBER(5,2))}, while a subquery and a conversion of a FLOAT or a text are echoed by the value
+     * they make, {@code '1.6'} (live-verified).
+     *
+     * @param args    the call's arguments
+     * @param part    its part
+     * @param type    the part's type
+     * @param written the number the part writes out, or null
+     * @return whether every row reads the part as the empty text
+     */
+    private boolean judgeFractionalSplitPart(final List<Expression> args, final Expression part, final DataType type,
+                                             final BigDecimal written) {
+        if (written != null) {
+            throw fractionalSplitPart(written.toPlainString());
+        }
+        final BigDecimal known;
+        boolean valueEchoed = convertsTextOrFloat(part);
+        if (part instanceof SubqueryExpression) {
+            known = foldedSubqueryNumber((SubqueryExpression) part);
+            valueEchoed = true;
+        } else {
+            known = knownNumber(part);
+        }
+        if (known == null) {
+            return true;
+        }
+        if (wholeDecimal(known)) {
+            // A whole value is read as a whole part is, and past 32 bits refused alike: i / 1 over a column holding
+            // 3000000000 alone is "found: 'SCALED_ROUND_INT_DIVIDE(TB1.I, 1)'" (live-verified).
+            if (!isNullLiteral(args.get(0)) && !isNullLiteral(args.get(1))
+                    && known.setScale(0, RoundingMode.HALF_UP).toBigInteger().bitLength() > 31) {
+                throw fractionalSplitPart(valueEchoed ? known.stripTrailingZeros().toPlainString()
+                    : strictPlanText(part));
+            }
+            return false;
+        }
+        final String echo = valueEchoed ? known.stripTrailingZeros().toPlainString() : timesOneCast(part, type);
+        throw fractionalSplitPart(echo != null ? echo : strictPlanText(part));
+    }
+
+    private static RuntimeException fractionalSplitPart(final String echo) {
+        return new RuntimeException(SqlCompilationError.of("argument 3 to function SPLIT_PART needs to be an integer,"
+            + " found: '" + echo + "'"));
+    }
+
+    /**
+     * The one number the plan knows an expression to be, or null: computed where it is over literals, else the one
+     * value the statistics leave it - none over a column holding a NULL beside it, nor beside a WHERE they cannot
+     * prove of every row. A division is known as {@link #knownQuotient} has it, a ROUND, TRUNC, CEIL or FLOOR to a
+     * scale only where it is whole ({@code ROUND(2.0, 1)}, not {@code ROUND(1.6, 1)}), and an expression over one the
+     * plan does not fold is not known itself: {@code 10 / 4 * 2} and {@code ROUND(1.5, 1) + 0.5} are read where the
+     * row is (live-verified).
+     */
+    private BigDecimal knownNumber(final Expression expression) {
+        if (isDivision(expression)) {
+            return knownQuotient((BinaryOperationExpression) expression);
+        }
+        final BigDecimal value = foldsThrough(expression) ? computedOrHeld(expression) : null;
+        return value != null && isScaledRounding(expression) && !wholeDecimal(value) ? null : value;
+    }
+
+    /** The value of an expression over literals, computed, else the one value the statistics leave it; or null. */
+    private BigDecimal computedOrHeld(final Expression expression) {
+        if (ConstantRootFold.isOverLiterals(expression, functionRegistry)) {
+            try {
+                return ValueRange.exactOf(expression.accept(this));
+            } catch (final RuntimeException uncomputed) {
+                // What cannot be computed fails where the row is read.
+                return null;
+            }
+        }
+        if (accumulates(expression) || queryExecutor != null && queryExecutor.filtersPastStatistics()) {
+            return null;
+        }
+        final ValueRange range = valueRangeInferencer.infer(expression);
+        if (range != null && !range.isEmpty() && !range.isNullable() && range.getMin() != null
+                && range.getMax() != null && range.getMin().compareTo(range.getMax()) == 0) {
+            return range.getMin();
+        }
+        return soleConvertedNumber(expression);
+    }
+
+    /** Whether every division and rounding to a scale within an expression folds (see {@link #knownNumber}). */
+    private boolean foldsThrough(final Expression expression) {
+        final List<Expression> inner = new ArrayList<Expression>();
+        if (expression instanceof BinaryOperationExpression) {
+            inner.add(((BinaryOperationExpression) expression).getLeft());
+            inner.add(((BinaryOperationExpression) expression).getRight());
+        } else if (expression instanceof UnaryOperationExpression) {
+            inner.add(((UnaryOperationExpression) expression).getOperand());
+        } else if (expression instanceof CastExpression) {
+            inner.add(((CastExpression) expression).getExpression());
+        } else if (expression instanceof FunctionCallExpression) {
+            inner.addAll(((FunctionCallExpression) expression).getArguments());
+        }
+        for (final Expression operand : inner) {
+            final boolean folds = isDivision(operand) || isScaledRounding(operand) ? knownNumber(operand) != null
+                : foldsThrough(operand);
+            if (!folds) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isDivision(final Expression expression) {
+        return expression instanceof BinaryOperationExpression
+            && ((BinaryOperationExpression) expression).getOperator() == BinaryOperator.DIVIDE;
+    }
+
+    /** Whether an expression is a ROUND, TRUNC, CEIL or FLOOR of an exact number to a scale. */
+    private boolean isScaledRounding(final Expression expression) {
+        if (!(expression instanceof FunctionCallExpression)) {
+            return false;
+        }
+        final FunctionCallExpression call = (FunctionCallExpression) expression;
+        return call.getNameExpression() == null && !call.isStar() && call.getArguments().size() >= 2
+            && SCALED_ROUNDING_NAMES.contains(call.getFunctionName().toUpperCase(Locale.ROOT))
+            && isExactNumber(typeInferencer.infer(call.getArguments().get(0)));
+    }
+
+    /** The calls that round a number to a scale. */
+    private static final Set<String> SCALED_ROUNDING_NAMES = new HashSet<>(Arrays.asList(
+        "ROUND", "TRUNC", "TRUNCATE", "CEIL", "CEILING", "FLOOR"));
+
+    private static boolean isExactNumber(final DataType type) {
+        return type instanceof NumericType && !NumericType.isApproximate(type) && !NumericType.isDecfloat(type);
+    }
+
+    /**
+     * The quotient a division folds to, both operands known: an integer one's only where it is whole ({@code 6 / 3};
+     * {@code 3 / 2} and {@code 1 / 8} are read where the row is), one of a number with a fraction where it is exact
+     * at the division's scale ({@code 1.5 / 3} and {@code 3 / 1.5}, not {@code 1.6 / 3}); null for any other
+     * (live-verified).
+     */
+    private BigDecimal knownQuotient(final BinaryOperationExpression division) {
+        final DataType dividendType = typeInferencer.infer(division.getLeft());
+        final DataType divisorType = typeInferencer.infer(division.getRight());
+        final DataType quotientType = typeInferencer.infer(division);
+        if (!isExactNumber(dividendType) || !isExactNumber(divisorType) || !isExactNumber(quotientType)) {
+            return null;
+        }
+        final BigDecimal dividend = knownNumber(division.getLeft());
+        final BigDecimal divisor = dividend == null ? null : knownNumber(division.getRight());
+        if (divisor == null || divisor.signum() == 0) {
+            return null;
+        }
+        final boolean integral = ((NumericType) dividendType).getScale() <= 0
+            && ((NumericType) divisorType).getScale() <= 0;
+        try {
+            final BigDecimal quotient = dividend.divide(divisor);
+            return quotient.stripTrailingZeros().scale() <= (integral ? 0 : ((NumericType) quotientType).getScale())
+                ? quotient : null;
+        } catch (final ArithmeticException nonTerminating) {
+            return null;
+        }
+    }
+
+    /**
+     * The number a conversion of a FLOAT or a text expression over a table's columns makes where each column holds one
+     * value, at the conversion's scale - {@code f::NUMBER(4,2)}, {@code (f + 0)::NUMBER(4,2)} and
+     * {@code TO_NUMBER(s, 4, 2)} over columns holding 1.6 alone are 1.60, and so is their product by 1, which the plan
+     * holds as a cast - or null for any other expression, over a join, and over a column whose values differ or that
+     * holds a NULL. Only the conversion is folded: {@code f::NUMBER(4,2) + 0} is read where the row is
+     * (live-verified).
+     */
+    private BigDecimal soleConvertedNumber(final Expression expression) {
+        Expression conversion = expression;
+        if (expression instanceof BinaryOperationExpression
+                && ((BinaryOperationExpression) expression).getOperator() == BinaryOperator.MULTIPLY) {
+            final BinaryOperationExpression product = (BinaryOperationExpression) expression;
+            conversion = isWholeOne(product.getRight()) ? product.getLeft()
+                : isWholeOne(product.getLeft()) ? product.getRight() : null;
+        }
+        if (conversion == null || !convertsTextOrFloat(conversion) || queryExecutor == null
+                || multiTableAllTables != null && multiTableAllTables.size() > 1) {
+            return null;
+        }
+        final Expression folded;
+        if (conversion instanceof CastExpression) {
+            final CastExpression cast = (CastExpression) conversion;
+            final Expression held = heldValues(cast.getExpression());
+            folded = held == null || held == cast.getExpression() ? null : new CastExpression(held,
+                cast.getTargetType(), cast.isTryMode(), cast.getDeclaredTarget(), cast.getFieldsModifier());
+        } else {
+            final FunctionCallExpression call = (FunctionCallExpression) conversion;
+            final Expression held = heldValues(call.getArguments().get(0));
+            final List<Expression> arguments = new ArrayList<Expression>(call.getArguments());
+            arguments.set(0, held);
+            folded = held == null || held == call.getArguments().get(0) ? null
+                : new FunctionCallExpression(call.getFunctionName(), arguments);
+        }
+        if (folded == null) {
+            return null;
+        }
+        try {
+            return ValueRange.exactOf(folded.accept(this));
+        } catch (final RuntimeException uncomputed) {
+            return null;
+        }
+    }
+
+    /**
+     * An expression with each column it reads replaced by the one value the column holds, a text cast to the column's
+     * type; the expression itself where it reads no column, and null where a column holds more than one value or a
+     * NULL, or the expression holds anything but literals, signs, casts and arithmetic.
+     */
+    private Expression heldValues(final Expression expression) {
+        if (expression instanceof LiteralExpression) {
+            return expression;
+        }
+        if (expression instanceof ColumnReferenceExpression) {
+            final ColumnReferenceExpression ref = (ColumnReferenceExpression) expression;
+            final Table owner = resolveDeclaredOwner(ref);
+            final TableColumn column = owner == null ? null : owner.getColumn(ref.getColumnName());
+            final Object held = column == null || owner.residentSource() == null ? null
+                : queryExecutor.columnSoleValue(owner.residentSource(), column.getName());
+            if (held == null) {
+                return null;
+            }
+            final Expression text = new LiteralExpression(held instanceof BigDecimal
+                ? ((BigDecimal) held).toPlainString() : String.valueOf(held), LiteralType.STRING);
+            return held instanceof CharSequence ? text
+                : new CastExpression(text, SqlTypeNames.canonical(column.getDataType()));
+        }
+        if (expression instanceof UnaryOperationExpression) {
+            final UnaryOperationExpression unary = (UnaryOperationExpression) expression;
+            final Expression operand = heldValues(unary.getOperand());
+            return operand == null ? null : operand == unary.getOperand() ? expression
+                : new UnaryOperationExpression(unary.getOperator(), operand);
+        }
+        if (expression instanceof BinaryOperationExpression) {
+            final BinaryOperationExpression binary = (BinaryOperationExpression) expression;
+            final Expression left = heldValues(binary.getLeft());
+            final Expression right = heldValues(binary.getRight());
+            if (left == null || right == null || binary.getEscape() != null) {
+                return null;
+            }
+            return left == binary.getLeft() && right == binary.getRight() ? expression
+                : new BinaryOperationExpression(left, binary.getOperator(), right);
+        }
+        if (expression instanceof CastExpression) {
+            final CastExpression cast = (CastExpression) expression;
+            final Expression operand = heldValues(cast.getExpression());
+            return operand == null ? null : operand == cast.getExpression() ? expression : new CastExpression(operand,
+                cast.getTargetType(), cast.isTryMode(), cast.getDeclaredTarget(), cast.getFieldsModifier());
+        }
+        return null;
+    }
+
+    /** The number a scalar subquery the plan folds to a constant answers, or null for one it does not fold. */
+    private BigDecimal foldedSubqueryNumber(final SubqueryExpression subquery) {
+        if (queryExecutor == null || !queryExecutor.foldsToConstant(subquery)) {
+            return null;
+        }
+        try {
+            return ValueRange.exactOf(subquery.accept(this));
+        } catch (final RuntimeException unanswered) {
+            return null;
+        }
+    }
+
+    /**
+     * A SPLIT_PART part with a fraction in its type that the plan does not know is read in its own type held in 32
+     * bits, the digits past the point counted in: over rows that differ, {@code i / 2} reading 1500000000 is "Number
+     * out of representable range: type FIXED[SB4](38,6){nullable}, value 1500000000.000000" (live-verified).
+     *
+     * @param part  the part
+     * @param value the value it reads
+     */
+    private void requireFittingFractionalPart(final Expression part, final Object value) {
+        final DataType declared = inferStaticType(part);
+        final BigDecimal number = value instanceof Number || value instanceof CharSequence
+            ? ValueRange.exactOf(value) : null;
+        if (!(declared instanceof NumericType) || number == null) {
             return;
         }
-        final BigDecimal written = writtenNumber(part);
-        if (written != null && written.stripTrailingZeros().scale() <= 0) {
+        final NumericType type = (NumericType) declared;
+        final BigDecimal held = number.setScale(type.getScale(), RoundingMode.HALF_UP);
+        if (held.unscaledValue().bitLength() > 31) {
+            throw new RuntimeException("Number out of representable range: type FIXED[SB4](" + type.getPrecision()
+                + "," + type.getScale() + "){nullable}, value " + held.toPlainString());
+        }
+    }
+
+    /**
+     * Whether a SPLIT_PART call answers the empty text for the row read: its part judged one the plan does not know
+     * with a fraction in its type (see {@link #judgeFractionalSplitPart}), and no argument NULL.
+     */
+    private boolean readsEmptySplitPart(final FunctionCallExpression call, final List<Object> argValues) {
+        return argValues.size() == 3 && call.getArguments().size() == 3 && argValues.get(0) != null
+            && argValues.get(1) != null && argValues.get(2) != null
+            && Boolean.TRUE.equals(splitPartsReadEmpty.get(call.getArguments().get(2)));
+    }
+
+    /**
+     * SPLIT_PART's whole part past 32 bits, refused while the statement compiles where the plan knows its value — a
+     * literal, an expression of literals by the value it computes, the one value a column's statistics leave it — and
+     * echoed as the plan prints it, a literal and a folded subquery by its value: {@code 3000000000} and
+     * {@code (SELECT 3000000000)} are "found: '3000000000'", {@code 2147483647 + 1} "found: '2147483647 + 1'", a
+     * column holding 3000000000 alone "found: 'TB1.I'", where one holding a NULL beside it is not known. A NULL
+     * text or separator answers NULL first, and a part the plan cannot know is refused where the row is read
+     * (live-verified).
+     *
+     * @param args    the call's arguments
+     * @param part    its part
+     * @param written the number the part writes out, or null
+     */
+    private void rejectWideSplitPart(final List<Expression> args, final Expression part, final BigDecimal written) {
+        if (isNullLiteral(args.get(0)) || isNullLiteral(args.get(1))) {
             return;
         }
-        String echo = written != null ? written.toPlainString() : null;
-        if (written == null && ConstantRootFold.isOverLiterals(part, functionRegistry)) {
+        BigDecimal value = written;
+        final boolean subquery = part instanceof SubqueryExpression;
+        if (value == null && subquery) {
+            value = foldedSubqueryNumber((SubqueryExpression) part);
+        }
+        if (value == null && ConstantRootFold.isOverLiterals(part, functionRegistry)) {
             final Object computed;
             try {
                 computed = part.accept(this);
             } catch (final RuntimeException uncomputed) {
-                // What cannot be computed fails where the row is read.
                 return;
             }
-            if (computed == null || computed instanceof BigDecimal && wholeDecimal((BigDecimal) computed)
-                    || computed instanceof Long || computed instanceof Integer || computed instanceof BigInteger) {
-                return;
-            }
-            // A conversion of a text or a FLOAT the plan carried out is echoed by the value it made:
-            // TO_DECIMAL('1.6', 4, 1) and 1.6::FLOAT::NUMBER(4,2) are '1.6' (live-verified).
-            if (computed instanceof BigDecimal && convertsTextOrFloat(part)) {
-                echo = ((BigDecimal) computed).stripTrailingZeros().toPlainString();
-            }
+            value = computed instanceof BigDecimal ? (BigDecimal) computed
+                : computed instanceof BigInteger ? new BigDecimal((BigInteger) computed)
+                : computed instanceof Long || computed instanceof Integer
+                    ? BigDecimal.valueOf(((Number) computed).longValue()) : null;
         }
-        if (written == null && !accumulates(part)) {
-            // The one whole value the plan knows a column's expression to be is read as a constant is.
+        if (value == null && !accumulates(part) && (queryExecutor == null || !queryExecutor.filtersPastStatistics())) {
             final ValueRange known = valueRangeInferencer.infer(part);
-            if (known != null && !known.isEmpty() && known.getMin() != null && known.getMax() != null
-                    && known.getMin().compareTo(known.getMax()) == 0 && wholeDecimal(known.getMin())) {
-                return;
+            if (known != null && !known.isEmpty() && !known.isNullable() && known.getMin() != null
+                    && known.getMax() != null && known.getMin().compareTo(known.getMax()) == 0) {
+                value = known.getMin();
             }
         }
-        throw new RuntimeException(SqlCompilationError.of("argument 3 to function SPLIT_PART needs to be an integer,"
-            + " found: '" + (echo != null ? echo : strictPlanText(part)) + "'"));
+        if (value == null || value.setScale(0, RoundingMode.HALF_UP).toBigInteger().bitLength() <= 31) {
+            return;
+        }
+        throw fractionalSplitPart(written != null || subquery ? value.stripTrailingZeros().toPlainString()
+            : strictPlanText(part));
+    }
+
+    /**
+     * The echo of a product by the whole number 1, which the plan holds as the cast to the product's type:
+     * {@code n * 1} over a NUMBER(4,2) is {@code CAST(T.N AS NUMBER(5,2))}; null for any other part.
+     */
+    private String timesOneCast(final Expression part, final DataType type) {
+        if (!(part instanceof BinaryOperationExpression)
+                || ((BinaryOperationExpression) part).getOperator() != BinaryOperator.MULTIPLY) {
+            return null;
+        }
+        final BinaryOperationExpression product = (BinaryOperationExpression) part;
+        final Expression other = isWholeOne(product.getRight()) ? product.getLeft()
+            : isWholeOne(product.getLeft()) ? product.getRight() : null;
+        return other == null ? null : "CAST(" + strictPlanText(other) + " AS " + SqlTypeNames.canonical(type) + ")";
+    }
+
+    private static boolean isWholeOne(final Expression operand) {
+        return operand instanceof LiteralExpression && ((LiteralExpression) operand).getType() == LiteralType.INTEGER
+            && ((LiteralExpression) operand).getValue() instanceof Number
+            && new BigDecimal(((LiteralExpression) operand).getValue().toString()).compareTo(BigDecimal.ONE) == 0;
     }
 
     /** Whether a value is a conversion into an exact number of a text or a FLOAT: a cast, or TO_NUMBER and kin. */
@@ -8158,7 +9338,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 || !(((LiteralExpression) literal).getValue() instanceof Number)) {
             return null;
         }
-        final BigDecimal value = new BigDecimal(((LiteralExpression) literal).getValue().toString());
+        final BigDecimal value = DecimalText.parse(((LiteralExpression) literal).getValue().toString());
         return negated ? value.negate() : value;
     }
 
@@ -8187,6 +9367,32 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
         throw new RuntimeException(
             "Invalid extraction path 'Extract path index cannot be null': invalid number at position {1}.");
+    }
+
+    /**
+     * An index of an ARRAY or a VARIANT written out as a number is judged while the statement compiles, over a table
+     * with no row too: the whole number it is cut to must lie between 0 and 2,147,483,647, or the call is refused as
+     * the path the plan folds the index into, "Invalid extraction path '-1': array index -1 is off limits; must be
+     * between 0 and 2,147,483,647." A computed index - {@code 0 - 1}, a cast, a column - is read with the row, and
+     * one naming no element answers NULL; so does a written one that rounds past either end, 2147483647.5 or -0.5
+     * (live-verified).
+     *
+     * @param array the value read
+     * @param index the index it is read at
+     */
+    private void rejectOffLimitsIndexOfArray(final Expression array, final Expression index) {
+        final BigDecimal written = writtenNumber(index);
+        if (written == null) {
+            return;
+        }
+        final DataType base = typeInferencer.infer(array);
+        if (!(base instanceof ArrayType) && !(base instanceof VariantType)) {
+            return;
+        }
+        final BigInteger whole = written.setScale(0, RoundingMode.DOWN).toBigInteger();
+        if (whole.signum() < 0 || whole.bitLength() > Integer.SIZE - 1) {
+            throw new RuntimeException(ExtractionPathSyntax.offLimitsIndex(whole));
+        }
     }
 
     /**
@@ -8344,6 +9550,49 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
     }
 
+    /** Whether an operator is one of the five arithmetic ones. */
+    private static boolean isArithmeticOperator(final BinaryOperator operator) {
+        return operator == BinaryOperator.ADD || operator == BinaryOperator.SUBTRACT
+            || operator == BinaryOperator.MULTIPLY || operator == BinaryOperator.DIVIDE
+            || operator == BinaryOperator.MODULO;
+    }
+
+    /**
+     * Refuse a text literal beside an exact number that spells a number of more than 38 decimals: see
+     * {@link ImpliedTextNumber#overScaledRefusal}.
+     *
+     * @param text  the operand that may be the literal
+     * @param other the operand beside it
+     */
+    private void rejectOverScaledText(final Expression text, final Expression other) {
+        if (!ImpliedTextNumber.isTextLiteral(text)) {
+            return;
+        }
+        final DataType otherType = typeInferencer.infer(other);
+        if (!(otherType instanceof NumericType) || NumericType.isApproximate(otherType)
+                || NumericType.isDecfloat(otherType)) {
+            return;
+        }
+        final String refusal = ImpliedTextNumber.overScaledRefusal(
+            String.valueOf(((LiteralExpression) text).getValue()));
+        if (refusal != null) {
+            throw new RuntimeException(refusal);
+        }
+    }
+
+    /**
+     * SYSTEM$GET_TAG's judgement ahead of the names of its query (see TagLookupCalls): its count, then what
+     * {@link #rejectTagLookupArguments} judges, with no name of its arguments resolved first — a name no relation
+     * holds is refused as an argument that is no constant, as any column is (live-verified).
+     *
+     * @param call the call
+     */
+    public void judgeTagLookup(final FunctionCallExpression call) {
+        final String funcName = call.getFunctionName().toUpperCase(Locale.ROOT);
+        judgeSystemCallShape(funcName, call);
+        rejectTagLookupArguments(funcName, call.getArguments(), call);
+    }
+
     /**
      * The SYSTEM$ functions answered while the statement compiles: an argument that reads a row is refused (see
      * {@link SystemConstantArguments}), and SYSTEM$GET_TAG's tag, object and domain and
@@ -8372,7 +9621,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return;
         }
         final List<Object> values = new ArrayList<>();
-        for (int i = 0; i < (lookup ? 3 : 1); i++) {
+        for (int i = 0; i < (lookup ? args.size() : 1); i++) {
             if (!ConstantArgumentWalk.isConstant(args.get(i), functionRegistry)) {
                 return;
             }
@@ -8396,7 +9645,18 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      */
     private void rejectCompileTimeSystemCall(final String funcName, final List<Expression> args,
                                              final Expression call) {
+        // A procedure that runs with its owner's rights refuses the call as a side effect first (live-verified).
+        if ("SYSTEM$SET_RETURN_VALUE".equals(funcName) && queryExecutor != null
+                && queryExecutor.insideOwnersRightsProcedure()) {
+            throw SideEffectFunctions.ownersRightsRefusal(funcName);
+        }
         TaskOnlyFunctions.requireTask(funcName);
+        // The table SYSTEM$AUTO_REFRESH_STATUS names is looked up as the statement compiles (see AutoRefreshStatus).
+        if ("SYSTEM$AUTO_REFRESH_STATUS".equals(funcName) && queryExecutor != null && args.size() == 1
+                && ConstantArgumentWalk.isConstant(args.get(0), functionRegistry)) {
+            AutoRefreshStatus.answer(queryExecutor.getCatalog(), args.get(0).accept(this));
+            return;
+        }
         if (!"SYSTEM$CLUSTERING_RATIO".equals(funcName) || queryExecutor == null) {
             return;
         }
@@ -8428,7 +9688,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
         for (int position = 0; position < args.size(); position++) {
             final ArrayArgumentKind kind = function.arrayArgumentKind(position);
-            if (kind == null) {
+            if (kind == null || "ARRAY_REMOVE".equals(funcName) && position == 1
+                    && typeInferencer.infer(args.get(0)) instanceof StructuredArrayType) {
+                // A structured ARRAY's value is judged by its elements' type (see requireElementFamily).
                 continue;
             }
             final DataType type = typeInferencer.infer(args.get(position));
@@ -8477,6 +9739,89 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (!LateConstantRefusal.record(refused, at)) {
             throw refused;
         }
+    }
+
+    /**
+     * A call of a SQL function whose expression body hands one of its text parameters to GET_DDL as the object type
+     * or name. The account expands the body into the statement while it compiles, so GET_DDL reads the call's own
+     * argument there and refuses one that reads a row as a direct call does, echoed from the plan in the place GET_DDL
+     * reads it: {@code gdp(t) AS 'GET_DDL(''table'', t)'} called as {@code gdp(k)} over a VARCHAR column is {@code
+     * Invalid value [GTT.K] for function '2', parameter EXPORT_DDL: constant arguments expected}, under SYSTEM$TYPEOF
+     * and over no row alike (live-verified). Only a text argument is judged, and a constant one names an object
+     * that is looked up as the statement compiles.
+     *
+     * @param call the call
+     */
+    private void rejectCalledGetDdlArguments(final FunctionCallExpression call) {
+        if (catalog == null || call.getFunctionName() == null || !mayCallUserFunction(call)
+                || DefinitionCompile.isActive()) {
+            return;
+        }
+        final Function udf = staticallyResolvedUdf(call);
+        if (udf == null || !inlinesExpressionBody(udf)) {
+            return;
+        }
+        final Expression body;
+        try {
+            body = ExpressionEvaluator.parse(sqlBodyText(udf));
+        } catch (final RuntimeException unparsed) {
+            return;
+        }
+        final List<Parameter> parameters = udf.getParameters();
+        final List<String> names = call.getArgumentNames();
+        final int[] targets = names != null && names.size() == call.getArguments().size()
+            ? NamedArguments.targets(parameters, names) : null;
+        for (final FunctionCallExpression getDdl : GetDdlCallWalk.of(body)) {
+            final List<Expression> args = getDdl.getArguments();
+            for (int i = 0; i < 2 && i < args.size() && args.size() <= 3; i++) {
+                final int place = args.get(i) instanceof ColumnReferenceExpression
+                    ? parameterPlace(parameters, (ColumnReferenceExpression) args.get(i)) : -1;
+                if (place < 0 || !(parameters.get(place).getDataType() instanceof StringType)) {
+                    continue;
+                }
+                final Expression passed = argumentFilling(call, place, targets);
+                if (passed == null || GetDdlArguments.isConstantText(passed, this)) {
+                    continue;
+                }
+                final DataType type = typeInferencer.infer(passed);
+                if (type != null && !(type instanceof StringType)) {
+                    continue;
+                }
+                throw new RuntimeException(SqlCompilationError.of("Invalid value [" + strictPlanText(passed)
+                    + "] for function '" + (i + 1) + "', parameter EXPORT_DDL: constant arguments expected"));
+            }
+        }
+    }
+
+    /** The place of the parameter an unqualified name in a function's body reads, or -1 where it reads none. */
+    private static int parameterPlace(final List<Parameter> parameters, final ColumnReferenceExpression reference) {
+        if (reference.isQualified() || reference.getColumnName() == null) {
+            return -1;
+        }
+        for (int p = 0; p < parameters.size(); p++) {
+            if (parameters.get(p).getName().equalsIgnoreCase(reference.getColumnName())) {
+                return p;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * The argument of a call that fills the parameter in a place: the argument in that place for a call written by
+     * place, the one {@code targets} sends there for one written by name; null where none does.
+     */
+    private static Expression argumentFilling(final FunctionCallExpression call, final int place,
+                                              final int[] targets) {
+        final List<Expression> arguments = call.getArguments();
+        if (targets == null) {
+            return place < arguments.size() ? arguments.get(place) : null;
+        }
+        for (int a = 0; a < targets.length; a++) {
+            if (targets[a] == place) {
+                return arguments.get(a);
+            }
+        }
+        return null;
     }
 
     /**
@@ -8668,8 +10013,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             }
         }
         final DataType rounded = typeInferencer.infer(args.get(0));
-        if (rounded instanceof VariantType
-                || rounded instanceof NumericType && NumericType.isApproximate(rounded)) {
+        // A FLOAT scale takes the FLOAT overload too: ROUND(1.2345, CAST(2 AS FLOAT), 'HALF_TO_EVEN') (live-verified).
+        if (rounded instanceof VariantType || NumericType.isApproximate(rounded)
+                || NumericType.isApproximate(typeInferencer.infer(args.get(1)))) {
             throw arityMismatch("too many arguments for function [ROUND] expected 2, got 3",
                 (FunctionCallExpression) call);
         }
@@ -8900,7 +10246,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 || !(call instanceof FunctionCallExpression)) {
             return;
         }
-        BigDecimal written = new BigDecimal(((LiteralExpression) literal).getValue().toString());
+        BigDecimal written = DecimalText.parse(((LiteralExpression) literal).getValue().toString());
         if (literal != arg && ((UnaryOperationExpression) arg).getOperator() == UnaryOperator.NEGATE) {
             written = written.negate();
         }
@@ -8954,7 +10300,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if (types.length() > 0) {
                 types.append(", ");
             }
-            types.append(SqlTypeNames.canonical(type));
+            // A BINARY is named as the other argument-type sentences name it: an unsized one, a conversion's
+            // answer, at the 64MB maximum, LPAD(TO_BINARY('AB', 'HEX'), 3) naming BINARY(67108864) (live-verified).
+            types.append(type instanceof BinaryType ? strictArgTypeText(arg) : SqlTypeNames.canonical(type));
         }
         throw arityMismatch("Invalid argument types for function '" + funcName + "': (" + types + ")",
             (FunctionCallExpression) call);
@@ -9151,6 +10499,29 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * as 'SUBSTR', {@code REPEAT(o, 2)} as 'LENGTH', {@code DIV0NULL(o, 2)} as 'DIV0' with a
      * rewritten argument list — are copied as measured (see {@link #rewrittenCallRefusal}).
      */
+    /**
+     * A VARIANT is read at a number, a text, a BOOLEAN or a VARIANT: GET refuses a FLOAT, a DECFLOAT, a date or time
+     * and a binary index by its type as the call compiles, the first argument named FILE, before the rule for an index
+     * an ARRAY refuses would name the VARIANT (live-verified).
+     *
+     * @param funcName the call's name, upper-cased
+     * @param args     its arguments
+     * @param call     the call
+     */
+    private void rejectNonIndexOfVariant(final String funcName, final List<Expression> args, final Expression call) {
+        if (funcName.equals("GET") && args.size() == 2 && typeInferencer.infer(args.get(0)) instanceof VariantType
+                && noVariantIndex(typeInferencer.infer(args.get(1)))) {
+            throw new RuntimeException(positionedArgumentTypes(call,
+                "Invalid argument types for function 'GET': (FILE, " + strictArgTypeText(args.get(1)) + ")"));
+        }
+    }
+
+    /** Whether GET refuses an index of this type over a VARIANT: a FLOAT, a DECFLOAT, a date or time, a binary. */
+    private static boolean noVariantIndex(final DataType index) {
+        return index instanceof NumericType && (NumericType.isApproximate(index) || NumericType.isDecfloat(index))
+            || index instanceof DateTimeType || index instanceof BinaryType;
+    }
+
     /** Whether a declared type is one OBJECT_KEYS refuses: a number, a text, an ARRAY, a BOOLEAN, a date or a binary. */
     private static boolean namesNoObject(final DataType type) {
         return type instanceof NumericType || type instanceof StringType || type instanceof ArrayType
@@ -9165,6 +10536,14 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             // A bucket count is a number or what spells one: a BOOLEAN and a date are neither (live-verified).
             throw new RuntimeException(positionedArgumentTypes(call,
                 "Invalid argument types for function 'NTILE': (" + strictArgTypeText(args.get(0)) + ")"));
+        }
+        if (funcName.equals("CONDITIONAL_TRUE_EVENT") && args.size() == 1 && vectorArgumentType(args.get(0)) != null) {
+            // The predicate it counts is read as TO_BOOLEAN reads one, and a VECTOR is refused by its type as the call
+            // compiles, at the call, whatever rows reach it; CONDITIONAL_CHANGE_EVENT, which counts changes of any
+            // value, takes one (live-verified).
+            throw new RuntimeException(positionedArgumentTypes(call,
+                "Invalid argument types for function 'CONDITIONAL_TRUE_EVENT': (" + strictArgTypeText(args.get(0))
+                    + ")"));
         }
         if (funcName.equals("OBJECT_KEYS") && args.size() == 1 && namesNoObject(typeInferencer.infer(args.get(0)))) {
             // An OBJECT or a VARIANT has keys; a value declared anything else is refused by its type as the call
@@ -9211,16 +10590,16 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (funcName.equals("CONVERT_TIMEZONE") && args.size() >= 2) {
             // What is converted is a timestamp or what reads as one: a number and a BOOLEAN are refused by
             // the argument types, and a TIME, which the two-argument form would have to make an instant
-            // of, as no TIMESTAMP_TZ (live-verified).
+            // of, as no TIMESTAMP_TZ, the three-argument form as no TIMESTAMP_NTZ (live-verified).
             final DataType converted = typeInferencer.infer(args.get(args.size() - 1));
             if (converted instanceof NumericType || converted instanceof BooleanType) {
                 throw new RuntimeException(positionedArgumentTypes(call,
                     "Invalid argument types for function 'CONVERT_TIMEZONE': (" + strictArgTypeList(args) + ")"));
             }
-            if (args.size() == 2 && converted instanceof DateTimeType
-                    && "TIME".equalsIgnoreCase(converted.getName())) {
+            if (converted instanceof DateTimeType && "TIME".equalsIgnoreCase(converted.getName())) {
                 throw new RuntimeException(SqlCompilationError.of("incompatible types: ["
-                    + strictArgTypeText(args.get(1)) + "] and [TIMESTAMP_TZ(9)]"));
+                    + strictArgTypeText(args.get(args.size() - 1)) + "] and ["
+                    + (args.size() == 2 ? "TIMESTAMP_TZ(9)" : "TIMESTAMP_NTZ(9)") + "]"));
             }
         }
         if (funcName.equals("COUNT_IF") && args.size() == 1) {
@@ -9416,6 +10795,23 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     private DataType binaryArgumentType(final Expression arg) {
         final DataType inferred = typeInferencer.infer(arg);
         return inferred instanceof BinaryType ? inferred : null;
+    }
+
+    /**
+     * Refuses a BINARY value longer than the width its argument's type declares, where a function holds it to that
+     * width (see BuiltInFunction#holdsDeclaredWidth); an unsized binary is read whole.
+     */
+    private void requireDeclaredBinaryWidth(final String funcName, final Expression arg, final Object value) {
+        if (!(value instanceof BinaryValue)) {
+            return;
+        }
+        final DataType declared = binaryArgumentType(arg);
+        if (declared instanceof BinaryType
+                && ((BinaryType) declared).getWidthSpelling() == BinaryWidthSpelling.DECLARED
+                && ((BinaryValue) value).length() > ((BinaryType) declared).getMaxLength()) {
+            throw new RuntimeException("Binary value '" + ((BinaryValue) value).toHex()
+                + "' is too long and would be truncated in '" + funcName + "'");
+        }
     }
 
     /** The BOOLEAN type of an expression, or null when it is not statically a BOOLEAN. */
@@ -9780,6 +11176,24 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * A compile-time refusal anchored on a recorded place — a call's name, a sign's operator —
      * resolved back to the statement, or the bare sentence when nothing recorded one.
      */
+    /**
+     * The type a call of a procedure's SYSTEM$REFERENCE token answers: its procedure's RETURNS type.
+     *
+     * @param call the call
+     * @return the type, or null for any other call named by IDENTIFIER
+     */
+    DataType procedureTokenType(final FunctionCallExpression call) {
+        if (queryExecutor == null) {
+            return null;
+        }
+        try {
+            final Object resolved = call.getNameExpression().accept(this);
+            return resolved == null ? null : ProcedureTokenCalls.returnType(queryExecutor, resolved.toString());
+        } catch (final RuntimeException unresolved) {
+            return null;
+        }
+    }
+
     private static String positionedAt(final SourcePosition within, final String detail) {
         final SourcePosition at = within == null ? null : ExpressionSource.resolve(within);
         return at != null
@@ -10112,7 +11526,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if (literal.getType() != LiteralType.INTEGER && literal.getType() != LiteralType.DECIMAL) {
                 return null;
             }
-            final BigDecimal value = new BigDecimal(String.valueOf(literal.getValue())).stripTrailingZeros();
+            final BigDecimal value = DecimalText.parse(String.valueOf(literal.getValue())).stripTrailingZeros();
             if (value.scale() <= 0) {
                 return new NumericType("NUMBER", Math.max(1, value.precision() - Math.min(0, value.scale())), 0);
             }
@@ -10293,7 +11707,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             final BigDecimal exact;
             try {
                 exact = bound instanceof Double || bound instanceof Float
-                    ? BigDecimal.valueOf(((Number) bound).doubleValue()) : new BigDecimal(bound.toString().trim());
+                    ? BigDecimal.valueOf(((Number) bound).doubleValue()) : DecimalText.parse(bound.toString().trim());
             } catch (final NumberFormatException notANumber) {
                 throw new RuntimeException("Numeric value '" + bound + "' is not recognized");
             }
@@ -10422,6 +11836,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (!(source instanceof ColumnReferenceExpression)) {
             return false;
         }
+        // A block's variable or a routine's argument is no column: x::INT of a FLOAT variable holding inf is
+        // {not null} (live-verified).
+        if (scriptVariableType(source) != null) {
+            return false;
+        }
         final TableColumn resolved = resolveDeclaredColumn((ColumnReferenceExpression) source);
         return resolved == null || resolved.isNullable();
     }
@@ -10469,6 +11888,14 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     /**
+     * {@link #strictPlanText} as a quantifier's refusal echoes its call: each cast as written — see
+     * {@link StrictMessagePrinter#castingAsWritten}.
+     */
+    String strictQuantifierText(final Expression expr) {
+        return expr.accept(new StrictMessagePrinter(this, StrictPrintMode.PLAN).castingAsWritten());
+    }
+
+    /**
      * {@link #strictPlanText} as the refusal of a column default echoes it — see
      * {@link StrictMessagePrinter#echoingDefault}.
      *
@@ -10492,6 +11919,17 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     /**
+     * {@link #strictPlanText} as a column's default is told back — see
+     * {@link StrictMessagePrinter#tellingColumnDefault}.
+     *
+     * @param expr the default
+     * @return the default as told
+     */
+    public String strictToldColumnDefaultText(final Expression expr) {
+        return expr.accept(new StrictMessagePrinter(this, StrictPrintMode.PLAN).tellingColumnDefault());
+    }
+
+    /**
      * {@link #strictPlanText} with what the plan folds early printed as its value — see
      * {@link StrictMessagePrinter#foldingConstants}.
      *
@@ -10500,6 +11938,18 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      */
     public String strictFoldedPlanText(final Expression expr) {
         return expr.accept(new StrictMessagePrinter(this, StrictPrintMode.PLAN).foldingConstants());
+    }
+
+    /**
+     * {@link #strictFoldedPlanText} for a GENERATOR bound: its literals' conversions print folded as well — see
+     * {@link StrictMessagePrinter#foldingConversions}.
+     *
+     * @param expr the bound
+     * @return the text
+     */
+    public String strictBoundPlanText(final Expression expr) {
+        return expr.accept(new StrictMessagePrinter(this, StrictPrintMode.PLAN).foldingConstants()
+            .foldingConversions());
     }
 
     /**
@@ -10619,62 +12069,106 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     /**
-     * The columns a star stands for over two relations joined with USING or NATURAL, as the plan echoes them: the
-     * join is one view to it, {@code SYS_VW}, whose columns are the keys once, then each side's other columns, a
-     * name met again suffixed {@code _0}. A qualified star reads its side's columns under their view names, and an
-     * EXCLUDE of a name the view holds twice is {@code ambiguous column name 'B'} (all live-verified). Null for any
-     * other relation, a join of more than two relations among them.
+     * The columns a star stands for over relations joined with USING or NATURAL, as the plan echoes them: the join is
+     * one view to it, {@code SYS_VW}, whose columns are the keys once, then each relation's other columns in the order
+     * read, a name met again suffixed {@code _0}, then {@code _1}, and so on. A chain of such joins is one view too:
+     * {@code fa JOIN fb USING (id) JOIN fc USING (id)} is {@code SYS_VW.ID, SYS_VW.A, SYS_VW.B, SYS_VW.C}. A relation
+     * joined to the view by a condition, a cross join or a comma follows it under its own name, wherever the FROM
+     * writes it: {@code fc JOIN (fa JOIN fb USING (id)) ON …} is {@code SYS_VW.ID, SYS_VW.A, SYS_VW.B, FC.ID, FC.C}. A
+     * star qualified by a relation of the view reads its columns under their view names, one qualified by another
+     * relation its own, and an EXCLUDE of a name the view holds twice is {@code ambiguous column name 'B'} (all
+     * live-verified). The account leaves out of a chain's star, and of its echo, the columns an earlier USING join
+     * renamed — {@code SYS_VW.ID, SYS_VW.B, SYS_VW.B_1} over three relations of columns ID and B — a column of a
+     * relation the query reads lost: every column is kept here. Null for any other relation, and for two separate
+     * runs of keyed joins.
      */
     private List<String> usingViewColumns(final StarArgument star) {
-        if (table == null || table.getJoinKeyNames() == null || table.getJoinedRelations() == null
-                || multiTableAllTables == null || multiTableAllTables.size() != 2) {
+        if (table == null || table.getJoinedRelations() == null || multiTableAllTables == null
+                || multiTableAllTables.size() < 2) {
             return null;
         }
-        final Table left = multiTableAllTables.get(0);
-        final Table right = multiTableAllTables.get(1);
-        final int leftWidth = left.getColumns().size();
-        if (!table.getJoinedRelations().includes(left) || !table.getJoinedRelations().includes(right)
-                || left.getJoinedRelations() != null || right.getJoinedRelations() != null
-                || table.getColumns().size() != leftWidth + right.getColumns().size()) {
+        final int count = multiTableAllTables.size();
+        // Where each relation's columns start among the joined ones.
+        final int[] offsets = new int[count + 1];
+        for (int r = 0; r < count; r++) {
+            final Table relation = multiTableAllTables.get(r);
+            if (!table.getJoinedRelations().includes(relation) || relation.getJoinedRelations() != null) {
+                return null;
+            }
+            offsets[r + 1] = offsets[r] + relation.getColumns().size();
+        }
+        if (table.getColumns().size() != offsets[count]) {
+            return null;
+        }
+        // The view is the run of relations a USING or NATURAL join keys - each holds the key it merged, hidden from
+        // the star - with the relation the run begins at.
+        int first = -1;
+        int last = -1;
+        for (int r = 1; r < count; r++) {
+            boolean keyed = false;
+            for (int i = offsets[r]; i < offsets[r + 1]; i++) {
+                keyed = keyed || table.getColumns().get(i).isHiddenFromStar();
+            }
+            if (keyed) {
+                if (last >= 0 && last != r - 1) {
+                    return null;
+                }
+                first = first < 0 ? r - 1 : first;
+                last = r;
+            }
+        }
+        if (last < 0) {
             return null;
         }
         // Each column of the view under its name there, aligned with the merged columns; a hidden key takes its
         // visible twin's name.
-        final List<String> viewNames = new ArrayList<>();
+        final Map<Integer, String> viewNames = new HashMap<>();
         final Map<String, Integer> met = new HashMap<>();
-        for (final TableColumn column : table.getColumns()) {
+        for (int i = offsets[first]; i < offsets[last + 1]; i++) {
+            final TableColumn column = table.getColumns().get(i);
             final String name = column.getName();
             if (column.isHiddenFromStar()) {
-                viewNames.add(name);
+                viewNames.put(i, name);
                 continue;
             }
             final Integer before = met.get(name);
-            viewNames.add(before == null ? name : name + "_" + (before - 1));
+            viewNames.put(i, before == null ? name : name + "_" + (before - 1));
             met.put(name, before == null ? 1 : before + 1);
         }
         if (star.getExcludes() != null) {
             for (final String excluded : star.getExcludes()) {
-                final Integer count = met.get(excluded);
-                if (count != null && count > 1) {
+                final Integer times = met.get(excluded);
+                if (times != null && times > 1) {
                     throw new RuntimeException(SqlCompilationError.of("ambiguous column name '"
                         + SqlIdentifiers.spellCanonical(excluded) + "'"));
                 }
             }
         }
-        int from = 0;
-        int to = table.getColumns().size();
-        if (star.getQualifier() != null) {
-            final Table named = qualifiedRelation(star.getQualifier());
-            if (named == left) {
-                to = leftWidth;
-            } else if (named == right) {
-                from = leftWidth;
-            } else {
-                return null;
-            }
-        }
         final Pattern kept = star.getIlike() == null ? null : StarArgument.ilikePattern(star.getIlike());
         final List<String> columns = new ArrayList<>();
+        if (star.getQualifier() != null) {
+            final Table relation = qualifiedRelation(star.getQualifier());
+            for (int r = first; r <= last && relation != null; r++) {
+                if (multiTableAllTables.get(r) == relation) {
+                    addViewColumns(columns, offsets[r], offsets[r + 1], viewNames, star, kept);
+                    return columns;
+                }
+            }
+            return null;
+        }
+        addViewColumns(columns, offsets[first], offsets[last + 1], viewNames, star, kept);
+        for (int r = 0; r < count; r++) {
+            if (r < first || r > last) {
+                final Table relation = multiTableAllTables.get(r);
+                addStarColumns(columns, relationAlias(relation), relation, star.getExcludes(), kept);
+            }
+        }
+        return columns;
+    }
+
+    /** The view's columns from one place to another as the echo names them, as a star or its qualifier keeps them. */
+    private void addViewColumns(final List<String> columns, final int from, final int to,
+                                final Map<Integer, String> viewNames, final StarArgument star, final Pattern kept) {
         for (int i = from; i < to; i++) {
             final TableColumn column = table.getColumns().get(i);
             final String name = column.getName();
@@ -10685,7 +12179,18 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             }
             columns.add("SYS_VW." + SqlIdentifiers.spellCanonical(viewNames.get(i)));
         }
-        return columns;
+    }
+
+    /** The name a relation of the query goes by: its alias, else its own. */
+    private String relationAlias(final Table relation) {
+        if (multiTableAliasToTable != null) {
+            for (final Map.Entry<String, Table> entry : multiTableAliasToTable.entrySet()) {
+                if (entry.getValue() == relation) {
+                    return entry.getKey();
+                }
+            }
+        }
+        return relation.getName();
     }
 
     /** The relation a star's qualifier names among the query's, or null. */
@@ -10851,9 +12356,13 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 + strictText(call) + "], expected " + minimum + ", got " + argCount, call);
         }
         if (!orderedValue && argCount > aggregate.getMaxArgCount()) {
+            // DISTINCT is echoed where it was written: SUM(DISTINCT 1, 2) (live-verified).
+            final String echoed = strictText(call);
+            final int open = echoed.indexOf('(');
+            final boolean unechoed = call.isDistinct() && open > 0 && !echoed.startsWith("DISTINCT ", open + 1);
             throw arityMismatch("too many arguments for function ["
-                + strictText(call) + "] expected "
-                + aggregate.getMaxArgCount() + ", got " + argCount, call);
+                + (unechoed ? echoed.substring(0, open + 1) + "DISTINCT " + echoed.substring(open + 1) : echoed)
+                + "] expected " + aggregate.getMaxArgCount() + ", got " + argCount, call);
         }
     }
 
@@ -11116,6 +12625,85 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     /**
+     * A block's variable read by its bare name in one of the block's own SQL expressions, as the block binds it (see
+     * {@link BlockVariableBinding}).
+     *
+     * @param ref the name as written
+     * @return the binding, or null for a name that reads a relation's column or no such variable
+     */
+    Expression boundBlockVariable(final ColumnReferenceExpression ref) {
+        if (ref.isQualified() || ref.getStarArgument() != null || ref.getPositionalOrdinal() > 0
+                || queryExecutor == null) {
+            return null;
+        }
+        final ProceduralExecutor procedural = queryExecutor.getProceduralExecutor();
+        if (procedural == null || !procedural.bindsIntoBlockExpression()
+                || !procedural.hasVariable(ref.getColumnName()) || strictMessageQualifier(ref) != null) {
+            return null;
+        }
+        final Object value;
+        try {
+            value = procedural.readVariable(ref.getColumnName());
+        } catch (final RuntimeException unreadable) {
+            // A name the block may not read yet is printed as written.
+            return null;
+        }
+        return BlockVariableBinding.of(procedural.getDeclaredVariableType(ref.getColumnName()), value);
+    }
+
+    /**
+     * An argument with each of a block's variables it reads replaced by the binding the block writes in its place
+     * (see {@link #boundBlockVariable}), as the account judges a constant argument over them: the argument itself
+     * where it reads none, or where one sits in a part no binding is written into.
+     */
+    private Expression withBoundVariables(final Expression argument) {
+        if (argument instanceof ColumnReferenceExpression) {
+            final Expression bound = boundBlockVariable((ColumnReferenceExpression) argument);
+            return bound != null ? bound : argument;
+        }
+        if (argument instanceof BinaryOperationExpression) {
+            final BinaryOperationExpression binary = (BinaryOperationExpression) argument;
+            final Expression left = withBoundVariables(binary.getLeft());
+            final Expression right = withBoundVariables(binary.getRight());
+            if (left == binary.getLeft() && right == binary.getRight()) {
+                return argument;
+            }
+            final BinaryOperationExpression rebuilt = new BinaryOperationExpression(left, binary.getOperator(), right,
+                binary.getEscape());
+            if (binary.isWrittenInParentheses()) {
+                rebuilt.markWrittenInParentheses();
+            }
+            return rebuilt;
+        }
+        if (argument instanceof UnaryOperationExpression) {
+            final UnaryOperationExpression unary = (UnaryOperationExpression) argument;
+            final Expression operand = withBoundVariables(unary.getOperand());
+            return operand == unary.getOperand() ? argument
+                : new UnaryOperationExpression(unary.getOperator(), operand);
+        }
+        if (argument instanceof CastExpression && !(argument instanceof PlannedCastExpression)
+                && !((CastExpression) argument).isTypedLiteral()) {
+            final CastExpression cast = (CastExpression) argument;
+            final Expression source = withBoundVariables(cast.getExpression());
+            return source == cast.getExpression() ? argument : new CastExpression(source, cast.getTargetType(),
+                cast.isTryMode(), cast.getDeclaredTarget(), cast.getFieldsModifier());
+        }
+        if (argument instanceof FunctionCallExpression
+                && ((FunctionCallExpression) argument).getNameExpression() == null) {
+            final FunctionCallExpression call = (FunctionCallExpression) argument;
+            final List<Expression> bound = new ArrayList<>();
+            boolean changed = false;
+            for (final Expression each : call.getArguments()) {
+                final Expression rebuilt = withBoundVariables(each);
+                changed |= rebuilt != each;
+                bound.add(rebuilt);
+            }
+            return changed ? call.withArguments(bound) : argument;
+        }
+        return argument;
+    }
+
+    /**
      * SYSTEM$ABORT_TRANSACTION, judged as its argument is written (see {@link TransactionAbortArgument}) before
      * the transaction it names is ended. A procedure that runs with its owner's rights may not call it. The
      * argument's type is judged before its value is read, a NULL the plan must type from what stands beside it —
@@ -11124,8 +12712,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      */
     private Object abortTransaction(final FunctionCallExpression expr) {
         if (queryExecutor.insideOwnersRightsProcedure()) {
-            throw new RuntimeException("SQL compilation error: \nQuery called from a stored procedure contains a"
-                + " function with side effects [SYSTEM$ABORT_TRANSACTION].");
+            throw SideEffectFunctions.ownersRightsRefusal("SYSTEM$ABORT_TRANSACTION");
         }
         final Expression argument = expr.getArguments().get(0);
         final String type = argumentTypeText(argument);
@@ -11241,6 +12828,32 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (func.namesStructuredKeysByLiteral() && count > 0) {
             judgeStructuredKeys(funcName, call);
         }
+        if (("GET".equals(funcName) || "GET_IGNORE_CASE".equals(funcName)) && count == 2) {
+            judgeStructuredGet(funcName, call);
+        }
+        if ("GET".equals(funcName) && count == 2
+                && typeInferencer.infer(call.getArguments().get(0)) instanceof MapType) {
+            requireMapKey((MapType) typeInferencer.infer(call.getArguments().get(0)), call.getArguments().get(0),
+                call.getArguments().get(1), funcName, false);
+        }
+        if ("MAP_CONTAINS_KEY".equals(funcName) && count == 2
+                && typeInferencer.infer(call.getArguments().get(1)) instanceof MapType) {
+            requireMapKey((MapType) typeInferencer.infer(call.getArguments().get(1)), call.getArguments().get(1),
+                call.getArguments().get(0), funcName, true);
+        }
+        if ("OBJECT_INSERT".equals(funcName) && count >= 3) {
+            judgeStructuredInsert(call);
+        }
+        if (("MAP_INSERT".equals(funcName) || "MAP_PICK".equals(funcName) || "MAP_DELETE".equals(funcName))
+                && count >= 2 && typeInferencer.infer(call.getArguments().get(0)) instanceof MapType) {
+            judgeMapArguments(funcName, call);
+        }
+        if ("MAP_CAT".equals(funcName) && count == 2) {
+            judgeMapCat(call);
+        }
+        if (("ARRAY_FLATTEN".equals(funcName) || "ARRAYS_ZIP".equals(funcName)) && count > 0) {
+            judgeStructuredArrays(funcName, call);
+        }
         final String named = func.signatureName(count);
         if (named == null) {
             return;
@@ -11259,6 +12872,165 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (func.refusesSignatureTypes(types)) {
             throw arityMismatch("Invalid argument types for function '" + named + "': ("
                 + strictArgTypeList(call.getArguments()) + ")", call);
+        }
+    }
+
+    /**
+     * MAP_INSERT, MAP_PICK and MAP_DELETE over a structured MAP, judged whatever rows the statement reads
+     * (live-verified): one key - a NULL or an ARRAY of keys aside - has the map's key type, refused as GET refuses one;
+     * several keys are judged by the one type their values fold to, as a conditional's branches fold, and refused under
+     * it - 'a' beside 2 is NUMBER(18,5), a key of no text map, and 1 beside 2.5 NUMBER(2,1), a key of no INT map;
+     * and MAP_INSERT's value is one the map's value type converts: no ARRAY, OBJECT or VARIANT for a structured value
+     * type and no BOOLEAN for a number, "Invalid argument types for function 'MAP_INSERT': (MAP(NUMBER(38,0),
+     * ARRAY(VARCHAR(134217728))), NUMBER(1,0), ARRAY)". A text or a VARIANT is converted to a number as the row is
+     * read.
+     */
+    private void judgeMapArguments(final String funcName, final FunctionCallExpression call) {
+        final List<Expression> arguments = call.getArguments();
+        final MapType map = (MapType) typeInferencer.infer(arguments.get(0));
+        final boolean insert = "MAP_INSERT".equals(funcName);
+        if (insert || arguments.size() == 2) {
+            final Expression key = arguments.get(1);
+            if (!isNullLiteral(key) && !(typeInferencer.infer(key) instanceof ArrayType)) {
+                requireMapKey(map, arguments.get(0), key, funcName, false);
+            }
+        } else if (arguments.size() > 2) {
+            requireMapKeys(map, arguments, funcName);
+        }
+        if (insert && arguments.size() >= 3
+                && !convertsInto(map.getValueType(), typeInferencer.infer(arguments.get(2)))) {
+            throw arityMismatch("Invalid argument types for function 'MAP_INSERT': (" + strictArgTypeList(arguments)
+                + ")", call);
+        }
+    }
+
+    /** Several keys of MAP_PICK or MAP_DELETE, judged by the type their values fold to; an ARRAY among them aside. */
+    private void requireMapKeys(final MapType map, final List<Expression> arguments, final String funcName) {
+        final List<Expression> keys = new ArrayList<>(arguments.subList(1, arguments.size()));
+        if (keys.size() > 1) {
+            rejectMixedKeyList(arguments.get(0), keys, funcName);
+        }
+        final Expression folded = new FunctionCallExpression("COALESCE", keys);
+        try {
+            for (final Expression key : keys) {
+                if (!isNullLiteral(key) && typeInferencer.infer(key) instanceof ArrayType) {
+                    return;
+                }
+            }
+            if (typeInferencer.infer(folded) == null) {
+                return;
+            }
+        } catch (final RuntimeException unfolded) {
+            // Keys of types no fold joins are left to the row.
+            return;
+        }
+        requireMapKey(map, arguments.get(0), folded, funcName, false);
+    }
+
+    /**
+     * Several keys are of the first one's type: an ARRAY after a text is {@code Can not convert parameter
+     * 'ARRAY_CONSTRUCT('b')' of type [ARRAY] into expected type [VARCHAR(1)]}, a text after an ARRAY the same the other
+     * way about, and an ARRAY beside another or a NULL selects no signature, {@code Function MAP_PICK cannot be used
+     * with arguments of types MAP(…) and ARRAY} (live-verified).
+     */
+    private void rejectMixedKeyList(final Expression mapArgument, final List<Expression> keys, final String funcName) {
+        final Expression first = keys.get(0);
+        final boolean firstNull = isNullLiteral(first);
+        final boolean arrayFirst = !firstNull && typeInferencer.infer(first) instanceof ArrayType;
+        boolean arrayLater = false;
+        for (int i = 1; i < keys.size(); i++) {
+            final Expression key = keys.get(i);
+            final boolean array = !isNullLiteral(key) && typeInferencer.infer(key) instanceof ArrayType;
+            if (arrayFirst && !array && !isNullLiteral(key)) {
+                throw new RuntimeException(SqlCompilationError.of("Can not convert parameter '" + strictText(key)
+                    + "' of type [" + strictArgTypeText(key) + "] into expected type [ARRAY]"));
+            }
+            if (!arrayFirst && !firstNull && array) {
+                throw new RuntimeException(SqlCompilationError.of("Can not convert parameter '" + strictPlanText(key)
+                    + "' of type [ARRAY] into expected type [" + strictArgTypeText(first) + "]"));
+            }
+            arrayLater = arrayLater || array;
+        }
+        if (arrayFirst || firstNull && arrayLater) {
+            throw new RuntimeException(SqlCompilationError.of("Function " + funcName
+                + " cannot be used with arguments of types " + strictArgTypeText(mapArgument) + " and ARRAY"));
+        }
+    }
+
+    /** Whether a value of {@code written} type converts implicitly into a map's value of {@code declared} type. */
+    private static boolean convertsInto(final DataType declared, final DataType written) {
+        if (declared == null || written == null) {
+            return true;
+        }
+        if (StructuredTypes.isStructured(declared)) {
+            return !(written instanceof VariantType) && (StructuredTypes.isStructured(written)
+                || !(written instanceof ArrayType) && !(written instanceof ObjectType));
+        }
+        return !(declared instanceof NumericType && written instanceof BooleanType);
+    }
+
+    /**
+     * MAP_CAT takes two maps whose keys, and whose values, are of one family each - a number beside a number of any
+     * scale or a FLOAT, a text beside a text - and is refused otherwise whatever rows the statement reads: "Invalid
+     * argument types for function 'MAP_CAT': (MAP(VARCHAR(134217728), NUMBER(38,0)), MAP(VARCHAR(134217728),
+     * BOOLEAN))" (live-verified).
+     */
+    private void judgeMapCat(final FunctionCallExpression call) {
+        final DataType first = typeInferencer.infer(call.getArguments().get(0));
+        final DataType second = typeInferencer.infer(call.getArguments().get(1));
+        if (!(first instanceof MapType) || !(second instanceof MapType)) {
+            return;
+        }
+        if (otherFamily(((MapType) first).getKeyType(), ((MapType) second).getKeyType())
+                || otherFamily(((MapType) first).getValueType(), ((MapType) second).getValueType())) {
+            throw arityMismatch("Invalid argument types for function 'MAP_CAT': ("
+                + strictArgTypeList(call.getArguments()) + ")", call);
+        }
+    }
+
+    /** Whether two scalar types are of two families, numbers, texts and booleans; false where either is neither. */
+    private static boolean otherFamily(final DataType one, final DataType other) {
+        final String family = scalarFamily(one);
+        final String otherFamily = scalarFamily(other);
+        return family != null && otherFamily != null && !family.equals(otherFamily);
+    }
+
+    /** A scalar type's family - NUMBER, TEXT or BOOLEAN - or null for any other type. */
+    private static String scalarFamily(final DataType type) {
+        return type instanceof NumericType ? "NUMBER" : type instanceof StringType ? "TEXT"
+            : type instanceof BooleanType ? "BOOLEAN" : null;
+    }
+
+    /**
+     * ARRAY_FLATTEN takes no structured ARRAY, and ARRAYS_ZIP no structured ARRAY beside a plain one, each refused
+     * whatever rows the statement reads: "Invalid argument types for function 'ARRAY_FLATTEN':
+     * (ARRAY(ARRAY(NUMBER(38,0))))" (live-verified).
+     */
+    private void judgeStructuredArrays(final String funcName, final FunctionCallExpression call) {
+        boolean structured = false;
+        boolean plain = false;
+        for (final Expression argument : call.getArguments()) {
+            final DataType type = typeInferencer.infer(argument);
+            structured = structured || type instanceof StructuredArrayType;
+            plain = plain || type instanceof ArrayType && !(type instanceof StructuredArrayType);
+        }
+        if ("ARRAY_FLATTEN".equals(funcName) ? structured : structured && plain) {
+            throw arityMismatch("Invalid argument types for function '" + funcName + "': ("
+                + strictArgTypeList(call.getArguments()) + ")", call);
+        }
+    }
+
+    /**
+     * The value ARRAY_REMOVE strips from a structured ARRAY is of its elements' family - a number of any scale for
+     * numbers, a text for texts - and is refused otherwise by its type and place, whatever rows the statement reads:
+     * "Invalid type [VARIANT] for function 'ARRAY_REMOVE' at position 2" (live-verified). A NULL is the row's.
+     */
+    private void requireElementFamily(final StructuredArrayType array, final Expression value) {
+        final String element = scalarFamily(array.getElementType());
+        final DataType written = isNullLiteral(value) ? null : typeInferencer.infer(value);
+        if (element != null && written != null && !element.equals(scalarFamily(written))) {
+            throw new RuntimeException(SqlCompilationError.of("Invalid type [" + strictArgTypeText(value)
+                + "] for function 'ARRAY_REMOVE' at position 2"));
         }
     }
 
@@ -11291,9 +13063,146 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 named = named || field.getName().equals(key);
             }
             if (!named) {
-                throw new RuntimeException("Function " + funcName + ": expected structured object to contain field "
+                throw new StructuredFieldRefusal("Function " + funcName + ": expected structured object to contain "
+                    + "field " + key + " but it did not.");
+            }
+        }
+    }
+
+    /**
+     * GET and GET_IGNORE_CASE read a structured OBJECT by a string literal alone, {@code GET(o, LOWER('A'))} being
+     * "Argument number 1 for function 'GET' needs to be a string literal.", and only a field it declares, whatever
+     * rows the statement reads: "Function GET: expected structured object to contain field nosuch but it did not."
+     * (live-verified).
+     */
+    private void judgeStructuredGet(final String funcName, final FunctionCallExpression call) {
+        final DataType objectType = typeInferencer.infer(call.getArguments().get(0));
+        if (!(objectType instanceof StructuredObjectType)) {
+            return;
+        }
+        final Expression key = call.getArguments().get(1);
+        if (!(key instanceof LiteralExpression) || ((LiteralExpression) key).getType() != LiteralType.STRING
+                || ((LiteralExpression) key).getValue() == null) {
+            throw new RuntimeException(SqlCompilationError.of("Argument number 1 for function '" + funcName
+                + "' needs to be a string literal."));
+        }
+        final String undeclared = StructuredLeaf.undeclaredField(objectType,
+            Collections.<Object>singletonList(String.valueOf(((LiteralExpression) key).getValue())),
+            "GET_IGNORE_CASE".equals(funcName));
+        if (undeclared != null) {
+            throw StructuredLeaf.missingField(undeclared);
+        }
+    }
+
+    /**
+     * A key a MAP is read by has the MAP's key type, judged whatever rows the statement reads (live-verified): a
+     * VARCHAR-keyed map takes a text alone, and a NUMBER-keyed one a fixed-point number of scale 0, or a number
+     * written out with a fraction of zero ({@code m[2.0]}); anything else, NULL included, is refused naming both
+     * types - "Function GET cannot be used with arguments of types MAP(NUMBER(38,0), VARCHAR(16777216)) and
+     * VARCHAR(1)", MAP_CONTAINS_KEY naming the key first. MAP_CONTAINS_KEY takes a NULL key, and answers NULL. A key
+     * of no known type is left to the row.
+     *
+     * @param map      the map's type
+     * @param mapArg   the map argument
+     * @param key      the key argument
+     * @param function the function as the refusal names it
+     * @param keyFirst whether the function takes the key before the map
+     */
+    private void requireMapKey(final MapType map, final Expression mapArg, final Expression key, final String function,
+                               final boolean keyFirst) {
+        final DataType declared = map.getKeyType();
+        final boolean nullKey = isNullLiteral(key);
+        final DataType written = nullKey ? null : typeInferencer.infer(key);
+        if (declared == null || !nullKey && written == null) {
+            return;
+        }
+        final boolean fits;
+        if (nullKey) {
+            fits = keyFirst;
+        } else if (declared instanceof StringType) {
+            fits = written instanceof StringType;
+        } else {
+            fits = written instanceof NumericType && !NumericType.isApproximate(written)
+                && (((NumericType) written).getScale() == 0 || wholeNumberWritten(key));
+        }
+        if (!fits) {
+            final String mapText = strictArgTypeText(mapArg);
+            final String keyText = nullKey ? "NULL" : strictArgTypeText(key);
+            throw new RuntimeException(SqlCompilationError.of("Function " + function
+                + " cannot be used with arguments of types " + (keyFirst ? keyText + " and " + mapText
+                : mapText + " and " + keyText)));
+        }
+    }
+
+    /** Whether an argument is a number written out, with a sign or not, whose fraction is zero. */
+    private static boolean wholeNumberWritten(final Expression argument) {
+        Expression written = argument;
+        while (written instanceof UnaryOperationExpression
+                && (((UnaryOperationExpression) written).getOperator() == UnaryOperator.NEGATE
+                    || ((UnaryOperationExpression) written).getOperator() == UnaryOperator.PLUS)) {
+            written = ((UnaryOperationExpression) written).getOperand();
+        }
+        if (!(written instanceof LiteralExpression) || ((LiteralExpression) written).getType() != LiteralType.INTEGER
+                && ((LiteralExpression) written).getType() != LiteralType.DECIMAL) {
+            return false;
+        }
+        return DecimalText.parse(String.valueOf(((LiteralExpression) written).getValue())).stripTrailingZeros()
+            .scale() <= 0;
+    }
+
+    /**
+     * A NUMBER key as the member a MAP holds it under, whatever scale it was written with: 2.0 reads the key 2
+     * (live-verified).
+     */
+    private static String mapKeyText(final Number key) {
+        return DecimalText.parse(key.toString()).stripTrailingZeros().toPlainString();
+    }
+
+    /**
+     * MAP_KEYS answers the keys as the map declares them, a NUMBER-keyed map's as numbers: {@code [1,2]}, typed
+     * {@code ARRAY(NUMBER(38,0) NOT NULL)} (live-verified). Any other call's value is handed back as it is.
+     *
+     * @param call   the call
+     * @param result its value
+     * @return the value, as its declared type holds it
+     */
+    private Object typedMapKeys(final FunctionCallExpression call, final Object result) {
+        if (result == null || !"MAP_KEYS".equalsIgnoreCase(call.getFunctionName()) || call.getArguments().size() != 1) {
+            return result;
+        }
+        final DataType keys = typeInferencer.infer(call);
+        return keys instanceof StructuredArrayType
+            && ((StructuredArrayType) keys).getElementType() instanceof NumericType
+            ? StructuredCast.forColumn(result, keys) : result;
+    }
+
+    /**
+     * OBJECT_INSERT over a structured OBJECT, whatever rows the statement reads (live-verified): with its update flag
+     * TRUE the key has to name a field the object declares, "Function OBJECT_INSERT: expected structured object to
+     * contain field c but it did not.", and the value may not be NULL, "Cannot set NULL value for structured object
+     * field"; without it the key may not name one, "Function OBJECT_INSERT: expected structured object to not contain
+     * field a but it did."
+     */
+    private void judgeStructuredInsert(final FunctionCallExpression call) {
+        final List<Expression> arguments = call.getArguments();
+        final DataType objectType = typeInferencer.infer(arguments.get(0));
+        final Object key = TypeInferencer.constantKey(arguments.get(1));
+        if (!(objectType instanceof StructuredObjectType) || !(key instanceof String)) {
+            return;
+        }
+        final boolean declared = ((StructuredObjectType) objectType).field((String) key) != null;
+        if (StructuredFunctionTypes.updates(arguments)) {
+            if (!declared) {
+                throw new StructuredFieldRefusal("Function OBJECT_INSERT: expected structured object to contain field "
                     + key + " but it did not.");
             }
+            if (arguments.get(2) instanceof LiteralExpression
+                    && ((LiteralExpression) arguments.get(2)).getType() == LiteralType.NULL) {
+                throw new StructuredFieldRefusal("Cannot set NULL value for structured object field");
+            }
+        } else if (declared) {
+            throw new StructuredFieldRefusal("Function OBJECT_INSERT: expected structured object to not contain field "
+                + key + " but it did.");
         }
     }
 
@@ -11382,6 +13291,19 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return "TO_DOUBLE(" + text + ")";
         }
         return target.equals("BOOLEAN") ? "TO_BOOLEAN(" + text + ")" : null;
+    }
+
+    /**
+     * TO_BINARY over two untyped NULLs, refused as a call of one argument too many: the account reads that NULL format
+     * as none (live-verified), while a text beside a NULL format answers NULL.
+     *
+     * @param call a call the query makes
+     */
+    void rejectNullFormattedBinary(final FunctionCallExpression call) {
+        if ("TO_BINARY".equalsIgnoreCase(call.getFunctionName()) && call.getArguments().size() == 2
+                && isNullLiteral(call.getArguments().get(0)) && isNullLiteral(call.getArguments().get(1))) {
+            throw arityMismatch("too many arguments for function [TO_BINARY(NULL, NULL)] expected 1, got 2", call);
+        }
     }
 
     private RuntimeException arityMismatch(final String detail, final FunctionCallExpression expr) {
@@ -11708,8 +13630,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      *
      * <p>The reverse direction — a cast INTO a geo type, {@code 'POINT(1 1)'::GEOGRAPHY} — is also
      * refused live ("invalid type [CAST('POINT(1 1)' AS GEOGRAPHY)] for parameter 'TO_GEOGRAPHY'"),
-     * but that is a rule about the TARGET and about which sources may reach it; it is deliberately
-     * left alone here, where the subject is what a geo value may be used AS.
+     * but that is a rule about the TARGET and about which sources may reach it, kept in
+     * {@code rejectGeoCastTarget}; the subject here is what a geo value may be used AS.
      */
     /**
      * The cast-source refusals that need no row — a FILE, a GEO or a STRUCTURED source, a TRY_CAST's
@@ -11722,6 +13644,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         rejectFileCastSource(expr);
         rejectGeoCastSource(expr);
         rejectStructuredTextCastSource(expr);
+        rejectGeoCastTarget(expr);
         rejectNonStringTryCastSource(expr);
         rejectUncastableSource(expr);
         rejectNonObjectCastSource(expr);
@@ -11842,11 +13765,13 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (!"LAST_QUERY_ID".equals(funcName) || args.size() != 1) {
             return;
         }
-        final Expression index = args.get(0);
-        if (blockExpressionConstant(index, true)) {
+        if (blockExpressionConstant(args.get(0), true)) {
             // A block binds its variable as a constant, and folds what reads no name before this rule (live-verified).
             return;
         }
+        // An index over a block's variables is judged and echoed over their bindings: i + 1 over an INT holding 1 is
+        // found '1 + 1', i * 3 over one holding 0 is constant (live-verified).
+        final Expression index = withBoundVariables(args.get(0));
         if (QueryIndexArgument.folds(index, this)) {
             QueryIndexArgument.requireWithinLimit(index, this);
             return;
@@ -11877,8 +13802,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             throw new RuntimeException(SqlCompilationError.of("invalid type [" + conversionCallEcho(funcName, args)
                 + "] for parameter 'TO_ARRAY'"));
         }
+        // A block's variable is judged by its binding: TO_OBJECT(n) over an INT is [TO_OBJECT(TO_NUMBER('5'))]
+        // (live-verified).
         if (!"TO_OBJECT".equals(funcName) || args.size() != 1
-                || !isRefusedObjectSource(typeInferencer.infer(args.get(0)))) {
+                || !isRefusedObjectSource(typeInferencer.infer(withBoundVariables(args.get(0))))) {
             return;
         }
         throw new RuntimeException(SqlCompilationError.of("invalid type [" + conversionCallEcho(funcName, args)
@@ -11898,8 +13825,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     private void rejectNonConstantGeneratorArgument(final String funcName, final List<Expression> args) {
         final int constants = generatorConstantSlots(funcName);
         for (int position = 0; position < constants && position < args.size(); position++) {
+            // A block's variables are bound as constants, so RANDOM(n + 1) over one is seeded (live-verified).
             if (!blockExpressionConstant(args.get(position), false)
-                    && !ConstantArgumentWalk.isConstant(args.get(position), functionRegistry)) {
+                    && !ConstantArgumentWalk.isConstant(withBoundVariables(args.get(position)), functionRegistry)) {
                 throw new RuntimeException(SqlCompilationError.of("argument " + (position + 1) + " to function "
                     + funcName + " needs to be constant, found '" + strictPlanText(args.get(position)) + "'"));
             }
@@ -11963,10 +13891,50 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     private void rejectGeoCastSource(final CastExpression expr) {
-        if (!GeoTypes.isGeo(typeInferencer.infer(expr.getExpression()))) {
+        final DataType source = typeInferencer.infer(expr.getExpression());
+        if (!GeoTypes.isGeo(source) || source.getName().equals(expr.getTargetBaseName())
+                && (isGeoNull(expr.getExpression())
+                    || ConstantArgumentWalk.isConstant(expr.getExpression(), functionRegistry))) {
+            // The geospatial source a cast takes is a constant cast to its own type, which the plan folds:
+            // CAST(CAST(NULL AS GEOGRAPHY) AS GEOGRAPHY) is NULL and TO_GEOGRAPHY('POINT(1 2)')::GEOGRAPHY the point,
+            // where a GEOGRAPHY column's CAST(g AS GEOGRAPHY) is refused (live-verified).
             return;
         }
         throw new RuntimeException(castSourceRejectionMessage(expr));
+    }
+
+    /**
+     * A cast INTO a geospatial type takes no typed value: every source but an untyped NULL is refused while the
+     * statement compiles, in the conversion's words, the source as the plan spells it (live-verified):
+     *
+     * <pre>
+     *   'POINT(1 2)'::GEOMETRY             invalid type [CAST('POINT(1 2)' AS GEOMETRY)] for parameter 'TO_GEOMETRY'
+     *   CAST(1 AS GEOGRAPHY)               invalid type [CAST(1 AS GEOGRAPHY)] for parameter 'TO_GEOGRAPHY'
+     *   s::GEOGRAPHY over a VARCHAR        invalid type [CAST(GSRC.S AS GEOGRAPHY)] …
+     *   CAST(NULL::VARCHAR AS GEOGRAPHY)   invalid type [CAST(SYSTEM$NULL_TO_TEXT(NULL) AS GEOGRAPHY)] …
+     *   TRY_CAST('POINT(1 2)' AS GEOGRAPHY)   invalid type [TRY_CAST('POINT(1 2)')] …
+     * </pre>
+     *
+     * <p>A VARIANT, an OBJECT and a BINARY are refused alike; TO_GEOGRAPHY and TO_GEOMETRY are the conversions.
+     */
+    private void rejectGeoCastTarget(final CastExpression expr) {
+        final DataType target = expr.getTargetDataType();
+        final Expression source = expr.getExpression();
+        if (!GeoTypes.isGeo(target) || UntypedNullFold.isUntypedNull(source)
+                || GeoTypes.isGeo(typeInferencer.infer(source))) {
+            return;
+        }
+        final String echo = conversionSourceEcho(source);
+        throw new RuntimeException(SqlCompilationError.of("invalid type ["
+            + (expr.isTryMode() ? "TRY_CAST(" + echo + ")" : "CAST(" + echo + " AS " + target.getName() + ")")
+            + "] for parameter '" + castConversionName(expr.getTargetType()) + "'"));
+    }
+
+    /** Whether {@code expression} is NULL cast to a geospatial type. */
+    private static boolean isGeoNull(final Expression expression) {
+        return expression instanceof CastExpression
+            && UntypedNullFold.isUntypedNull(((CastExpression) expression).getExpression())
+            && GeoTypes.isGeo(((CastExpression) expression).getTargetDataType());
     }
 
     /**
@@ -11976,7 +13944,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * live. Shared by the FILE and GEOSPATIAL source rules, which produce it identically.
      */
     private String castSourceRejectionMessage(final CastExpression expr) {
-        final String source = strictText(expr.getExpression());
+        // A NULL cast to a geospatial type is printed as the plan holds it, UNDERLYING_TO_UDT(NULL).
+        final String source = isGeoNull(expr.getExpression()) ? strictConversionText(expr.getExpression())
+            : strictText(expr.getExpression());
         // The target is rendered with its default parameters, exactly as live prints it: live
         // run CAST(f AS NUMBER) over table fk reports "CAST(FK.F AS NUMBER(38,0))" and
         // CAST(f AS VARCHAR) reports "CAST(FK.F AS VARCHAR(134217728))".
@@ -12507,9 +14477,86 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
     }
 
+    /**
+     * A text argument of GREATEST or LEAST that does not fit the exact NUMBER the call folds to, refused as a set
+     * operation's text branch is refused at its unified type (see SetOperations#fixedTextAt): the NUMBER(38,1) that
+     * {@code GREATEST(id, '99999999999999999999999999999999999999.5')} folds to holds thirty-seven integer digits, not
+     * thirty-eight. The comparison's own 10^38 check let it through, and a CTAS stored the thirty-nine digits. A
+     * text that fits is left as it is, for the ordering to convert; one that spells no number is the ordering's to
+     * refuse.
+     */
+    private void rejectOrderedTextPastFold(final FunctionCallExpression expr, final List<Object> argValues) {
+        final DataType folded = inferStaticType(expr);
+        if (!(folded instanceof NumericType) || NumericType.isApproximate(folded)
+                || NumericType.isDecfloat(folded)) {
+            return;
+        }
+        for (final Object value : argValues) {
+            if (value instanceof CharSequence && isDecimalText(value.toString())) {
+                SetOperations.fixedTextAt(value.toString(), (NumericType) folded);
+            }
+        }
+    }
+
+    /** Whether a text is a plain decimal number, the only spelling whose digits can overflow a fold. */
+    private static boolean isDecimalText(final String text) {
+        try {
+            DecimalText.parse(text.trim());
+            return true;
+        } catch (final NumberFormatException notADecimal) {
+            return false;
+        }
+    }
+
     /** The conditionals that order their arguments, and so evaluate a predicate beside a text as a BOOLEAN. */
     private static final Set<String> ORDERING_CONDITIONALS = Set.of(
         "GREATEST", "LEAST", "GREATEST_IGNORE_NULLS", "LEAST_IGNORE_NULLS");
+
+    /**
+     * A row-time failure of a conditional that orders its arguments, marked to be raised bare by a write: GREATEST
+     * and LEAST convert a text argument as they compare, inside the query, so the account refuses
+     * {@code CREATE TABLE g AS SELECT GREATEST(id, '…') g FROM t} and the INSERT … SELECT of it without the DML
+     * sentence a value converted only as it is written carries (live-verified; see DeferredFault#bare). Any other
+     * call's failure is left as it is.
+     *
+     * @param funcName the call's name, upper-cased
+     * @param failure  the failure
+     * @return the failure
+     */
+    private static RuntimeException orderingFailure(final String funcName, final RuntimeException failure) {
+        return ORDERING_CONDITIONALS.contains(funcName) && DeferredFault.deferrable(failure)
+            ? DeferredFault.bare(failure) : failure;
+    }
+
+    /** The precision an exact NUMBER operand is declared with, or -1 for any other operand. */
+    private int declaredPrecision(final Expression operand) {
+        final DataType type = inferStaticType(operand);
+        return type instanceof NumericType && !NumericType.isApproximate(type) && !NumericType.isDecfloat(type)
+            ? ((NumericType) type).getPrecision() : -1;
+    }
+
+    /** The conversions of a DECFLOAT to an exact NUMBER that a call names. */
+    private static final Set<String> DECFLOAT_NARROWING_CALLS = Set.of("TO_NUMBER", "TO_DECIMAL", "TO_NUMERIC");
+
+    /**
+     * Refuses a DECFLOAT that TO_NUMBER, TO_DECIMAL or TO_NUMERIC cannot hold at the width the call declares - its
+     * first two whole-number arguments, NUMBER(38,0) by default - naming the conversion as a cast does:
+     * {@code TO_DECIMAL(DECFLOAT '1e38', 10, 2)} is {@code Decfloat out of representable range, operation:
+     * TO_NUMBER(1e38, 10, 2)} (live-verified; see Decfloats#toNumber).
+     *
+     * @param argValues the call's evaluated arguments, the DECFLOAT first
+     */
+    private static void narrowDecfloatArgument(final List<Object> argValues) {
+        final List<Integer> width = new ArrayList<>();
+        for (int i = 1; i < argValues.size() && width.size() < 2; i++) {
+            final Object argument = argValues.get(i);
+            if (argument instanceof Number && !(argument instanceof Double) && !(argument instanceof Float)) {
+                width.add(Integer.valueOf(((Number) argument).intValue()));
+            }
+        }
+        Decfloats.toNumber((BigDecimal) argValues.get(0), width.isEmpty() ? 38 : width.get(0).intValue(),
+            width.size() < 2 ? 0 : width.get(1).intValue());
+    }
 
     /**
      * A membership test over a subquery — {@code x [NOT] IN (SELECT …)}, {@code x op ANY / SOME / ALL (SELECT …)} —
@@ -13065,9 +15112,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (args.size() < vectorArgs) {
             return;   // the arity error reports this better than a type error would
         }
-        final VectorType first = declaredVectorType(funcName, args, args.get(0));
+        final VectorType first = declaredVectorType(funcName, args, args.get(0), call);
         if (pair) {
-            final VectorType second = declaredVectorType(funcName, args, args.get(1));
+            final VectorType second = declaredVectorType(funcName, args, args.get(1), call);
             if (first != null && second != null && !first.equals(second)) {
                 throw new RuntimeException("Invalid argument types for function '" + funcName
                     + "': (" + strictArgTypeList(args) + ")");
@@ -13085,7 +15132,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * runtime value decides, as everywhere else in these checks.
      */
     private VectorType declaredVectorType(final String funcName, final List<Expression> args,
-                                          final Expression arg) {
+                                          final Expression arg, final Expression call) {
         final DataType inferred = typeInferencer.infer(arg);
         if (inferred instanceof VectorType) {
             return (VectorType) inferred;
@@ -13093,8 +15140,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         final boolean untypedNull = arg instanceof LiteralExpression
             && ((LiteralExpression) arg).getType() == LiteralType.NULL;
         if (inferred != null || untypedNull) {
-            throw new RuntimeException("Invalid argument types for function '" + funcName
-                + "': (" + strictArgTypeList(args) + ")");
+            throw argumentTypesRefusal(funcName, args, call);
         }
         return null;
     }
@@ -13386,7 +15432,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * argument-type error listing every argument's type. Undetermined types always pass.
      */
     private void rejectArgumentTypes(final String funcName, final List<Expression> args,
-                                     final Map<String, int[]> family, final Class<?>[] rejected) {
+                                     final Map<String, int[]> family, final Class<?>[] rejected,
+                                     final Expression call) {
         final int[] positions = family.get(funcName);
         if (positions == null) {
             return;
@@ -13401,10 +15448,41 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             }
             for (final Class<?> type : rejected) {
                 if (type.isInstance(inferred)) {
-                    throw new RuntimeException("Invalid argument types for function '" + funcName
-                        + "': (" + strictArgTypeList(args) + ")");
+                    throw argumentTypesRefusal(funcName, args, call);
                 }
             }
+        }
+    }
+
+    /**
+     * A call's argument-type refusal, raised while the statement compiles and placed at the call where its place is
+     * known: {@code SELECT BOOLAND(b, b) FROM t} is "error line 1 at position 7" and then "Invalid argument types for
+     * function 'BOOLAND': (BOOLEAN, BOOLEAN)", and inside a subquery holding an outer aggregate it comes ahead of the
+     * aggregate's place (live-verified). With no call, or no place for it, the sentence stands alone.
+     */
+    private RuntimeException argumentTypesRefusal(final String funcName, final List<Expression> args,
+                                                  final Expression call) {
+        final String detail = "Invalid argument types for function '" + funcName + "': (" + strictArgTypeList(args)
+            + ")";
+        final SourcePosition placed = call instanceof FunctionCallExpression
+            ? ExpressionSource.resolve(((FunctionCallExpression) call).getPosition()) : null;
+        return new RuntimeException(placed != null
+            ? SqlCompilationError.at(placed.getLine(), placed.getCharPositionInLine(), detail) : detail);
+    }
+
+    /**
+     * A bit aggregate takes a number, or a text it reads as one: a BOOLEAN and a date or a time are refused while the
+     * statement compiles, at the call - {@code BITAND_AGG(b)} over a BOOLEAN is "Invalid argument types for function
+     * 'BITAND_AGG': (BOOLEAN)", {@code BITXOR_AGG(d)} over a DATE "(DATE)" (live-verified).
+     */
+    private void rejectNonNumberBitAggregateArgument(final String funcName, final List<Expression> args,
+                                                     final Expression call) {
+        if (args.isEmpty() || !TypeInferencer.BIT_AGGREGATES.contains(funcName)) {
+            return;
+        }
+        final DataType inferred = typeInferencer.infer(args.get(0));
+        if (inferred instanceof BooleanType || inferred instanceof DateTimeType) {
+            throw argumentTypesRefusal(funcName, args, call);
         }
     }
 
@@ -13495,11 +15573,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                     + conversionSourceEcho(expr.getExpression()) + ")] for parameter '"
                     + castConversionName(expr.getTargetType()) + "'"));
             }
-            final String nominal = "NUMBER".equals(kind) && source instanceof BooleanType
-                ? "NUMBER(2,0)" : castTargetTypeText(expr.getTargetType());
             throw new RuntimeException(SqlCompilationError.of(
                 "Function TRY_CAST cannot be used with arguments of types "
-                + strictArgTypeText(expr.getExpression()) + " and " + nominal));
+                + strictArgTypeText(expr.getExpression()) + " and " + castTargetTypeText(expr.getTargetType())));
         }
         if (source instanceof NumericType || source instanceof BooleanType
                 || source instanceof DateTimeType || source instanceof BinaryType
@@ -13706,13 +15782,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 "argument needs to be a string: '" + strictPlanText(source) + "'"));
         }
         // The target the sentence echoes is the DECLARED pair when the call spells one out —
-        // TRY_TO_NUMBER(1000, 2, 0) names NUMBER(2,0), not the nominal NUMBER(38,0) — except a
-        // BOOLEAN source, which ALWAYS echoes NUMBER(2,0), even against a declared (5,1)
-        // (live-verified in both directions).
+        // TRY_TO_NUMBER(1000, 2, 0) names NUMBER(2,0), not the nominal NUMBER(38,0) — and a BOOLEAN
+        // source is no exception: TRY_TO_NUMBER(TRUE) names NUMBER(38,0) (live-verified).
         final String declaredTarget;
-        if (numericTryTo && inferred instanceof BooleanType) {
-            declaredTarget = "NUMBER(2,0)";
-        } else if (numericTryTo) {
+        if (numericTryTo) {
             declaredTarget = declaredNumberTarget(args, target);
         } else if ("TIMESTAMP".equals(kind)) {
             declaredTarget = target.substring(0, target.indexOf('('))
@@ -14278,8 +16351,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         // An INTERVAL takes no format either: TO_VARCHAR(INTERVAL '1' DAY, 'YYYY') is refused the same way,
         // naming the literal as its conversion, TO_INTERVAL_DAY_TIME('1') (live-verified).
         // Neither does a BOOLEAN or the bare word NULL: TO_CHAR(NULL, NULL) and TO_CHAR(TRUE, NULL) are refused
-        // for their count, not for their format.
-        if (!(first instanceof StringType) && !(first instanceof VariantType) && !isIntervalType(first)
+        // for their count, not for their format. Nor an OBJECT or an ARRAY, an XML value's included:
+        // TO_VARCHAR(OBJECT_CONSTRUCT('a', 1), 'X') and TO_CHAR(PARSE_XML('<r/>'), NULL) (live-verified).
+        if (!(first instanceof StringType) && !(first instanceof VariantType) && !(first instanceof ObjectType)
+                && !(first instanceof ArrayType) && !isIntervalType(first)
                 && !(first instanceof BooleanType) && !(first == null && isNullLiteral(args.get(0)))) {
             return;
         }
@@ -14313,13 +16388,52 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         return strictArgTypeText(arg);
     }
 
+    /**
+     * TIME_SLICE's slice length, judged before the unit is read, over no rows as well (live-verified): one that is no
+     * whole number is refused by its type, "invalid type [FLOAT] for parameter 'slice-length'" - a text, a FLOAT, a
+     * VARIANT, a fixed-point number with a scale and a fraction written as one, 5.6 being NUMBER(2,1) where 5.0 is
+     * taken - and one written out that is not positive by its value, read as a 32-bit integer and spelled with
+     * thousands separators: "invalid value [-1,294,967,296] for parameter 'slice-length'" for 3000000000. A length a
+     * row gives is judged as the row is read.
+     *
+     * @param length the length argument
+     */
+    private void requireSliceLength(final Expression length) {
+        final DataType type = typeInferencer.infer(length);
+        final boolean scaled = type instanceof NumericType && !NumericType.isApproximate(type)
+            && ((NumericType) type).getScale() > 0 && !(length instanceof LiteralExpression);
+        if (type instanceof StringType || NumericType.isApproximate(type) || type instanceof VariantType || scaled
+                || fractionalLiteral(length) != null) {
+            throw new RuntimeException(SqlCompilationError.of("invalid type [" + strictArgTypeText(length)
+                + "] for parameter 'slice-length'"));
+        }
+        Expression written = length;
+        boolean negative = false;
+        while (written instanceof UnaryOperationExpression
+                && (((UnaryOperationExpression) written).getOperator() == UnaryOperator.NEGATE
+                    || ((UnaryOperationExpression) written).getOperator() == UnaryOperator.PLUS)) {
+            negative ^= ((UnaryOperationExpression) written).getOperator() == UnaryOperator.NEGATE;
+            written = ((UnaryOperationExpression) written).getOperand();
+        }
+        if (!(written instanceof LiteralExpression) || ((LiteralExpression) written).getType() != LiteralType.INTEGER
+                && ((LiteralExpression) written).getType() != LiteralType.DECIMAL) {
+            return;
+        }
+        final BigDecimal value = DecimalText.parse(String.valueOf(((LiteralExpression) written).getValue()));
+        final int wrapped = (negative ? value.negate() : value).toBigInteger().intValue();
+        if (wrapped <= 0) {
+            throw new RuntimeException(SqlCompilationError.of("invalid value [" + String.format(Locale.ROOT, "%,d",
+                wrapped) + "] for parameter 'slice-length'"));
+        }
+    }
+
     /** A number literal that carries a fraction, as written; null for a whole one or anything else. */
     private static String fractionalLiteral(final Expression arg) {
         if (!(arg instanceof LiteralExpression) || ((LiteralExpression) arg).getType() != LiteralType.DECIMAL) {
             return null;
         }
         final String written = String.valueOf(((LiteralExpression) arg).getValue());
-        return new BigDecimal(written).stripTrailingZeros().scale() > 0 ? written : null;
+        return DecimalText.parse(written).stripTrailingZeros().scale() > 0 ? written : null;
     }
 
     /** A scale argument that is no whole number, as a refusal names it; null for a whole number or no literal. */
@@ -14335,7 +16449,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return "'" + literal.getValue() + "'";
         }
         if (literal.getType() == LiteralType.DECIMAL
-                && new BigDecimal(String.valueOf(literal.getValue())).stripTrailingZeros().scale() > 0) {
+                && DecimalText.parse(String.valueOf(literal.getValue())).stripTrailingZeros().scale() > 0) {
             return String.valueOf(literal.getValue());
         }
         return null;
@@ -14429,7 +16543,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if (name.contains("FLOAT") || name.contains("DOUBLE") || name.contains("REAL")) {
                 return "FLOAT";
             }
-            final int precision = numeric.getPrecision() > 0 ? numeric.getPrecision() : 38;
+            // A precision of 0 is declared, not missing: AS_NUMBER(v, 0) is NUMBER(0,0), which holds any value
+            // (live-verified).
+            final int precision = numeric.getPrecision() >= 0 ? numeric.getPrecision() : 38;
             return "NUMBER(" + precision + "," + Math.max(numeric.getScale(), 0) + ")";
         }
         if (inferred instanceof DateTimeType) {
@@ -14527,6 +16643,98 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
         final Table owner = resolveDeclaredOwner(ref);
         return owner == null ? null : owner.getColumn(ref.getColumnName());
+    }
+
+    /**
+     * The precision a cast's source is tagged by where it reads its recursive CTE's step inside the term: the plan
+     * knows no interval of those values, so the widest, 38, whatever the column's type; 0 for any other source (see
+     * {@link ValueCaster#castValue(Object, String, boolean, int)}).
+     */
+    private int recursiveStepPrecision(final Expression source) {
+        final ColumnReferenceCollectWalk walk = new ColumnReferenceCollectWalk();
+        source.accept(walk);
+        boolean readsStep = false;
+        for (final ColumnReferenceExpression reference : walk.references()) {
+            final Table owner = columnOwner(reference);
+            readsStep = readsStep || owner != null && owner.isRecursiveStep();
+        }
+        final DataType type = readsStep ? typeInferencer.infer(source) : null;
+        return type instanceof NumericType && !NumericType.isApproximate(type) && !NumericType.isDecfloat(type)
+            ? WIDEST_PRECISION : 0;
+    }
+
+    /**
+     * How an expression reads a stored table's column (see StoredRead): a reference to a catalog table's column reads
+     * it whole, as does one to a derived relation's column that carries it, and an IFF whose condition is a constant
+     * reads as the branch it takes (the plan folds it away: {@code IFF(TRUE, a, NULL)} hands a's column on); an
+     * element or a path of any of them reads an element. Anything else, and anything past a grouping, reads none.
+     *
+     * @param expr the expression
+     * @return how it reads one
+     */
+    public StoredRead storedReadOf(final Expression expr) {
+        if (expr instanceof ColumnReferenceExpression) {
+            return overGroupedRows ? StoredRead.NONE : storedReadOfColumn((ColumnReferenceExpression) expr);
+        }
+        final Expression taken = takenBranch(expr);
+        if (taken != expr) {
+            return storedReadOf(taken);
+        }
+        final Expression base = VariantRowElements.elementBase(expr);
+        return base != null && storedReadOf(base) != StoredRead.NONE ? StoredRead.ELEMENT : StoredRead.NONE;
+    }
+
+    /**
+     * {@link #storedReadOf} of a column reference: its relation's own, a catalog table's column read whole; a
+     * correlated subquery's reference to the query around it reads as the scope that holds the column reads it, so
+     * {@code (SELECT TO_VARCHAR(va.a[0]::DATE, 'YYYYMMDD')) FROM va} converts the outer row's stored element
+     * (live-verified).
+     */
+    private StoredRead storedReadOfColumn(final ColumnReferenceExpression ref) {
+        final Table owner = ref.getColumnName() == null ? null : columnOwner(ref);
+        if (owner == null) {
+            return ref.getColumnName() == null || lateralContext == null ? StoredRead.NONE : outerStoredRead(ref);
+        }
+        if (isBaseCatalogTable(owner)) {
+            return StoredRead.COLUMN;
+        }
+        final TableColumn column = owner.getColumn(ref.getColumnName());
+        return column == null ? StoredRead.NONE : column.getStoredRead();
+    }
+
+    /** How the innermost scope around this one that holds a column reads it, or none where no scope holds it. */
+    private StoredRead outerStoredRead(final ColumnReferenceExpression ref) {
+        for (final ExpressionEvaluatorVisitor outer : SubqueryCompilation.enclosingScopes(this)) {
+            if (outer.columnOwner(ref) != null) {
+                return outer.storedReadOf(ref);
+            }
+        }
+        return StoredRead.NONE;
+    }
+
+    /** The relation a column reference reads, or null where it reads none of this scope's. */
+    private Table columnOwner(final ColumnReferenceExpression ref) {
+        final String columnName = ref.getColumnName();
+        if (ref.getPositionalOrdinal() > 0 || columnName == null) {
+            return multiTableAllTables == null || multiTableAllTables.size() <= 1 ? table : null;
+        }
+        if (ref.getTableName() != null) {
+            final String qualifier = typedQualifier(ref.getTableName(), table, multiTableAliasToTable);
+            final Table qualified = tableForAlias(qualifier, multiTableAliasToTable);
+            if (qualified != null && qualified.hasColumn(columnName)) {
+                return qualified;
+            }
+            return table != null && table.getName().equalsIgnoreCase(qualifier) && table.hasColumn(columnName)
+                ? table : null;
+        }
+        if (multiTableAllTables != null) {
+            for (final Table candidate : multiTableAllTables) {
+                if (candidate.hasColumn(columnName)) {
+                    return candidate;
+                }
+            }
+        }
+        return table != null && table.hasColumn(columnName) ? table : null;
     }
 
     /**
@@ -15236,6 +17444,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                     throw new RuntimeException(SqlCompilationError.of(
                         "invalid use of 'distinct' for function '" + strictText(call) + "'"));
                 }
+                if (call.isDistinct() && "VARIANCE".equals(funcName)
+                        && functionRegistry.hasAggregateFunction(funcName)) {
+                    // VARIANCE alone takes no DISTINCT, which VARIANCE_SAMP, VAR_SAMP and the deviations take
+                    // (live-verified).
+                    throw new UnsupportedFeatureException("VARIANCE(DISTINCT)");
+                }
                 // A conversion's own source rule belongs to this walk too, or an aggregate around
                 // TO_DATE(f) would be judged before the conversion it wraps. A TIMESTAMP scale is
                 // asked first: TRY_TO_TIMESTAMP(n, '3') is the scale sentence, not TRY_CAST's.
@@ -15243,6 +17457,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 rejectNumberConversionArguments(funcName, call.getArguments());
                 rejectNonStringTryToSource(funcName, call.getArguments());
                 rejectNonStringConversionSource(funcName, call.getArguments());
+                rejectNonIndexOfVariant(funcName, call.getArguments(), call);
                 rejectSemiStructuredArgument(funcName, call.getArguments(), call);
             }
             return;
@@ -15483,8 +17698,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             final SourcePosition where = ExpressionSource.resolve(ref.getPosition());
             rejectWhereAlias(ref, columnName, where);
             // Echoed AS WRITTEN: a quoted reference keeps its quotes and its case, because "a" and A
-            // are different columns and the folded spelling would name the wrong one.
-            final String echoed = ref.getWrittenName() != null ? ref.getWrittenName() : upperName;
+            // are different columns and the folded spelling would name the wrong one. A name ending in a dollar
+            // sign is echoed in quotes: a$ is '"A$"', where a$b is 'A$B' (live-verified).
+            final String written = ref.getWrittenName() != null ? ref.getWrittenName() : upperName;
+            final String echoed = !written.startsWith("\"") && written.indexOf('.') < 0 && written.endsWith("$")
+                ? "\"" + written + "\"" : written;
             throw where != null
                 ? new InvalidQualifierException(echoed, where)
                 : new InvalidQualifierException(echoed);
@@ -15732,6 +17950,16 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         this.groupedRelations = relations;
     }
 
+    /**
+     * Whether the row read is a grouped query's: an item past the grouping reads the value its group holds, which no
+     * stored table's column holds (see StoredRead).
+     *
+     * @param overGroupedRows whether it is
+     */
+    public void setOverGroupedRows(final boolean overGroupedRows) {
+        this.overGroupedRows = overGroupedRows;
+    }
+
     /** Whether a written qualifier is one the row around this query offers (see {@link #setEnclosingQualifiers}). */
     boolean isEnclosingQualifier(final String qualifier) {
         return enclosingQualifiers != null && qualifier != null
@@ -15740,6 +17968,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
     public void setOutputAliasTypes(final Map<String, DataType> types) {
         this.outputAliasTypes = types;
+    }
+
+    public void setOutputAliasRanges(final Map<String, ValueRange> ranges) {
+        this.outputAliasRanges = ranges;
     }
 
     /**
@@ -15752,6 +17984,17 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return null;
         }
         return outputAliasTypes.get(ref.getColumnName().toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * The interval a BARE reference's values lie in when it names an earlier select item's alias rather than a
+     * relation's column — the aliased expression's, which is what SYSTEM$TYPEOF's storage tag reads — or null.
+     */
+    ValueRange outputAliasRange(final ColumnReferenceExpression ref) {
+        if (outputAliasRanges == null || ref.getTableName() != null || resolveDeclaredColumn(ref) != null) {
+            return null;
+        }
+        return outputAliasRanges.get(ref.getColumnName().toUpperCase(Locale.ROOT));
     }
 
     public void setScopeExemptNames(final Set<String> names) {
@@ -16279,6 +18522,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     @Override
     public Object visitObjectAccess(final ObjectAccessExpression expr) {
         rejectStringBaseInPathAccess(expr);
+        if (resultHolds(expr)) {
+            return DeferredFault.read(resultContext.get(canonicalPrintOf(expr)));
+        }
         final Object baseValue = expr.getBase().accept(this);
 
         if (baseValue == null) {
@@ -16339,6 +18585,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     @Override
     public Object visitArrayAccess(final ArrayAccessExpression expr) {
         rejectStringBaseInSubscript(expr);
+        if (resultHolds(expr)) {
+            return DeferredFault.read(resultContext.get(canonicalPrintOf(expr)));
+        }
         final Object arrayValue = expr.getArray().accept(this);
         final Object indexValue = expr.getIndex().accept(this);
 
@@ -16350,10 +18599,17 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (baseType instanceof StructuredObjectType && !(indexValue instanceof Number)) {
             requireDeclaredFields(baseType, Collections.singletonList(indexValue.toString()));
         }
-        final Object read = readSubscript(arrayValue, indexValue);
-        final DataType leaf = StructuredLeaf.ofSubscript(baseType,
-            indexValue instanceof Number ? indexValue : indexValue.toString(), false);
-        return leaf != null ? StructuredLeaf.typed(read, leaf) : read;
+        if ((indexValue instanceof Double || indexValue instanceof Float) && !(baseType instanceof MapType)
+                && writtenNumber(expr.getIndex()) == null) {
+            // A FLOAT index names no element, as GET's does (live-verified: [1,2,3][1::FLOAT] is NULL).
+            return null;
+        }
+        // A MAP is read by its key, a NUMBER one as the number it is: m[1], m[2.0] and m[i] (live-verified).
+        final Object key = baseType instanceof MapType && indexValue instanceof Number
+            ? mapKeyText((Number) indexValue) : indexValue;
+        final Object read = readSubscript(arrayValue, key);
+        final DataType leaf = StructuredLeaf.ofSubscript(baseType, key instanceof Number ? key : key.toString(), false);
+        return leaf != null ? heldToDeclaredLength(StructuredLeaf.typed(read, leaf), leaf) : read;
     }
 
     /** What a subscript reads: a number indexes an array, a text names an object's member. */
@@ -17757,12 +20013,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 known = word == null || LastDay.partOf(word) != null;
                 break;
             case "TIME_SLICE":
-                // A slice length that is no whole number is refused by its type before the unit is read: a text, and
-                // a fraction written as one - 5.6 is NUMBER(2,1), where 5.0 is taken (live-verified).
-                if (args.size() >= 2 && (typeInferencer.infer(args.get(1)) instanceof StringType
-                        || fractionalLiteral(args.get(1)) != null)) {
-                    throw new RuntimeException(SqlCompilationError.of("invalid type [" + strictArgTypeText(args.get(1))
-                        + "] for parameter 'slice-length'"));
+                if (args.size() >= 2) {
+                    requireSliceLength(args.get(1));
                 }
                 word = args.size() >= 3 && isStringLiteral(args.get(2))
                     ? String.valueOf(((LiteralExpression) args.get(2)).getValue()) : null;

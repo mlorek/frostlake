@@ -21,8 +21,11 @@ import dev.frostlake.metastore.SqlObject;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.TreeMap;
 
-public class View extends SqlObject implements SessionScoped {
+public class View extends SqlObject implements SessionScoped, ContactHolder {
 
     private final String definition;
     private final List<String> columnNames;
@@ -48,6 +51,15 @@ public class View extends SqlObject implements SessionScoped {
     /** Attached row access policy (ALTER VIEW ... ADD ROW ACCESS POLICY p ON (cols)), or null. */
     private String rowAccessPolicyName;
     private List<String> rowAccessPolicyColumns = new ArrayList<>();
+    /** The aggregation policy the view is read under, by its qualified name, with its ENTITY KEY; or null. */
+    private String aggregationPolicyName;
+    private List<String> aggregationEntityKey = new ArrayList<>();
+    /** The join policy the view is read under, by its qualified name; or null. */
+    private String joinPolicyName;
+    /** The DATA METRIC FUNCTIONS attached to the view and their DATA_METRIC_SCHEDULE, as a table's are. */
+    private final DataMetricAttachments dataMetrics = new DataMetricAttachments();
+    /** The contacts attached to the view, by purpose, each by its full name. */
+    private final Map<String, String> contacts = new TreeMap<>();
 
     public View(final String name, final String definition) {
         super(name);
@@ -198,11 +210,44 @@ public class View extends SqlObject implements SessionScoped {
     }
     public boolean hasRowAccessPolicy() { return rowAccessPolicyName != null && !rowAccessPolicyName.isEmpty(); }
 
+    public String getAggregationPolicyName() { return aggregationPolicyName; }
+    public void setAggregationPolicyName(final String name) { this.aggregationPolicyName = name; }
+    public List<String> getAggregationEntityKey() { return aggregationEntityKey; }
+    public void setAggregationEntityKey(final List<String> key) {
+        this.aggregationEntityKey = key == null ? new ArrayList<String>() : new ArrayList<>(key);
+    }
+    public boolean hasAggregationPolicy() {
+        return aggregationPolicyName != null && !aggregationPolicyName.isEmpty();
+    }
+
+    public String getJoinPolicyName() { return joinPolicyName; }
+    public void setJoinPolicyName(final String name) { this.joinPolicyName = name; }
+    public boolean hasJoinPolicy() { return joinPolicyName != null && !joinPolicyName.isEmpty(); }
+
+    /** The data metric functions attached to this view and their schedule. */
+    public DataMetricAttachments dataMetricAttachments() { return dataMetrics; }
+
+    @Override
+    public Map<String, String> getContacts() {
+        return new TreeMap<>(contacts);
+    }
+
+    @Override
+    public void setContact(final String purpose, final String contactName) {
+        contacts.put(purpose.toUpperCase(Locale.ROOT), contactName);
+    }
+
+    @Override
+    public void unsetContact(final String purpose) {
+        contacts.remove(purpose.toUpperCase(Locale.ROOT));
+    }
+
     /**
      * A full-fidelity duplicate for CLONE DATABASE/SCHEMA: keeps the explicit column list, the SECURE
-     * flag, the comment, the change tracking a stream on the clone reads by, any attached row access policy, and the
-     * columns with their masking and projection policies and their tags (the name-and-definition constructor alone
-     * silently dropped all of these from clones).
+     * flag, the comment, the change tracking a stream on the clone reads by, any attached row access, aggregation
+     * and join policy, the attached data metric functions and their schedule, the contacts, and the columns with their
+     * masking and projection policies and their tags (the name-and-definition constructor alone silently dropped all of
+     * these from clones).
      */
     public View copy() {
         final View clone = columnNames != null
@@ -226,6 +271,11 @@ public class View extends SqlObject implements SessionScoped {
         clone.writtenBody = writtenBody;
         clone.rowAccessPolicyName = rowAccessPolicyName;
         clone.rowAccessPolicyColumns = new ArrayList<>(rowAccessPolicyColumns);
+        clone.aggregationPolicyName = aggregationPolicyName;
+        clone.aggregationEntityKey = new ArrayList<>(aggregationEntityKey);
+        clone.joinPolicyName = joinPolicyName;
+        dataMetrics.copyInto(clone.dataMetrics);
+        clone.contacts.putAll(contacts);
         return clone;
     }
 

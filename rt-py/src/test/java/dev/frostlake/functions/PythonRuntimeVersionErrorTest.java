@@ -17,6 +17,7 @@
 package dev.frostlake.functions;
 
 import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.rt.py.PythonInterpreter;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -24,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * The engine embeds GraalPy (Python 3.12), so ordinary Snowflake handler syntax — parameter and return
@@ -96,9 +98,15 @@ public class PythonRuntimeVersionErrorTest extends BaseDatabaseTest {
      *
      * <p>It is raised by CREATE, not by the call: a real account compiles a Python FUNCTION's body when
      * the function is created, so the body never gets as far as being callable.
+     *
+     * <p>It holds for the embedded GraalPy alone: the account and the CPython backend run a newer Python, where
+     * the syntax is taken.
      */
     @Test
     public void testNewerThanEmbeddedSyntaxIsExplained() {
+        assumeFalse(isLiveSnowflake(), "the account runs a Python newer than the embedded one");
+        assumeFalse(PythonInterpreter.description().endsWith("(CPython)"),
+            "the CPython backend runs the host's Python");
         final RuntimeException error = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
@@ -118,7 +126,7 @@ public class PythonRuntimeVersionErrorTest extends BaseDatabaseTest {
         });
         final String message = error.getMessage();
         assertTrue(message.contains("RUNTIME_VERSION '3.13'"), message);
-        assertTrue(message.contains("3.12 (GraalPy)"), message);
+        assertTrue(message.contains(PythonInterpreter.description()), message);
     }
 
     @Test
@@ -152,6 +160,7 @@ public class PythonRuntimeVersionErrorTest extends BaseDatabaseTest {
             RETURNS VARCHAR
             LANGUAGE PYTHON
             RUNTIME_VERSION = '3.11'
+            PACKAGES = ('snowflake-snowpark-python')
             HANDLER = 'run'
             AS
             $$

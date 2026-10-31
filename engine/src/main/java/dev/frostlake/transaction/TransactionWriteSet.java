@@ -16,10 +16,13 @@
 
 package dev.frostlake.transaction;
 
-import dev.frostlake.metastore.model.ChangeType;
+import dev.frostlake.executor.StatementCancellation;
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.model.Stream;
-import dev.frostlake.metastore.model.StreamRecord;
+import dev.frostlake.metastore.model.StreamVersion;
+import dev.frostlake.metastore.model.StreamVersionKind;
 import dev.frostlake.storage.Row;
+import dev.frostlake.storage.SnapshotSequence;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.stream.StreamManager;
@@ -34,6 +37,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
@@ -66,10 +70,20 @@ public class TransactionWriteSet {
     private final Map<String, Map<Long, Row>> updates = new LinkedHashMap<>();
     /** table → stable ids of base rows deleted by this transaction. */
     private final Map<String, Set<Long>> deletes = new LinkedHashMap<>();
-    /** table → the PARTITIONS lock the first touching statement took (SHOW LOCKS' rows). */
+
+    /**
+     * What each statement did to each table it changed or named, by statement ordinal and table, in the order the
+     * statements first did so: the versions a COMMIT writes, one for each (see StatementTableChange).
+     */
+    private Map<String, StatementTableChange> statementChanges = new LinkedHashMap<>();
+    /** The change found last, which a statement writing many rows of one table finds again at once. */
+    private StatementTableChange lastChange;
+    /** table → the PARTITIONS lock its writes took (SHOW LOCKS' rows). */
     private final Map<String, TableLock> tableLocks = new LinkedHashMap<>();
-    /** Raw (as-passed) table spellings whose lock entry is known to exist — see {@link #recordTableTouch}. */
+    /** Raw (as-passed) table spellings the running statement has written — see {@link #recordTableWrite}. */
     private final Set<String> lockNotedRaw = new HashSet<>();
+    /** The query ID of the statement {@link #lockNotedRaw} was noted for. */
+    private String lockNotedWriter;
 
     // Copy-on-first-mutation statement savepoint: while one is active, each mutator snapshots a
     // table's three entries the FIRST time the statement touches that table — the former full
@@ -94,6 +108,9 @@ public class TransactionWriteSet {
 
     /** The ordinal of the statement begun last, from 1. */
     private long statementOrdinal;
+
+    /** The tables written since {@link #takeWrittenTables} last asked: what one statement wrote. */
+    private final Set<String> writtenTables = new LinkedHashSet<>();
 
     /** The newest ordinal whose savepoint was let go: a point that needs one at or below it cannot be read. */
     private long lastForgotten;
@@ -230,6 +247,14 @@ public class TransactionWriteSet {
             activeSavepoint = enclosing.pollLast();
             return false;
         }
+        final Map<String, StatementTableChange> kept = new LinkedHashMap<>();
+        for (final Map.Entry<String, StatementTableChange> change : statementChanges.entrySet()) {
+            if (change.getValue().getOrdinal() < savepoint.ordinal()) {
+                kept.put(change.getKey(), change.getValue());
+            }
+        }
+        statementChanges = kept;
+        lastChange = null;
         for (final String table : savepoint.touchedTables()) {
             final List<Row> insertsPre = savepoint.insertsBefore(table);
             if (insertsPre == null) {
@@ -258,6 +283,7 @@ public class TransactionWriteSet {
     }
 
     private void snapshotForSavepoint(final String table) {
+        writtenTables.add(table);
         if (activeSavepoint == null || activeSavepoint.isTouched(table)) {
             return;
         }
@@ -271,6 +297,18 @@ public class TransactionWriteSet {
     }
 
     public void recordInsert(final String table, final Row row) {
+        recordInsert(table, row, true);
+    }
+
+    /**
+     * Record a row an INSERT adds to a table.
+     *
+     * @param table      the table, fully qualified
+     * @param row        the row
+     * @param locksTable whether the INSERT takes the table's lock: it does where the table holds committed rows, and
+     *                   takes none on an empty one (live-verified)
+     */
+    public void recordInsert(final String table, final Row row, final boolean locksTable) {
         snapshotForSavepoint(table);
         List<Row> list = inserts.get(table);
         if (list == null) {
@@ -278,8 +316,10 @@ public class TransactionWriteSet {
             inserts.put(table, list);
         }
         list.add(row);
-        // No lock registration: an append-only INSERT holds no PARTITIONS lock (live-verified) —
-        // only partition-rewriting DML (UPDATE / DELETE / MERGE / TRUNCATE) surfaces in SHOW LOCKS.
+        statementChange(table).addInserted();
+        if (locksTable) {
+            recordTableWrite(table);
+        }
     }
 
     /** Record a new value for an existing base row (by stable id). No-op if this txn already deleted it. */
@@ -295,7 +335,8 @@ public class TransactionWriteSet {
             updates.put(table, map);
         }
         map.put(rowId, newValue);
-        recordTableTouch(table);
+        statementChange(table).addUpdated();
+        recordTableWrite(table);
     }
 
     /** Record deletion of an existing base row (by stable id); supersedes any pending update of that row. */
@@ -310,27 +351,71 @@ public class TransactionWriteSet {
             set = new HashSet<>();
             deletes.put(table, set);
         }
-        set.add(rowId);
-        recordTableTouch(table);
+        if (set.add(rowId)) {
+            statementChange(table).addDeleted();
+        }
+        recordTableWrite(table);
     }
 
     /**
-     * Register the PARTITIONS lock a DML touch takes on a table; the first touch wins the cell. The
-     * raw-spelling memo skips the per-row upper-casing after a spelling's first touch; it is cleared
-     * wherever lock entries can be removed (statement rollback, {@link #clear}), since a memo entry
-     * must never outlive its lock.
+     * The change the running statement makes to a table, begun at its first change or note of the table.
+     *
+     * @param table the table, fully qualified
+     * @return the change
      */
-    private void recordTableTouch(final String table) {
+    private StatementTableChange statementChange(final String table) {
+        final long ordinal = activeOrdinal();
+        if (lastChange != null && lastChange.getOrdinal() == ordinal && lastChange.getTable().equals(table)) {
+            return lastChange;
+        }
+        final String key = ordinal + ":" + table;
+        StatementTableChange change = statementChanges.get(key);
+        if (change == null) {
+            change = new StatementTableChange(ordinal, table, StatementClock.hostLocal());
+            statementChanges.put(key, change);
+        }
+        lastChange = change;
+        return change;
+    }
+
+    /**
+     * Note the running statement as a DML statement of one kind writing a table, whether or not it changes a row: a
+     * stream's backlog lists a version for each such statement (see StatementTableChange).
+     *
+     * @param table the table, fully qualified
+     * @param kind  INSERT, UPDATE, DELETE or MERGE
+     */
+    public void noteStatementTarget(final String table, final StreamVersionKind kind) {
+        statementChange(table).noteKind(kind);
+    }
+
+    /**
+     * Register the PARTITIONS lock a write of a row takes on a table — an INSERT's too (live-verified): acquired at
+     * the table's first write, and named by the latest statement that changed a row of it. A lock entry is replaced,
+     * never changed, so a statement's savepoint keeps the one it began with. The raw-spelling memo skips the
+     * per-row upper-casing after a spelling's first write in a statement; it is cleared wherever lock entries can be
+     * removed (statement rollback, {@link #clear}), since a memo entry must never outlive its lock.
+     */
+    private void recordTableWrite(final String table) {
+        final String writer = StatementCancellation.runningQueryId();
+        if (!Objects.equals(writer, lockNotedWriter)) {
+            lockNotedRaw.clear();
+            lockNotedWriter = writer;
+        }
         if (!lockNotedRaw.add(table)) {
             return;
         }
         final String key = table.toUpperCase(Locale.ROOT);
-        if (!tableLocks.containsKey(key)) {
-            tableLocks.put(key, new TableLock(System.currentTimeMillis(), UUID.randomUUID().toString()));
+        final TableLock held = tableLocks.get(key);
+        if (held == null) {
+            tableLocks.put(key, new TableLock(System.currentTimeMillis(), writer != null ? writer
+                : UUID.randomUUID().toString()));
+        } else if (writer != null && !writer.equals(held.getQueryId())) {
+            tableLocks.put(key, new TableLock(held.getAcquiredOn(), writer));
         }
     }
 
-    /** The tables this write set touched, each with the lock its first touch acquired. */
+    /** The tables this write set wrote, each with the lock its first write acquired. */
     public Map<String, TableLock> getTableLocks() {
         return tableLocks;
     }
@@ -344,10 +429,11 @@ public class TransactionWriteSet {
      */
     public void recordTruncate(final String table, final List<Long> committedRowIds) {
         snapshotForSavepoint(table);
+        statementChange(table).addTruncated(committedRowIds.size() + rowDelta(table));
         inserts.remove(table);
         updates.remove(table);
         deletes.put(table, new HashSet<>(committedRowIds));
-        recordTableTouch(table);
+        recordTableWrite(table);
     }
 
     /**
@@ -360,6 +446,14 @@ public class TransactionWriteSet {
         inserts.remove(table);
         updates.remove(table);
         deletes.remove(table);
+        final Map<String, StatementTableChange> kept = new LinkedHashMap<>();
+        for (final Map.Entry<String, StatementTableChange> change : statementChanges.entrySet()) {
+            if (!change.getValue().getTable().equals(table)) {
+                kept.put(change.getKey(), change.getValue());
+            }
+        }
+        statementChanges = kept;
+        lastChange = null;
     }
 
     /**
@@ -463,6 +557,7 @@ public class TransactionWriteSet {
         final List<Row> ins = inserts.get(table);
         if (ins != null && index >= 0 && index < ins.size()) {
             ins.set(index, newRow);
+            statementChange(table).addUpdated();
         }
     }
 
@@ -472,6 +567,7 @@ public class TransactionWriteSet {
         final List<Row> ins = inserts.get(table);
         if (ins != null && index >= 0 && index < ins.size()) {
             ins.remove(index);
+            statementChange(table).addDeleted();
         }
     }
 
@@ -514,65 +610,6 @@ public class TransactionWriteSet {
         return result;
     }
 
-    /**
-     * Synthesize the stream change records for {@code table}'s buffered (not-yet-committed) changes, exactly
-     * as {@link #applyTo} would track them at commit — an update as a DELETE(old)+INSERT(new) pair, a delete
-     * as a DELETE(old), an insert as an INSERT(new) — but WITHOUT mutating storage or any stream. Old images
-     * are read from {@code base} by stable id; every record is tagged with {@code captureName} (the bare
-     * source-table name, to match committed records) and carries a negative, per-record id that cannot
-     * collide with a real (positive) committed record id. Lets a stream read inside a transaction fold this
-     * transaction's own uncommitted DML into its net delta; empty when nothing is buffered for {@code table}.
-     */
-    public List<StreamRecord> bufferedChangeRecords(final String table, final TableStorage base,
-                                                    final String captureName) {
-        final List<Row> ins = inserts.get(table);
-        final Map<Long, Row> upd = updates.get(table);
-        final Set<Long> del = deletes.get(table);
-        final boolean hasUpd = upd != null && !upd.isEmpty();
-        final boolean hasDel = del != null && !del.isEmpty();
-        final boolean hasIns = ins != null && !ins.isEmpty();
-        if (!hasUpd && !hasDel && !hasIns) {
-            return Collections.emptyList();
-        }
-        final List<StreamRecord> out = new ArrayList<>();
-        long transientId = -1L;   // negative ids never collide with committed (positive) record ids
-
-        Map<Long, Integer> idToIndex = null;
-        if (hasUpd || hasDel) {
-            final List<Long> ids = base.getRowIds();
-            idToIndex = new HashMap<>(ids.size() * 2);
-            for (int i = 0; i < ids.size(); i++) {
-                idToIndex.put(ids.get(i), i);
-            }
-        }
-        // Match applyTo's order (updates, deletes, inserts) so consolidation with committed records agrees.
-        if (hasUpd) {
-            for (final Map.Entry<Long, Row> entry : upd.entrySet()) {
-                final Integer idx = idToIndex.get(entry.getKey());
-                if (idx == null) {
-                    continue;
-                }
-                final long pairId = transientId--;
-                out.add(new StreamRecord(base.getRow(idx).getValues(), ChangeType.DELETE, true, pairId, captureName));
-                out.add(new StreamRecord(entry.getValue().getValues(), ChangeType.INSERT, true, pairId, captureName));
-            }
-        }
-        if (hasDel) {
-            for (final Long id : del) {
-                final Integer idx = idToIndex.get(id);
-                if (idx != null) {
-                    out.add(new StreamRecord(base.getRow(idx).getValues(), ChangeType.DELETE, false, transientId--, captureName));
-                }
-            }
-        }
-        if (hasIns) {
-            for (final Row row : ins) {
-                out.add(new StreamRecord(row.getValues(), ChangeType.INSERT, false, transientId--, captureName));
-            }
-        }
-        return out;
-    }
-
     /** Flush this write set to the base store (the COMMIT step). */
     public void applyTo(final StorageEngine storage) {
         applyTo(storage, null);
@@ -589,6 +626,9 @@ public class TransactionWriteSet {
         tables.addAll(updates.keySet());
         tables.addAll(deletes.keySet());
         tables.addAll(inserts.keySet());
+        for (final StatementTableChange change : statementChanges.values()) {
+            tables.add(change.getTable());
+        }
 
         for (final String table : tables) {
             // A table dropped (or replaced) after these writes were buffered has no storage to flush to —
@@ -622,6 +662,7 @@ public class TransactionWriteSet {
             final List<Stream> capturing = streamManager != null
                 ? streamManager.capturingStreams(table) : Collections.emptyList();
             final boolean captured = !capturing.isEmpty();
+            final long rowsBefore = base.getRowCount();
 
             // 1. Updates first.
             if (upd != null) {
@@ -673,6 +714,23 @@ public class TransactionWriteSet {
                     }
                 }
             }
+            if (captured) {
+                // One version for each statement that wrote the table, in the order they ran (StatementTableChange).
+                long rows = rowsBefore;
+                for (final StatementTableChange change : statementChanges.values()) {
+                    if (!change.getTable().equals(table)) {
+                        continue;
+                    }
+                    final StreamVersion version = change.version(rows, SnapshotSequence.mark());
+                    rows = change.rowsAfter(rows);
+                    if (version == null) {
+                        continue;
+                    }
+                    for (final Stream stream : capturing) {
+                        stream.addVersion(version);
+                    }
+                }
+            }
         }
     }
 
@@ -687,6 +745,14 @@ public class TransactionWriteSet {
         MovedTables.rekey(inserts, moved);
         MovedTables.rekey(updates, moved);
         MovedTables.rekey(deletes, moved);
+        final Map<String, StatementTableChange> rekeyed = new LinkedHashMap<>();
+        for (final StatementTableChange change : statementChanges.values()) {
+            final String target = moved.get(change.getTable());
+            final StatementTableChange kept = target == null ? change : change.movedTo(target);
+            rekeyed.put(kept.getOrdinal() + ":" + kept.getTable(), kept);
+        }
+        statementChanges = rekeyed;
+        lastChange = null;
         MovedTables.rekey(tableLocks, MovedTables.upperCased(moved));
         lockNotedRaw.clear();
         if (activeSavepoint != null) {
@@ -712,6 +778,29 @@ public class TransactionWriteSet {
         return (ins == null ? 0 : ins.size()) - (del == null ? 0 : del.size());
     }
 
+    /**
+     * The tables written since the last call, by fully-qualified name, and start the record again: what a statement
+     * wrote, whose rows its QUERY_HISTORY row counts — a write inside an explicit transaction produces the rows of the
+     * table it wrote alone, not those of every table the transaction has written (live-verified).
+     *
+     * @return the tables
+     */
+    public Set<String> takeWrittenTables() {
+        final Set<String> taken = new LinkedHashSet<>(writtenTables);
+        writtenTables.clear();
+        return taken;
+    }
+
+    /**
+     * Put tables back on the record {@link #takeWrittenTables} reads: a statement's, set aside while a statement it ran
+     * counted its own.
+     *
+     * @param tables the tables, by fully-qualified name
+     */
+    public void noteWrittenTables(final Set<String> tables) {
+        writtenTables.addAll(tables);
+    }
+
     /** The fully-qualified names of every table this write set holds a buffered insert, update, or delete for. */
     public Set<String> changedTables() {
         final Set<String> out = new LinkedHashSet<>();
@@ -725,10 +814,22 @@ public class TransactionWriteSet {
         return inserts.isEmpty() && updates.isEmpty() && deletes.isEmpty();
     }
 
+    /**
+     * Whether a statement noted a table it wrote, or changed one: a COMMIT then writes the versions of the
+     * statements, a statement that changed no row included (see StatementTableChange).
+     *
+     * @return whether one did
+     */
+    public boolean notesStatements() {
+        return !statementChanges.isEmpty();
+    }
+
     public void clear() {
         inserts.clear();
         updates.clear();
         deletes.clear();
+        statementChanges.clear();
+        lastChange = null;
         tableLocks.clear();
         lockNotedRaw.clear();
         forgetStatements();
@@ -757,6 +858,9 @@ public class TransactionWriteSet {
         for (final Map.Entry<String, Set<Long>> e : deletes.entrySet()) {
             c.deletes.put(e.getKey(), new HashSet<>(e.getValue()));
         }
+        for (final Map.Entry<String, StatementTableChange> e : statementChanges.entrySet()) {
+            c.statementChanges.put(e.getKey(), e.getValue().movedTo(e.getValue().getTable()));
+        }
         c.tableLocks.putAll(tableLocks);
         return c;
     }
@@ -772,6 +876,9 @@ public class TransactionWriteSet {
         }
         for (final Map.Entry<String, Set<Long>> e : savepoint.deletes.entrySet()) {
             deletes.put(e.getKey(), new HashSet<>(e.getValue()));
+        }
+        for (final Map.Entry<String, StatementTableChange> e : savepoint.statementChanges.entrySet()) {
+            statementChanges.put(e.getKey(), e.getValue().movedTo(e.getValue().getTable()));
         }
         tableLocks.putAll(savepoint.tableLocks);
     }

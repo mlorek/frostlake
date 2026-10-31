@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.IntervalQualifier;
 import dev.frostlake.values.DayTimeInterval;
 import dev.frostlake.values.YearMonthInterval;
@@ -193,9 +194,9 @@ public final class IntervalCells {
             return (BigDecimal) value;
         }
         if (value instanceof Number) {
-            return new BigDecimal(value.toString());
+            return DecimalText.parse(value.toString());
         }
-        return new BigDecimal(String.valueOf(value).trim());
+        return DecimalText.parse(String.valueOf(value).trim());
     }
 
     /** Months in one unit of a year-month interval, 0 for a day-time unit. */

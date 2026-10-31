@@ -16,10 +16,13 @@
 
 package dev.frostlake.rt.js;
 
+import dev.frostlake.executor.udf.GuestWatch;
 import dev.frostlake.executor.udf.HandlerJson;
+import dev.frostlake.executor.udf.HandlerLanguages;
 import dev.frostlake.executor.udf.JavaScriptIdentifiers;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.metastore.model.Parameter;
+import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
@@ -33,6 +36,7 @@ import dev.frostlake.values.BinaryValue;
 
 import java.time.temporal.TemporalAccessor;
 import java.util.List;
+import java.util.Locale;
 import javax.script.Invocable;
 import javax.script.ScriptEngine;
 import javax.script.ScriptException;
@@ -53,6 +57,15 @@ final class JavaScriptHandler {
 
     /** The line of the evaluated source that holds the body's first line. */
     static final int BODY_FIRST_LINE = 3;
+
+    /**
+     * What a table function's driver answers in place of the rows written when the handler object is no object,
+     * or followed by a member's name when that member is no function (see {@link JavaScriptTableFunction}).
+     */
+    static final String NO_MEMBER = "\u0001M:";
+
+    /** What {@link #tableSource} is given for an argument that is no constant of the statement. */
+    static final Object NOT_CONSTANT = new Object();
 
     /**
      * What the invoker reads a semi-structured argument's text with, in a scope the handler's body cannot see.
@@ -329,11 +342,14 @@ final class JavaScriptHandler {
         }
         final String arguments = passed.length() > 0 ? passed.substring(2) : "";
         final String global = "'" + name.replace("\\", "\\\\").replace("'", "\\'") + "'";
+        // The handler is a function written where only the global names are, handed to the invoker that holds the
+        // helpers: a body reads none of the invoker's names, parse or handler (live-verified).
         final StringBuilder source = new StringBuilder()
-            .append("(function () { var parse = JSON.parse, toJson = JSON.stringify, isArray = Array.isArray;\n")
-            .append("var handler = function ").append(named ? name : "").append('(').append(declared).append(") {\n")
+            .append("(function (handler, invoker) { return invoker(handler); })(\n")
+            .append("function ").append(named ? name : "").append('(').append(declared).append(") {\n")
             .append(body)
-            .append("\n};\n")
+            .append("\n},\n")
+            .append("function (handler) { var parse = JSON.parse, toJson = JSON.stringify, isArray = Array.isArray;\n")
             .append("return (function () {\n")
             .append(semiStructured || procedure ? ARRIVE : "")
             .append(binary ? BYTES : "")
@@ -366,7 +382,7 @@ final class JavaScriptHandler {
             source.append("} finally { if (had) { globalThis[").append(global).append("] = saved; } else { delete globalThis[")
                 .append(global).append("]; } }\n");
         }
-        return source.append("};\n})();\n})()").toString();
+        return source.append("};\n})();\n})").toString();
     }
 
     /**
@@ -380,18 +396,25 @@ final class JavaScriptHandler {
      *
      * <p>The driver takes an operation first - 0 to begin a partition, 1 to read a row, 2 to end the
      * partition - and answers the rows written during it as JSON, each cell a tagged text: {@code u} for a
-     * NULL, {@code b1} / {@code b0}, {@code n} and a number, {@code s} and a text.
+     * NULL, {@code b1} / {@code b0}, {@code n} and a number, {@code s} and a text. A handler object that is no
+     * object, or a member it calls that is no function, is answered as {@link #NO_MEMBER}; one with no
+     * {@code processRow} at all as null.
      *
+     * @param name       the function's name as the catalog holds it
      * @param parameters the function's parameters
      * @param columns    the function's declared columns
      * @param body       the handler body as written
+     * @param constants  for each parameter, the value of its argument when that is a constant of the statement,
+     *                   else {@link #NOT_CONSTANT}; null for none
      * @return the script
      */
-    static String tableSource(final List<Parameter> parameters, final List<Parameter> columns, final String body) {
+    static String tableSource(final String name, final List<Parameter> parameters, final List<Parameter> columns,
+                              final String body, final List<Object> constants) {
         final StringBuilder passed = new StringBuilder();
         final StringBuilder converted = new StringBuilder();
         final StringBuilder row = new StringBuilder();
         final StringBuilder info = new StringBuilder();
+        final StringBuilder told = new StringBuilder();
         boolean semiStructured = false;
         boolean binary = false;
         for (int i = 0; i < parameters.size(); i++) {
@@ -406,8 +429,17 @@ final class JavaScriptHandler {
                     .append(" = arrive(a").append(i).append("); }\n");
             }
             row.append(i > 0 ? ", " : "").append(key).append(": a").append(i);
-            info.append(i > 0 ? ", " : "").append(key).append(": {isNullable: true, isConst: false")
-                .append(type instanceof NumericType ? ", type: 'real'" : "").append('}');
+            // A constant is told by its value as the handler reads it, the partition's first row converted for the
+            // purpose, and every argument by its type's name (live-verified).
+            final Object constant = constants == null || i >= constants.size() ? NOT_CONSTANT : constants.get(i);
+            final boolean isConstant = constant != NOT_CONSTANT;
+            info.append(i > 0 ? ", " : "").append(key).append(": {")
+                .append(isConstant ? "constValue: undefined, " : "")
+                .append("isNullable: true, isConst: ").append(isConstant)
+                .append(", type: '").append(argumentTypeName(type)).append("'}");
+            if (isConstant) {
+                told.append("argumentInfo[").append(key).append("].constValue = a").append(i).append(";\n");
+            }
         }
         final StringBuilder cells = new StringBuilder();
         final StringBuilder names = new StringBuilder();
@@ -429,11 +461,19 @@ final class JavaScriptHandler {
                 .replace("@DOUBLE@", HandlerJson.DOUBLE_IN_SOURCE)
                 .replace("@INSTANT@", HandlerJson.INSTANT_IN_SOURCE)
                 .replace("@BYTES@", "'" + HandlerJson.BINARY_IN_SOURCE + "' + ") : "");
+        // The handler object is an expression read where only the global names are, handed to the driver that holds
+        // the helpers; while the driver runs, the function's name is a function of its own, as the account's
+        // function JNT() {} (live-verified).
+        final String own = JavaScriptIdentifiers.isDeclarable(name) ? name : null;
+        final String global = own == null ? null : "'" + own + "'";
         return new StringBuilder()
-            .append("(function () { var parse = JSON.parse, toJson = JSON.stringify, isArray = Array.isArray;\n")
-            .append("var udtfObject =\n")
+            .append("(function (udtfObject, driver) { return driver(udtfObject); })(\n")
+            .append('\n')
             .append('(').append(body).append(")\n")
-            .append(";\nreturn (function () {\n")
+            .append(",\nfunction (udtfObject) { ")
+            .append("var parse = JSON.parse, toJson = JSON.stringify, isArray = Array.isArray;\n")
+            .append(own == null ? "" : "var own = function " + own + "() {};\n")
+            .append("return (function () {\n")
             .append(semiStructured ? ARRIVE : "")
             .append(binary ? BYTES : "")
             .append(helpers)
@@ -451,18 +491,51 @@ final class JavaScriptHandler {
             .append("var argumentInfo = {").append(info).append("};\n")
             .append("var took = function () { var out = toJson(written); written = []; return out; };\n")
             .append("return function (operation").append(passed).append(") {\n")
+            .append(own == null ? "" : "var had = Object.prototype.hasOwnProperty.call(globalThis, " + global
+                + "), saved = globalThis[" + global + "];\nglobalThis[" + global + "] = own;\ntry {\n")
             .append("if (operation === 0) {\n")
-            .append("if (udtfObject === null || udtfObject === undefined || typeof udtfObject.processRow !== 'function') ")
-            .append("{ return null; }\n")
-            .append("if (udtfObject.initialize !== undefined) { udtfObject.initialize(argumentInfo, context); }\n")
+            .append("if (udtfObject === null || typeof udtfObject !== 'object' && typeof udtfObject !== 'function') ")
+            .append("{ return '").append(NO_MEMBER).append("'; }\n")
+            .append("if (udtfObject.processRow === undefined) { return null; }\n")
+            .append(told.length() == 0 ? "" : converted)
+            .append(told)
+            .append("if (udtfObject.initialize !== undefined) { if (typeof udtfObject.initialize !== 'function') ")
+            .append("{ return '").append(NO_MEMBER).append("initialize'; } ")
+            .append("udtfObject.initialize(argumentInfo, context); }\n")
             .append("return took();\n}\n")
             .append("if (operation === 2) {\n")
-            .append("if (udtfObject.finalize !== undefined) { udtfObject.finalize(rowWriter, context); }\n")
+            .append("if (udtfObject.finalize !== undefined) { if (typeof udtfObject.finalize !== 'function') ")
+            .append("{ return '").append(NO_MEMBER).append("finalize'; } ")
+            .append("udtfObject.finalize(rowWriter, context); }\n")
             .append("return took();\n}\n")
+            .append("if (typeof udtfObject.processRow !== 'function') { return '").append(NO_MEMBER)
+            .append("processRow'; }\n")
             .append(converted)
             .append("udtfObject.processRow({").append(row).append("}, rowWriter, context);\n")
             .append("return took();\n")
-            .append("};\n})();\n})()").toString();
+            .append(own == null ? "" : "} finally { if (had) { globalThis[" + global + "] = saved; } else { delete "
+                + "globalThis[" + global + "]; } }\n")
+            .append("};\n})();\n})").toString();
+    }
+
+    /**
+     * The name {@code argumentInfo} gives an argument's type: {@code text}, {@code real}, {@code boolean},
+     * {@code binary}, and a date, timestamp or semi-structured type's own name in lower case (live-verified).
+     */
+    private static String argumentTypeName(final DataType type) {
+        if (type instanceof StringType) {
+            return "text";
+        }
+        if (type instanceof NumericType) {
+            return "real";
+        }
+        if (type instanceof BooleanType) {
+            return "boolean";
+        }
+        if (type instanceof BinaryType) {
+            return "binary";
+        }
+        return type == null ? "variant" : type.getName().toLowerCase(Locale.ROOT);
     }
 
     /** A name as a JavaScript string literal. */
@@ -493,7 +566,13 @@ final class JavaScriptHandler {
             values[2 + i] = arguments == null || i >= arguments.size() ? null
                 : argumentValue(name, parameters.get(i), arguments.get(i));
         }
-        return ((Invocable) engine).invokeMethod(driver, "call", values);
+        // The statement's end - its cancel, its timeout - ends the handler wherever it runs (see GuestWatch).
+        final Object watch = GuestWatch.begin(GraalJsEngine.canceller(engine));
+        try {
+            return ((Invocable) engine).invokeMethod(driver, "call", values);
+        } finally {
+            GuestWatch.end(watch);
+        }
     }
 
     /**
@@ -616,7 +695,24 @@ final class JavaScriptHandler {
         for (int i = 0; i < arguments.size(); i++) {
             values[at++] = argumentValue(name, parameters.get(i), arguments.get(i));
         }
-        return ((Invocable) engine).invokeMethod(invoker, "call", values);
+        // A Python handler's frames lie below when a Python procedure runs the statement that calls this one. The
+        // script engine fills an Error's stack by walking the thread's frames and fails on the other language's, so
+        // under one an Error carries no frames: its message and its stack's text are kept.
+        final boolean underPython = HandlerLanguages.isRunning(UdfLanguage.PYTHON);
+        final Object limit = underPython ? engine.eval("Error.stackTraceLimit") : null;
+        if (underPython) {
+            engine.eval("Error.stackTraceLimit = 0");
+        }
+        // The statement's end - its cancel, its timeout - ends the handler wherever it runs (see GuestWatch).
+        final Object watch = GuestWatch.begin(GraalJsEngine.canceller(engine));
+        try {
+            return ((Invocable) engine).invokeMethod(invoker, "call", values);
+        } finally {
+            GuestWatch.end(watch);
+            if (underPython) {
+                engine.eval("Error.stackTraceLimit = " + limit);
+            }
+        }
     }
 
     /** One argument as the invoker takes it. */

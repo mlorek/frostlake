@@ -35,8 +35,9 @@ import java.util.Locale;
  *   "a[x]"  "a[+1]"  "a[-1]"  "a[1.0]"            invalid number at position N      past its first character
  * </pre>
  * and a quoted name nothing closes is a dangling quote at the position past the quote. A bare name here is
- * ASCII letters, digits, {@code _ $ @} and the characters of Latin-1 short of its last, with no digit first
- * (U+00B5, U+00D7, U+00DF and U+00E9 are taken, U+00FF and everything above it is not); it runs up to the
+ * ASCII letters, digits, {@code _ $ @} and the characters of Latin-1 past ASCII but U+00C0, U+00C1 and U+00F5 to
+ * U+00FF — the values no byte of UTF-8 takes — with no digit first (every one of the 128 measured, first in the
+ * name and later; everything above Latin-1 is refused too); it runs up to the
  * next separator, bracket, space or tab and is judged whole. Spaces and tabs may follow a name, a separator
  * and a bracket's contents, but not a closing bracket. A position past 2,147,483,647 is refused by its own
  * sentence.
@@ -173,11 +174,19 @@ public final class ExtractionPathSyntax {
     /** The refusal of a position no array can count, which names the position where the path is expected. */
     private static String offLimits(final String digits) {
         final BigInteger position = new BigInteger(digits);
-        if (position.bitLength() < Integer.SIZE) {
-            return null;
-        }
-        final String grouped = new DecimalFormat("#,###", DecimalFormatSymbols.getInstance(Locale.ROOT))
-            .format(position);
+        return position.bitLength() < Integer.SIZE ? null : offLimitsIndex(position);
+    }
+
+    /**
+     * The refusal of an array index no array counts, the index grouped by thousands as the path names it:
+     * "Invalid extraction path '-3,000,000,000': array index -3,000,000,000 is off limits; must be between 0 and
+     * 2,147,483,647." (live-verified).
+     *
+     * @param index the index, below 0 or past 2,147,483,647
+     * @return the refusal
+     */
+    public static String offLimitsIndex(final BigInteger index) {
+        final String grouped = new DecimalFormat("#,###", DecimalFormatSymbols.getInstance(Locale.ROOT)).format(index);
         return "Invalid extraction path '" + grouped + "': array index " + grouped
             + " is off limits; must be between 0 and 2,147,483,647.";
     }
@@ -198,6 +207,6 @@ public final class ExtractionPathSyntax {
 
     private static boolean isNamePart(final char c) {
         return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
-            || c == '_' || c == '$' || c == '@' || (c >= 0x80 && c <= 0xFE);
+            || c == '_' || c == '$' || c == '@' || (c >= 0x80 && c <= 0xBF) || (c >= 0xC2 && c <= 0xF4);
     }
 }

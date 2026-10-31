@@ -148,6 +148,29 @@ public final class GraalJsEngine {
     }
 
     /**
+     * What ends an execution running in an engine made here: its context is cancelled, the execution failing where it
+     * stands (see GuestWatch). An engine made elsewhere has nothing to cancel.
+     *
+     * @param engine the engine
+     * @return what cancels its execution
+     */
+    static Runnable canceller(final ScriptEngine engine) {
+        return new Runnable() {
+            @Override
+            public void run() {
+                if (engine instanceof GraalJSScriptEngine) {
+                    final Context context = ((GraalJSScriptEngine) engine).getPolyglotContext();
+                    try {
+                        context.close(true);
+                    } catch (final RuntimeException alreadyClosed) {
+                        // Best effort: a context closing already ends its execution.
+                    }
+                }
+            }
+        };
+    }
+
+    /**
      * The host object of an engine made here.
      *
      * @param engine the engine

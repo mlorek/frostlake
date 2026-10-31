@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.config.AccountIdentity;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.model.Database;
@@ -27,6 +28,7 @@ import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import java.time.Instant;
@@ -49,10 +51,12 @@ final class ShowSecurityExecutor {
 
     private final Catalog catalog;
     private final ShowCommandExecutor facade;
+    private final AccountIdentity identity;
 
-    ShowSecurityExecutor(final Catalog catalog, final ShowCommandExecutor facade) {
+    ShowSecurityExecutor(final Catalog catalog, final ShowCommandExecutor facade, final AccountIdentity identity) {
         this.catalog = catalog;
         this.facade = facade;
+        this.identity = identity;
     }
 
     public ResultSet showUsers() {
@@ -263,6 +267,7 @@ final class ShowSecurityExecutor {
             {"SCIM_USER_NAME", "null", "null", "User name of an user (required for SCIM provisioning)"},
             {"PASSWORD_LAST_SET_TIME", "null", "null", "The timestamp on which the last non-null password was set for the user. Default to null if no password has been set yet."},
             {"MINS_TO_BYPASS_SESSION_POLICY", "null", "null", "Temporarily bypass session policy for the given number of minutes."},
+            {"MINS_TO_BYPASS_INGRESS_POLICY", "null", "null", "Temporarily bypass ingress policy for the given number of minutes."},
             {"CUSTOM_LANDING_PAGE_URL", "null", "null", "Custom Landing Page of the user"},
             {"CUSTOM_LANDING_PAGE_URL_FLUSH_NEXT_UI_LOAD", "false", "false", "Whether or not to flush the custom landing page of the user on next UI load"},
             {"IS_FROM_ORGANIZATION_USER", "false", "false", "Whether the user is imported from an organization user."},
@@ -353,12 +358,16 @@ final class ShowSecurityExecutor {
             }
         }
         if (!ownershipGranted && granted != null && granted.getOwner() != null && !granted.getOwner().isEmpty()) {
+            // A database role owns under its qualified name and is named bare as the grantee, as its other rows
+            // name it.
+            final DatabaseRole ownerRole = new AccessControlListings(catalog).databaseRoleNamed(granted.getOwner());
+            final String owner = ownerRole != null ? ownerRole.getName() : granted.getOwner();
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(granted.getCreatedTime()),
                 Privilege.OWNERSHIP.toString(),
                 grantedOn, reportedName,
-                "ROLE", granted.getOwner(),
-                "true", granted.getOwner(),
+                ownerRole != null ? AccessControlListings.DATABASE_ROLE : "ROLE", owner,
+                "true", owner,
                 ShowResultHelpers.OWNER_ROLE_TYPE
             )));
         }
@@ -439,7 +448,9 @@ final class ShowSecurityExecutor {
 
     /**
      * SHOW GRANTS OF ROLE: who holds the role. Live's five columns are its own shape — narrower
-     * than every other grants listing.
+     * than every other grants listing. PUBLIC, which every user and role holds, lists no one, and a grant of the
+     * account's own role hierarchy — SYSADMIN and SECURITYADMIN to ACCOUNTADMIN, USERADMIN to SECURITYADMIN —
+     * names no grantor (live-verified).
      */
     public ResultSet showGrantsOfRole(final String roleName) {
         final Role role = catalog.getRoleExact(roleName);
@@ -451,6 +462,9 @@ final class ShowSecurityExecutor {
             new ResultSetColumn("granted_by", StringType.VARCHAR)
         );
         final List<Row> rows = new ArrayList<>();
+        if ("PUBLIC".equals(role.getName())) {
+            return withExpiry(columns, rows);
+        }
         for (final User user : catalog.getAllUsers()) {
             if (user.getGrantedRoles().contains(role.getName())) {
                 rows.add(new Row(Arrays.asList(
@@ -463,10 +477,10 @@ final class ShowSecurityExecutor {
                 rows.add(new Row(Arrays.asList(
                     roleGrantedOn(holder.getRoleGrantTime(role.getName()), holder.getCreatedTime()),
                     role.getName(), "ROLE", holder.getName(),
-                    holder.getRoleGrantor(role.getName()))));
+                    holder.hasExplicitRoleGrant(role.getName()) ? holder.getRoleGrantor(role.getName()) : "")));
             }
         }
-        return new ResultSet(columns, rows);
+        return withExpiry(columns, rows);
     }
 
     /**
@@ -501,7 +515,7 @@ final class ShowSecurityExecutor {
                     "false", user.getRoleGrantor(roleName))));
             }
         }
-        return new ResultSet(columns, rows);
+        return withExpiry(columns, rows);
     }
 
     /**
@@ -527,7 +541,8 @@ final class ShowSecurityExecutor {
         }
         final List<Row> rows = new ArrayList<>();
         if (toUser) {
-            final User user = catalog.getUserExact(targetName);
+            final User user = UserLookup.asking(catalog, facade.getSecurityManager(), targetName,
+                Privilege.MANAGE_GRANTS);
             for (final String roleName : user.getGrantedRoles()) {
                 // Live Snowflake never surfaces PUBLIC membership here — re-probed on a real account
                 //: a fresh user shows zero grants, and after an EXPLICIT
@@ -580,7 +595,42 @@ final class ShowSecurityExecutor {
             }
             rows.addAll(new AccessControlListings(catalog).grantsTo(role, "ROLE", role.getName()).getRows());
         }
-        return new ResultSet(columns, AccessControlListings.sortedGrants(rows));
+        final List<Row> sorted = AccessControlListings.sortedGrants(namedAccount(rows));
+        return toUser ? withExpiry(columns, sorted) : new ResultSet(columns, sorted);
+    }
+
+    /**
+     * A listing of what a role or a user holds, ended by the {@code expires_on} column the account gives it; no grant
+     * here expires, so its cells are NULL.
+     */
+    private static ResultSet withExpiry(final List<ResultSetColumn> columns, final List<Row> rows) {
+        final List<ResultSetColumn> expiring = new ArrayList<>(columns);
+        expiring.add(new ResultSetColumn("expires_on", DateTimeType.TIMESTAMP_LTZ));
+        final List<Row> out = new ArrayList<>();
+        for (final Row row : rows) {
+            final List<Object> values = new ArrayList<>(row.getValues());
+            values.add(null);
+            out.add(new Row(values));
+        }
+        return new ResultSet(expiring, out);
+    }
+
+    /**
+     * The rows of a grant listing with each grant on the account named by the account's locator, as SHOW GRANTS ON
+     * ACCOUNT names it, where the grant is recorded under the word ACCOUNT (live-verified).
+     */
+    private List<Row> namedAccount(final List<Row> rows) {
+        final List<Row> named = new ArrayList<>(rows.size());
+        for (final Row row : rows) {
+            if ("ACCOUNT".equals(row.getValue(2))) {
+                final List<Object> values = new ArrayList<>(row.getValues());
+                values.set(3, identity.getAccountLocator());
+                named.add(new Row(values));
+            } else {
+                named.add(row);
+            }
+        }
+        return named;
     }
 
     /** Build a two-column (property, value) describe result. */

@@ -31,14 +31,17 @@ import dev.frostlake.executor.expressions.RowExpression;
 import dev.frostlake.executor.expressions.SortKeyRole;
 import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.expressions.SubqueryMemo;
+import dev.frostlake.executor.expressions.UnsupportedFeatureException;
 import dev.frostlake.executor.expressions.UntypedNullFold;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Function;
+import dev.frostlake.metastore.model.StoredRead;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.DataType;
 import dev.frostlake.values.ValueRange;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -70,11 +73,16 @@ public class ExpressionEvaluator {
     private Set<String> outputScopeNames;
     private Set<String> enclosingQualifiers;
     private Map<String, Table> groupedRelations;
+    /** Whether this evaluator reads a grouped query's rows (see {@link #setOverGroupedRows}). */
+    private boolean overGroupedRows;
     private Map<String, DataType> outputAliasTypes;
+    private Map<String, ValueRange> outputAliasRanges;
     private Map<String, Object> resultContext;
     private Map<String, Object> subqueryOuterRow;
     private Map<String, DataType> scriptNameTypes;
     private boolean bindsAsParameters;
+    /** The NOT nodes read as IS NOT TRUE, by identity (see PerGroupNegations). */
+    private Set<Expression> notTrueNegations = Collections.emptySet();
     // One memo per evaluator instance (= one outer query's row loop). Evaluators are created per
     // operator-execution and never pooled, so cached uncorrelated-subquery results never leak across
     // queries. See SubqueryMemo.
@@ -220,7 +228,12 @@ public class ExpressionEvaluator {
         visitor.setSubqueryMemo(subqueryMemo);
         visitor.setScriptNameTypes(scriptNameTypes);
         visitor.setBindsAsParameters(bindsAsParameters);
+        visitor.setNotTrueNegations(notTrueNegations);
         visitor.setGroupedRelations(groupedRelations);
+        visitor.setOverGroupedRows(overGroupedRows);
+        // An earlier select item's alias is typed from that item while a row is read too (SYSTEM$TYPEOF of it).
+        visitor.setOutputAliasTypes(outputAliasTypes);
+        visitor.setOutputAliasRanges(outputAliasRanges);
         return expression.accept(visitor);
     }
 
@@ -244,6 +257,16 @@ public class ExpressionEvaluator {
      */
     public void setBindsAsParameters(final boolean parameters) {
         this.bindsAsParameters = parameters;
+    }
+
+    /**
+     * The NOT nodes this evaluator reads as IS NOT TRUE, a NULL operand passing: a HAVING's NOTs over an aggregate of
+     * a per-group subquery (see PerGroupNegations).
+     *
+     * @param negations the nodes, by identity
+     */
+    public void setNotTrueNegations(final Set<Expression> negations) {
+        this.notTrueNegations = negations;
     }
 
     /**
@@ -333,6 +356,15 @@ public class ExpressionEvaluator {
      */
     public boolean callsUserFunction(final List<String> parts) {
         return preparedVisitor().callsUserFunction(parts);
+    }
+
+    /**
+     * SYSTEM$GET_TAG's own judgement ahead of its query's names: see {@link ExpressionEvaluatorVisitor#judgeTagLookup}.
+     *
+     * @param call the call
+     */
+    public void judgeTagLookup(final FunctionCallExpression call) {
+        preparedVisitor().judgeTagLookup(call);
     }
 
     /** The plan-time user-defined function argument check alone, over a parsed expression. */
@@ -439,7 +471,9 @@ public class ExpressionEvaluator {
         reusableVisitor.setOutputScopeNames(outputScopeNames);
         reusableVisitor.setEnclosingQualifiers(enclosingQualifiers);
         reusableVisitor.setGroupedRelations(groupedRelations);
+        reusableVisitor.setOverGroupedRows(overGroupedRows);
         reusableVisitor.setOutputAliasTypes(outputAliasTypes);
+        reusableVisitor.setOutputAliasRanges(outputAliasRanges);
         reusableVisitor.setScriptNameTypes(scriptNameTypes);
         reusableVisitor.setBindsAsParameters(bindsAsParameters);
         if (multiTableAllTables != null) {
@@ -506,6 +540,16 @@ public class ExpressionEvaluator {
         this.outputAliasTypes = types;
     }
 
+    /**
+     * The intervals the aliased select items' values lie in, so SYSTEM$TYPEOF of an alias tells the storage the
+     * aliased expression takes.
+     *
+     * @param ranges alias name (upper-cased) to interval
+     */
+    public void setOutputAliasRanges(final Map<String, ValueRange> ranges) {
+        this.outputAliasRanges = ranges;
+    }
+
     /** {@link #validateStrict} for a WINDOW call re-formed without its OVER clause — the walk runs
      *  with the windowed marker set, so the bare-form desugared-name rewrites stay off (live reports
      * the WRITTEN name for windowed forms, measured). */
@@ -538,6 +582,8 @@ public class ExpressionEvaluator {
         }
         reusableVisitor.setQueryExecutor(queryExecutor);
         reusableVisitor.setDeclaredTypeBase(declaredTypeBase, declaredTypeAliasToTable, declaredTypeAllTables);
+        // A key naming a select item's alias is typed from that item, as inferStaticType types it.
+        reusableVisitor.setOutputAliasTypes(outputAliasTypes);
         if (multiTableAllTables != null) {
             reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
         }
@@ -719,8 +765,10 @@ public class ExpressionEvaluator {
             return reusableVisitor.inferStaticType(expression);
         } catch (final RuntimeException undetermined) {
             // A COMPILATION error is a refusal the channel reached on purpose — an operand pair
-            // Snowflake rejects — not the ordinary "could not determine a type" this swallows.
-            if (SqlCompilationError.isCompilationError(undetermined.getMessage())) {
+            // Snowflake rejects — not the ordinary "could not determine a type" this swallows. So is a function the
+            // role may not use, refused where its call is typed.
+            if (SqlCompilationError.isCompilationError(undetermined.getMessage())
+                    || undetermined instanceof PrivilegeRefusal) {
                 throw undetermined;
             }
             return null;
@@ -779,6 +827,33 @@ public class ExpressionEvaluator {
     }
 
     /**
+     * How a select item reads a stored table's column (see StoredRead). Never throws.
+     *
+     * @param text the item as its projection reads it, or null
+     * @return how it reads one; NONE where it reads none or cannot be told
+     */
+    public StoredRead storedReadOf(final String text) {
+        if (text == null || text.trim().isEmpty()) {
+            return StoredRead.NONE;
+        }
+        try {
+            return preparedVisitor().storedReadOf(parse(text));
+        } catch (final RuntimeException undetermined) {
+            return StoredRead.NONE;
+        }
+    }
+
+    /**
+     * Whether this evaluator reads a grouped query's rows: an item past its grouping reads the value the group
+     * holds, which no stored table's column holds (see StoredRead).
+     *
+     * @param overGroupedRows whether it does
+     */
+    public void setOverGroupedRows(final boolean overGroupedRows) {
+        this.overGroupedRows = overGroupedRows;
+    }
+
+    /**
      * Whether a select item projects a number or boolean constant wrapped into a VARIANT, or a column carrying
      * one out of a derived relation — see TableColumn#isUncheckedConstant. Never throws.
      *
@@ -788,6 +863,21 @@ public class ExpressionEvaluator {
     public boolean projectsUncheckedConstant(final Expression expression) {
         try {
             return preparedVisitor().projectsUncheckedConstant(expression);
+        } catch (final RuntimeException undetermined) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether a select item of a FROM-less select projects a number or boolean literal — see
+     * TableColumn#isLiteralConstant. Never throws.
+     *
+     * @param expression a select item
+     * @return true for such an item
+     */
+    public boolean projectsLiteralConstant(final Expression expression) {
+        try {
+            return preparedVisitor().projectsLiteralConstant(expression);
         } catch (final RuntimeException undetermined) {
             return false;
         }
@@ -844,6 +934,8 @@ public class ExpressionEvaluator {
         }
         reusableVisitor.setQueryExecutor(queryExecutor);
         reusableVisitor.setDeclaredTypeBase(declaredTypeBase, declaredTypeAliasToTable, declaredTypeAllTables);
+        reusableVisitor.setOutputAliasTypes(outputAliasTypes);
+        reusableVisitor.setOutputAliasRanges(outputAliasRanges);
         if (multiTableAllTables != null) {
             reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
         }
@@ -904,8 +996,10 @@ public class ExpressionEvaluator {
             reusableVisitor.rejectArgumentFamilies(expression);
         } catch (final RuntimeException undetermined) {
             // A COMPILATION error is a refusal the channel reached on purpose — an argument family
-            // Snowflake rejects — not the ordinary "could not determine a type" this swallows.
-            if (SqlCompilationError.isCompilationError(undetermined.getMessage())) {
+            // Snowflake rejects — not the ordinary "could not determine a type" this swallows; so is a feature
+            // refused as unsupported.
+            if (SqlCompilationError.isCompilationError(undetermined.getMessage())
+                    || undetermined instanceof UnsupportedFeatureException) {
                 throw undetermined;
             }
         }
@@ -959,6 +1053,17 @@ public class ExpressionEvaluator {
      */
     public String foldedPlannedText(final Expression expression) {
         return preparedVisitor().strictFoldedPlanText(expression);
+    }
+
+    /**
+     * {@link #foldedPlannedText} for a GENERATOR bound, its literals' conversions folded too - see
+     * {@link ExpressionEvaluatorVisitor#strictBoundPlanText}.
+     *
+     * @param expression the bound
+     * @return the bound as the refusal echoes it
+     */
+    public String boundPlannedText(final Expression expression) {
+        return preparedVisitor().strictBoundPlanText(expression);
     }
 
     /**

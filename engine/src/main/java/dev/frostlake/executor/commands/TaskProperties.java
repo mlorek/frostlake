@@ -30,6 +30,7 @@ import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.ScheduleType;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Task;
+import dev.frostlake.metastore.model.TaskState;
 import dev.frostlake.metastore.model.User;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.task.TaskGraphConfig;
@@ -77,6 +78,9 @@ final class TaskProperties {
 
     /** The level parameters, whose bare value keeps the case it is written in. */
     private static final Set<String> LEVELS = new HashSet<>(Arrays.asList("LOG_LEVEL", "TRACE_LEVEL"));
+    /** The parameters a task takes from its graph's root, which a task that is no root cannot set. */
+    private static final Set<String> ROOT_PARAMETERS = new HashSet<>(Arrays.asList("TASK_AUTO_RETRY_ATTEMPTS",
+        "SUSPEND_TASK_AFTER_NUM_FAILURES"));
 
     private static final BigInteger INT_MIN = BigInteger.valueOf(Integer.MIN_VALUE);
     private static final BigInteger INT_MAX = BigInteger.valueOf(Integer.MAX_VALUE);
@@ -139,8 +143,10 @@ final class TaskProperties {
                 : name.getText(), TaskPropertyValue.of(option.taskPropertyValue()));
         }
         if (option.scheduleClause() != null) {
+            // A session variable holding a NULL or a Boolean is read as no schedule (see PropertyVariables).
             return new TaskPropertySetting(option.scheduleClause().SCHEDULE().getText(),
-                TaskPropertyValue.quoted(option.scheduleClause().STRING_LITERAL().getText()));
+                option.scheduleClause().STRING_LITERAL() == null ? TaskPropertyValue.none()
+                    : TaskPropertyValue.quoted(option.scheduleClause().STRING_LITERAL().getText()));
         }
         final String spelling = option.getStart().getText();
         if (option.booleanValue() != null) {
@@ -151,6 +157,9 @@ final class TaskProperties {
         }
         if (option.STRING_LITERAL() != null) {
             return new TaskPropertySetting(spelling, TaskPropertyValue.quoted(option.STRING_LITERAL().getText()));
+        }
+        if (option.getToken(FrostlakeParser.NULL, 0) != null) {
+            return new TaskPropertySetting(spelling, TaskPropertyValue.none());
         }
         return new TaskPropertySetting(spelling, TaskPropertyValue.name(option.identifier()));
     }
@@ -206,6 +215,9 @@ final class TaskProperties {
     }
 
     private void requireKind(final String key, final TaskPropertyValue value) {
+        if (ParameterRegistry.takesNoValue("TASK", key)) {
+            throw new RuntimeException(SqlCompilationError.invalidValueForParameter(value.written(), key));
+        }
         switch (key) {
             case "CONFIG":
             case "SCHEDULE":
@@ -355,6 +367,12 @@ final class TaskProperties {
                 task.setWarehouse(value.text());
                 return;
             case "SCHEDULE":
+                if (value.text() == null) {
+                    // No schedule, as a session variable holding a NULL or a Boolean leaves one (live-verified).
+                    task.setSchedule(null);
+                    task.setScheduleType(null);
+                    return;
+                }
                 TaskOptions.requireValidSchedule(value.text());
                 task.setSchedule(value.text());
                 task.setScheduleType(value.text().toUpperCase(Locale.ROOT).contains("CRON")
@@ -580,9 +598,26 @@ final class TaskProperties {
             throw nonRootOverlapping(task);
         }
         if (retryAttemptsGiven) {
-            throw new RuntimeException("Cannot set parameter TASK_AUTO_RETRY_ATTEMPTS on non-root task "
-                + task.getName() + ". Non-root tasks use the parameter setting from their root task. Please set "
-                + "this on the root task for this task instead.");
+            throw nonRootParameter("TASK_AUTO_RETRY_ATTEMPTS", task);
+        }
+    }
+
+    /**
+     * The parameters a task takes from its graph's root, refused on a task that runs after others or finalizes a
+     * graph, the first one written named. ALTER TASK … SET refuses them before it asks whether the graph runs,
+     * wherever they stand among the statement's properties (live-verified).
+     *
+     * @param task     the task
+     * @param settings the statement's properties
+     */
+    void requireRootParameters(final Task task, final List<TaskPropertySetting> settings) {
+        if (task.getPredecessors().isEmpty() && !task.isFinalizer()) {
+            return;
+        }
+        for (final TaskPropertySetting setting : settings) {
+            if (ROOT_PARAMETERS.contains(setting.key())) {
+                throw nonRootParameter(setting.key(), task);
+            }
         }
     }
 
@@ -632,7 +667,10 @@ final class TaskProperties {
     /**
      * The tasks an AFTER list names, refused when one does not exist (every name is looked up first), when the
      * task has a finalizer, and then per name when it is the task itself, lives in another schema or is a
-     * finalizer task, which no task may follow. A name given twice is kept once.
+     * finalizer task, which no task may follow. A predecessor that already runs after the task is taken: the
+     * account lets a graph close a loop through other tasks ({@code ALTER TASK b ADD AFTER c} over r, b after r
+     * and c after b), and every task of the loop then has a predecessor, so EXECUTE TASK refuses each as a
+     * non-root task (live-verified). A name given twice is kept once.
      *
      * @param task  the task that would run after them
      * @param names the predecessors as written
@@ -676,6 +714,66 @@ final class TaskProperties {
             }
         }
         return resolved;
+    }
+
+    /**
+     * Refuses a change to the graph of a root task that runs: the root "must be suspended before any task is
+     * recreated" and before "a child task is added (using CREATE TASK … AFTER or ALTER TASK … ADD AFTER) or removed
+     * (using ALTER TASK … REMOVE AFTER)" (documented). Each task given is asked for the roots its graph hangs from.
+     *
+     * @param members the tasks whose graphs the statement changes
+     */
+    void requireSuspendedRoots(final List<Task> members) {
+        for (final Task member : members) {
+            for (final Task root : TaskGraphs.rootsOf(schema, member)) {
+                if (root.getState() == TaskState.STARTED) {
+                    throw notSuspended(root);
+                }
+            }
+        }
+    }
+
+    /**
+     * Refuses a change to a task of a graph whose root runs. While a root with a child or a finalizer runs, none of
+     * the graph's tasks is altered, redefined or dropped, and no child or finalizer is resumed or suspended; its
+     * tags and contacts still change, and the root still resumes and suspends. A task that runs alone takes every
+     * change (live-verified).
+     *
+     * @param member the task the statement changes
+     */
+    void requireSuspendedGraph(final Task member) {
+        for (final Task root : TaskGraphs.rootsOf(schema, member)) {
+            if (root.getState() == TaskState.STARTED
+                    && (hasChildren(root) || TaskGraphs.finalizerOf(schema, root) != null)) {
+                throw notSuspended(root);
+            }
+        }
+    }
+
+    private RuntimeException notSuspended(final Task root) {
+        return new RuntimeException("Unable to update graph with root task " + qualified(root)
+            + " since that root task is not suspended.");
+    }
+
+    /**
+     * The tasks an AFTER list names that exist in the task's schema, for asking their roots; one that does not is
+     * refused by {@link #requirePredecessors} first.
+     *
+     * @param names the predecessors as written
+     * @return the tasks found
+     */
+    List<Task> namedPredecessors(final List<FrostlakeParser.QualifiedNameContext> names) {
+        final List<Task> found = new ArrayList<>();
+        for (final FrostlakeParser.QualifiedNameContext name : names) {
+            final List<String> parts = Arrays.asList(ParseTreeText.qualifiedNameParts(name));
+            final Schema home = schemaOf(parts);
+            final Task predecessor = home == null || !sameSchema(home) ? null
+                : exactTask(home, parts.get(parts.size() - 1));
+            if (predecessor != null) {
+                found.add(predecessor);
+            }
+        }
+        return found;
     }
 
     /**
@@ -738,6 +836,10 @@ final class TaskProperties {
         final String sessionUser = catalog.currentUserForDdl();
         if (sessionUser != null && sessionUser.equalsIgnoreCase(userName)) {
             return;
+        }
+        if (!catalog.hasUserExact(userName)) {
+            // Refused with no hint of a privilege (live-verified).
+            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("User", userName));
         }
         final User user = catalog.getUserExact(userName);
         final String owner = task.getOwner();
@@ -868,6 +970,12 @@ final class TaskProperties {
             shown.add(part.startsWith("\"") ? part : part.toUpperCase(Locale.ROOT));
         }
         return String.join(".", shown);
+    }
+
+    private static RuntimeException nonRootParameter(final String parameter, final Task task) {
+        return new RuntimeException("Cannot set parameter " + parameter + " on non-root task " + task.getName()
+            + ". Non-root tasks use the parameter setting from their root task. Please set this on the root task for "
+            + "this task instead.");
     }
 
     private RuntimeException nonRootConfig(final Task task) {

@@ -16,10 +16,10 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.ArrayType;
-import dev.frostlake.values.CodePointText;
 import dev.frostlake.values.VariantValue;
 
 import tools.jackson.databind.ObjectMapper;
@@ -48,16 +48,12 @@ public class RegexpSubstrAll extends TextArgumentFunction {
         if (anyNull(args)) {
             return null;
         }
-        if (args.get(0) == null || args.get(1) == null) {
-            return null;
-        }
         final String subject = SharedFunctionHelpers.textOf(args.get(0));
         final String pattern = SharedFunctionHelpers.textOf(args.get(1));
-        final int position = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) : 1;
-        final int occurrence = args.size() > 3 && args.get(3) != null ? wholeNumber(args.get(3)) : 1;
-        final String parameters = args.size() > 4 && args.get(4) != null
-            ? SharedFunctionHelpers.textOf(args.get(4)) : null;
-        final Integer groupNum = args.size() > 5 && args.get(5) != null ? Integer.valueOf(wholeNumber(args.get(5))) : null;
+        final int position = RegexpHelper.wholeArgument(args, 2, 1);
+        final int occurrence = RegexpHelper.wholeArgument(args, 3, 1);
+        final String parameters = RegexpHelper.textArgument(args, 4);
+        final Integer groupNum = RegexpHelper.groupArgument(args, 5);
         RegexpHelper.requirePosition(position);
         RegexpHelper.requireOccurrence(occurrence);
         RegexpHelper.requireGroup(groupNum);
@@ -66,24 +62,17 @@ public class RegexpSubstrAll extends TextArgumentFunction {
         }
 
         final ArrayNode array = MAPPER.createArrayNode();
-        // The position counts characters, a supplementary one included (live-verified).
-        final int start = Math.max(0, position - 1);
-        if (start > CodePointText.length(subject)) {
+        final int start = RegexpHelper.searchStart(subject, position);
+        if (start < 0) {
             return VariantValue.ofNode(array);
         }
         final boolean extract = groupNum != null || RegexpHelper.hasExtract(parameters);
         final Matcher matcher = RegexpHelper.compile(pattern, parameters).matcher(subject);
-        if (matcher.find(CodePointText.offset(subject, start))) {
+        if (matcher.find(start)) {
             int index = 1;
             do {
                 if (index >= occurrence) {
-                    final String value;
-                    if (extract && matcher.groupCount() >= 1) {
-                        final int group = groupNum != null ? groupNum : 1;
-                        value = group <= matcher.groupCount() ? matcher.group(group) : null;
-                    } else {
-                        value = matcher.group();
-                    }
+                    final String value = RegexpHelper.matchedText(matcher, extract, groupNum);
                     if (value == null) {
                         array.addNull();
                     } else {
@@ -100,4 +89,10 @@ public class RegexpSubstrAll extends TextArgumentFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 6; }
+
+    /** A BINARY is no text here: the account refuses it by the argument types, under either name (live-verified). */
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 }

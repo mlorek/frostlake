@@ -16,9 +16,11 @@
 
 package dev.frostlake.formats;
 
+import dev.frostlake.executor.copy.StagedFileIo;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericFixed;
 import org.apache.avro.generic.GenericRecord;
+import org.apache.avro.util.Utf8;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.JsonNodeFactory;
@@ -41,20 +43,51 @@ public final class AvroRecordConverter {
     private AvroRecordConverter() {
     }
 
+    /** A record as a JSON object, a string holding a byte that is no part of UTF-8 read with U+FFFD in its place. */
     public static ObjectNode toJson(final GenericRecord record) {
+        return toJson(record, true);
+    }
+
+    /**
+     * A record as a JSON object, its strings read as UTF-8: a string holding a byte that is no part of UTF-8 is refused
+     * (see {@link AvroUnreadableText}) unless REPLACE_INVALID_CHARACTERS reads each such byte as U+FFFD
+     * (live-verified).
+     *
+     * @param record         the record
+     * @param replaceInvalid whether REPLACE_INVALID_CHARACTERS = TRUE
+     * @return the object
+     */
+    public static ObjectNode toJson(final GenericRecord record, final boolean replaceInvalid) {
         final ObjectNode object = NODES.objectNode();
         for (final Schema.Field field : record.getSchema().getFields()) {
-            object.set(field.name(), valueToJson(record.get(field.name())));
+            object.set(field.name(), valueToJson(record.get(field.name()), replaceInvalid));
         }
         return object;
     }
 
-    private static JsonNode valueToJson(final Object value) {
+    /** An Avro string's text: its bytes read as UTF-8, a byte that is no part of it refused or replaced. */
+    private static String text(final Utf8 value, final boolean replaceInvalid) {
+        final byte[] bytes = new byte[value.getByteLength()];
+        System.arraycopy(value.getBytes(), 0, bytes, 0, bytes.length);
+        final String marked = StagedFileIo.markedUtf8(bytes);
+        if (StagedFileIo.firstUnreadable(marked) < 0) {
+            return marked;
+        }
+        if (!replaceInvalid) {
+            throw new AvroUnreadableText(StagedFileIo.unreadableShown(marked));
+        }
+        return StagedFileIo.unreadableReplaced(marked);
+    }
+
+    private static JsonNode valueToJson(final Object value, final boolean replaceInvalid) {
         if (value == null) {
             return NODES.nullNode();
         }
         if (value instanceof GenericRecord) {
-            return toJson((GenericRecord) value);
+            return toJson((GenericRecord) value, replaceInvalid);
+        }
+        if (value instanceof Utf8) {
+            return NODES.textNode(text((Utf8) value, replaceInvalid));
         }
         if (value instanceof CharSequence) {
             return NODES.textNode(value.toString());   // Utf8 or String, also enum symbols
@@ -86,14 +119,14 @@ public final class AvroRecordConverter {
         if (value instanceof Collection) {
             final ArrayNode array = NODES.arrayNode();
             for (final Object element : (Collection<?>) value) {
-                array.add(valueToJson(element));
+                array.add(valueToJson(element, replaceInvalid));
             }
             return array;
         }
         if (value instanceof Map) {
             final ObjectNode object = NODES.objectNode();
             for (final Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
-                object.set(String.valueOf(entry.getKey()), valueToJson(entry.getValue()));
+                object.set(String.valueOf(entry.getKey()), valueToJson(entry.getValue(), replaceInvalid));
             }
             return object;
         }

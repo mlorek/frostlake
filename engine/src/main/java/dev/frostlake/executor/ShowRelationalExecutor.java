@@ -24,6 +24,7 @@ import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.RetentionChain;
 import dev.frostlake.metastore.StreamSources;
+import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.SystemSchema;
 import dev.frostlake.metastore.model.CheckConstraint;
 import dev.frostlake.metastore.model.Database;
@@ -68,7 +69,8 @@ final class ShowRelationalExecutor {
     /**
      * DESCRIBE's default cell: an identity column spells its whole generator here —
      * {@code IDENTITY START 5 INCREMENT 2 NOORDER} — any other column its declared expression
-     * verbatim, and a column with no default NULL.
+     * as it is told back, and a column with no default NULL, as one declared {@code DEFAULT NULL} is
+     * (live-verified).
      *
      * <p>SHOW COLUMNS DOES NOT AGREE WITH THIS, and the two must not share one helper: there the same
      * unset cell is the EMPTY STRING, and an identity column's default cell is empty because the
@@ -80,7 +82,7 @@ final class ShowRelationalExecutor {
         if (col.isAutoIncrement()) {
             return identityGenerator(col);
         }
-        return col.getDefaultValue() != null
+        return col.getDefaultValue() != null && !"NULL".equals(col.getDefaultValue())
             ? ShowResultHelpers.renderDefaultExpression(col.getDefaultValue()) : null;
     }
 
@@ -128,12 +130,10 @@ final class ShowRelationalExecutor {
         return listed == null ? "" : listed;
     }
 
-    /** How live renders a clustering key in SHOW output: LINEAR(a, b), or empty when unclustered. */
-    private String clusterByText(final List<String> clusterKeys) {
-        if (clusterKeys.isEmpty()) {
-            return "";
-        }
-        return "LINEAR(" + String.join(", ", clusterKeys) + ")";
+    /** A clustering key's written text as SHOW lists it, under LINEAR when it names no ordering; empty for none. */
+    private static String listedKey(final String written) {
+        final String listed = ClusteringKeySpelling.listed(written);
+        return listed == null ? "" : listed;
     }
 
     /** One SHOW OBJECTS row in live's column order.
@@ -252,11 +252,13 @@ final class ShowRelationalExecutor {
         final String cur = catalog.getCurrentDatabase();
         final List<Row> rows = new ArrayList<>();
         for (final Database db : catalog.getAllDatabases()) {
-            rows.add(databaseRow(db, db.getName().equals(cur), history, null));
+            if (seenDatabase(db)) {
+                rows.add(databaseRow(db, db.getName().equals(cur), history, null));
+            }
         }
         if (history) {
             for (final DroppedObject dropped : catalog.droppedOfKind("DATABASE")) {
-                if (dropped.getObject() instanceof Database) {
+                if (dropped.getObject() instanceof Database && seenDatabase((Database) dropped.getObject())) {
                     rows.add(databaseRow((Database) dropped.getObject(), false, true, dropped.getDroppedOn()));
                 }
             }
@@ -265,23 +267,28 @@ final class ShowRelationalExecutor {
         return new ResultSet(columns, rows);
     }
 
-    /** One SHOW DATABASES row; with {@code history}, followed by its {@code dropped_on}. */
+    /**
+     * One SHOW DATABASES row; with {@code history}, followed by its {@code dropped_on}. The SNOWFLAKE database is the
+     * application its ACCOUNT_USAGE share comes from: of origin {@code SNOWFLAKE.ACCOUNT_USAGE}, owned by no role,
+     * retained for no day (live-verified).
+     */
     private Row databaseRow(final Database db, final boolean current, final boolean history,
                             final Instant droppedOn) {
+        final boolean system = SystemDatabase.is(db.getName());
         final List<Object> cells = new ArrayList<>(Arrays.asList(
                 ShowResultHelpers.createdOn(db.getCreatedTime()),
                 db.getName(),
                 "N",
                 current ? "Y" : "N",
-                "",
-                db.getOwner(),
+                system ? SystemDatabase.ORIGIN : "",
+                system ? "" : db.getOwner(),
                 ShowResultHelpers.text(db.getComment()),
                 // options is where SHOW spells transience: the word TRANSIENT, or nothing at all for
                 // a permanent object — not a YES/NO cell like INFORMATION_SCHEMA's.
                 db.isTransientObject() ? "TRANSIENT" : "",
-                effectiveRetention(db, null, null),
-                "STANDARD",
-                ShowResultHelpers.OWNER_ROLE_TYPE,
+                system ? "0" : effectiveRetention(db, null, null),
+                system ? "APPLICATION" : "STANDARD",
+                system ? "" : ShowResultHelpers.OWNER_ROLE_TYPE,
                 null, null, null
             ));
         if (history) {
@@ -336,15 +343,20 @@ final class ShowRelationalExecutor {
         final String curSchema = catalog.getCurrentSchema();
         final List<Row> rows = new ArrayList<>();
         final Database database = catalog.databaseExact(dbName);
+        // A database the session does not see lists none of its schemas, its INFORMATION_SCHEMA included.
+        final boolean databaseSeen = seenDatabase(database);
         for (final Schema schema : database.getAllSchemas()) {
             // The current schema is tracked by its stored name; names are unique ignoring case.
-            rows.add(schemaRow(database.getName(), schema, schema.getName().equalsIgnoreCase(curSchema), history,
-                null));
+            if (databaseSeen && seenSchema(database.getName(), schema)) {
+                rows.add(schemaRow(database.getName(), schema, schema.getName().equalsIgnoreCase(curSchema), history,
+                    null));
+            }
         }
         if (history) {
             for (final DroppedObject dropped : catalog.droppedOfKind("SCHEMA")) {
                 if (dropped.getObject() instanceof Schema
-                        && database.getName().equals(((Schema) dropped.getObject()).getDatabaseName())) {
+                        && database.getName().equals(((Schema) dropped.getObject()).getDatabaseName())
+                        && databaseSeen && seenSchema(database.getName(), (Schema) dropped.getObject())) {
                     rows.add(schemaRow(database.getName(), (Schema) dropped.getObject(), false, true,
                         dropped.getDroppedOn()));
                 }
@@ -352,6 +364,22 @@ final class ShowRelationalExecutor {
             sortByName(rows, 1);
         }
         return new ResultSet(columns, rows);
+    }
+
+    /**
+     * Whether SHOW DATABASES lists a database, and DESCRIBE and GET_DDL answer it: only when the session sees it - its
+     * roles own it or hold a privilege on it, or hold MANAGE GRANTS (documented). The SNOWFLAKE database is shared to
+     * every role.
+     */
+    private boolean seenDatabase(final Database database) {
+        return SystemDatabase.is(database.getName())
+            || ownership.sees("DATABASE", database.getName(), database.getOwner());
+    }
+
+    /** Whether SHOW SCHEMAS lists a schema, and DESCRIBE and GET_DDL answer it, by {@link #seenDatabase}'s rule. */
+    private boolean seenSchema(final String databaseName, final Schema schema) {
+        return SystemDatabase.is(databaseName)
+            || ownership.sees("SCHEMA", QualifiedName.join(databaseName, schema.getName()), schema.getOwner());
     }
 
     /** One SHOW SCHEMAS row; with {@code history}, followed by its {@code dropped_on}. */
@@ -587,7 +615,7 @@ final class ShowRelationalExecutor {
                         dt.getName(),
                         dbName, scName, dt.isTransient() ? "TRANSIENT" : "TABLE",
                         ShowResultHelpers.text(dt.getComment()),
-                        clusterByText(dt.getClusterKeys()),
+                        listedKey(dt.getClusterByText()),
                         // The rows its last refresh held; no size is told.
                         dt.getRefreshedRows(),
                         0L,
@@ -625,7 +653,7 @@ final class ShowRelationalExecutor {
                     // The versions come newest first, so within one millisecond the older one keeps the earlier place.
                     byName.put(versionKey(scName, table.getName(), table.getCreatedTime(), version.getDroppedOn(),
                             dropped.size() - 1 - i),
-                        tableRow(table, dbName, scName, version.getRows() == null ? 0L : version.getRows().size(),
+                        tableRow(table, dbName, scName, version.rowCount(),
                         String.valueOf(version.getRetentionDays()), true, version.getDroppedOn()));
                 }
             }
@@ -641,9 +669,9 @@ final class ShowRelationalExecutor {
      */
     private static String versionKey(final String scName, final String name, final Instant created,
                                      final Instant droppedOn, final int place) {
-        return scName + "." + name + "\u0001" + String.format("%020d", created.toEpochMilli()) + "\u0001"
-            + (droppedOn == null ? "~" : String.format("%020d", droppedOn.toEpochMilli())) + "\u0001"
-            + String.format("%06d", place);
+        return scName + "." + name + "\u0001" + String.format(Locale.ROOT, "%020d", created.toEpochMilli()) + "\u0001"
+            + (droppedOn == null ? "~" : String.format(Locale.ROOT, "%020d", droppedOn.toEpochMilli())) + "\u0001"
+            + String.format(Locale.ROOT, "%06d", place);
     }
 
     /**
@@ -697,11 +725,18 @@ final class ShowRelationalExecutor {
      */
     private List<DroppedObject> droppedTablesOf(final String dbName, final String scName) {
         final String prefix = "TABLE:" + QualifiedName.key(dbName, scName, "");
+        // A version purged with a retention of 0 is listed too, the newest of its name: dropping the name again
+        // forgets it (see Catalog#listedOnlyVersions). Read first, as reading the versions purges again.
+        final Map<String, DroppedObject> listedOnly = catalog.listedOnlyVersions();
         final List<DroppedObject> out = new ArrayList<>();
         for (final Map.Entry<String, List<DroppedObject>> entry : catalog.droppedVersions().entrySet()) {
             final String key = entry.getKey();
-            if (!key.startsWith(prefix) || QualifiedName.parse(key.substring("TABLE:".length())).size() != 3) {
+            if (!isSchemaTableKey(key, prefix)) {
                 continue;
+            }
+            final DroppedObject listed = listedOnly.remove(key);
+            if (listed != null) {
+                out.add(listed);
             }
             for (int i = entry.getValue().size() - 1; i >= 0; i--) {
                 if (entry.getValue().get(i).getObject() instanceof Table) {
@@ -709,7 +744,17 @@ final class ShowRelationalExecutor {
                 }
             }
         }
+        for (final Map.Entry<String, DroppedObject> entry : listedOnly.entrySet()) {
+            if (isSchemaTableKey(entry.getKey(), prefix)) {
+                out.add(entry.getValue());
+            }
+        }
         return out;
+    }
+
+    /** Whether a dropped-table key names a table of the schema a prefix keys, not one of a schema it nests. */
+    private static boolean isSchemaTableKey(final String key, final String prefix) {
+        return key.startsWith(prefix) && QualifiedName.parse(key.substring("TABLE:".length())).size() == 3;
     }
 
     /**
@@ -787,9 +832,10 @@ final class ShowRelationalExecutor {
                     ShowResultHelpers.text(view.getOwner()),
                     ShowResultHelpers.text(view.getComment()),
                     // Snowflake's text column carries the view's full CREATE statement; INFORMATION_SCHEMA's
-                    // views were never created and carry none (live-verified).
+                    // views were never created and carry none, nor do the SNOWFLAKE database's own (live-verified).
                     // A SECURE view's text is its owner's to read: any other role is shown none.
-                    "INFORMATION_SCHEMA".equals(scName) || view.isSecure() && !ownership.actsAsOwner(view.getOwner())
+                    "INFORMATION_SCHEMA".equals(scName) || view.getOwner() == null && SystemDatabase.is(dbName)
+                        || view.isSecure() && !ownership.actsAsOwner(view.getOwner())
                         ? ""
                         : view.getListedText() != null ? view.getListedText() : view.ddl(scName + "." + view.getName()),
                     // These two read "true"/"false" on a real account, not the Y/N used elsewhere.
@@ -808,7 +854,8 @@ final class ShowRelationalExecutor {
                     dbName, scName,
                     ShowResultHelpers.text(mv.getOwner()),
                     ShowResultHelpers.text(mv.getComment()),
-                    mv.ddl(scName + "." + mv.getName()),
+                    // A SECURE materialized view's text is its owner's to read, as a secure view's is (documented).
+                    mv.isSecure() && !ownership.actsAsOwner(mv.getOwner()) ? "" : mv.ddl(scName + "." + mv.getName()),
                     String.valueOf(mv.isSecure()), "true",
                     ShowResultHelpers.ownerRoleType(mv.getOwner()), "OFF"
                 )));
@@ -881,7 +928,7 @@ final class ShowRelationalExecutor {
                     mv.getName(),
                     "",
                     dbName, scName,
-                    clusterByText(mv.getClusterKeys()),
+                    listedKey(mv.getClusterByText()),
                     // The rows it materialized; no size is told.
                     mv.getMaterializedRows(),
                     0L,
@@ -895,8 +942,9 @@ final class ShowRelationalExecutor {
                     MaterializedViewValidity.reason(mv),
                     MaterializedViewRefresh.behindBy(catalog, mv),
                     ShowResultHelpers.text(mv.getComment()),
-                    // The full CREATE statement, as written.
-                    mv.getListedText() != null ? mv.getListedText() : mv.ddl(scName + "." + mv.getName()),
+                    // The full CREATE statement, as written; a SECURE one's is its owner's to read (documented).
+                    mv.isSecure() && !ownership.actsAsOwner(mv.getOwner()) ? ""
+                        : mv.getListedText() != null ? mv.getListedText() : mv.ddl(scName + "." + mv.getName()),
                     mv.isSecure() ? "true" : "false",
                     mv.getClusterKeys().isEmpty() || mv.isReclusterSuspended() ? "OFF" : "ON",
                     "ROLE"
@@ -954,8 +1002,9 @@ final class ShowRelationalExecutor {
             if (!seen("VIEW", schema, v.getName(), v.getOwner())) {
                 continue;
             }
-            byRelation.put(v.getName(), viewColumnRows(v.getName(), v.getResolvedColumns(),
-                v.getColumnNames(), databaseName, schema.getName()));
+            byRelation.put(v.getName(), viewColumnRows(v.getName(),
+                InformationSchemaColumns.resolvedColumns(v, schema.getName()), v.getColumnNames(), databaseName,
+                schema.getName()));
         }
         for (final MaterializedView mv : schema.getMaterializedViews()) {
             if (!seen("MATERIALIZED_VIEW", schema, mv.getName(), mv.getOwner())) {
@@ -1069,8 +1118,9 @@ final class ShowRelationalExecutor {
         final View named = findViewOrNull(name);
         if (named != null) {
             requireSeen("VIEW", catalog.resolveOwningSchema(name), named.getName(), named.getOwner(), name, kind);
-            rows.addAll(viewColumnRows(named.getName(), named.getResolvedColumns(),
-                named.getColumnNames(), relationDatabase(name), relationSchema(name)));
+            rows.addAll(viewColumnRows(named.getName(),
+                InformationSchemaColumns.resolvedColumns(named, relationSchema(name)), named.getColumnNames(),
+                relationDatabase(name), relationSchema(name)));
             return new ResultSet(columns, rows);
         }
         final MaterializedView materialized = findMaterializedViewOrNull(name);
@@ -1152,9 +1202,10 @@ final class ShowRelationalExecutor {
                 // nullable one (live-captured), not Y/N.
                 col.isNullable() ? "true" : "NOT_NULL",
                 columnDefaultText(col),
-                "COLUMN",
-                // The expression cell is empty for an ordinary column, never NULL (live-verified).
-                "",
+                col.isVirtual() ? "VIRTUAL_COLUMN" : "COLUMN",
+                // The expression cell is a virtual column's expression, and empty for an ordinary column, never
+                // NULL (live-verified).
+                col.isVirtual() ? col.getVirtualText() : "",
                 // SHOW spells an unset comment as the empty string, never NULL (live-verified;
                 // DESCRIBE is the surface that keeps NULL for unset).
                 ShowResultHelpers.text(col.getComment()),
@@ -1249,8 +1300,9 @@ final class ShowRelationalExecutor {
                               final String comment) {
         // The unset text cells are the EMPTY STRING here too — default, expression and autoincrement
         // alike. A derived column has no default and no identity, so all three are always empty.
+        // One of INFORMATION_SCHEMA's own views lists its columns as VIEW_COLUMN (live-verified).
         return new Row(Arrays.asList(relationName, schemaName, columnName, dataType,
-            nullable ? "true" : "NOT_NULL", "", "COLUMN", "",
+            nullable ? "true" : "NOT_NULL", "", "INFORMATION_SCHEMA".equals(schemaName) ? "VIEW_COLUMN" : "COLUMN", "",
             // The view's OWN declared column comment, spelled the way SHOW spells every unset text
             // value — the empty string, never NULL. A base column's comment does not reach here
             // (live-verified), and the view's does.
@@ -1459,7 +1511,15 @@ final class ShowRelationalExecutor {
     /** See {@link ShowCommandExecutor#describeDatabase}. */
     ResultSet describeDatabase(final String databaseName) {
         final Map<String, Row> byName = new TreeMap<>();
-        for (final Schema schema : catalog.databaseExact(databaseName).getAllSchemas()) {
+        final Database described = catalog.databaseExact(databaseName);
+        if (!seenDatabase(described)) {
+            // One the session does not see is answered as one that does not exist.
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Database", described.getName()));
+        }
+        for (final Schema schema : described.getAllSchemas()) {
+            if (!seenSchema(described.getName(), schema)) {
+                continue;
+            }
             final Object created = "INFORMATION_SCHEMA".equals(schema.getName())
                 ? ShowResultHelpers.createdOn(StatementClock.instant())
                 : ShowResultHelpers.createdOn(schema.getCreatedTime());
@@ -1617,13 +1677,14 @@ final class ShowRelationalExecutor {
             final List<Object> cells = new ArrayList<>(Arrays.asList(
                 col.getName(),
                 typeText,
-                "COLUMN",
+                col.isVirtual() ? "VIRTUAL" : "COLUMN",
                 col.isNullable() ? "Y" : "N",
                 describeDefaultText(col),
                 col.isPrimaryKey() ? "Y" : "N",
                 col.isUnique() ? "Y" : "N",
                 checksByColumn.get(col.getName().toUpperCase(Locale.ROOT)),
-                null,
+                // A virtual column's expression, as the plan prints it (live-verified).
+                col.getVirtualText(),
                 col.getComment(),
                 // Only a MASKING policy reaches this cell. A projection policy on the same column
                 // leaves it null, and so does a row access policy on the table (live-verified).

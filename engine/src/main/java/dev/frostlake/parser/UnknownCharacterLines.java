@@ -91,7 +91,7 @@ public final class UnknownCharacterLines {
         final CommonTokenStream stream = new CommonTokenStream(lexer);
         stream.fill();
         final int at = unread.isEmpty() ? -1 : unread.get(0).intValue();
-        if (at < 0 || at >= sql.length() || !opensNoToken(sql.charAt(at))) {
+        if (at < 0 || at >= sql.length() || !opensNoToken(sql, at)) {
             return null;
         }
         final List<Token> spoken = new ArrayList<>();
@@ -246,8 +246,13 @@ public final class UnknownCharacterLines {
         return false;
     }
 
-    /** A quote, a dollar sign, a slash and a backtick open a literal, a name or a comment: no such character. */
-    private static boolean opensNoToken(final char character) {
-        return character != '\'' && character != '"' && character != '$' && character != '/' && character != '`';
+    /**
+     * A quote, a dollar sign, a slash and a backtick a name's character follows open a literal, a name or a comment:
+     * no such character.
+     */
+    private static boolean opensNoToken(final String sql, final int at) {
+        final char character = sql.charAt(at);
+        return character != '\'' && character != '"' && character != '$' && character != '/'
+            && (character != '`' || !UnclosedLiteralLines.opensBacktickName(sql, at));
     }
 }

@@ -31,8 +31,8 @@ import java.util.List;
  * GET_PATH(object, path_string) — follows an {@link ExtractionPath} such as {@code a.b[0]["c d"]}.
  *
  * <p>A path GET_PATH cannot read is refused when the row is read — {@code Bad compound object's field path
- * name 'a.' in GET_PATH}, the empty path included (live-verified). A path written as a literal is judged
- * before that, by the stricter {@link dev.frostlake.functions.scalar.ExtractionPathSyntax}.
+ * name 'a.' in GET_PATH}, the empty path included, over a NULL source too (live-verified). A path written as a
+ * literal is judged before that, by the stricter {@link dev.frostlake.functions.scalar.ExtractionPathSyntax}.
  */
 public class GetPath extends VariantAccessorFunction {
     private final boolean pathMode;
@@ -47,11 +47,23 @@ public class GetPath extends VariantAccessorFunction {
         // A VECTOR is no container a path reaches into (live-verified: GET(v, 0) is NULL).
         if (args.get(0) instanceof VectorValue) return null;
         final JsonNode src = ArrayFunctionHelper.parseNode(args.get(0));
-        if (src == null || args.get(1) == null) return null;
+        if (args.get(1) == null) return null;
+        if (src == null) {
+            // A path read with the row is judged over a NULL source too: GET_PATH(NULL, p) over p holding 'a.', 'a['
+            // or '' is refused (live-verified).
+            if (pathMode && ExtractionPath.read(args.get(1).toString()) == null) {
+                throw new RuntimeException(ExtractionPath.malformed(args.get(1).toString(), getName()));
+            }
+            return null;
+        }
         final String accessor = args.get(1).toString();
         final JsonNode result;
         if (pathMode) {
             result = navigatePath(src, accessor);
+        } else if (src.isArray() && (args.get(1) instanceof Double || args.get(1) instanceof Float)) {
+            // A FLOAT index names no element, its NaN and infinities included: GET([1,2,3], 1::FLOAT) is NULL
+            // (live-verified). One written out is read as the number it writes before the row is.
+            result = null;
         } else if (src.isArray() && args.get(1) instanceof Number) {
             // An index written with a fraction goes to the nearest whole number: GET(arr, 1.6) reads the third
             // element (live-verified).

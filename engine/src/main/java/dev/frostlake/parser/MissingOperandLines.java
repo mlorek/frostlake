@@ -34,6 +34,7 @@ import org.antlr.v4.runtime.Token;
  *   SELECT 1 FROM WHERE             'WHERE', then '&lt;EOF&gt;': the WHERE's condition
  *   SELECT FROM t; SELECT FROM      'FROM', then the second statement's 'FROM' and '&lt;EOF&gt;'
  *   … EXISTS (SELECT FROM)          'FROM', then the ')'
+ *   SELECT 1 &amp; FROM t x y           'FROM', then 'y': an ampersand's operand is missing
  * </pre>
  *
  * <p>The reading is rebuilt on the text: a value, or a table's name, is written where the part is missing and the
@@ -82,6 +83,8 @@ final class MissingOperandLines {
             missing = VALUE;
         } else if (before == FrostlakeLexer.FROM && fault.getType() == FrostlakeLexer.WHERE) {
             missing = TABLE;
+        } else if (before == FrostlakeParser.AMP && fault.getType() == FrostlakeLexer.FROM) {
+            missing = VALUE;
         } else {
             return lines;
         }

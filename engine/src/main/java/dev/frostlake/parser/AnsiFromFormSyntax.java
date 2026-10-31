@@ -117,14 +117,92 @@ public final class AnsiFromFormSyntax {
             final List<String> block = sql == null || !standsInBlock(firstCall) ? null
                 : BlockQueryLines.lines(sql, BlockReadOn.spoken(sql), firstFrom.getTokenIndex(), true);
             final List<String> lines = new ArrayList<>();
+            final List<String> valued = block == null ? valueQueryLines(firstCall, tokens) : null;
             if (block != null) {
                 lines.addAll(block);
+            } else if (valued != null) {
+                lines.addAll(valued);
             } else {
                 lines.add(SyntaxErrorListener.sentence(firstFrom));
                 lines.addAll(readAsFromClause(firstCall, firstFrom, tokens, sql));
             }
             throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", lines)), lines, sql);
         }
+    }
+
+    /**
+     * The lines of such a call in the first item of a query used as a value, read as live reads a query whose first
+     * item is a call (see {@link ValueSubqueryLines}): the query's SELECT, then — in a select list — the item's second
+     * token and, when the item opens with a bracket, the call's own '(', or — in an IN list — the token past the call
+     * (all live-verified). Null for any other place.
+     *
+     * <pre>
+     *   SELECT (SELECT EXTRACT('wks' FROM d) FROM t) FROM t      'SELECT', then the call's '('
+     *   SELECT (SELECT ABS(EXTRACT('wks' FROM d)) FROM t)        'SELECT', then ABS's '('
+     *   SELECT (SELECT (EXTRACT('wks' FROM d)) FROM t) FROM t    'SELECT', 'EXTRACT', then the call's '('
+     *   SELECT (SELECT ((EXTRACT('wks' FROM d))) FROM t)         'SELECT', the second '(', then the call's '('
+     *   … WHERE a IN (SELECT EXTRACT('wks' FROM d) FROM t)       'SELECT', then the 'FROM' past the call
+     * </pre>
+     */
+    private static List<String> valueQueryLines(final ParserRuleContext call, final TokenStream tokens) {
+        FrostlakeParser.ExprItemContext item = null;
+        ParserRuleContext query = null;
+        for (ParserRuleContext up = call.getParent(); up != null && query == null; up = up.getParent()) {
+            if (item == null && up instanceof FrostlakeParser.ExprItemContext) {
+                item = (FrostlakeParser.ExprItemContext) up;
+            } else if (up instanceof FrostlakeParser.SelectStatementContext) {
+                query = up;
+            }
+        }
+        if (item == null || query == null || query.getStart() == null
+                || query.getStart().getType() != FrostlakeLexer.SELECT
+                || spokenAfter(tokens, query.getStart()) != item.getStart()) {
+            return null;
+        }
+        final ParserRuleContext holder = query.getParent();
+        final List<String> lines = new ArrayList<>();
+        lines.add(SyntaxErrorListener.sentence(query.getStart()));
+        if (holder instanceof FrostlakeParser.InSubqueryExprContext) {
+            final Token past = call.getStop() == null ? null : spokenAfter(tokens, call.getStop());
+            if (past == null || past.getType() == Token.EOF) {
+                return null;
+            }
+            lines.add(SyntaxErrorListener.sentence(past));
+            return lines;
+        }
+        if (!(holder instanceof FrostlakeParser.ScalarSubqueryExprContext) || !inSelectItem(holder)) {
+            return null;
+        }
+        lines.add(SyntaxErrorListener.sentence(spokenAfter(tokens, item.getStart())));
+        if (item.getStart().getType() == FrostlakeLexer.LPAREN) {
+            lines.add(SyntaxErrorListener.sentence(spokenAfter(tokens, call.getStart())));
+        }
+        return lines;
+    }
+
+    /** Whether a context stands in a select item, with no clause between them. */
+    private static boolean inSelectItem(final ParserRuleContext context) {
+        for (ParserRuleContext up = context.getParent(); up != null; up = up.getParent()) {
+            if (up instanceof FrostlakeParser.ExprItemContext) {
+                return true;
+            }
+            if (up instanceof FrostlakeParser.WhereClauseContext || up instanceof FrostlakeParser.HavingClauseContext
+                    || up instanceof FrostlakeParser.OrderItemContext
+                    || up instanceof FrostlakeParser.SelectStatementContext) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /** The default-channel token after {@code token}, or null. */
+    private static Token spokenAfter(final TokenStream tokens, final Token token) {
+        for (int i = token.getTokenIndex() + 1; i < tokens.size(); i++) {
+            if (tokens.get(i).getChannel() == Token.DEFAULT_CHANNEL) {
+                return tokens.get(i);
+            }
+        }
+        return null;
     }
 
     private static boolean standsInBlock(final ParserRuleContext call) {

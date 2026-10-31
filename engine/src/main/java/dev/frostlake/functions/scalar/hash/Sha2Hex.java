@@ -14,43 +14,10 @@
  * limitations under the License.
  */
 
+
 package dev.frostlake.functions.scalar.hash;
 
-import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.functions.SemiStructuredRejection;
-import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.StringType;
-
-import java.util.List;
-
-public class Sha2Hex extends BuiltInFunction {
-    public Sha2Hex() { super("SHA2_HEX", StringType.VARCHAR); }
-
-    @Override
-    public Object evaluate(final List<Object> args) {
-        final int bits = Sha2DigestSize.of(args);
-        if (args.get(0) == null) return null;
-        return SharedFunctionHelpers.toHex(
-            SharedFunctionHelpers.digest("SHA-" + bits, SharedFunctionHelpers.toUtf8(args.get(0))));
-    }
-
-    @Override
-    public int getMinArgCount() { return 1; }
-    @Override
-    public int getMaxArgCount() { return 2; }
-
-    /**
-     * A predicate as SHA2_HEX's first argument is refused by the argument types, where a BOOLEAN
-     * value is read as text (live-verified).
-     */
-    @Override
-    public SemiStructuredRejection predicateRejection(final int position) {
-        return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
-    }
-
-    /** A BOOLEAN is no digest size: the call is refused by its argument types (live-verified). */
-    @Override
-    public SemiStructuredRejection booleanRejection(final int position) {
-        return position == 1 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
-    }
+/** SHA2_HEX(msg [, bits]) — SHA2 under another name: the lowercase hex SHA-2 digest of the message bytes. */
+public class Sha2Hex extends Sha2 {
+    public Sha2Hex() { super("SHA2_HEX"); }
 }

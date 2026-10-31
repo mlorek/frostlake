@@ -16,7 +16,7 @@
 
 package dev.frostlake.rt.py;
 
-import org.graalvm.polyglot.Value;
+import java.util.List;
 
 /**
  * A Python function's HANDLER judged against its signature once the body has run at CREATE, as the account
@@ -158,22 +158,23 @@ final class PythonHandlerCheck {
      */
     static String refusal(final String handlerName, final boolean table, final boolean aggregate,
                           final int declared) {
-        final Value report;
+        final Object inspected;
         try {
-            PythonRuntime.bind("__fl_handler_name", handlerName);
-            PythonRuntime.bind("__fl_handler_table", Boolean.valueOf(table));
-            PythonRuntime.bind("__fl_handler_aggregate", Boolean.valueOf(aggregate));
-            PythonRuntime.bind("__fl_handler_declared", Integer.valueOf(declared));
-            PythonRuntime.eval(INSPECTION);
-            report = PythonRuntime.global("__fl_handler_report");
+            PythonInterpreter.bind("__fl_handler_name", handlerName);
+            PythonInterpreter.bind("__fl_handler_table", Boolean.valueOf(table));
+            PythonInterpreter.bind("__fl_handler_aggregate", Boolean.valueOf(aggregate));
+            PythonInterpreter.bind("__fl_handler_declared", Integer.valueOf(declared));
+            PythonInterpreter.eval(INSPECTION);
+            inspected = PythonInterpreter.global("__fl_handler_report");
         } catch (final RuntimeException uninspectable) {
-            PythonRuntime.settleAfter(uninspectable);
+            PythonInterpreter.settleAfter(uninspectable);
             return null;
         }
-        if (report == null || !report.hasArrayElements()) {
+        if (!(inspected instanceof List) || ((List<?>) inspected).isEmpty()) {
             return null;
         }
-        final String kind = report.getArrayElement(0).asString();
+        final List<?> report = (List<?>) inspected;
+        final String kind = String.valueOf(report.get(0));
         if ("missing".equals(kind)) {
             return table || aggregate ? "Could not find handler class" : "Could not find handler";
         }
@@ -181,10 +182,10 @@ final class PythonHandlerCheck {
             return "Could not find process method";
         }
         if ("interpreter".equals(kind)) {
-            return "Python Interpreter Error:\n" + report.getArrayElement(1).asString();
+            return "Python Interpreter Error:\n" + report.get(1);
         }
         if ("refused".equals(kind)) {
-            return report.getArrayElement(1).asString();
+            return String.valueOf(report.get(1));
         }
         return null;
     }
@@ -200,8 +201,8 @@ final class PythonHandlerCheck {
         if (handlerName == null || handlerName.isEmpty() || isDotted(handlerName)) {
             return;
         }
-        PythonRuntime.bind("__fl_forgotten", handlerName);
-        PythonRuntime.eval("globals().pop(__fl_forgotten, None)\n");
+        PythonInterpreter.bind("__fl_forgotten", handlerName);
+        PythonInterpreter.eval("globals().pop(__fl_forgotten, None)\n");
     }
 
     /** Whether a HANDLER names an attribute of a module rather than a name the body defines. */

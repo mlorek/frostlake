@@ -158,7 +158,10 @@ final class UserProperties {
             } else if (property.PASSWORD() != null) {
                 user.setPassword(text(property.STRING_LITERAL()));
             } else if (property.DEFAULT_ROLE() != null) {
-                user.setDefaultRole(nameOrLiteral(property));
+                // A name is the role it spells, a quoted one exactly; a string is folded as a bare name is.
+                final String role = nameOrLiteral(property);
+                user.setDefaultRole(property.identifier() != null || role == null ? role
+                    : role.toUpperCase(Locale.ROOT));
             } else if (property.DEFAULT_WAREHOUSE() != null) {
                 user.setDefaultWarehouse(nameOrLiteral(property));
             } else if (property.DEFAULT_NAMESPACE() != null) {
@@ -168,7 +171,7 @@ final class UserProperties {
                     ? property.qualifiedName().getText()
                     : text(property.STRING_LITERAL())).toUpperCase(Locale.ROOT));
             } else if (property.DEFAULT_SECONDARY_ROLES() != null) {
-                user.setDefaultSecondaryRoles(rolesJson(property));
+                user.writeDefaultSecondaryRoles(rolesJson(property));
             } else if (property.LOGIN_NAME() != null) {
                 // A login name is upper-cased however it is written — `LOGIN_NAME = 'ln'` stores LN.
                 // DISPLAY_NAME beside it keeps the case it was given.

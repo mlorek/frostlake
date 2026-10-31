@@ -24,6 +24,7 @@ import java.net.URL;
 import java.sql.Array;
 import java.sql.Blob;
 import java.sql.Clob;
+import java.sql.Connection;
 import java.sql.Date;
 import java.sql.NClob;
 import java.sql.Ref;
@@ -38,6 +39,8 @@ import java.sql.Statement;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.sql.Types;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.Calendar;
 import java.util.Map;
 
@@ -51,9 +54,11 @@ import java.util.Map;
  * <p>The cursor moves forward only: the account's driver offers no other movement and refuses every scrolling call.
  * Its position reads as that driver's does: {@code getRow} counts the rows {@code next} has reached and keeps the
  * last one's number once the rows are exhausted, {@code isBeforeFirst} holds until a row is reached — for an empty
- * result, always — and {@code isLast} holds while the next call would pass the end. A label names the first column
- * whose name matches it ignoring case — the account's driver's rule under
- * {@code CLIENT_RESULT_COLUMN_CASE_INSENSITIVE = TRUE} — and a label no column has is refused with SQLSTATE 42703.
+ * result, always — and {@code isLast} holds while the next call would pass the end. A label names the column spelled
+ * exactly as it is, as the account's driver reads one by default, until the connection's session sets
+ * {@code CLIENT_RESULT_COLUMN_CASE_INSENSITIVE = TRUE}; from then on it names the first column whose name matches it
+ * ignoring case (see {@link ResultColumnCase}). A label no column has is refused with SQLSTATE 42703: {@code Column
+ * not found: x} (live-verified).
  * A closed result set refuses every read with {@code Result set has been closed.}, while {@code next} answers false.
  */
 public abstract class AbstractFrostlakeResultSet implements ResultSet {
@@ -70,12 +75,16 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
     private static final int CLOSED_CODE = 200037;
 
     private final Statement statement;
+    /** The zone the session's TIMEZONE named when the result was made (see {@link #sessionZone}). */
+    private final ZoneId zone;
     private boolean closed;
     private boolean lastReadWasNull;
     // The row the cursor stands on, from 0: -1 before the first, rowCount() or more once next() has passed the last.
     private int cursor = -1;
     // How many rows next() has reached.
     private int reached;
+    // The most rows the cursor reaches, the statement's setMaxRows when the result was made; 0 for every row.
+    private final int rowLimit;
 
     /**
      * A result set the statement produced.
@@ -84,6 +93,37 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
      */
     protected AbstractFrostlakeResultSet(final Statement statement) {
         this.statement = statement;
+        this.rowLimit = maxRowsOf(statement);
+        this.zone = zoneOf(statement);
+    }
+
+    /** The zone the statement's session named when the result was made, UTC for a statement of no such session. */
+    private static ZoneId zoneOf(final Statement statement) {
+        try {
+            final Connection connection = statement == null ? null : statement.getConnection();
+            return connection instanceof SessionZoneSource ? ((SessionZoneSource) connection).sessionZone()
+                : ZoneOffset.UTC;
+        } catch (final SQLException closed) {
+            return ZoneOffset.UTC;
+        }
+    }
+
+    /** The statement's setMaxRows, which bounds the rows its result hands out (live-verified); 0 when unset. */
+    private static int maxRowsOf(final Statement statement) {
+        if (statement == null) {
+            return 0;
+        }
+        try {
+            return statement.getMaxRows();
+        } catch (final SQLException closed) {
+            return 0;
+        }
+    }
+
+    /** The rows the cursor reaches: every row, or the first {@link #rowLimit} of them. */
+    private int rows() {
+        final int all = rowCount();
+        return rowLimit > 0 && rowLimit < all ? rowLimit : all;
     }
 
     // ---------------------------------------------------------------- what a transport supplies
@@ -167,6 +207,16 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
     }
 
     /**
+     * The zone the session's TIMEZONE named when the statement ran: what a DATE's midnight and a wall clock read as a
+     * time are read in (see {@link TemporalCellReads}).
+     *
+     * @return the zone
+     */
+    protected ZoneId sessionZone() {
+        return zone;
+    }
+
+    /**
      * Called once the cursor has moved onto a row, before any getter reads it.
      *
      * @param row the row, from 1
@@ -184,7 +234,7 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
      * @return the current row, or 0 when the cursor is on none
      */
     protected final int currentRow() {
-        return cursor >= 0 && cursor < rowCount() ? cursor + 1 : 0;
+        return cursor >= 0 && cursor < rows() ? cursor + 1 : 0;
     }
 
     /** Refuses every call on a closed result set, as the account's driver refuses it. */
@@ -204,7 +254,7 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
      */
     protected final Object read(final int column) throws SQLException {
         checkClosed();
-        if (column < 1 || column > columnCount() || cursor < 0 || cursor >= rowCount()) {
+        if (column < 1 || column > columnCount() || cursor < 0 || cursor >= rows()) {
             throw new SQLException("Invalid column index: " + column, NO_SUCH_COLUMN_STATE, NO_SUCH_COLUMN_CODE);
         }
         final Object value = cell(cursor + 1, column);
@@ -215,6 +265,16 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
     /** A column's JDBC type, as the result's metadata names it. */
     private int jdbcType(final int column) throws SQLException {
         return getMetaData().getColumnType(column);
+    }
+
+    /** A column's temporal family, by the type its metadata names; null for a column that is not temporal. */
+    private TemporalColumnKind temporalKind(final int column) throws SQLException {
+        return TemporalColumnKind.of(getMetaData().getColumnTypeName(column));
+    }
+
+    /** Whether a column is a FLOAT, which a typed getter reads by {@link FloatColumnReads}. */
+    private boolean floatColumn(final int column) throws SQLException {
+        return FloatColumnReads.isFloat(jdbcType(column));
     }
 
     /**
@@ -229,11 +289,14 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
 
     /**
      * The cell a temporal getter reads; a cell of a column that getter does not read is refused as the account's
-     * driver refuses it (see {@link JdbcMarshaling#readsTemporal}).
+     * driver refuses it (see {@link JdbcMarshaling#readsTemporal}), and a FLOAT column's even when it is NULL.
      */
     private Object temporalCell(final int column, final String target) throws SQLException {
         final Object value = read(column);
         final int type = jdbcType(column);
+        if (FloatColumnReads.isFloat(type)) {
+            throw FloatColumnReads.temporalRefusal(target);
+        }
         if (value != null && !JdbcMarshaling.readsTemporal(type, target)) {
             throw JdbcMarshaling.unconvertible(type, target, wire(column, value));
         }
@@ -268,6 +331,9 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (interval != null) {
             return IntervalColumnReads.getBoolean(interval, intervalCount(cell));
         }
+        if (floatColumn(columnIndex)) {
+            return FloatColumnReads.getBoolean(cell);
+        }
         return cell != null && JdbcCellReads.booleanOf(jdbcType(columnIndex), cell, wire(columnIndex, cell));
     }
 
@@ -277,6 +343,9 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         final IntervalKind interval = intervalKind(columnIndex, cell);
         if (interval != null) {
             return IntervalColumnReads.getByte(interval, intervalCount(cell));
+        }
+        if (floatColumn(columnIndex)) {
+            return FloatColumnReads.getByte();
         }
         return cell == null ? 0 : JdbcCellReads.byteOf(jdbcType(columnIndex), wire(columnIndex, cell));
     }
@@ -288,6 +357,9 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (interval != null) {
             return IntervalColumnReads.getShort(interval, intervalCount(cell));
         }
+        if (floatColumn(columnIndex)) {
+            return FloatColumnReads.getShort(cell);
+        }
         return cell == null ? 0 : JdbcCellReads.shortOf(jdbcType(columnIndex), wire(columnIndex, cell));
     }
 
@@ -297,6 +369,9 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         final IntervalKind interval = intervalKind(columnIndex, cell);
         if (interval != null) {
             return IntervalColumnReads.getInt(interval, intervalCount(cell));
+        }
+        if (floatColumn(columnIndex)) {
+            return FloatColumnReads.getInt(cell);
         }
         if (cell == null) {
             return 0;
@@ -311,6 +386,9 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         final IntervalKind interval = intervalKind(columnIndex, cell);
         if (interval != null) {
             return IntervalColumnReads.getLong(interval, intervalCount(cell));
+        }
+        if (floatColumn(columnIndex)) {
+            return FloatColumnReads.getLong(cell);
         }
         if (cell == null) {
             return 0;
@@ -346,6 +424,9 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (interval != null) {
             return IntervalColumnReads.getBigDecimal(interval, intervalCount(cell));
         }
+        if (floatColumn(columnIndex)) {
+            return FloatColumnReads.getBigDecimal(cell);
+        }
         return cell == null ? null : decimal(columnIndex, cell);
     }
 
@@ -361,7 +442,8 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (interval != null) {
             return IntervalColumnReads.getBytes(interval, intervalCount(cell));
         }
-        return JdbcMarshaling.toBytes(cell);
+        return cell == null ? null
+            : JdbcCellReads.bytesOf(jdbcType(columnIndex), cell, text(columnIndex, cell), wire(columnIndex, cell));
     }
 
     @Override
@@ -370,7 +452,10 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (interval != null) {
             return IntervalColumnReads.getDate(interval);
         }
-        return JdbcMarshaling.toDate(temporalCell(columnIndex, "date"));
+        final Object cell = temporalCell(columnIndex, "date");
+        final TemporalColumnKind kind = temporalKind(columnIndex);
+        return cell == null || kind == null ? JdbcMarshaling.toDate(cell)
+            : TemporalCellReads.date(cell, kind, sessionZone());
     }
 
     @Override
@@ -379,7 +464,10 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (interval != null) {
             return IntervalColumnReads.getTime(interval);
         }
-        return JdbcMarshaling.toTime(temporalCell(columnIndex, "time"), jdbcType(columnIndex));
+        final Object cell = temporalCell(columnIndex, "time");
+        final TemporalColumnKind kind = temporalKind(columnIndex);
+        return cell == null || kind == null ? JdbcMarshaling.toTime(cell, jdbcType(columnIndex))
+            : TemporalCellReads.time(cell, kind, sessionZone(), jdbcType(columnIndex));
     }
 
     @Override
@@ -388,7 +476,10 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (interval != null) {
             return IntervalColumnReads.getTimestamp(interval);
         }
-        return JdbcMarshaling.toTimestamp(temporalCell(columnIndex, "timestamp"), jdbcType(columnIndex));
+        final Object cell = temporalCell(columnIndex, "timestamp");
+        final TemporalColumnKind kind = temporalKind(columnIndex);
+        return cell == null || kind == null ? JdbcMarshaling.toTimestamp(cell, jdbcType(columnIndex))
+            : TemporalCellReads.timestamp(cell, kind, sessionZone());
     }
 
     @Override
@@ -396,8 +487,10 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (cal == null || intervalKind(columnIndex, read(columnIndex)) != null) {
             return getDate(columnIndex);
         }
-        // The day's midnight in the Calendar's zone.
-        return JdbcMarshaling.toDate(temporalCell(columnIndex, "date"), cal);
+        final Object cell = temporalCell(columnIndex, "date");
+        final TemporalColumnKind kind = temporalKind(columnIndex);
+        return cell == null || kind == null ? JdbcMarshaling.toDate(cell, cal)
+            : TemporalCellReads.date(cell, kind, sessionZone(), cal);
     }
 
     @Override
@@ -412,10 +505,13 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
             return getTimestamp(columnIndex);
         }
         final Object cell = temporalCell(columnIndex, "timestamp");
-        // A TIME is read without the Calendar; a wall clock with no zone is read in the Calendar's zone; a zoned cell
-        // keeps its moment (live-verified).
-        return jdbcType(columnIndex) == Types.TIME ? JdbcMarshaling.toTimestamp(cell, Types.TIME)
-            : JdbcMarshaling.toTimestamp(cell, cal);
+        final TemporalColumnKind kind = temporalKind(columnIndex);
+        if (cell == null || kind == null) {
+            // A TIME is read without the Calendar, and any other cell in the Calendar's zone.
+            return jdbcType(columnIndex) == Types.TIME ? JdbcMarshaling.toTimestamp(cell, Types.TIME)
+                : JdbcMarshaling.toTimestamp(cell, cal);
+        }
+        return TemporalCellReads.timestamp(cell, kind, sessionZone(), cal);
     }
 
     @Override
@@ -425,12 +521,29 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (interval != null) {
             return IntervalColumnReads.getObject(interval, intervalCount(cell));
         }
-        return cell == null ? null : object(columnIndex, cell);
+        if (cell == null) {
+            return null;
+        }
+        if (semiStructured(columnIndex)) {
+            // A semi-structured cell is handed back as the text getString reads, as the account's driver hands back
+            // every one, a number, a boolean and a date the engine holds unwrapped included (live-verified: the
+            // VARIANT of 0.0000001 is the String 0.0000001, the VARIANT of TRUE the String true).
+            return text(columnIndex, cell);
+        }
+        final Object temporal = TemporalCellReads.object(cell, temporalKind(columnIndex), sessionZone());
+        return temporal != null ? temporal : object(columnIndex, cell);
     }
 
+    /** Whether a column holds semi-structured values, by the type its metadata names: a VARIANT, OBJECT or ARRAY. */
+    private boolean semiStructured(final int column) throws SQLException {
+        final String type = getMetaData().getColumnTypeName(column);
+        return "VARIANT".equalsIgnoreCase(type) || "OBJECT".equalsIgnoreCase(type) || "ARRAY".equalsIgnoreCase(type);
+    }
+
+    /** The account's driver reads no cell through a type map (live-verified), so neither does this one. */
     @Override
     public Object getObject(final int columnIndex, final Map<String, Class<?>> map) throws SQLException {
-        return getObject(columnIndex);
+        throw new SQLFeatureNotSupportedException();
     }
 
     @Override
@@ -443,9 +556,14 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         return TypedObjectReads.getObject(this, columnIndex, type);
     }
 
+    /**
+     * The account's driver reads no cell as a {@link java.sql.Array} — a semi-structured ARRAY, a structured
+     * {@code ARRAY(NUMBER)} and a NULL alike, over JSON and Arrow results (live-verified) — so neither does this one:
+     * an ARRAY reads as its JSON text through getString and getObject.
+     */
     @Override
     public Array getArray(final int columnIndex) throws SQLException {
-        return EngineArray.from(read(columnIndex));
+        throw new SQLFeatureNotSupportedException();
     }
 
     @Override
@@ -459,12 +577,27 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
     public int findColumn(final String columnLabel) throws SQLException {
         checkClosed();
         final int count = columnCount();
+        final boolean ignoreCase = labelsIgnoreCase();
         for (int i = 1; i <= count; i++) {
-            if (columnLabel != null && columnLabel.equalsIgnoreCase(columnLabel(i))) {
+            final String name = columnLabel(i);
+            if (columnLabel != null && (ignoreCase ? columnLabel.equalsIgnoreCase(name) : columnLabel.equals(name))) {
                 return i;
             }
         }
         throw new SQLException("Column not found: " + columnLabel, UNDEFINED_COLUMN);
+    }
+
+    /** Whether the connection this result set came from matches a label ignoring case (see ResultColumnCase). */
+    private boolean labelsIgnoreCase() {
+        if (statement == null) {
+            return false;
+        }
+        try {
+            final Connection connection = statement.getConnection();
+            return connection instanceof ResultColumnCase && ((ResultColumnCase) connection).labelsIgnoreCase();
+        } catch (final SQLException noConnection) {
+            return false;
+        }
     }
 
     @Override
@@ -559,7 +692,7 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
 
     @Override
     public Object getObject(final String columnLabel, final Map<String, Class<?>> map) throws SQLException {
-        return getObject(findColumn(columnLabel));
+        throw new SQLFeatureNotSupportedException();
     }
 
     @Override
@@ -585,10 +718,10 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
         if (closed) {
             return false;
         }
-        if (cursor < rowCount()) {
+        if (cursor < rows()) {
             cursor++;
         }
-        if (cursor < rowCount()) {
+        if (cursor < rows()) {
             reached++;
             enteredRow(cursor + 1);
             return true;
@@ -611,7 +744,7 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
     @Override
     public boolean isAfterLast() throws SQLException {
         checkClosed();
-        return cursor >= rowCount();
+        return cursor >= rows();
     }
 
     @Override
@@ -623,7 +756,7 @@ public abstract class AbstractFrostlakeResultSet implements ResultSet {
     @Override
     public boolean isLast() throws SQLException {
         checkClosed();
-        return cursor + 1 == rowCount();
+        return cursor + 1 == rows();
     }
 
     @Override

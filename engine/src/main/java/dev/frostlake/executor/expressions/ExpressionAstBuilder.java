@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.BoundedParseCache;
 import dev.frostlake.executor.IntegerLiteralRange;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.SelectItemAccessors;
@@ -31,6 +32,7 @@ import dev.frostlake.parser.KeyContexts;
 import dev.frostlake.parser.OperandRefusals;
 import dev.frostlake.parser.StageArgumentSyntax;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericLiteralTypes;
 import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.VectorType;
@@ -152,7 +154,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         } else if (argument.DOLLAR_QUOTED_STRING() != null) {
             literal = new LiteralExpression(unquoteDollar(argument.getText()), LiteralType.STRING);
         } else {
-            literal = new LiteralExpression(new BigDecimal(argument.getText()), LiteralType.DECIMAL);
+            literal = new LiteralExpression(DecimalText.parse(argument.getText()), LiteralType.DECIMAL);
         }
         literal.setPosition(at);
         return literal;
@@ -179,7 +181,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                 // Integer literal wider than a Java long — Snowflake NUMBER(38,0) allows up to 38 digits,
                 // so represent it exactly as a BigDecimal (e.g. 20+ digit synthetic row IDs) rather than
                 // overflowing with "For input string".
-                return new LiteralExpression(new BigDecimal(intText), LiteralType.DECIMAL);
+                return new LiteralExpression(DecimalText.parse(intText), LiteralType.DECIMAL);
             }
         }
         if (lit.FLOAT_LITERAL() != null) {
@@ -463,9 +465,11 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     public Expression visitUnaryExpr(final FrostlakeParser.UnaryExprContext ctx) {
         // Two signs in a row are no expression on a real account: `- -n`, `+-n` and `-+1` are refused
         // as an invalid function named by the OUTER sign, spaced or not, before the operand is read -
-        // so `+-+n` names '+'. A parenthesised inner sign, `-(-n)`, and a sign after a binary operator,
-        // `1 - -n`, are ordinary (live-verified).
-        if (ctx.expression() instanceof FrostlakeParser.UnaryExprContext) {
+        // so `+-+n` names '+'. A tilde is such a sign too: `-~1` names '-' and `~-1` and `~~1` name '~'. A
+        // parenthesised inner sign, `-(-n)`, and a sign after a binary operator, `1 - -n`, are ordinary
+        // (live-verified).
+        if (ctx.expression() instanceof FrostlakeParser.UnaryExprContext
+                || ctx.expression() instanceof FrostlakeParser.TildeExprContext) {
             throw new RuntimeException(SqlCompilationError.of("invalid function '" + ctx.op.getText() + "'"));
         }
         final Expression operand = visit(ctx.expression());
@@ -514,6 +518,12 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     @Override
     public Expression visitCaretExpr(final FrostlakeParser.CaretExprContext ctx) {
         throw CaretOperator.refusal();
+    }
+
+    /** Nor is the bar (see {@link CaretOperator}). */
+    @Override
+    public Expression visitBarExpr(final FrostlakeParser.BarExprContext ctx) {
+        throw CaretOperator.barRefusal();
     }
 
     /**
@@ -602,10 +612,33 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
      */
     @Override
     public Expression visitDoubledEqualsExpr(final FrostlakeParser.DoubledEqualsExprContext ctx) {
-        final Token sign = ctx.EQ_EQ().getSymbol();
+        return signCall(ctx.EQ_EQ().getSymbol(), ctx.expression(0), ctx.expression(1));
+    }
+
+    /** {@code a & b}: a call of a function named {@code "&"}, which resolves to nothing (live-verified). */
+    @Override
+    public Expression visitAmpExpr(final FrostlakeParser.AmpExprContext ctx) {
+        return signCall(ctx.AMP().getSymbol(), ctx.expression(0), ctx.expression(1));
+    }
+
+    /** {@code ~a}: a call of a function named {@code "~"}, which resolves to nothing (live-verified). */
+    @Override
+    public Expression visitTildeExpr(final FrostlakeParser.TildeExprContext ctx) {
+        // A sign straight after the tilde makes it an invalid function, as two signs in a row are (see
+        // visitUnaryExpr).
+        if (ctx.expression() instanceof FrostlakeParser.UnaryExprContext
+                || ctx.expression() instanceof FrostlakeParser.TildeExprContext) {
+            throw new RuntimeException(SqlCompilationError.of("invalid function '~'"));
+        }
+        return signCall(ctx.TILDE().getSymbol(), ctx.expression());
+    }
+
+    /** A call of the function an operator's sign names, over its operands, placed at the sign. */
+    private FunctionCallExpression signCall(final Token sign, final FrostlakeParser.ExpressionContext... operands) {
         final List<Expression> arguments = new ArrayList<>();
-        arguments.add(visit(ctx.expression(0)));
-        arguments.add(visit(ctx.expression(1)));
+        for (final FrostlakeParser.ExpressionContext operand : operands) {
+            arguments.add(visit(operand));
+        }
         final FunctionCallExpression call = new FunctionCallExpression(sign.getText(), arguments);
         final List<String> name = new ArrayList<>();
         name.add(sign.getText());
@@ -1998,7 +2031,8 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     /** Where a named argument's value starts: the token after its arrow. */
     private static SourcePosition namedArgumentPlace(final FrostlakeParser.NamedArgumentContext na) {
         final ParserRuleContext value = na.expression() != null ? na.expression()
-            : na.selectStatement() != null ? na.selectStatement() : na.argumentRow();
+            : na.selectStatement() != null ? na.selectStatement()
+            : na.booleanExpr() != null ? na.booleanExpr() : na.argumentRow();
         return keywordPosition(value != null ? value.getStart() : na.getStart());
     }
 
@@ -2012,6 +2046,9 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                 elements.add(visit(element));
             }
             return new ArgumentRowExpression(elements);
+        }
+        if (na.booleanExpr() != null) {
+            return visit(na.booleanExpr());
         }
         if (na.expression() == null) {
             return positionedSubquery(na.selectStatement());
@@ -2494,10 +2531,23 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
      */
     private static DataType declaredTarget(final FrostlakeParser.DataTypeNameContext type,
                                            final FrostlakeParser.TypeParametersContext params) {
+        // A type read once as none of these is none again, written the same: a SQL function's every call writes its
+        // arguments out through such casts, and the type was parsed for each.
+        final String written = params == null ? type.getText() : type.getText() + params.getText();
+        if (PLAIN_TARGETS.get(written) != null) {
+            return null;
+        }
         final DataType parsed = DataTypeParser.parse(type, params, DataTypeParser.CAST_STRING_DEFAULT);
-        return StructuredTypes.isStructured(parsed) || parsed instanceof VectorType
-            || IntervalCasts.isIntervalType(parsed) ? parsed : null;
+        if (StructuredTypes.isStructured(parsed) || parsed instanceof VectorType
+                || IntervalCasts.isIntervalType(parsed)) {
+            return parsed;
+        }
+        PLAIN_TARGETS.put(written, Boolean.TRUE);
+        return null;
     }
+
+    /** The cast targets already read as no structured, VECTOR or INTERVAL type, by their written text. */
+    private static final BoundedParseCache<Boolean> PLAIN_TARGETS = new BoundedParseCache<Boolean>(512, 256);
 
     /**
      * FILE is a COLUMN type but not a CAST target: live, {@code NULL::FILE},

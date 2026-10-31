@@ -59,8 +59,11 @@ ENABLE_CORTEX_ANALYST_MODEL_AZURE_OPENAI	false	Whether to allow models from Azur
 ENABLE_CORTEX_AUTOMATIC_DATABASE_DESCRIPTIONS	false	When true, enables automatic Cortex-powered database descriptions. Account admins can set this to false to disable the feature for their account.	BOOLEAN
 ENABLE_CORTEX_AUTOMATIC_SCHEMA_DESCRIPTIONS	false	When true, enables automatic Cortex-powered schema descriptions. Account admins can set this to false to disable the feature for their account.	BOOLEAN
 ENABLE_CORTEX_AUTOMATIC_TABLE_DESCRIPTIONS	true	When true, enables automatic Cortex-powered table descriptions. Account admins can set this to false to disable the feature for their account.	BOOLEAN
+ENABLE_CORTEX_EMAIL_ATTACHMENTS	true	Whether Cortex may send email attachments on this account. An account admin can turn this off before any attachment is sent.	BOOLEAN
+ENABLE_CORTEX_TOOLS_ADVANCED_GOVERNANCE	false	Enables the Cortex Tools Advanced Governance add-on, which provides enhanced governance and policy controls for Cortex Tools. Enabling this add-on incurs additional charges. Disabling it turns those controls off: any Advanced Governance configuration stops applying and must be set up again if you re-enable.	BOOLEAN
 ENABLE_CORTEX_WEBSEARCH	false	Set to true to allow Cortex products to use web search	BOOLEAN
 ENABLE_DATA_COMPACTION	true	User-visible parameter that controls table storage optimization for managed Iceberg tables.	BOOLEAN
+ENABLE_DEFAULT_EMAIL_NOTIFICATION	true	When false, SNOWFLAKE$DEFAULT_EMAIL stays disabled even after ENABLE_DEFAULT_EMAIL_NOTIFICATION_INTEGRATION is turned on. ACCOUNTADMIN can set this before that BCR is enabled.	BOOLEAN
 ENABLE_DUAL_STACK_LOAD_BALANCER	false	Enables dual-stack load balancer for public traffic	BOOLEAN
 ENABLE_EGRESS_COST_OPTIMIZER	true	If true, replication cache will get applied automatically for the account	BOOLEAN
 ENABLE_ICEBERG_MERGE_ON_READ	true	Deprecated. Use ICEBERG_MERGE_ON_READ_BEHAVIOR to control merge-on-read on Iceberg tables.	BOOLEAN
@@ -76,7 +79,7 @@ ENABLE_PER_ACCOUNT_APP_SERVICE_URL	false	If true, public app service traffic lik
 ENABLE_PYPI_REPOSITORY_USER_PUBLIC_GRANT	true	If true (default), grant pypi_repository_user to PUBLIC. Set to false to opt out.	BOOLEAN
 ENABLE_QUOTA_EVENT_LOGGING	true	When true, enable quota event logging feature	BOOLEAN
 ENABLE_SELECTIVE_EXTERNAL_VOLUME_REPLICATION_PUPR	false	This parameter enables selective external volume replication PuPr	BOOLEAN
-ENABLE_SNOWFLAKE_INTELLIGENCE_ARTIFACT_SHARING	false	Enable or disable all sharing (link and user-based) for Snowflake Intelligence artifacts at the account level.	BOOLEAN
+ENABLE_SNOWFLAKE_INTELLIGENCE_ARTIFACT_SHARING	true	Enable or disable all sharing (link and user-based) for Snowflake Intelligence artifacts at the account level.	BOOLEAN
 ENABLE_SNOWFLAKE_MANAGED_STORAGE_VOLUME_PRIVATELINK	false	Enables privatelink access to Snowflake managed storage external volumes	BOOLEAN
 ENABLE_SPCS_BLOCK_STORAGE_SNOWFLAKE_FULL_ENCRYPTION_ENFORCEMENT	false	Enable enforcement of SNOWFLAKE_FULL encryption for SPCS block-storage volumes and snapshots.	BOOLEAN
 ENABLE_STAGE_S3_PRIVATELINK_FOR_US_EAST_1	false	set to true to generate aws s3 regional URL instead of global s3 urls.	BOOLEAN
@@ -96,7 +99,7 @@ EXEMPT_DISABLE_RISKY_USER	false	When true, exempts the target from automatic dis
 EXTERNAL_OAUTH_ADD_PRIVILEGED_ROLES_TO_BLOCKED_LIST	true	If true, automatically adds the ACCOUNTADMIN and SECURITYADMIN roles the blocked roles set	BOOLEAN
 EXTERNAL_VOLUME		Name of an external volume that will be used for persisted Iceberg metadata and data files.	STRING
 FEATURE_COMMENT_PROPAGATION	DISABLED	When ENABLED, column comments propagate automatically along column lineage. Account admins set DISABLED to turn the feature off for their account, which also turns off the producer-side emission and consumer-side handler gates for COLUMN_COMMENT_CHANGED and LINEAGE_NODE_CREATED.	STRING
-FEATURE_CORTEX_CODE_SANDBOX	DISABLED_PRIVATE_PREVIEW	Enable Cortex Code sandbox (microVM isolation for code execution). When ENABLED or ENABLED_PUBLIC_PREVIEW, the Cortex Code CLI auto-activates sandbox mode for the account without requiring the CORTEX_CODE_EXPERIMENTAL_FEATURES environment variable.	STRING
+FEATURE_CORTEX_CODE_SANDBOX	ENABLED	Enable Cortex Code sandbox (microVM isolation for code execution). When ENABLED or ENABLED_PUBLIC_PREVIEW, the Cortex Code CLI auto-activates sandbox mode for the account without requiring the CORTEX_CODE_EXPERIMENTAL_FEATURES environment variable.	STRING
 FEATURE_ENABLE_REQUEST_ACCESS_FOR_WORKSPACES	DISABLED	Enables the workspace access request system functions. Setting this to ENABLED also enables ENABLE_GRANT_APPROVAL, ENABLE_LINEAGE_AWARE_RECIPIENT_CASCADE, ENABLE_REQUEST_ACCESS_FOR_WORKSPACES, ENABLE_ACCESS_REQUEST_HIERARCHICAL_APPROVER_ROUTING, ENABLE_ACCESS_REQUEST_REVIEWER_NOMINATION, and UI_ENABLE_WORKSPACE_ACCESS_REQUESTS. ENABLE_GRANT_APPROVAL_EXPIRY_CLEANER must be set separately at system level.	STRING
 FEATURE_RBAC_INHERITED_GRANTS	DISABLED	This is feature parameter for RBAC Inherited Grants	STRING
 FORCE_WORKSHEET_MIGRATION_FOR_ACCOUNT	false	When enabled, all users in the account are automatically advanced to the final worksheet migration (skipping the manual 'Migrate to Workspaces' click) by the PEP background job.	BOOLEAN

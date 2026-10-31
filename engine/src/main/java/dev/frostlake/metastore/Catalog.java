@@ -23,13 +23,16 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.metastore.model.AccountTags;
 import dev.frostlake.metastore.model.AggregationPolicy;
+import dev.frostlake.metastore.model.CloneContent;
 import dev.frostlake.metastore.model.ComputePool;
 import dev.frostlake.metastore.model.Contact;
 import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.JoinPolicy;
 import dev.frostlake.metastore.model.MaskingPolicy;
+import dev.frostlake.metastore.model.MaterializedView;
 import dev.frostlake.metastore.model.ObjectParameters;
 import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Privilege;
@@ -45,6 +48,7 @@ import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.Tag;
+import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.User;
 import dev.frostlake.metastore.model.View;
 import dev.frostlake.metastore.model.Warehouse;
@@ -55,6 +59,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -74,6 +79,10 @@ public class Catalog {
     private final IntegrationRegistry integrations = new IntegrationRegistry();
     /** The files COPY has loaded, for LOAD_HISTORY and COPY_HISTORY. */
     private final LoadHistory loadHistory = new LoadHistory();
+    /** The refreshes the account's dynamic tables ran, for DYNAMIC_TABLE_REFRESH_HISTORY. */
+    private final DynamicTableRefreshHistory dynamicTableRefreshHistory = new DynamicTableRefreshHistory();
+    /** The account's query history, whose time-travel points a restored state keeps; the executor shares it. */
+    private QueryHistoryTracker queryHistory;
     /**
      * The files each permanent table has loaded, by the table's storage key: what a COPY skips unless FORCE = TRUE,
      * kept with the catalog so a snapshot, a clone and a restored state carry it.
@@ -148,6 +157,12 @@ public class Catalog {
     // Dropped-object retention for UNDROP (Time Travel restore): "KIND:fqName" → every dropped version of that name,
     // oldest first. UNDROP restores the newest, and the next UNDROP of the name the one dropped before it.
     private final Map<String, List<DroppedObject>> droppedObjects = new ConcurrentHashMap<>();
+    /**
+     * The latest table version of each name purged with a retention of 0, kept only to be listed (see
+     * {@link #listedOnlyVersions}); guarded by the dropped versions' lock.
+     */
+    private final Map<String, DroppedObject> listedOnly = new HashMap<>();
+
     /** Told of every dropped version {@link #purgeExpiredDropped} forgets for good; null for none. */
     private volatile DroppedVersionPurge droppedVersionPurge;
 
@@ -178,6 +193,15 @@ public class Catalog {
             schema.setOwner(null);
             schema.setComment(seeded.comment());
             system.addSchema(schema);
+            if (seeded == SystemSchema.ACCOUNT_USAGE) {
+                AccountUsageViews.seed(schema);
+            }
+        }
+        // Its database roles are the share's, which no role owns.
+        for (final String name : SystemDatabase.roles()) {
+            final DatabaseRole role = new DatabaseRole(SystemDatabase.NAME, name);
+            role.setOwner(null);
+            system.putDatabaseRole(role);
         }
         system.setReadOnly(true);
         this.currentDatabase = "SNOWFLAKE";
@@ -193,18 +217,23 @@ public class Catalog {
         // beside it (live-verified).
         final Database db = new Database(name);
         db.setOwner(currentRoleForOwner());
+        // The PUBLIC schema is created by the same statement, so the creating role owns it as it owns the database
+        // (live-verified: the PUBLIC schema's owner is the database's).
+        if (db.hasSchema("PUBLIC")) {
+            db.getSchema("PUBLIC").setOwner(db.getOwner());
+        }
         databases.put(name, db);
         // A dropped database's privileges are not the new one's (GrantNames).
         GrantNames.created(this, "DATABASE", name);
     }
 
-    public void cloneDatabase(final String sourceName, final String targetName) {
+    public void cloneDatabase(final String sourceName, final String targetName, final CloneContent content) {
         if (databases.containsKey(targetName)) {
             throw new RuntimeException(alreadyExists(targetName));
         }
 
         final Database sourceDb = databaseExact(sourceName);
-        final Database targetDb = sourceDb.clone(targetName);
+        final Database targetDb = sourceDb.clone(targetName, content);
         for (final Schema schema : sourceDb.getAllSchemas()) {
             if (targetDb.hasSchema(schema.getName())) {
                 StreamSources.carryClonedStates(this, schema, targetDb.getSchema(schema.getName()));
@@ -271,8 +300,10 @@ public class Catalog {
      * Drop a schema and move the session off it when it was the current one.
      *
      * <p>★ THE SCHEMA FALLS BACK TO PUBLIC, not to nothing — live leaves the DATABASE alone and puts
-     * the schema back to PUBLIC, which is the same landing place {@link #useDatabase} chooses. Only
-     * dropping the database itself clears both.
+     * the schema back to PUBLIC, which is the same landing place {@link #useDatabase} chooses, or to none where
+     * PUBLIC is gone too; a restore of the dropped schema does not bring the session back (live-verified). Only
+     * dropping the database itself clears both. Another session keeps the name it holds (see
+     * {@link #getCurrentSchema}).
      *
      * @param databaseName the schema's database
      * @param schemaName the schema to drop
@@ -281,7 +312,7 @@ public class Catalog {
     public void dropSchema(final String databaseName, final String schemaName, final boolean cascade) {
         final Database database = getDatabase(databaseName);
         database.dropSchema(schemaName, cascade);
-        if (schemaName.equalsIgnoreCase(getCurrentSchema())
+        if (schemaName.equalsIgnoreCase(heldSchemaName())
                 && database.getName().equalsIgnoreCase(getCurrentDatabase())) {
             setCurrentSchemaName(database.hasSchema("PUBLIC") ? "PUBLIC" : null);
         }
@@ -359,20 +390,6 @@ public class Catalog {
         PolicyReferences.repoint(allSchemas(), null, from, new String[] {target.getName(), schema.getName()});
     }
 
-    /**
-     * Leave the session with no current schema when its current schema's name no longer names one. The session holds
-     * its schema by name: a rename away leaves it a current database and no current schema, so CURRENT_SCHEMA() is
-     * NULL, while a SWAP hands the name to the other schema, which the session then is in (live-verified).
-     */
-    public void releaseVanishedCurrentSchema() {
-        final String database = getCurrentDatabase();
-        final String schema = getCurrentSchema();
-        if (database != null && schema != null && databases.containsKey(database)
-                && !databaseExact(database).hasSchemaExact(schema)) {
-            setCurrentSchemaName(null);
-        }
-    }
-
     /** Every schema of every database: the places an attachment to a policy anywhere can be. */
     private List<Schema> allSchemas() {
         final List<Schema> schemas = new ArrayList<>();
@@ -401,27 +418,47 @@ public class Catalog {
     }
 
     /** True when a masking policy ({@code masking}) or row access policy is attached to any column,
-     *  table or view — Snowflake refuses to drop or replace such a policy (live-verified). Attachment
-     *  names may be stored bare or qualified, so the comparison uses the last segment. */
-    public boolean isPolicyInUse(final String policyName, final boolean masking) {
-        final String bare = policyName.toUpperCase(Locale.ROOT);
+     *  table or view — Snowflake refuses to drop or replace such a policy (live-verified). An attachment
+     *  holds the policy its full name names (see {@link PolicyReferences#names}): a namesake in another
+     *  schema, or a quoted name differing only in case, is another policy, and not in use (live-verified).
+     *
+     * @param home       the policy's schema
+     * @param policyName the policy's own name */
+    public boolean isPolicyInUse(final Schema home, final String policyName, final boolean masking) {
         for (final Database database : getAllDatabases()) {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final Table table : schema.getTables()) {
                     if (masking) {
                         for (final TableColumn column : table.getColumns()) {
-                            if (policyNameMatches(column.getMaskingPolicyName(), bare)) {
+                            if (holds(column.getMaskingPolicyName(), schema, home, policyName)) {
                                 return true;
                             }
                         }
-                    } else if (policyNameMatches(table.getRowAccessPolicyName(), bare)) {
+                    } else if (holds(table.getRowAccessPolicyName(), schema, home, policyName)) {
                         return true;
                     }
                 }
-                if (!masking) {
-                    for (final View view : schema.getViews()) {
-                        if (policyNameMatches(view.getRowAccessPolicyName(), bare)) {
+                for (final View view : schema.getViews()) {
+                    if (!masking) {
+                        if (holds(view.getRowAccessPolicyName(), schema, home, policyName)) {
                             return true;
+                        }
+                    } else if (view.hasResolvedColumns()) {
+                        // A view's own column masked by the policy holds it too (live-verified).
+                        for (final TableColumn column : view.getResolvedColumns()) {
+                            if (holds(column.getMaskingPolicyName(), schema, home, policyName)) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                for (final MaterializedView view : schema.getMaterializedViews()) {
+                    if (masking && view.hasResolvedColumns()) {
+                        // A materialized view's own column masked by the policy holds it, as a view's does.
+                        for (final TableColumn column : view.getResolvedColumns()) {
+                            if (holds(column.getMaskingPolicyName(), schema, home, policyName)) {
+                                return true;
+                            }
                         }
                     }
                 }
@@ -430,12 +467,9 @@ public class Catalog {
         return false;
     }
 
-    private boolean policyNameMatches(final String attached, final String bare) {
-        if (attached == null) {
-            return false;
-        }
-        final int dot = attached.lastIndexOf('.');
-        return (dot >= 0 ? attached.substring(dot + 1) : attached).equalsIgnoreCase(bare);
+    /** Whether an attachment recorded on a relation of {@code where} holds the policy {@code home} names so. */
+    private boolean holds(final String attached, final Schema where, final Schema home, final String policyName) {
+        return PolicyReferences.names(this, attached, where, home, policyName);
     }
 
     public List<Database> getAllDatabases() {
@@ -617,7 +651,31 @@ public class Catalog {
         return scope != null ? scope[0] : currentDatabase;
     }
 
+    /**
+     * The session's current schema, or null. The session holds its schema by name (live-verified): while its current
+     * database holds no schema of that name — the session or another renamed it away, or another dropped it — the
+     * session has no current schema, and a schema renamed back, restored or created under the name is current again.
+     *
+     * @return the current schema's name, or null
+     */
     public String getCurrentSchema() {
+        final String[] scope = sessionScope.get();
+        final String database = scope != null ? scope[0] : currentDatabase;
+        final String schema = scope != null ? scope[1] : currentSchema;
+        if (schema == null || database == null) {
+            return schema;
+        }
+        final Database held = databases.get(database);
+        return held == null || held.hasSchemaExact(schema) ? schema : null;
+    }
+
+    /**
+     * The name of the schema the session holds as its current one, whether or not its database holds a schema of
+     * that name now: what a saved context keeps, so that a schema of the name is current again once there is one.
+     *
+     * @return the held name, or null
+     */
+    public String heldSchemaName() {
         final String[] scope = sessionScope.get();
         return scope != null ? scope[1] : currentSchema;
     }
@@ -1163,6 +1221,29 @@ public class Catalog {
         return loadHistory;
     }
 
+    /** The refreshes the account's dynamic tables ran, under the names they ran under. */
+    public DynamicTableRefreshHistory getDynamicTableRefreshHistory() {
+        return dynamicTableRefreshHistory;
+    }
+
+    /**
+     * The history the account's statements are kept in, whose time-travel points a snapshot keeps.
+     *
+     * @return the history, or null before an executor shares one
+     */
+    public QueryHistoryTracker getQueryHistory() {
+        return queryHistory;
+    }
+
+    /**
+     * Share an executor's query history with the catalog's snapshots.
+     *
+     * @param history the history
+     */
+    public void useQueryHistory(final QueryHistoryTracker history) {
+        this.queryHistory = history;
+    }
+
     /**
      * The files each permanent table has loaded, by the table's storage key, each file as its load key: what a COPY
      * of the table skips unless FORCE = TRUE.
@@ -1191,6 +1272,11 @@ public class Catalog {
             ? sessionContext.getCreatingRole() : "SYSADMIN";
     }
 
+    /** The session's primary role, or null where no session is bound. */
+    public String currentPrimaryRole() {
+        return sessionContext != null ? sessionContext.getCurrentRole() : null;
+    }
+
     /**
      * The owner role of a schema-level object, for ownership-based authorization. Returns null when
      * the type is not one that carries an owner here, or the object cannot be resolved.
@@ -1205,21 +1291,22 @@ public class Catalog {
                 case "VIEW": return resolveView(objectName).getOwner();
                 case "SCHEMA": return resolveSchema(objectName).getOwner();
                 case "DATABASE": return getDatabase(objectName).getOwner();
-                case "STAGE": return getStage(objectName).getOwner();
+                case "STAGE": return getStageExact(objectName).getOwner();
                 case "WAREHOUSE": return getWarehouse(objectName).getOwner();
                 default: {
-                    // Schema-level objects: resolve the containing schema, then the object by bare name.
+                    // Schema-level objects: resolve the containing schema, then the object by its exact bare name, as
+                    // the statement names it: an unquoted LX_S is not the owner of "lx_s".
                     final Schema schema = resolveSchemaForObject(objectName);
                     final String bare = objectName(objectName);
                     switch (objectType.toUpperCase(Locale.ROOT)) {
-                        case "STREAM": return schema.getStream(bare).getOwner();
-                        case "TASK": return schema.getTask(bare).getOwner();
-                        case "PIPE": return schema.getPipe(bare).getOwner();
+                        case "STREAM": return schema.getStreamExact(bare).getOwner();
+                        case "TASK": return schema.getTaskExact(bare).getOwner();
+                        case "PIPE": return schema.getPipeExact(bare).getOwner();
                         case "DYNAMIC TABLE": return schema.getDynamicTable(bare).getOwner();
                         case "MATERIALIZED VIEW": return schema.getMaterializedView(bare).getOwner();
-                        case "MASKING POLICY": return schema.getMaskingPolicy(bare).getOwner();
-                        case "ROW ACCESS POLICY": return schema.getRowAccessPolicy(bare).getOwner();
-                        case "TAG": return schema.getTag(bare).getOwner();
+                        case "MASKING POLICY": return schema.getMaskingPolicyExact(bare).getOwner();
+                        case "ROW ACCESS POLICY": return schema.getRowAccessPolicyExact(bare).getOwner();
+                        case "TAG": return schema.getTagExact(bare).getOwner();
                         default: return null;
                     }
                 }
@@ -1270,15 +1357,29 @@ public class Catalog {
      * @param role the role named, upper-cased
      */
     private void requireAssigned(final String role) {
+        if (!mayActivate(role)) {
+            throw new RuntimeException(SqlAccessControlError.roleNotAssigned(role));
+        }
+    }
+
+    /**
+     * Whether the session's user may activate a role, as {@link #requireAssigned} decides it: granted to the user,
+     * or to a role the user may activate, or PUBLIC. A session whose user this catalog does not hold may activate
+     * any role.
+     *
+     * @param role the role named, upper-cased
+     * @return true when USE ROLE would accept the role for the session's user
+     */
+    public boolean mayActivate(final String role) {
         if (sessionContext == null || "PUBLIC".equals(role)) {
-            return;
+            return true;
         }
         // The engine's own session runs as SYSTEM on behalf of the user CURRENT_USER() names.
         final String securityUser = sessionContext.getCurrentUser();
         final String executing = "SYSTEM".equals(securityUser) ? sessionContext.getDisplayUser() : securityUser;
         final User user = executing == null ? null : users.get(NameKeys.keyFor(users, executing));
         if (user == null) {
-            return;
+            return true;
         }
         final Set<String> reached = new HashSet<String>();
         final List<String> pending = new ArrayList<String>(user.getGrantedRoles());
@@ -1289,9 +1390,7 @@ public class Catalog {
                 pending.addAll(held.getGrantedRoles());
             }
         }
-        if (!reached.contains(role)) {
-            throw new RuntimeException(SqlAccessControlError.roleNotAssigned(role));
-        }
+        return reached.contains(role);
     }
 
     /**
@@ -1355,6 +1454,7 @@ public class Catalog {
         synchronized (droppedObjects) {
             // The versions whose retention ran out go first, so a long run of drops holds no rows nothing can restore.
             purgeExpiredDropped();
+            listedOnly.remove(key);
             List<DroppedObject> versions = droppedObjects.get(key);
             if (versions == null) {
                 versions = new ArrayList<>();
@@ -1402,6 +1502,19 @@ public class Catalog {
     }
 
     /**
+     * The table versions purged with a retention of 0 that SHOW TABLES HISTORY still lists, by "TABLE:fqName": the
+     * latest of each name until the name is dropped again, which UNDROP no longer finds (live-verified).
+     *
+     * @return a copy of the listings
+     */
+    public Map<String, DroppedObject> listedOnlyVersions() {
+        synchronized (droppedObjects) {
+            purgeExpiredDropped();
+            return new TreeMap<>(listedOnly);
+        }
+    }
+
+    /**
      * Who is told when a dropped version is forgotten for good: the engine, which deletes the stage files the version
      * set aside.
      *
@@ -1425,8 +1538,14 @@ public class Catalog {
             for (final DroppedObject version : entry.getValue()) {
                 if (!version.isPurgedAt(now)) {
                     kept.add(version);
-                } else if (purge != null) {
-                    purge.purged(entry.getKey(), version);
+                } else {
+                    // A table kept for no day is still listed, its data gone, until its name is dropped again.
+                    if (version.getRetentionDays() <= 0 && version.getObject() instanceof Table) {
+                        listedOnly.put(entry.getKey(), version.listedOnly());
+                    }
+                    if (purge != null) {
+                        purge.purged(entry.getKey(), version);
+                    }
                 }
             }
             if (kept.size() != entry.getValue().size()) {
@@ -1483,20 +1602,35 @@ public class Catalog {
             throw new NameTakenException(alreadyExists(objName));
         }
         final Stage stage = new Stage(objName, type, url, "CSV", false, null, s3PathResolver);
-        stage.setOwner(FutureGrants.ownerOfNew(this, "STAGE", schema, objName));
+        final CreationGrants grantsOfNew = FutureGrants.ofNew(this, "STAGE", schema, objName);
+        stage.setOwner(grantsOfNew.owner());
         schema.addStage(stage);
+        grantsOfNew.apply();
     }
 
     public void createStage(final String name, final StageType type, final String url,
                            final String fileFormat, final boolean encryption, final String comment) {
+        createStage(name, type, url, fileFormat, encryption, comment, false);
+    }
+
+    /**
+     * CREATE [TEMPORARY] STAGE: a temporary stage is its session's own, and takes the name of a permanent stage,
+     * hiding it from that session alone (see Schema.holdsStageFor).
+     */
+    public void createStage(final String name, final StageType type, final String url,
+                            final String fileFormat, final boolean encryption, final String comment,
+                            final boolean temporary) {
         final Schema schema = resolveSchemaForObject(name);
         final String objName = objectName(name);
-        if (schema.hasStageExact(objName)) {
+        if (schema.holdsStageFor(objName, temporary)) {
             throw new NameTakenException(alreadyExists(objName));
         }
         final Stage stage = new Stage(objName, type, url, fileFormat, encryption, comment, s3PathResolver);
-        stage.setOwner(FutureGrants.ownerOfNew(this, "STAGE", schema, objName));
+        stage.setTemporary(temporary);
+        final CreationGrants grantsOfNew = FutureGrants.ofNew(this, "STAGE", schema, objName);
+        stage.setOwner(grantsOfNew.owner());
         schema.addStage(stage);
+        grantsOfNew.apply();
     }
 
     public void dropStage(final String name) {
@@ -1510,6 +1644,17 @@ public class Catalog {
      */
     public void dropStageExact(final String name) {
         resolveSchemaForObject(name).dropStageExact(objectName(name));
+    }
+
+    /**
+     * Drops the stage a CREATE OR REPLACE of that lifetime replaces: a temporary stage replaces its session's own
+     * temporary one, a permanent stage a permanent one (see Schema.dropStageFor).
+     *
+     * @param name      the name as written, qualified or not
+     * @param temporary whether the new stage is temporary
+     */
+    public void dropStageFor(final String name, final boolean temporary) {
+        resolveSchemaForObject(name).dropStageFor(objectName(name), temporary);
     }
 
     /** ALTER STAGE … RENAME TO — rekey the schema's map and rename the object itself. */
@@ -1611,6 +1756,16 @@ public class Catalog {
     /** The pipe a statement names, exactly: a quoted name in another case is another pipe (live-verified). */
     public Pipe getPipe(final String name) {
         return resolveSchemaForObject(name).getPipeExact(objectName(name));
+    }
+
+    /**
+     * The task a canonical name names, bare or qualified, resolved as a pipe's name is.
+     *
+     * @param name the canonical name
+     * @return the task, or null where no task of exactly that name is in the schema
+     */
+    public Task getTask(final String name) {
+        return resolveSchemaForObject(name).getTaskExact(objectName(name));
     }
 
     public List<Stage> getAllStages() {
@@ -1843,13 +1998,23 @@ public class Catalog {
         return resolveSchemaForObject(qualifiedName).getJoinPolicy(objectName(qualifiedName));
     }
 
-    /** True when a join policy is attached to any table — live refuses to drop or replace one. */
-    public boolean isJoinPolicyInUse(final String policyName) {
-        final String bare = policyName.toUpperCase(Locale.ROOT);
+    /**
+     * True when a join policy is attached to any table or view — live refuses to drop or replace one. An attachment
+     * holds the policy its full name names, as {@link #isPolicyInUse} reads it.
+     *
+     * @param home       the policy's schema
+     * @param policyName the policy's own name
+     */
+    public boolean isJoinPolicyInUse(final Schema home, final String policyName) {
         for (final Database database : databases.values()) {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final Table table : schema.getTables()) {
-                    if (policyNameMatches(table.getJoinPolicyName(), bare)) {
+                    if (holds(table.getJoinPolicyName(), schema, home, policyName)) {
+                        return true;
+                    }
+                }
+                for (final View view : schema.getViews()) {
+                    if (holds(view.getJoinPolicyName(), schema, home, policyName)) {
                         return true;
                     }
                 }
@@ -1879,13 +2044,23 @@ public class Catalog {
         return resolveSchemaForObject(qualifiedName).getAggregationPolicyExact(objectName(qualifiedName));
     }
 
-    /** True when an aggregation policy is attached to any table — live refuses to drop or replace one. */
-    public boolean isAggregationPolicyInUse(final String policyName) {
-        final String bare = policyName.toUpperCase(Locale.ROOT);
+    /**
+     * True when an aggregation policy is attached to any table or view — live refuses to drop or replace one (a
+     * table, live-verified). An attachment holds the policy its full name names, as {@link #isPolicyInUse} reads it.
+     *
+     * @param home       the policy's schema
+     * @param policyName the policy's own name
+     */
+    public boolean isAggregationPolicyInUse(final Schema home, final String policyName) {
         for (final Database database : databases.values()) {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final Table table : schema.getTables()) {
-                    if (policyNameMatches(table.getAggregationPolicyName(), bare)) {
+                    if (holds(table.getAggregationPolicyName(), schema, home, policyName)) {
+                        return true;
+                    }
+                }
+                for (final View view : schema.getViews()) {
+                    if (holds(view.getAggregationPolicyName(), schema, home, policyName)) {
                         return true;
                     }
                 }
@@ -1915,15 +2090,39 @@ public class Catalog {
         return resolveSchemaForObject(qualifiedName).getProjectionPolicyExact(objectName(qualifiedName));
     }
 
-    /** True when a projection policy is attached to any column — live refuses to drop or replace one. */
-    public boolean isProjectionPolicyInUse(final String policyName) {
-        final String bare = policyName.toUpperCase(Locale.ROOT);
+    /**
+     * True when a projection policy is attached to any column of a table or a view — live refuses to drop or replace
+     * one (a table's, live-verified). An attachment holds the policy its full name names, as {@link #isPolicyInUse}
+     * reads it.
+     *
+     * @param home       the policy's schema
+     * @param policyName the policy's own name
+     */
+    public boolean isProjectionPolicyInUse(final Schema home, final String policyName) {
         for (final Database database : databases.values()) {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final Table table : schema.getTables()) {
                     for (final TableColumn column : table.getColumns()) {
-                        if (policyNameMatches(column.getProjectionPolicyName(), bare)) {
+                        if (holds(column.getProjectionPolicyName(), schema, home, policyName)) {
                             return true;
+                        }
+                    }
+                }
+                for (final View view : schema.getViews()) {
+                    if (view.hasResolvedColumns()) {
+                        for (final TableColumn column : view.getResolvedColumns()) {
+                            if (holds(column.getProjectionPolicyName(), schema, home, policyName)) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                for (final MaterializedView view : schema.getMaterializedViews()) {
+                    if (view.hasResolvedColumns()) {
+                        for (final TableColumn column : view.getResolvedColumns()) {
+                            if (holds(column.getProjectionPolicyName(), schema, home, policyName)) {
+                                return true;
+                            }
                         }
                     }
                 }
@@ -1940,6 +2139,41 @@ public class Catalog {
      */
     public Contact findContact(final String qualifiedName) {
         return resolveSchemaForObject(qualifiedName).getContact(objectName(qualifiedName));
+    }
+
+    /**
+     * Rename a contact. A new name resolves as a created one does, and a qualified one naming another schema moves
+     * the contact there, its attachments going with it (live-verified); a name a contact holds there is refused, the
+     * contact's own included.
+     *
+     * @param oldName the contact's name as written
+     * @param newName the new name as written
+     */
+    public void renameContact(final String oldName, final String newName) {
+        final Schema from = resolveSchemaForObject(oldName);
+        final Schema to = resolveSchemaForObject(newName);
+        to.requireCreatable(Privilege.CREATE_CONTACT);
+        if (to.getContact(objectName(newName)) != null) {
+            throw renamedOntoTaken(newName);
+        }
+        final String was = from.qualifiedName(from.getContact(objectName(oldName)).getName());
+        from.renameContact(objectName(oldName), objectName(newName));
+        final Contact renamed = from.getContact(objectName(newName));
+        if (from != to) {
+            from.dropContact(objectName(newName));
+            to.addContact(renamed);
+        }
+        ContactReferences.repoint(allSchemas(), was, to.qualifiedName(renamed.getName()));
+    }
+
+    /**
+     * Leave the attachments of a contact replaced by another of its name naming nothing: they held the contact
+     * replaced (live-verified).
+     *
+     * @param fullName the replaced contact's full name
+     */
+    public void contactReplaced(final String fullName) {
+        ContactReferences.repoint(allSchemas(), fullName, null);
     }
 
     /**
@@ -2028,6 +2262,14 @@ public class Catalog {
         final Role publicRole = new Role("PUBLIC");
         publicRole.setComment("Public role is automatically available to every user in the account.");
         roles.put("PUBLIC", publicRole);
+        // PUBLIC holds the SNOWFLAKE database's roles every role may use, granted by none (see SystemDatabase).
+        final Database system = getDatabase(SystemDatabase.NAME);
+        for (final String held : SystemDatabase.publicRoles()) {
+            final DatabaseRole role = system == null ? null : system.getDatabaseRole(held);
+            if (role != null) {
+                publicRole.grantDatabaseRole(role.getQualifiedName(), "");
+            }
+        }
 
         // Set up role hierarchy (roles inherit privileges from granted roles)
         // ACCOUNTADMIN inherits from SECURITYADMIN and SYSADMIN
@@ -2175,19 +2417,48 @@ public class Catalog {
         roles.remove(name);
         // What the role owned is the dropping role's from now on (see RoleOwnership).
         RoleOwnership.handOver(this, heldAs, currentRoleForOwner());
+        // Every grant that names the role goes with it (DROP ROLE, documented): the role granted to roles and users,
+        // and what it granted as the grantor - roles, database roles and privileges, on the objects it owned too.
+        for (final Role holder : roles.values()) {
+            for (final String granted : holder.getGrantedRoles()) {
+                if (granted.equals(heldAs) || heldAs.equals(holder.getRoleGrantor(granted))) {
+                    holder.revokeRole(granted);
+                }
+            }
+            holder.revokeGrantedBy(heldAs);
+        }
+        for (final Database database : getAllDatabases()) {
+            for (final DatabaseRole holder : database.getDatabaseRoles()) {
+                holder.revokeGrantedBy(heldAs);
+            }
+        }
+        for (final User user : users.values()) {
+            for (final String granted : user.getGrantedRoles()) {
+                if (granted.equals(heldAs) || heldAs.equals(user.getRoleGrantor(granted))) {
+                    user.revokeRole(granted);
+                }
+            }
+            user.revokeGrantedBy(heldAs);
+        }
+        if (sessionContext != null) {
+            sessionContext.removeActiveRole(heldAs);
+        }
     }
 
     /**
-     * Check if a role is a system role
+     * Whether a role's canonical name is a system role's: a quoted name is that name alone, so {@code "sysadmin"}
+     * names a role of its own beside SYSADMIN, as every quoted identifier names exactly what it spells.
+     *
+     * @param roleName the role's canonical name
+     * @return whether it is a system role's
      */
     public boolean isSystemRole(final String roleName) {
-        final String upperName = roleName.toUpperCase(Locale.ROOT);
-        return upperName.equals("ORGADMIN") ||
-               upperName.equals("ACCOUNTADMIN") ||
-               upperName.equals("SECURITYADMIN") ||
-               upperName.equals("USERADMIN") ||
-               upperName.equals("SYSADMIN") ||
-               upperName.equals("PUBLIC");
+        return "ORGADMIN".equals(roleName)
+            || "ACCOUNTADMIN".equals(roleName)
+            || "SECURITYADMIN".equals(roleName)
+            || "USERADMIN".equals(roleName)
+            || "SYSADMIN".equals(roleName)
+            || "PUBLIC".equals(roleName);
     }
 
     /**
@@ -2583,11 +2854,14 @@ public class Catalog {
             throw new RuntimeException(SqlCompilationError.of("Object '" + spelled + "' already exists."));
         }
         final String was = source.qualifiedName(view.getName());
+        // A stream on the view follows it, as a table stream follows its table (StreamSources).
+        StreamSources.bindAll(this);
         source.dropView(view.getName());
         view.rename(newName);
         target.addView(view);
         // Its privileges go with it (GrantNames).
         GrantNames.renamed(this, "VIEW", was, target.qualifiedName(view.getName()));
+        StreamSources.respellAll(this);
     }
 
     /**

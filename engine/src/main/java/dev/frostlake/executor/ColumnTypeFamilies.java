@@ -33,6 +33,7 @@ import dev.frostlake.types.StructuredObjectType;
 import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.types.VectorType;
 
 import java.util.Locale;
 
@@ -79,17 +80,34 @@ public final class ColumnTypeFamilies {
         if (target == null || sourceType == null) {
             return;
         }
+        // A VECTOR column takes a VECTOR of its own type and nothing else: not an ARRAY, a VARIANT or a text that a
+        // cast would convert, nor a VECTOR of another element type, "expecting VECTOR(FLOAT, 3) but got ARRAY for
+        // column V" (live-verified, for INSERT, UPDATE and MERGE).
+        if (target.getDataType() instanceof VectorType && !target.getDataType().equals(sourceType)) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Expression type does not match column data type, expecting "
+                + spell(target.getDataType()) + " but got " + spell(sourceType)
+                + " for column " + target.getName()));
+        }
         final String targetFamily = family(target.getDataType());
         final String sourceFamily = family(sourceType);
         if (targetFamily == null || sourceFamily == null) {
             return;
         }
+        // A semi-structured value is no structured one: an ARRAY_CONSTRUCT written to an ARRAY(INT) column is
+        // "incompatible types: [ARRAY] and [ARRAY(NUMBER(38,0))]", and an OBJECT or a VARIANT in an OBJECT, a MAP or a
+        // structured ARRAY column likewise (live-verified, for INSERT, UPDATE, MERGE and a CTAS column list).
         if ("TIMESTAMP".equals(targetFamily) && "TIME".equals(sourceFamily)
-                || "STRING".equals(targetFamily) && sourceFamily.startsWith(INTERVAL_FAMILY)) {
+                || "STRING".equals(targetFamily) && sourceFamily.startsWith(INTERVAL_FAMILY)
+                || isStructuredFamily(targetFamily) && ("ARRAY".equals(sourceFamily) || "OBJECT".equals(sourceFamily)
+                    || "VARIANT".equals(sourceFamily))) {
             throw new RuntimeException(SqlCompilationError.of("incompatible types: ["
                 + spell(sourceType) + "] and [" + spell(target.getDataType()) + "]"));
         }
-        if (!accepts(targetFamily, sourceFamily) || zonedIntoUnzoned(target.getDataType(), sourceType)) {
+        // A structured value reaches a structured column only when it coerces to the column's type, its elements
+        // to the column's elements (see StructuredTypes.coercible).
+        if (!accepts(targetFamily, sourceFamily) || zonedIntoUnzoned(target.getDataType(), sourceType)
+                || isStructuredFamily(targetFamily) && !StructuredTypes.coercible(sourceType, target.getDataType())) {
             throw new RuntimeException(SqlCompilationError.of(
                 "Expression type does not match column data type, expecting "
                 + spell(target.getDataType()) + " but got " + spell(sourceType)

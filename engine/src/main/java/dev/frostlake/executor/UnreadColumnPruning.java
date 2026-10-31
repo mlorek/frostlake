@@ -203,6 +203,30 @@ final class UnreadColumnPruning {
         return constants;
     }
 
+    /**
+     * Whether an expression is built from literals alone, its ANDs included: what it answers is decided before any
+     * row is read.
+     */
+    static boolean builtFromLiterals(final ParserRuleContext expr) {
+        final List<TerminalNode> tokens = new ArrayList<TerminalNode>();
+        terminals(expr, tokens);
+        for (final TerminalNode token : tokens) {
+            final int type = token.getSymbol().getType();
+            if (!CONSTANT_TOKENS.contains(type) && type != FrostlakeParser.AND) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Whether a token is one a condition of literals alone is written with: a literal, a comparison, an operator of
+     * NOT, AND, OR, IS, + and -, and a bracket.
+     */
+    static boolean isConstantToken(final int type) {
+        return CONSTANT_TOKENS.contains(type) || type == FrostlakeParser.AND;
+    }
+
     private static void conjuncts(final FrostlakeParser.BooleanExprContext expr,
                                   final List<ParserRuleContext> constants) {
         if (expr instanceof FrostlakeParser.AndExprContext) {

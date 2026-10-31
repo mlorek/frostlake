@@ -17,6 +17,7 @@
 package dev.frostlake.rt.scala;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.config.EngineConfig;
 import dev.frostlake.storage.ResultSet;
 
 import org.junit.jupiter.api.AfterEach;
@@ -51,6 +52,9 @@ public class ScalaJarHandlerTest {
         scalaJar = buildScalaJar();
 
         engine = new DatabaseEngine();
+        // The JAR is imported by its local path, the affordance the default config refuses (a real account names
+        // a stage).
+        engine.getConfig().setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
         engine.execute("CREATE DATABASE db");
         engine.execute("USE DATABASE db");
         engine.execute("CREATE SCHEMA s");

@@ -29,7 +29,7 @@ import java.util.List;
  * ({@link CoercedNumericArgumentAccumulator}) and takes live's whole-number rule instead.
  */
 public class PercentileContAccumulator implements AggregateFunction.Accumulator, ApproximateAwareAccumulator,
-    CoercedNumericArgumentAccumulator {
+    CoercedNumericArgumentAccumulator, DecfloatAwareAccumulator {
     private final List<Object> values = new ArrayList<>();
     private boolean approximateArgument;
     private boolean coercedArgument;
@@ -60,6 +60,22 @@ public class PercentileContAccumulator implements AggregateFunction.Accumulator,
         this.coercedArgument = coerced;
     }
 
+    /** Whether the argument is declared DECFLOAT, interpolated to 38 digits (see DecfloatAggregates). */
+    private boolean decfloatArgument;
+
+    /** Whether the call is computed per group, which refuses a DECFLOAT interpolation (see DecfloatAggregates). */
+    private boolean perGroup;
+
+    /** @param computedPerGroup whether a GROUP BY or a PARTITION BY computes the call group by group */
+    public void setPerGroup(final boolean computedPerGroup) {
+        this.perGroup = computedPerGroup;
+    }
+
+    @Override
+    public void setDecfloatArgument(final boolean decfloat) {
+        this.decfloatArgument = decfloat;
+    }
+
     /** The JSON nulls of a VARIANT argument, each sorting after every number (see AggregateNumerics). */
     private int jsonNulls;
 
@@ -78,6 +94,10 @@ public class PercentileContAccumulator implements AggregateFunction.Accumulator,
 
     @Override
     public Object getResult() {
+        if (decfloatArgument) {
+            // Its double weights are taken over the values as ordered, so a descending order is no complement.
+            return DecfloatAggregates.percentileCont(values, percentile, descending, perGroup);
+        }
         // Interpolation reads the same from either end: a fraction counted downwards is its complement upwards.
         final double upwards = descending ? 1 - percentile : percentile;
         return coercedArgument

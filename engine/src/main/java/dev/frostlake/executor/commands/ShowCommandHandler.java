@@ -31,6 +31,7 @@ import dev.frostlake.executor.operators.ResultSetProvider;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.SystemSchema;
 import dev.frostlake.metastore.model.AppObjectKind;
 import dev.frostlake.metastore.model.Database;
@@ -129,6 +130,14 @@ public class ShowCommandHandler implements CommandHandler {
         final ShowListing listing = ShowListing.of(ctx);
         UnmodelledListings.requireParsed(ctx, listing);
         ShowTailSyntax.requireParsed(ctx, listing);
+        if (ctx.EXCHANGE() != null) {
+            // Only the region listing reads a data exchange's scope; any other listing stops at the word, as before.
+            if (listing != ShowListing.REGIONS) {
+                throw SyntaxAfter.unexpected(ctx.DATA());
+            }
+            throw RegionsListing.dataExchangeRefusal(ctx, ctx.objectName() == null ? null
+                : QualifiedName.join(queryExecutor.resolveObjectNameParts(ctx.objectName())));
+        }
         if (listing == ShowListing.REGIONS && ctx.IN() != null) {
             throw RegionsListing.scopeRefusal(ctx);
         }
@@ -804,7 +813,17 @@ public class ShowCommandHandler implements CommandHandler {
             }
             return showExecutor.showObjects(scope.name());
         } else if (ctx.ORGANIZATION() != null && ctx.ACCOUNTS() != null) {
-            return showExecutor.showOrganizationAccounts();
+            if (ctx.LIKE() != null && ctx.showTail() != null && ctx.showTail().STARTS() != null) {
+                // The organization's listing reads a LIKE, and no STARTS WITH after one (live-verified).
+                throw SyntaxAfter.unexpected(ctx.stringText());
+            }
+            // Only the organization account lists the organization's accounts, which this account is not: the
+            // listing is refused whatever the role, LIKE or no LIKE (live-verified).
+            final SessionContext session = queryExecutor.getSecurityManager() == null ? null
+                : queryExecutor.getSecurityManager().getSessionContext();
+            throw new PrivilegeRefusal(SqlAccessControlError.manageAccountsRequired(
+                session == null ? null : session.getCurrentRole(), session != null && session.isSecondaryRolesInUse(),
+                catalog.getAccountLocator()));
         } else if (ctx.ACCOUNTS() != null) {
             if (ctx.showAccountsScope() != null) {
                 // The listing takes no scope: an IN with nothing after it is unfinished, any other is refused whole.
@@ -888,7 +907,10 @@ public class ShowCommandHandler implements CommandHandler {
             if (database == null) {
                 throw NoCurrentDatabaseRefusal.forStatement();
             }
-            return showExecutor.showParametersInDatabase(database, like);
+            final ResultSet listing = showExecutor.showParametersInDatabase(database, like);
+            // The SNOWFLAKE database is a share's, and neither it nor a schema of its own lists a parameter
+            // (live-verified).
+            return SystemDatabase.is(database) ? new ResultSet(listing.getColumns(), new ArrayList<Row>()) : listing;
         }
         if (scope.SCHEMA() != null) {
             final String[] parts = catalog.withoutAccount(named, 2);
@@ -900,7 +922,9 @@ public class ShowCommandHandler implements CommandHandler {
             if (database == null || schema == null) {
                 throw NoCurrentDatabaseRefusal.forStatement();
             }
-            return showExecutor.showParametersInSchema(database, schema, like);
+            final ResultSet listing = showExecutor.showParametersInSchema(database, schema, like);
+            return SystemSchema.of(database, schema) != null
+                ? new ResultSet(listing.getColumns(), new ArrayList<Row>()) : listing;
         }
         if (scope.TASK() != null) {
             if (scope.objectName() == null) {
@@ -1042,13 +1066,17 @@ public class ShowCommandHandler implements CommandHandler {
 
     /**
      * A schema of the SNOWFLAKE database is not described (live-verified): the share most of them come from lacks
-     * the privilege, and one of the SNOWFLAKE application's asks the session's role for MONITOR. Its
-     * INFORMATION_SCHEMA is described as any database's.
+     * the privilege, one of the SNOWFLAKE application's asks the session's role for MONITOR, and a few are answered
+     * as schemas that are not there. Its INFORMATION_SCHEMA is described as any database's.
      */
     private void refuseSystemSchema(final Schema schema) {
         final SystemSchema system = SystemSchema.of(schema.getDatabaseName(), schema.getName());
         if (system == null) {
             return;
+        }
+        if (system.isHidden()) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Schema",
+                QualifiedName.join(schema.getDatabaseName(), schema.getName())));
         }
         if (system.owner() == null) {
             throw new PrivilegeRefusal(SqlAccessControlError.insufficientPrivileges("schema", schema.getName())
@@ -1061,6 +1089,16 @@ public class ShowCommandHandler implements CommandHandler {
         throw new PrivilegeRefusal(SqlAccessControlError.privilegeRequired("SCHEMA", schema.getName(),
             session.getCurrentRole(), session.isSecondaryRolesInUse(), Privilege.MONITOR.name(),
             QualifiedName.join(schema.getDatabaseName(), schema.getName())));
+    }
+
+    /** The SNOWFLAKE database is not described: its application asks the session's role for MONITOR (live-verified). */
+    private void refuseSystemDatabase(final String databaseName) {
+        if (!SystemDatabase.is(databaseName) || queryExecutor.getSecurityManager() == null) {
+            return;
+        }
+        final SessionContext session = queryExecutor.getSecurityManager().getSessionContext();
+        throw new PrivilegeRefusal(SqlAccessControlError.privilegeRequired("DATABASE", databaseName,
+            session.getCurrentRole(), session.isSecondaryRolesInUse(), Privilege.MONITOR.name(), databaseName));
     }
 
     /** The name parts DESCRIBE SCHEMA or DATABASE names, refused as live refuses a name with too many parts. */
@@ -1184,6 +1222,12 @@ public class ShowCommandHandler implements CommandHandler {
             DescribeProperties.requireValues(ctx);
             throw new RuntimeException(DescribeTagRefusal.SENTENCE);
         }
+        if (ctx.CONTACT() != null) {
+            // Nor any contact: DESCRIBE CONTACT is an unsupported feature whether or not the contact exists, as live
+            // answers it; SHOW CONTACTS is how one is read back (live-verified).
+            DescribeProperties.requireValues(ctx);
+            throw new RuntimeException("Unsupported feature 'CONTACT'.");
+        }
         RoutineSignatureForm.requireTypesOnly(ctx.dataTypeList());
         final boolean stageProperties = DescribeProperties.describesStage(ctx, queryExecutor);
         if (ctx.ACCOUNT() != null) {
@@ -1198,6 +1242,7 @@ public class ShowCommandHandler implements CommandHandler {
         if (ctx.DATABASE() != null) {
             final String databaseName = describedContainerParts(ctx.objectName(), 1)[0];
             catalog.databaseExact(databaseName);
+            refuseSystemDatabase(databaseName);
             return showExecutor.describeDatabase(databaseName);
         }
         if ((ctx.TABLE() != null || ctx.VIEW() != null) && ctx.EVENT() == null && ctx.ICEBERG() == null
@@ -1618,12 +1663,12 @@ public class ShowCommandHandler implements CommandHandler {
         } else if (ctx.TO() != null) {
             // SHOW GRANTS TO USER/ROLE identifier
             final String targetType = ctx.USER() != null ? "USER" : "ROLE";
-            final String targetName = PrincipalNames.of(ctx.principalName(), queryExecutor);
+            final String targetName = PrincipalNames.of(ctx.grantsPrincipal(), queryExecutor);
             return showExecutor.showGrantsTo(targetType, targetName);
         }
-        if (ctx.OF() != null && ctx.ROLE() != null && ctx.principalName() != null) {
+        if (ctx.OF() != null && ctx.ROLE() != null && ctx.grantsPrincipal() != null) {
             // SHOW GRANTS OF ROLE identifier
-            return showExecutor.showGrantsOfRole(PrincipalNames.of(ctx.principalName(), queryExecutor));
+            return showExecutor.showGrantsOfRole(PrincipalNames.of(ctx.grantsPrincipal(), queryExecutor));
         }
         if (ctx.ON() == null && ctx.TO() == null && ctx.OF() == null) {
             // Bare SHOW GRANTS: what the current user holds.
@@ -1636,6 +1681,10 @@ public class ShowCommandHandler implements CommandHandler {
     private String[] grantsTargetParts(final FrostlakeParser.ShowGrantsTargetContext target) {
         if (target.grantsObjectName() != null && target.grantsObjectName().wholeObjectName() != null) {
             return queryExecutor.resolveWholeObjectNameParts(target.grantsObjectName().wholeObjectName());
+        }
+        if (target.KW_IDENTIFIER_OPEN() != null) {
+            // The word IDENTIFIER with no whole reference after it is the object's own name.
+            return new String[] {target.KW_IDENTIFIER_OPEN().getText().toUpperCase(Locale.ROOT)};
         }
         if (target.identifierArgument() != null) {
             return queryExecutor.resolveIdentifierArgument(target.identifierArgument());

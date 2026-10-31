@@ -19,11 +19,11 @@ package dev.frostlake.security;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.model.CallerGrant;
 import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.Schema;
-import dev.frostlake.metastore.model.SecurableObjectType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -50,44 +50,6 @@ public class SecurityManager {
     public SecurityManager(final Catalog catalog, final SessionContext sessionContext) {
         this.catalog = catalog;
         this.sessionContext = sessionContext;
-    }
-
-    /**
-     * Refuse a statement that needs a privilege the session does not hold on an object, deciding as
-     * {@link #holdsPrivilege} decides: one of the roles a privilege is asked of owns the object or was granted the
-     * privilege, and no administrative role stands in for that. The SYSTEM user, the engine's own, is asked nothing.
-     * Spoken in this engine's own words, for the kinds whose refusal is not measured; the measured ones go through
-     * {@code QueryExecutor.requirePrivilege}.
-     */
-    public void checkPermission(final Privilege requiredPrivilege, final String objectType, final String objectName) {
-        if (!sessionContext.isSecurityEnabled()) {
-            return; // Security checks disabled
-        }
-        final String currentUser = sessionContext.getCurrentUser();
-        // SYSTEM user always has all permissions
-        if ("SYSTEM".equals(currentUser)) {
-            return;
-        }
-        if (holdsPrivilege(requiredPrivilege, objectType, objectName,
-                catalog.getObjectOwnerRole(objectType, objectName))) {
-            logger.debug("Permission granted: {} on {}:{}", requiredPrivilege, objectType, objectName);
-            return;
-        }
-        final String message = String.format(
-            "Permission denied: User '%s' with roles %s does not have %s privilege on %s '%s'",
-            currentUser, askedRoles(), requiredPrivilege, objectType, objectName);
-        logger.warn(message);
-        throw new SecurityException(message);
-    }
-
-    /**
-     * Typed overload of {@link #checkPermission(Privilege, String, String)} for the securable object kinds
-     * modelled by {@link SecurableObjectType}. The string form is retained for the open-ended GRANT object-type
-     * space (FUNCTION, PROCEDURE, SEQUENCE, ROLE, …), which reaches beyond these constants.
-     */
-    public void checkPermission(final Privilege requiredPrivilege, final SecurableObjectType objectType,
-                                final String objectName) {
-        checkPermission(requiredPrivilege, objectType.getCatalogName(), objectName);
     }
 
     /**
@@ -131,6 +93,62 @@ public class SecurityManager {
         throw new SecurityException(String.format(
             "Cannot grant privileges on %s '%s': requires OWNERSHIP of the object or an administrative"
             + " role (ACCOUNTADMIN / SECURITYADMIN / SYSADMIN)", objectType, objectName));
+    }
+
+    /**
+     * Authorize ALTER SCHEMA … ENABLE | DISABLE MANAGED ACCESS (documented). Turning it on asks the schema's owner to
+     * decide every grant too (MANAGE GRANTS, or an administrative role), and every future grant in the schema to be
+     * revoked first; turning it off asks MANAGE GRANTS beside the ownership only while a future grant in the schema is
+     * open. The ALTER's own check stands for the owner otherwise.
+     *
+     * @param schema     the schema
+     * @param enable     whether managed access is turned on
+     * @param futureOpen whether a future grant in the schema is open
+     */
+    public void checkManagedAccessSwitch(final Schema schema, final boolean enable, final boolean futureOpen) {
+        final String schemaName = QualifiedName.join(schema.getDatabaseName(), schema.getName());
+        if (enable && futureOpen) {
+            throw new SecurityException(String.format(Locale.ROOT, "Cannot enable managed access on schema '%s': the"
+                + " future grants in it must be revoked first", schemaName));
+        }
+        if (!enable && !futureOpen) {
+            return;
+        }
+        final boolean unchecked = !sessionContext.isSecurityEnabled()
+            || "SYSTEM".equals(sessionContext.getCurrentUser()) && !restricted();
+        if (unchecked || decidesGrants() && owns(schema.getOwner(), "SCHEMA", schemaName)) {
+            return;
+        }
+        throw new SecurityException(String.format(Locale.ROOT, "Cannot %s managed access on schema '%s'%s: requires"
+            + " OWNERSHIP of the schema and MANAGE GRANTS or an administrative role (ACCOUNTADMIN / SECURITYADMIN /"
+            + " SYSADMIN)",
+            enable ? "enable" : "disable", schemaName, enable ? "" : " while future grants are defined in it"));
+    }
+
+    /**
+     * Refuses to pass the ownership of an object in a schema WITH MANAGED ACCESS, now or through a future grant, to
+     * a role other than the schema's owner or a role granted to it: there ownership passes only to a subordinate role
+     * of the schema owner (documented), whichever role grants it.
+     *
+     * @param schema  the schema the object lives in or the future grant names, or null for none
+     * @param what    the object or the future objects as the refusal names them
+     * @param grantee the role, or the database role, the ownership passes to
+     */
+    public void checkManagedOwnershipGrantee(final Schema schema, final String what, final Role grantee) {
+        if (schema == null || !schema.isManagedAccess() || schema.getOwner() == null || schema.getOwner().isEmpty()) {
+            return;
+        }
+        for (final Role subordinate : holdersUnder(rolesUnder(catalog.resolveRoleName(schema.getOwner())))) {
+            if (subordinate == grantee) {
+                return;
+            }
+        }
+        throw new SecurityException(String.format(
+            "Cannot grant OWNERSHIP on %s to %s '%s': schema '%s' has managed access, where ownership passes only to"
+            + " the schema's owner or a role granted to it", what,
+            grantee instanceof DatabaseRole ? "database role" : "role",
+            grantee instanceof DatabaseRole ? ((DatabaseRole) grantee).getQualifiedName() : grantee.getName(),
+            QualifiedName.join(schema.getDatabaseName(), schema.getName())));
     }
 
     /**
@@ -181,7 +199,8 @@ public class SecurityManager {
 
     /** Whether the session decides every grant: the SYSTEM user, an administrative role, or MANAGE GRANTS. */
     private boolean decidesGrants() {
-        if (!sessionContext.isSecurityEnabled() || "SYSTEM".equals(sessionContext.getCurrentUser())) {
+        if (!sessionContext.isSecurityEnabled()
+                || "SYSTEM".equals(sessionContext.getCurrentUser()) && !restricted()) {
             return true;
         }
         final Set<String> roles = sessionRights();
@@ -273,15 +292,6 @@ public class SecurityManager {
     }
 
     /**
-     * Authorize ALTER of an object: the current session must own the object, hold an administrative
-     * role, or have been granted ALTER (or OWNERSHIP/ALL) on it. Delegates to {@link #checkPermission}
-     * with {@link Privilege#ALTER} — the securityEnabled / SYSTEM-user bypasses are applied there.
-     */
-    public void checkAlter(final SecurableObjectType objectType, final String objectName) {
-        checkPermission(Privilege.ALTER, objectType.getCatalogName(), objectName);
-    }
-
-    /**
      * Whether the session may act as an object's owner: whether {@code owner} is the primary role, one of the
      * secondary roles, or a role any of those inherits, however many levels down. No administrative role
      * stands in for it — ACCOUNTADMIN does not own what another role owns unless that role is granted to it.
@@ -334,7 +344,57 @@ public class SecurityManager {
         if (!sessionContext.isSecurityEnabled() || owner == null) {
             return true;
         }
+        if (restricted()) {
+            return callerGranted(privilege.name(), objectType, objectName)
+                && callerHolds(privilege, objectType, objectName, owner);
+        }
         final Set<String> roles = askedRoles();
+        return roles.contains(catalog.resolveRoleName(owner)) || holdsOwningDatabaseRole(roles, owner)
+            || holdsExactly(holdersUnder(roles), objectType, GrantNames.of(catalog, objectType, objectName),
+                privilege);
+    }
+
+    /**
+     * Whether a caller grant the restricted body's owner holds names a privilege on an object (see
+     * {@link #restricted}): granted on the object itself, on every object of its kind in its schema, its database or
+     * the account, or with ALL CALLER PRIVILEGES.
+     *
+     * @param privilege  the privilege, by its enumeration name, or null for any one
+     * @param objectType the object's kind as privileges record it
+     * @param objectName the object's name in full
+     * @return whether one does
+     */
+    private boolean callerGranted(final String privilege, final String objectType, final String objectName) {
+        final String owner = sessionContext.getRestrictedOwner();
+        final String ownerRole = owner == null ? null : catalog.resolveRoleName(owner);
+        if (ownerRole == null || !catalog.roleExists(ownerRole)) {
+            return false;
+        }
+        final String recorded = GrantNames.of(catalog, objectType, objectName);
+        final String[] containers = GrantNames.containers(objectType, recorded);
+        final String database = containers.length > 0 ? containers[0] : null;
+        final String schema = containers.length > 1 ? QualifiedName.join(containers[0], containers[1]) : null;
+        for (final CallerGrant grant : catalog.getRoleExact(ownerRole).getCallerGrants()) {
+            if (grant.covers(privilege == null ? grant.getPrivilege() : privilege, objectType, recorded, database,
+                    schema)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether the caller of a restricted body holds a privilege on an object by its own rights, which a caller grant
+     * lets the body use: the session's roles, PUBLIC among them, own it or were granted it; the SYSTEM user holds
+     * every one.
+     */
+    private boolean callerHolds(final Privilege privilege, final String objectType, final String objectName,
+                                final String owner) {
+        if ("SYSTEM".equals(sessionContext.getCurrentUser()) || owner == null) {
+            return true;
+        }
+        final Set<String> roles = getEffectiveRoles();
+        roles.add("PUBLIC");
         return roles.contains(catalog.resolveRoleName(owner)) || holdsOwningDatabaseRole(roles, owner)
             || holdsExactly(holdersUnder(roles), objectType, GrantNames.of(catalog, objectType, objectName),
                 privilege);
@@ -353,12 +413,25 @@ public class SecurityManager {
         if (!sessionContext.isSecurityEnabled() || owner == null) {
             return true;
         }
+        if (restricted()) {
+            return callerGranted(null, objectType, objectName)
+                && ("SYSTEM".equals(sessionContext.getCurrentUser()) || holdAny(callerRights(), objectType,
+                    objectName, owner));
+        }
         return holdAny(askedRoles(), objectType, objectName, owner);
+    }
+
+    /** The roles the caller of a restricted body holds its own privileges through: the session's, with PUBLIC. */
+    private Set<String> callerRights() {
+        final Set<String> roles = getEffectiveRoles();
+        roles.add("PUBLIC");
+        return roles;
     }
 
     /**
      * Whether the rights a statement runs with reach an object, which is what lists it in INFORMATION_SCHEMA:
-     * they own it, or hold whatever privilege on it. Inside a stored procedure that runs with owner's rights
+     * they own it, or hold whatever privilege on it, and use its database and schema (see usesContainers). Inside a
+     * stored procedure that runs with owner's rights
      * these are the owner's rights alone - what the caller holds lists nothing there (live-verified). An object
      * with no recorded owner is reached, as is everything while security checks are off.
      *
@@ -371,7 +444,8 @@ public class SecurityManager {
         if (!sessionContext.isSecurityEnabled() || owner == null) {
             return true;
         }
-        return holdAny(reachingRoles(), objectType, objectName, owner);
+        final Set<String> roles = reachingRoles();
+        return holdAny(roles, objectType, objectName, owner) && usesContainers(roles, objectType, objectName);
     }
 
     /**
@@ -389,7 +463,22 @@ public class SecurityManager {
             return true;
         }
         final Set<String> roles = reachingRoles();
-        return holdAny(roles, objectType, objectName, owner) || managesGrants(roles);
+        return holdAny(roles, objectType, objectName, owner) && usesContainers(roles, objectType, objectName)
+            || managesGrants(roles);
+    }
+
+    /**
+     * Whether the roles use an object's containers, which reaching it takes beside a privilege on the object itself:
+     * USAGE on the database and the schema of a schema's object, on the database of a schema (documented: "To access
+     * a specific object within a schema, a role must have USAGE on the database and schema"). Owning a container, ALL
+     * and OWNERSHIP grants count as USAGE.
+     */
+    private boolean usesContainers(final Set<String> roles, final String objectType, final String objectName) {
+        final String[] containers = GrantNames.containers(objectType, objectName);
+        if (containers.length > 0 && !uses(roles, "DATABASE", containers[0])) {
+            return false;
+        }
+        return containers.length < 2 || uses(roles, "SCHEMA", containers[0] + "." + containers[1]);
     }
 
     /**
@@ -398,12 +487,24 @@ public class SecurityManager {
      */
     private Set<String> reachingRoles() {
         final String executableOwner = sessionContext.getExecutableOwner();
-        if (executableOwner == null) {
+        if (executableOwner == null || restricted()) {
             return askedRoles();
         }
         final Set<String> roles = rolesUnder(catalog.resolveRoleName(executableOwner));
         roles.add("PUBLIC");
         return roles;
+    }
+
+    /**
+     * Whether a RESTRICTED CALLER procedure's body runs on this thread. Restricted caller's rights let a body use only
+     * those of its caller's privileges a caller grant names ("every privilege required by the executable must be
+     * specified in one or more caller grants", documented): a privilege on an object, USAGE on its database and schema
+     * included, is held when a caller grant the procedure's owner holds names it and the caller holds it (see
+     * {@link #callerGranted} and {@link #callerHolds}). No other privilege is held - none on the account, none to
+     * create - PUBLIC's and the SYSTEM user's included.
+     */
+    private boolean restricted() {
+        return sessionContext.isRestrictedCaller();
     }
 
     /** Whether one of the roles holds MANAGE GRANTS: ACCOUNTADMIN and SECURITYADMIN, or a role it was granted to. */
@@ -419,9 +520,13 @@ public class SecurityManager {
         return false;
     }
 
+    /**
+     * Whether the roles hold any privilege on an object: one of them owns it, or holds a database role that owns it,
+     * or whatever grant on it reaches them (see {@link #holdsPrivilege}).
+     */
     private boolean holdAny(final Set<String> roles, final String objectType, final String objectName,
                             final String owner) {
-        if (roles.contains(catalog.resolveRoleName(owner))) {
+        if (roles.contains(catalog.resolveRoleName(owner)) || holdsOwningDatabaseRole(roles, owner)) {
             return true;
         }
         final String recorded = GrantNames.of(catalog, objectType, objectName);
@@ -439,7 +544,9 @@ public class SecurityManager {
      */
     private Set<String> askedRoles() {
         final Set<String> roles = sessionRights();
-        roles.add("PUBLIC");
+        if (!restricted()) {
+            roles.add("PUBLIC");
+        }
         final String rightsOwner = ownerRights.get();
         if (rightsOwner != null) {
             roles.addAll(rolesUnder(rightsOwner));
@@ -450,9 +557,13 @@ public class SecurityManager {
     /**
      * The roles the session's rights come from: the session's own (see {@link #getEffectiveRoles}), or inside a
      * stored procedure that runs with owner's rights the owner's alone, with PUBLIC: such a procedure runs with its
-     * owner's privileges and none of its caller's (documented).
+     * owner's privileges and none of its caller's (documented). Inside a RESTRICTED CALLER body there are none (see
+     * {@link #restricted}).
      */
     private Set<String> sessionRights() {
+        if (restricted()) {
+            return new HashSet<>();
+        }
         final String executableOwner = sessionContext.getExecutableOwner();
         if (executableOwner == null) {
             return getEffectiveRoles();
@@ -465,14 +576,20 @@ public class SecurityManager {
     /**
      * Whether the session holds a privilege on the account: one of its roles (see {@link #sessionRights}) was granted
      * it on the account, or is a system role that holds it from the start - ACCOUNTADMIN every privilege on the
-     * account, USERADMIN, and so SECURITYADMIN above it, CREATE USER and CREATE ROLE (documented). The SYSTEM user
-     * holds every one, as does anything while security checks are off.
+     * account, SECURITYADMIN MANAGE GRANTS, USERADMIN, and so SECURITYADMIN above it, CREATE USER and CREATE ROLE
+     * (documented). The SYSTEM user holds every one, as does anything while security checks are off.
      *
      * @param privilege the privilege the statement needs
      * @return whether the statement may go on
      */
     public boolean holdsAccountPrivilege(final Privilege privilege) {
-        if (!sessionContext.isSecurityEnabled() || "SYSTEM".equals(sessionContext.getCurrentUser())) {
+        if (!sessionContext.isSecurityEnabled()) {
+            return true;
+        }
+        if (restricted()) {
+            return false;
+        }
+        if ("SYSTEM".equals(sessionContext.getCurrentUser())) {
             return true;
         }
         final Set<String> roles = sessionRights();
@@ -483,7 +600,27 @@ public class SecurityManager {
         if ((privilege == Privilege.CREATE_USER || privilege == Privilege.CREATE_ROLE) && roles.contains("USERADMIN")) {
             return true;
         }
+        if (privilege == Privilege.MANAGE_GRANTS) {
+            return managesGrants(roles);
+        }
         return holds(holdersUnder(roles), "ACCOUNT", "ACCOUNT", privilege);
+    }
+
+    /**
+     * Whether the session may act as a role's or a user's owner, as a DROP or a replacement of either asks (see
+     * {@link #actsAsOwner}). The SYSTEM user, the engine's own, may for every one, as it holds every account
+     * privilege (see {@link #holdsAccountPrivilege}), and so may anything while security checks are off.
+     *
+     * @param owner the role or user's owner role; null when none is recorded, which passes
+     */
+    public boolean mayActAsPrincipalOwner(final String owner) {
+        if (!sessionContext.isSecurityEnabled()) {
+            return true;
+        }
+        if (restricted()) {
+            return false;
+        }
+        return "SYSTEM".equals(sessionContext.getCurrentUser()) || actsAsOwner(owner);
     }
 
     /**
@@ -497,7 +634,13 @@ public class SecurityManager {
      * @return whether one of the session's roles may alter the user
      */
     public boolean mayModifyUser(final String userName, final String owner) {
-        if (!sessionContext.isSecurityEnabled() || "SYSTEM".equals(sessionContext.getCurrentUser())) {
+        if (!sessionContext.isSecurityEnabled()) {
+            return true;
+        }
+        if (restricted()) {
+            return false;
+        }
+        if ("SYSTEM".equals(sessionContext.getCurrentUser())) {
             return true;
         }
         final Set<String> roles = sessionRights();
@@ -546,6 +689,9 @@ public class SecurityManager {
         if (!sessionContext.isSecurityEnabled() || owner == null) {
             return true;
         }
+        if (restricted()) {
+            return false;
+        }
         final String ownerRole = catalog.resolveRoleName(owner);
         final String rightsOwner = ownerRights.get();
         final String acting = rightsOwner != null ? rightsOwner : sessionContext.getCreatingRole();
@@ -583,11 +729,24 @@ public class SecurityManager {
         if (!sessionContext.isSecurityEnabled()) {
             return null;
         }
+        if (restricted()) {
+            // A restricted body uses a container by a caller grant of USAGE on it, its caller holding that USAGE.
+            if (!usesByCallerGrant("DATABASE", databaseName)) {
+                return "DATABASE";
+            }
+            return usesByCallerGrant("SCHEMA", databaseName + "." + schemaName) ? null : "SCHEMA";
+        }
         final Set<String> roles = askedRoles();
         if (!uses(roles, "DATABASE", databaseName)) {
             return "DATABASE";
         }
         return uses(roles, "SCHEMA", databaseName + "." + schemaName) ? null : "SCHEMA";
+    }
+
+    /** Whether a restricted body uses a container: a caller grant names USAGE on it, and its caller may use it. */
+    private boolean usesByCallerGrant(final String containerType, final String containerName) {
+        return callerGranted(Privilege.USAGE.name(), containerType, containerName)
+            && ("SYSTEM".equals(sessionContext.getCurrentUser()) || uses(callerRights(), containerType, containerName));
     }
 
     private boolean uses(final Set<String> roles, final String containerType, final String containerName) {
@@ -721,6 +880,18 @@ public class SecurityManager {
             }
         }
         return closureOf(activated);
+    }
+
+    /**
+     * The roles enabled in the session, as INFORMATION_SCHEMA.ENABLED_ROLES lists them: every role in use and every
+     * role granted to one of them, however many levels down, and PUBLIC, which is always enabled (documented).
+     *
+     * @return the roles' names
+     */
+    public Set<String> enabledRoles() {
+        final Set<String> roles = getEffectiveRoles();
+        roles.add("PUBLIC");
+        return roles;
     }
 
     /**

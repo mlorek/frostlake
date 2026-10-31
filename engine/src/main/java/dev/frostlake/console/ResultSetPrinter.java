@@ -22,6 +22,7 @@ import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Renders a JDBC {@link ResultSet} for the console clients without ever rewinding it: result
@@ -107,7 +108,8 @@ final class ResultSetPrinter {
         println(sepLine);
         final StringBuilder headerLine = new StringBuilder("|");
         for (int i = 0; i < columnCount; i++) {
-            headerLine.append(" ").append(String.format("%-" + columnWidths[i] + "s", headers[i])).append(" |");
+            headerLine.append(" ").append(String.format(Locale.ROOT, "%-" + columnWidths[i] + "s",
+                headers[i])).append(" |");
         }
         println(headerLine.toString());
         println(sepLine);
@@ -115,7 +117,8 @@ final class ResultSetPrinter {
         for (final String[] row : rows) {
             final StringBuilder rowLine = new StringBuilder("|");
             for (int i = 0; i < columnCount; i++) {
-                rowLine.append(" ").append(String.format("%-" + columnWidths[i] + "s", row[i])).append(" |");
+                rowLine.append(" ").append(String.format(Locale.ROOT, "%-" + columnWidths[i] + "s",
+                    row[i])).append(" |");
             }
             println(rowLine.toString());
         }

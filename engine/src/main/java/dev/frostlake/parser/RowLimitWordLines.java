@@ -149,6 +149,36 @@ final class RowLimitWordLines {
     }
 
     /**
+     * The lines of a script whose missing separator is the statement word straight after such a word that may be an
+     * alias: the word told for both readings, as a fault after it is — {@code SELECT 1 FROM t1 LIMIT 1e; SELECT 2},
+     * whose number and semicolon the lexer drops, names the second SELECT twice (live-verified). Null for any other
+     * missing separator.
+     *
+     * @param sql       the script's text
+     * @param tokens    the parse's tokens
+     * @param firstLine the line the missing separator is refused in
+     * @return the lines, or null
+     */
+    static List<String> runInValueLines(final String sql, final TokenStream tokens, final String firstLine) {
+        final List<Token> spoken = new ArrayList<>();
+        for (int i = 0; i < tokens.size(); i++) {
+            if (tokens.get(i).getChannel() == Token.DEFAULT_CHANNEL) {
+                spoken.add(tokens.get(i));
+            }
+        }
+        for (int i = 1; i + 1 < spoken.size(); i++) {
+            if (spoken.get(i).getType() != FrostlakeLexer.LPAREN && isRowLimitWord(spoken.get(i - 1))
+                    && SyntaxErrorListener.sentence(spoken.get(i)).equals(firstLine)) {
+                final List<String> told = new ArrayList<>();
+                told.add(firstLine);
+                final List<String> both = withBothReadings(sql, spoken, spoken.get(i).getTokenIndex(), told);
+                return both.size() > 1 ? both : null;
+            }
+        }
+        return null;
+    }
+
+    /**
      * The lines of a script whose missing separator is the bracket after such a word, the word read as the alias of
      * what stands before it and the bracket as the next statement's start: the bracket's lines (see
      * {@link #bracketLines}), or null when the bracket is no such word's.

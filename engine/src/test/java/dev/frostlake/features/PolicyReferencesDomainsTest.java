@@ -210,8 +210,7 @@ public class PolicyReferencesDomainsTest extends MeasuredCellsTestSupport {
                 + "TEST_DB.TEST_SCHEMA.NOSUCH_X."},
             {"SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'nosuch_x', "
                 + "REF_ENTITY_DOMAIN => 'USER'))",
-                "REFUSED SQL compilation error: | User 'NOSUCH_X' does not exist or not authorized. Your primary "
-                + "role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>."},
+                "REFUSED SQL compilation error: | User 'NOSUCH_X' does not exist or not authorized."},
             {"SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'nosuch_x', "
                 + "REF_ENTITY_DOMAIN => 'ACCOUNT'))",
                 "REFUSED SQL compilation error: | Account 'NOSUCH_X' does not exist or not authorized. Your primary "

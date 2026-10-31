@@ -17,9 +17,9 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 
-import java.math.BigDecimal;
 import java.util.List;
 
 /**
@@ -46,7 +46,7 @@ public class ApproxPercentileEstimate extends BuiltInFunction {
         }
         final PercentileDigest digest = PercentileDigest.parse(state);
         final double percentile = fraction instanceof Number
-            ? ((Number) fraction).doubleValue() : new BigDecimal(String.valueOf(fraction).trim()).doubleValue();
+            ? ((Number) fraction).doubleValue() : DecimalText.parse(String.valueOf(fraction).trim()).doubleValue();
         return digest.estimate(percentile);
     }
 

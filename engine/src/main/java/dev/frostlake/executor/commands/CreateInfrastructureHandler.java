@@ -29,6 +29,7 @@ import dev.frostlake.executor.StorageIntegrationReference;
 import dev.frostlake.executor.WarehouseReference;
 import dev.frostlake.executor.udf.TemporaryObjectStatements;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.CreationGrants;
 import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.InstanceFamilies;
@@ -39,6 +40,7 @@ import dev.frostlake.metastore.model.ComputePool;
 import dev.frostlake.metastore.model.ComputePoolState;
 import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.FileFormat;
+import dev.frostlake.metastore.model.Integration;
 import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
@@ -52,12 +54,15 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.task.TaskGraphs;
 
+import org.antlr.v4.runtime.CharStream;
+import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -97,18 +102,22 @@ public class CreateInfrastructureHandler implements CommandHandler {
         final String taskQualifiedName = getText(ctx.qualifiedName(0));
         final String taskName = ddl.extractObjectName(taskQualifiedName);
         final boolean orReplace = ctx.or_replace() != null;
+        final boolean orAlter = ctx.or_alter() != null;
         TaskBodySyntax.requireOneStatement(ctx);
 
         try {
-            DDLCommandHandler.refuseTakenName(!orReplace && !ifNotExists,
+            DDLCommandHandler.refuseTakenName(!orReplace && !orAlter && !ifNotExists,
                 hasTaskNamed(ddl.resolveSchemaFromQualifiedName(taskQualifiedName), taskName),
                 qualifiedNameParts(ctx.qualifiedName(0)));
             ddl.checkCreatePrivilege(Privilege.CREATE_TASK,
                 ddl.resolveSchemaFromQualifiedName(taskQualifiedName));
-            if (orReplace) {
+            final Schema schema = ddl.resolveSchemaFromQualifiedName(taskQualifiedName);
+            if (orReplace || orAlter && hasTaskNamed(schema, taskName)) {
                 queryExecutor.requireOwnership("TASK", qualifiedNameParts(ctx.qualifiedName(0)), null);
             }
-            final Schema schema = ddl.resolveSchemaFromQualifiedName(taskQualifiedName);
+            if (orAlter && ctx.tagList() != null) {
+                InlineTags.refuseOnOrAlter(ctx.tagList(), queryExecutor);
+            }
             final String sqlText = taskBodyText(ctx.taskBody());
 
             // The first step reads the statement alone — a property named twice, a name no task carries, a
@@ -125,7 +134,11 @@ public class CreateInfrastructureHandler implements CommandHandler {
             final TaskProperties properties = new TaskProperties(catalog, schema);
             properties.compile(settings);
             final Task task = new Task(taskName, null, null, sqlText, null);
-            task.setOwner(FutureGrants.ownerOfNew(catalog, "TASK", schema, task.getName()));
+            // The owner is worked out here, for the checks that read it; the future grants apply only once the
+            // task is added, so CREATE OR ALTER and a refused CREATE OR REPLACE leave the grants on the task that
+            // stays as they were.
+            final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "TASK", schema, task.getName());
+            task.setOwner(grantsOfNew.owner());
             String runAs = null;
             if (ctx.taskExecuteAs() != null) {
                 runAs = TaskProperties.runAsUser(ctx.taskExecuteAs(), queryExecutor);
@@ -175,6 +188,16 @@ public class CreateInfrastructureHandler implements CommandHandler {
             }
             properties.requireRootSettings(task);
             properties.requireServerlessSettings(task);
+            // The graph of a root that runs is not changed: no child is added under one of its tasks, and no child
+            // of it is recreated or redefined (a root that runs is weighed below, by CREATE OR ALTER).
+            final List<Task> graphs = new ArrayList<>(properties.namedPredecessors(after));
+            if ((orAlter || orReplace) && hasTaskNamed(schema, taskName)) {
+                final Task standing = schema.getTaskExact(taskName);
+                if (!TaskGraphs.isRoot(standing) || standing.isFinalizer()) {
+                    graphs.add(standing);
+                }
+            }
+            properties.requireSuspendedRoots(graphs);
             // The tags are written right after the name, before every property, and each has to exist.
             if (ctx.tagList() != null) {
                 InlineTags.apply(task, ctx.tagList(), queryExecutor);
@@ -182,10 +205,28 @@ public class CreateInfrastructureHandler implements CommandHandler {
             if (ctx.taskContacts() != null) {
                 TaskContacts.apply(task, ctx.taskContacts(), catalog);
             }
+            if (orAlter && hasTaskNamed(schema, taskName)) {
+                // The task there becomes what the statement writes: a property it leaves out is unset, while its
+                // state, its runs and its tags stay (live-verified, documented). A root that runs is changed only
+                // while it runs alone, and is made to run after others only once suspended.
+                final Task standing = schema.getTaskExact(taskName);
+                if (TaskGraphs.isRoot(standing) && !standing.isFinalizer()) {
+                    if (after.isEmpty()) {
+                        properties.requireSuspendedGraph(standing);
+                    } else {
+                        properties.requireSuspendedRoots(Collections.singletonList(standing));
+                    }
+                }
+                standing.redefineAs(task);
+                ConditionalDdlOutcome.alteredInPlace();
+                logger.trace("Altered task: {}", taskQualifiedName);
+                return null;
+            }
             if (orReplace && hasTaskNamed(schema, taskName)) {
                 schema.dropTask(taskName);
             }
             schema.addTask(task);
+            grantsOfNew.apply();
             logger.trace("Created task: {}", taskQualifiedName);
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
@@ -246,6 +287,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             catalog.beginSessionScope(pipeSchema.getDatabaseName(), pipeSchema.getName());
             final Stage pipeStage;
             try {
+                requirePipeCopyParses(ctx.copyStatement());
                 pipeStage = validatePipeCopyBody(ctx.copyStatement());
                 requirePipeCopyPrivileges(ctx.copyStatement(), pipeStage);
             } finally {
@@ -318,8 +360,10 @@ public class CreateInfrastructureHandler implements CommandHandler {
                 pipe.setComment(comment);
             }
 
-            pipe.setOwner(FutureGrants.ownerOfNew(catalog, "PIPE", pipeSchema, pipe.getName()));
+            final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "PIPE", pipeSchema, pipe.getName());
+            pipe.setOwner(grantsOfNew.owner());
             pipeSchema.addPipe(pipe);
+            grantsOfNew.apply();
             logger.trace("Created pipe: {}", pipeName);
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
@@ -336,6 +380,33 @@ public class CreateInfrastructureHandler implements CommandHandler {
      * values, unknown format options) belongs to the engine-wide option-value surface and is not
      * pipe-specific.
      */
+    /**
+     * A pipe's COPY read as the COPY statement it is, at its own place in the statement: the body is kept as text
+     * where the pipe is parsed, and a fault in it refuses the pipe as it refuses the COPY on its own, {@code CREATE
+     * PIPE pp AS COPY INTO ct FROM @cs FILE_FORMAT = (, TYPE = CSV)} at the comma and then at the list's closing
+     * parenthesis (live-verified). The text before the COPY is read as blanks, its line breaks kept, so each place
+     * the parse names is the statement's own.
+     */
+    private void requirePipeCopyParses(final FrostlakeParser.CopyStatementContext copyCtx) {
+        if (copyCtx == null || copyCtx.getStart() == null || copyCtx.getStop() == null) {
+            return;
+        }
+        final CharStream source = copyCtx.getStart().getInputStream();
+        final int start = copyCtx.getStart().getStartIndex();
+        final int stop = copyCtx.getStop().getStopIndex();
+        if (source == null || start < 0 || stop < start) {
+            return;
+        }
+        final StringBuilder placed = new StringBuilder(stop + 1);
+        final String before = start == 0 ? "" : source.getText(Interval.of(0, start - 1));
+        for (int i = 0; i < before.length(); i++) {
+            final char written = before.charAt(i);
+            placed.append(written == '\n' || written == '\r' ? written : ' ');
+        }
+        placed.append(source.getText(Interval.of(start, stop)));
+        QueryExecutor.requireParses(placed.toString());
+    }
+
     private Stage validatePipeCopyBody(final FrostlakeParser.CopyStatementContext copyCtx) {
         if (copyCtx == null) {
             return null;
@@ -554,8 +625,11 @@ public class CreateInfrastructureHandler implements CommandHandler {
 
             final Schema schema = sequenceSchema;
             schema.requireCreatable(Privilege.CREATE_SEQUENCE);
-            sequence.setOwner(FutureGrants.ownerOfNew(catalog, "SEQUENCE", schema, sequence.getName()));
+            final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "SEQUENCE", schema,
+                sequence.getName());
+            sequence.setOwner(grantsOfNew.owner());
             schema.addSequence(sequence);
+            grantsOfNew.apply();
             logger.trace("Created sequence: {} with START={}, INCREMENT={}", sequenceQualifiedName, startValue, increment);
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
@@ -750,43 +824,6 @@ public class CreateInfrastructureHandler implements CommandHandler {
         return STAGE_OPTION_NAMES.contains(name);
     }
 
-    /** Collect a parenthesized option list's key=value pairs (values unquoted, keys upper). */
-    private void collectParenOptions(final FrostlakeParser.ParenOptionListContext list,
-                                     final Map<String, String> into) {
-        for (final FrostlakeParser.ParenOptionContext option : list.parenOption()) {
-            final String key = option.optionKey().getText().toUpperCase(Locale.ROOT);
-            if (option.LPAREN() != null) {
-                into.put(key, listedValues(option.stringLiteralList()));
-                continue;
-            }
-            String value = option.copyOptionValue() != null ? option.copyOptionValue().getText() : "";
-            if (value.length() >= 2 && value.startsWith("'") && value.endsWith("'")) {
-                value = value.substring(1, value.length() - 1);
-            }
-            into.put(key, value);
-        }
-    }
-
-    /**
-     * A list option's values as a stage lists them: {@code NULL_IF = ('\\N', 'NULL')} reads {@code [\\N, NULL]},
-     * a backslash doubled, and a list of nothing but empty texts reads {@code []} (live-verified).
-     *
-     * @param list the written list, or null for an empty pair of parentheses
-     * @return the listed text
-     */
-    static String listedValues(final FrostlakeParser.StringLiteralListContext list) {
-        final List<String> values = new ArrayList<>();
-        if (list != null) {
-            for (final TerminalNode node : list.STRING_LITERAL()) {
-                final String value = ParseTreeText.extractStringLiteral(node);
-                if (!value.isEmpty()) {
-                    values.add(value.replace("\\", "\\\\"));
-                }
-            }
-        }
-        return "[" + String.join(", ", values) + "]";
-    }
-
     /**
      * The CREATE privilege a new object of a schema asks, unless the statement makes a temporary one, which needs
      * no privilege on the schema it is named in (live-verified); nothing is created in INFORMATION_SCHEMA either way.
@@ -863,16 +900,17 @@ public class CreateInfrastructureHandler implements CommandHandler {
             String url = hasProps && ctx.stageProperties().URL() != null
                 ? ddl.extractStringLiteral(ctx.stageProperties().STRING_LITERAL()) : null;
             String fileFormat = "CSV";
-            boolean encryption = false;
+            boolean encryptionGiven = false;
+            FrostlakeParser.ParenOptionListContext encryptionGroup = null;
+            String encryptionWritten = null;
             String comment = null;
             boolean sawFileFormat = false;
             boolean sawCloudAccessOption = false;
+            Integration storageIntegration = null;
             boolean credentials = false;
-            boolean encryptionKey = false;
             StageDirectoryOptions directory = null;
             final Map<String, String> formatOptions = new LinkedHashMap<>();
             final Map<String, String> copyOptions = new LinkedHashMap<>();
-            String declaredEncryptionType = null;
 
             if (hasProps) {
                 for (final FrostlakeParser.StageOptionContext option : ctx.stageProperties().stageOption()) {
@@ -912,20 +950,11 @@ public class CreateInfrastructureHandler implements CommandHandler {
                             formatOptions.putAll(written.format().getOptions());
                         }
                     } else if (option.ENCRYPTION() != null) {
-                        encryption = option.booleanValue() != null && option.booleanValue().TRUE() != null;
-                        if (option.parenOptionList() != null) {
-                            final Map<String, String> encryptionOptions = new LinkedHashMap<>();
-                            collectParenOptions(option.parenOptionList(), encryptionOptions);
-                            declaredEncryptionType = encryptionOptions.get("TYPE");
-                            encryptionKey = encryptionOptions.containsKey("MASTER_KEY")
-                                || encryptionOptions.containsKey("KMS_KEY_ID");
-                            // Only Snowflake-managed encryption fits an internal stage, live-verified.
-                            if (url == null && declaredEncryptionType != null
-                                    && !declaredEncryptionType.toUpperCase(Locale.ROOT).startsWith("SNOWFLAKE_")) {
-                                throw new RuntimeException(SqlCompilationError.of("Cannot set URL,"
-                                    + " credentials, or encryption key of an internal or temporary stage."));
-                            }
-                        }
+                        // Judged once the location, which may be written after it, is known (see StageEncryption).
+                        encryptionGiven = true;
+                        encryptionGroup = option.parenOptionList();
+                        encryptionWritten = option.booleanValue() == null ? null
+                            : option.booleanValue().getText().toUpperCase(Locale.ROOT);
                     } else if (option.COMMENT() != null) {
                         comment = ddl.extractStringLiteral(option.STRING_LITERAL());
                     } else if (option.COPY_OPTIONS() != null) {
@@ -946,11 +975,21 @@ public class CreateInfrastructureHandler implements CommandHandler {
                             continue;
                         }
                         if (!STAGE_OPTION_NAMES.contains(key)) {
-                            throw ParameterRegistry.invalidProperty(key, "STAGE");
+                            // Named as written: invalid property 'foo' for 'STAGE' (live-verified).
+                            throw ParameterRegistry.invalidProperty(option.identifier().getText(), "STAGE");
+                        }
+                        if ("ENCRYPTION".equals(key)) {
+                            // A value of another kind than the grammar's own ENCRYPTION alternative reads.
+                            encryptionGiven = true;
+                            encryptionGroup = option.parenOptionList();
+                            encryptionWritten = option.copyOptionValue() == null ? null
+                                : ParseTreeText.getOriginalText(option.copyOptionValue());
+                            continue;
                         }
                         if ("STORAGE_INTEGRATION".equals(key)) {
                             // The integration is looked up before the stage's own shape is judged.
-                            StorageIntegrationReference.require(catalog, option.copyOptionValue());
+                            storageIntegration = StorageIntegrationReference.require(catalog,
+                                queryExecutor.getSecurityManager(), option.copyOptionValue());
                         }
                         if ("CREDENTIALS".equals(key) || "STORAGE_INTEGRATION".equals(key)) {
                             sawCloudAccessOption = true;
@@ -964,6 +1003,10 @@ public class CreateInfrastructureHandler implements CommandHandler {
                 }
             }
 
+            // The group is judged where its stage's location is known, before the location's own checks.
+            final StageEncryption judgedEncryption = encryptionGiven
+                ? StageEncryption.judge(encryptionWritten, encryptionGroup, url, url == null, true) : null;
+
             // Cloud access options make no sense without a location, live-verified wording.
             if (sawCloudAccessOption && url == null) {
                 throw new RuntimeException(SqlCompilationError.of("invalid stage ("
@@ -971,19 +1014,28 @@ public class CreateInfrastructureHandler implements CommandHandler {
             }
 
             CloudStageUrls.require(url);
+            StorageIntegrationReference.requireLocation(storageIntegration, url);
+            // A GCS stage reaches its bucket through a storage integration alone (live-verified).
+            if (storageIntegration == null && url != null && url.regionMatches(true, 0, "gcs://", 0, 6)) {
+                throw new RuntimeException(SqlCompilationError.of("Creation of stages with direct credentials,"
+                    + " including accessing public stages, has been forbidden for GCS stages. See your account"
+                    + " administrator for details."));
+            }
             refuseLocalUrlUnlessEnabled(url);
             // A replacement drops the stage it replaces once the new one is judged whole, so a refused statement
             // leaves that stage as it was (live-verified).
+            final boolean temporary = ctx.TEMPORARY() != null || ctx.TEMP() != null;
             if (ctx.or_replace() != null) {
                 try {
-                    catalog.dropStageExact(stageName);
+                    // A temporary stage replaces its session's own, never the permanent stage it hides.
+                    catalog.dropStageFor(stageName, temporary);
                 } catch (final RuntimeException ignored) {
                     // No stage of that name to replace.
                 }
             }
 
             final StageType type = (url == null || url.startsWith("file://")) ? StageType.INTERNAL : StageType.EXTERNAL;
-            catalog.createStage(stageName, type, url, fileFormat, encryption, comment);
+            catalog.createStage(stageName, type, url, fileFormat, false, comment, temporary);
             if (url == null) {
                 // A new internal stage is empty on a real account too.
                 queryExecutor.resetInternalStageDir(stageName);
@@ -992,10 +1044,9 @@ public class CreateInfrastructureHandler implements CommandHandler {
             final Stage created = catalog.getStage(stageName);
             created.getFileFormatOptions().putAll(formatOptions);
             created.getCopyOptions().putAll(copyOptions);
-            created.setEncryptionType(declaredEncryptionType);
-            created.setTemporary(ctx.TEMPORARY() != null || ctx.TEMP() != null);
+            created.setEncryptionType(judgedEncryption == null ? null : judgedEncryption.type());
             created.setCredentials(credentials);
-            created.setEncryptionKey(encryptionKey);
+            created.setEncryptionKey(judgedEncryption != null && judgedEncryption.key());
             if (directory != null) {
                 directory.applyTo(created);
                 // A directory table enabled at creation registers the files its stage already holds, unless
@@ -1120,6 +1171,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
     }
 
     public Object handleCreateFileFormat(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
+        requireFormatOption(ctx);
         final String name = getText(ctx.qualifiedName(0));
         // The simple name is the parse tree's last identifier part — never a re-split of the
         // flattened text, which breaks a quoted name containing a dot.
@@ -1141,9 +1193,10 @@ public class CreateInfrastructureHandler implements CommandHandler {
                 fileFormat.markTemporary(StatementSession.current());
             }
             // The future grants of the schema or its database cover the new format (live-verified).
-            fileFormat.setOwner(TemporaryObjectStatements.isTemporary(ctx) ? catalog.currentRoleForOwner()
-                : FutureGrants.ownerOfNew(catalog, "FILE_FORMAT", catalog.requireOwningSchema(
-                    QualifiedName.of(nameParts)), simpleName));
+            final CreationGrants grantsOfNew = TemporaryObjectStatements.isTemporary(ctx) ? null
+                : FutureGrants.ofNew(catalog, "FILE_FORMAT", catalog.requireOwningSchema(QualifiedName.of(nameParts)),
+                    simpleName);
+            fileFormat.setOwner(grantsOfNew == null ? catalog.currentRoleForOwner() : grantsOfNew.owner());
             final FileFormatClause written = FileFormatClause.read(ctx.copyFormatOption(), fileFormat, true, false);
             if (written.comment() != null) {
                 fileFormat.setComment(written.comment());
@@ -1168,11 +1221,31 @@ public class CreateInfrastructureHandler implements CommandHandler {
                     + SqlIdentifiers.spellCanonical(catalog.getFileFormat(name).getName()) + "' already exists."));
             }
             catalog.addFileFormat(name, fileFormat);
+            if (grantsOfNew != null) {
+                grantsOfNew.apply();
+            }
             logger.trace("Created file format: {}", simpleName);
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
         }
         return null;
+    }
+
+    /**
+     * A file format given a COMMENT and no option is refused for its TYPE, IF NOT EXISTS or not, where one given no
+     * option at all, or any option beside the COMMENT, is a CSV format (live-verified).
+     */
+    private static void requireFormatOption(final FrostlakeParser.CreateStatementContext ctx) {
+        boolean comment = !ctx.commentClause().isEmpty();
+        for (final FrostlakeParser.CopyFormatOptionContext option : ctx.copyFormatOption()) {
+            if (option.identifier() == null || !"COMMENT".equalsIgnoreCase(option.identifier().getText())) {
+                return;
+            }
+            comment = true;
+        }
+        if (comment) {
+            throw new RuntimeException(SqlCompilationError.of("Missing option(s): type"));
+        }
     }
 
     public Object handleAlterFileFormat(final FrostlakeParser.AlterStatementContext ctx) {

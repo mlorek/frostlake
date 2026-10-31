@@ -35,7 +35,8 @@ import java.util.Set;
  * database and schema, its variables and parameters, the query ID it answered with, the values it drew from counters,
  * the results it read by RESULT_SCAN and from the query-history listings, what its identities answered (see
  * {@link StatementAnswers}), whether the work it ran in sessions of their own went to records of their own, and how
- * many records the log took between the statement and its own record. Recovery replays each session of the log in a
+ * many records the log took between the statement and its own record, and which of its variables a SET gave a
+ * DECFLOAT, whose decimals carry no type of their own. Recovery replays each session of the log in a
  * session of its own, every statement put back into its context and in the place it ran: one session's USE, SET,
  * ALTER SESSION or USE ROLE never reaches another's statements, a variable a session held before a checkpoint is
  * there again, a replayed statement draws, reads and answers again what it first did, and a statement of a
@@ -60,6 +61,8 @@ public final class WalStatementContext {
     private final boolean runsLoggedApart;
     private final long readMark;
     private final int lag;
+    private final Set<String> decfloatVariables;
+    private final Map<String, Integer> variablePrecisions;
 
     /**
      * A context that carries no session state, read results or place: one from a log before v5.
@@ -135,6 +138,18 @@ public final class WalStatementContext {
                                final Set<String> unkeptVariables, final Set<String> unkeptParameters,
                                final List<RecordedResult> results, final Map<String, List<String>> answers,
                                final boolean runsLoggedApart, final long readMark, final int lag) {
+        this(session, user, role, activeRoles, database, schema, queryId, draws, variables, parameters, unkeptVariables,
+            unkeptParameters, results, answers, runsLoggedApart, readMark, lag, null, null);
+    }
+
+    private WalStatementContext(final String session, final String user, final String role,
+                                final List<String> activeRoles, final String database, final String schema,
+                                final String queryId, final List<CounterDraw> draws,
+                                final Map<String, Object> variables, final Map<String, Object> parameters,
+                                final Set<String> unkeptVariables, final Set<String> unkeptParameters,
+                                final List<RecordedResult> results, final Map<String, List<String>> answers,
+                                final boolean runsLoggedApart, final long readMark, final int lag,
+                                final Set<String> decfloatVariables, final Map<String, Integer> variablePrecisions) {
         this.session = session;
         this.user = user;
         this.role = role;
@@ -155,6 +170,33 @@ public final class WalStatementContext {
         this.runsLoggedApart = runsLoggedApart;
         this.readMark = readMark;
         this.lag = lag;
+        this.decfloatVariables = decfloatVariables == null ? null : new HashSet<String>(decfloatVariables);
+        this.variablePrecisions = variablePrecisions == null ? null
+            : new HashMap<String, Integer>(variablePrecisions);
+    }
+
+    /**
+     * This context with the variables a SET gave a DECFLOAT named.
+     *
+     * @param names the variables' upper-case names, or null where they are not known
+     * @return the context
+     */
+    public WalStatementContext withDecfloatVariables(final Set<String> names) {
+        return new WalStatementContext(session, user, role, activeRoles, database, schema, queryId, draws,
+            variables, parameters, unkeptVariables, unkeptParameters, results, answers, runsLoggedApart, readMark, lag,
+            names, variablePrecisions);
+    }
+
+    /**
+     * This context with the precisions a SET gave time and timestamp variables.
+     *
+     * @param precisions the precisions, by the variables' upper-case names, or null where they are not known
+     * @return the context
+     */
+    public WalStatementContext withVariablePrecisions(final Map<String, Integer> precisions) {
+        return new WalStatementContext(session, user, role, activeRoles, database, schema, queryId, draws,
+            variables, parameters, unkeptVariables, unkeptParameters, results, answers, runsLoggedApart, readMark, lag,
+            decfloatVariables, precisions);
     }
 
     /**
@@ -200,7 +242,8 @@ public final class WalStatementContext {
                                         final List<RecordedResult> read, final Map<String, List<String>> answered,
                                         final boolean apart, final long endMark) {
         return new WalStatementContext(session, user, role, activeRoles, database, schema, answeredWith, drawn,
-            variables, parameters, unkeptVariables, unkeptParameters, read, answered, apart, endMark, lag);
+            variables, parameters, unkeptVariables, unkeptParameters, read, answered, apart, endMark, lag,
+            decfloatVariables, variablePrecisions);
     }
 
     /**
@@ -213,7 +256,7 @@ public final class WalStatementContext {
         final long between = readMark < 0 ? 0 : Math.max(0L, taken - readMark);
         return new WalStatementContext(session, user, role, activeRoles, database, schema, queryId, draws,
             variables, parameters, unkeptVariables, unkeptParameters, results, answers, runsLoggedApart, readMark,
-            (int) Math.min(Integer.MAX_VALUE, between));
+            (int) Math.min(Integer.MAX_VALUE, between), decfloatVariables, variablePrecisions);
     }
 
     public String getSession() {
@@ -306,5 +349,21 @@ public final class WalStatementContext {
     /** How many records the log took between the statement's end and its own record: 0 for one logged at once. */
     public int getLag() {
         return lag;
+    }
+
+    /**
+     * The variables a SET gave a DECFLOAT, by upper-case name, or null where the context does not name them: one from a
+     * log before v8.
+     */
+    public Set<String> getDecfloatVariables() {
+        return decfloatVariables == null ? null : new HashSet<String>(decfloatVariables);
+    }
+
+    /**
+     * The precisions a SET gave time and timestamp variables, by upper-case name, or null where the context does not
+     * name them: one from a log before v9.
+     */
+    public Map<String, Integer> getVariablePrecisions() {
+        return variablePrecisions == null ? null : new HashMap<String, Integer>(variablePrecisions);
     }
 }

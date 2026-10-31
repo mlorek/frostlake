@@ -54,6 +54,8 @@ public final class SystemFunctionArity {
         declare("SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS", 1, 1);
         declare("SYSTEM$CURRENT_USER_TASK_NAME", 0, 0);
         declare("SYSTEM$PIPE_STATUS", 1, -1);
+        declare("SYSTEM$PIPE_FORCE_RESUME", 1, 2);
+        declare("SYSTEM$TASK_DEPENDENTS_ENABLE", 1, -1);
         declare("SYSTEM$CLUSTERING_DEPTH", 1, -1);
         declare("SYSTEM$CLUSTERING_INFORMATION", 1, -1);
         declare("SYSTEM$CLUSTERING_RATIO", 1, -1);
@@ -66,6 +68,7 @@ public final class SystemFunctionArity {
         declare("SYSTEM$GET_TAG_ON_CURRENT_COLUMN", 1, 1);
         declare("SYSTEM$GET_TASK_GRAPH_CONFIG", 0, 1);
         declare("SYSTEM$REFERENCE", 2, -1);
+        declare("SYSTEM$AUTO_REFRESH_STATUS", 1, 1);
     }
 
     private SystemFunctionArity() {

@@ -116,9 +116,14 @@ public class User implements Taggable {
         return defaultRole;
     }
 
+    /**
+     * Sets the role a new session of the user starts in, by its canonical name: a quoted name exactly as written, a
+     * bare one in upper case, as roles are stored.
+     *
+     * @param defaultRole the role's canonical name, or null for none
+     */
     public void setDefaultRole(final String defaultRole) {
-        // Normalise to upper-case to match how roles are stored (CREATE and ALTER both land here).
-        this.defaultRole = defaultRole == null ? null : defaultRole.toUpperCase(Locale.ROOT);
+        this.defaultRole = defaultRole;
     }
 
     /** The roles granted, as a copy. */
@@ -239,6 +244,15 @@ public class User implements Taggable {
         grants.purgeGrants(objectType, objectName, ownershipOnly);
     }
 
+    /**
+     * Takes back the privileges but OWNERSHIP, and the database roles, a dropped role granted this user.
+     *
+     * @param grantor the dropped role's canonical name
+     */
+    public void revokeGrantedBy(final String grantor) {
+        grants.revokeGrantedBy(grantor);
+    }
+
     public void grantColumnPrivilege(final String objectType, final String objectName, final String columnName, final Privilege privilege) {
         grants.grantColumnPrivilege(objectType, objectName, columnName, privilege);
     }
@@ -335,6 +349,38 @@ public class User implements Taggable {
 
     public void setDefaultSecondaryRoles(final String defaultSecondaryRoles) {
         this.defaultSecondaryRoles = defaultSecondaryRoles;
+    }
+
+    /** Whether a statement wrote the user's DEFAULT_SECONDARY_ROLES, which a session of the user then starts from. */
+    private boolean defaultSecondaryRolesWritten;
+
+    /**
+     * Records the secondary roles a statement writes for the user's sessions to start from.
+     *
+     * @param defaultSecondaryRoles the roles as the JSON array live reports
+     */
+    public void writeDefaultSecondaryRoles(final String defaultSecondaryRoles) {
+        this.defaultSecondaryRoles = defaultSecondaryRoles;
+        this.defaultSecondaryRolesWritten = true;
+    }
+
+    /**
+     * Whether a statement wrote the user's DEFAULT_SECONDARY_ROLES; the account's default it starts with is not
+     * applied to a session.
+     *
+     * @return whether one did
+     */
+    public boolean isDefaultSecondaryRolesWritten() {
+        return defaultSecondaryRolesWritten;
+    }
+
+    /**
+     * Restores whether a statement wrote the user's DEFAULT_SECONDARY_ROLES.
+     *
+     * @param written whether one did
+     */
+    public void restoreDefaultSecondaryRolesWritten(final boolean written) {
+        this.defaultSecondaryRolesWritten = written;
     }
 
     public boolean isMustChangePassword() {

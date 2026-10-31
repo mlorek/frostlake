@@ -83,6 +83,8 @@ public class MaterializedViewSnapshot implements Serializable {
 
     /** The clustering key's expressions, or null in a snapshot written before a view could have one. */
     public ArrayList<String> clusterKeys;
+    /** The text written after CLUSTER BY; null in a snapshot taken before it was kept, and for no key. */
+    public String clusterByText;
 
     /** Whether automatic reclustering is paused. */
     public boolean reclusterSuspended;

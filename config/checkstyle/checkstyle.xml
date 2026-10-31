@@ -139,6 +139,23 @@
             <property name="ignoreComments" value="true"/>
         </module>
 
+        <!-- Formatting in the default locale: String.format and a string's formatted() write %d's digits, and %f's
+             separator, in the JVM's default locale, so an engine started under one whose digits are not ASCII
+             would print them. A format given as a literal must name Locale.ROOT; a text block's formatted() has no
+             way to, so the main sources do not use it (suppressions.xml leaves the tests theirs). -->
+        <module name="RegexpSinglelineJava">
+            <property name="id" value="LocaleFreeFormat"/>
+            <property name="format" value="String\.format\(&quot;"/>
+            <property name="message" value="Formatting in the default locale: pass Locale.ROOT first."/>
+            <property name="ignoreComments" value="true"/>
+        </module>
+        <module name="RegexpSinglelineJava">
+            <property name="id" value="LocaleFreeFormatted"/>
+            <property name="format" value="&quot;\.formatted\("/>
+            <property name="message" value="formatted() formats in the default locale: use String.format(Locale.ROOT, …)."/>
+            <property name="ignoreComments" value="true"/>
+        </module>
+
         <!-- final on every parameter-like binding: method and constructor parameters, and catch
              clauses. The for-each and lambda halves of the rule have no Checkstyle module.
 

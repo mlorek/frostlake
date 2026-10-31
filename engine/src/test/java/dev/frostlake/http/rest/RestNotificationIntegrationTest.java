@@ -30,11 +30,11 @@ public class RestNotificationIntegrationTest extends BaseRestTest {
         ok(post("/api/v2/notification-integrations", "{\"name\":\"rn_mail\",\"enabled\":true,"
             + "\"notification_hook\":{\"type\":\"EMAIL\",\"default_subject\":\"s\"}}"));
         ok(post("/api/v2/notification-integrations", "{\"name\":\"rn_hook\",\"enabled\":false,"
-            + "\"notification_hook\":{\"type\":\"WEBHOOK\",\"webhook_url\":\"https://h/x\","
+            + "\"notification_hook\":{\"type\":\"WEBHOOK\",\"webhook_url\":\"https://events.pagerduty.com/v2/enqueue\","
             + "\"webhook_body_template\":\"{\\\"m\\\":\\\"SNOWFLAKE_WEBHOOK_MESSAGE\\\"}\",\"webhook_headers\":{\"Content-Type\":\"application/json\"}}}"));
         ok(post("/api/v2/notification-integrations", "{\"name\":\"rn_sns\",\"enabled\":true,"
-            + "\"notification_hook\":{\"type\":\"QUEUE_AWS_SNS_OUTBOUND\",\"aws_sns_topic_arn\":\"arn:t\","
-            + "\"aws_sns_role_arn\":\"arn:r\"}}"));
+            + "\"notification_hook\":{\"type\":\"QUEUE_AWS_SNS_OUTBOUND\",\"aws_sns_topic_arn\":\"arn:aws:sns:us-east-1:1:t\","
+            + "\"aws_sns_role_arn\":\"arn:aws:iam::1:role/r\"}}"));
         ok(post("/api/v2/notification-integrations", "{\"name\":\"rn_gcp\",\"enabled\":true,"
             + "\"notification_hook\":{\"type\":\"QUEUE_GCP_PUBSUB_INBOUND\","
             + "\"gcp_pubsub_subscription_name\":\"projects/project-1234/subscriptions/sub1\"}}"));
@@ -44,11 +44,11 @@ public class RestNotificationIntegrationTest extends BaseRestTest {
         assertEquals("s", mail.path("notification_hook").path("default_subject").asString());
         final JsonNode hook = ok(get("/api/v2/notification-integrations/rn_hook")).path("notification_hook");
         assertEquals("WEBHOOK", hook.path("type").asString());
-        assertEquals("https://h/x", hook.path("webhook_url").asString());
+        assertEquals("https://events.pagerduty.com/v2/enqueue", hook.path("webhook_url").asString());
         assertEquals("application/json", hook.path("webhook_headers").path("Content-Type").asString());
         final JsonNode sns = ok(get("/api/v2/notification-integrations/rn_sns")).path("notification_hook");
         assertEquals("QUEUE_AWS_SNS_OUTBOUND", sns.path("type").asString());
-        assertEquals("arn:t", sns.path("aws_sns_topic_arn").asString());
+        assertEquals("arn:aws:sns:us-east-1:1:t", sns.path("aws_sns_topic_arn").asString());
         assertTrue(sns.path("sf_aws_iam_user_arn").asString().startsWith("arn:aws:iam::"), sns.toString());
         assertTrue(sns.path("sf_aws_external_id").asString().contains("_SFCRole="), sns.toString());
         assertEquals("QUEUE_GCP_PUBSUB_INBOUND", ok(get("/api/v2/notification-integrations/rn_gcp"))

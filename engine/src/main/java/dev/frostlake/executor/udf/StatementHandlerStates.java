@@ -123,7 +123,10 @@ public final class StatementHandlerStates {
     }
 
     /**
-     * The state of the call being evaluated, made on its first use in the running statement.
+     * The state of the call being evaluated, made on its first use in the running statement. Every statement the
+     * engine runs begins its scope - one sent on its own, one a procedure or a block runs, a child statement, a read
+     * of a relation's shape - so none goes without; only an expression evaluated through the engine's API outside
+     * every statement does.
      *
      * @param owner   the routine
      * @param variant what else the state was made for, compared by value

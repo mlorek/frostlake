@@ -48,10 +48,14 @@ final class TaskContacts {
         final List<String> purposes = new ArrayList<>();
         final List<String> names = new ArrayList<>();
         for (final FrostlakeParser.ContactAssignmentContext assignment : contacts.contactAssignment()) {
-            final String written = ParseTreeText.getOriginalText(assignment.qualifiedName());
+            // Named exactly, as a contact is everywhere: a quoted name keeps its case (live-verified).
+            final String written = ParseTreeText.getQualifiedName(assignment.qualifiedName());
             if (catalog.findContact(written) == null) {
                 throw new RuntimeException(SqlCompilationError.doesNotExist("Contact",
-                    catalog.qualifiedObjectName(written)));
+                    catalog.qualifiedExactName(written)));
+            }
+            if (assignment.listValue() != null) {
+                throw ListValues.noPurpose(assignment.listValue());
             }
             final FrostlakeParser.ContactPurposeContext purposeWritten = assignment.contactPurpose();
             final String purpose = purposeWritten.identifier() != null
@@ -65,7 +69,7 @@ final class TaskContacts {
                 throw new RuntimeException("Try to attach duplicate purposes to the object to create, domain TASK.");
             }
             purposes.add(purpose);
-            names.add(catalog.qualifiedObjectName(written));
+            names.add(catalog.qualifiedExactName(written));
         }
         for (int i = 0; i < purposes.size(); i++) {
             task.setContact(purposes.get(i), names.get(i));

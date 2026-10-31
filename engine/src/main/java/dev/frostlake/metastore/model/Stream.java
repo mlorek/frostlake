@@ -29,7 +29,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 
 /**
  * Represents a Snowflake Stream - Change Data Capture (CDC) mechanism
@@ -48,6 +47,8 @@ public class Stream implements Named, Taggable {
      * its recorded name read where the stream lives (see {@code StreamSources}).
      */
     private Table sourceTable;
+    /** The view a view stream is bound to, null while it is not bound yet. */
+    private View sourceView;
     /**
      * The tables a VIEW stream's view reads, bound like {@link #sourceTable}, in the order of
      * {@link #getBaseTableNames}: null until bound.
@@ -62,6 +63,10 @@ public class Stream implements Named, Taggable {
     private boolean stale;
     /** Whether the stream is a table stream cloned with its schema or database after its table went. */
     private boolean lostInClone;
+    /** Whether the stream was re-bound to tables that replaced the ones it read (see {@link #restartOn}). */
+    private boolean rebound;
+    /** The tables a re-bind that kept the stream's changes lists it as reading (see {@link #showOn}), or null. */
+    private List<Table> shownTables;
     private String comment;
     /**
      * The rows a SHOW_INITIAL_ROWS stream reports until it is first consumed — the source's rows at the
@@ -71,8 +76,12 @@ public class Stream implements Named, Taggable {
     private List<StreamRecord> initialRecords;
     /** The same moment in the order table snapshots are taken in, which tells apart moments one millisecond holds. */
     private long offsetSequence = SnapshotSequence.mark();
+    /** The versions of the tables the stream reads that commits wrote past its offset, the oldest first. */
+    private final List<StreamVersion> versions = new ArrayList<>();
     /** A dynamic-table stream's image of the table's rows at the last refresh it saw. */
     private List<List<Object>> refreshImage;
+    /** The identities of {@link #refreshImage}'s rows, in its order, or null when not known. */
+    private List<String> refreshImageIds;
 
     public Stream(final String name, final String sourceTableName, final StreamType streamType) {
         this(name, sourceTableName, StreamSourceType.TABLE, streamType, false);
@@ -164,7 +173,9 @@ public class Stream implements Named, Taggable {
      * pair (ISUPDATE true); updated then deleted nets to a plain DELETE of the original image.
      * Logical rows are chained by value image (an update pair's DELETE half matches the entry
      * whose current image it removes), since change records carry per-operation — not per-row —
-     * ids. APPEND_ONLY streams record only true INSERTs, so they are returned as-is.
+     * ids; a dynamic table's row known by an identity keeps one id, so its INSERT after its DELETE is
+     * the row coming back, an update of it or no change at all. APPEND_ONLY streams record only true
+     * INSERTs, so they are returned as-is.
      */
     public List<StreamRecord> getUnconsumedNetRecords() {
         if (initialRecords != null) {
@@ -174,19 +185,18 @@ public class Stream implements Named, Taggable {
     }
 
     /**
-     * The net unconsumed records as {@link #getUnconsumedNetRecords}, but with {@code extraRaw} transient
-     * change records (e.g. the current transaction's not-yet-committed base-table changes) folded in AFTER
-     * the committed unconsumed ones, so a stream read inside a transaction reflects that transaction's own
-     * uncommitted DML — the deferred-apply equivalent of read-your-writes for streams. The extras are never
-     * added to the stream, so a rollback (which just discards the write set) needs no undo here. Extras that
-     * an {@link #addRecord} would drop (an APPEND_ONLY stream keeps only true INSERTs) are filtered the same
-     * way before consolidation.
+     * The net unconsumed records as {@link #getUnconsumedNetRecords}, of the records before {@code cut} alone: what a
+     * read inside a transaction lists, the changes captured before the transaction began (see
+     * {@link #recordsBefore}). The transaction's own changes are not among them (live-verified).
+     *
+     * @param cut the records the read ends at
+     * @return the net records
      */
-    public List<StreamRecord> getUnconsumedNetRecordsWith(final List<StreamRecord> extraRaw) {
+    public List<StreamRecord> getUnconsumedNetRecordsUpTo(final long cut) {
         if (initialRecords != null) {
             return new ArrayList<>(initialRecords);
         }
-        return netRecordsOf(unconsumedRecordsWith(extraRaw));
+        return netRecordsOf(unconsumedRecordsUpTo(cut));
     }
 
     /**
@@ -199,15 +209,14 @@ public class Stream implements Named, Taggable {
      * still reported, because a later delete does not un-append it; and a row that already existed
      * reports nothing however it is rewritten, because rewriting is not appending.
      *
-     * <p>{@code extraRaw} folds in transient records the same way {@link #getUnconsumedNetRecordsWith}
-     * does.
+     * <p>{@code cut} ends the window as it ends {@link #getUnconsumedNetRecordsUpTo}'s.
      */
-    public List<StreamRecord> getUnconsumedAppendsWith(final List<StreamRecord> extraRaw) {
+    public List<StreamRecord> getUnconsumedAppendsUpTo(final long cut) {
         if (initialRecords != null) {
             return new ArrayList<>(initialRecords);
         }
         final List<StreamRecord> appends = new ArrayList<>();
-        for (final StreamRecord record : unconsumedRecordsWith(extraRaw)) {
+        for (final StreamRecord record : unconsumedRecordsUpTo(cut)) {
             if (isAppend(record)) {
                 appends.add(record);
             }
@@ -215,15 +224,12 @@ public class Stream implements Named, Taggable {
         return appends;
     }
 
-    private List<StreamRecord> unconsumedRecordsWith(final List<StreamRecord> extraRaw) {
-        final List<StreamRecord> combined = getUnconsumedRecords();
-        for (final StreamRecord record : extraRaw) {
-            if (streamType == StreamType.APPEND_ONLY && !isAppend(record)) {
-                continue;
-            }
-            combined.add(record);
+    private List<StreamRecord> unconsumedRecordsUpTo(final long cut) {
+        final int end = (int) Math.min(cut, records.size());
+        if (currentOffset >= end) {
+            return new ArrayList<>();
         }
-        return combined;
+        return new ArrayList<>(records.subList((int) currentOffset, end));
     }
 
     private List<StreamRecord> netRecordsOf(final List<StreamRecord> raw) {
@@ -238,6 +244,8 @@ public class Stream implements Named, Taggable {
         // identical duplicate rows is exactly the scan's.
         final Map<List<Object>, List<StreamNetChange>> byImage = new HashMap<>();
         final Map<StreamNetChange, Integer> creationSeq = new IdentityHashMap<>();
+        // A deleted row by its id, which an INSERT of the same id brings back.
+        final Map<List<Object>, StreamNetChange> deletedById = new HashMap<>();
         int nextSeq = 0;
         for (int i = 0; i < raw.size(); i++) {
             final StreamRecord record = raw.get(i);
@@ -266,6 +274,12 @@ public class Stream implements Named, Taggable {
                     indexImage(byImage, creationSeq, change);
                 }
             } else if (record.getChangeType() == ChangeType.INSERT) {
+                final StreamNetChange back = deletedById.remove(idKey(record));
+                if (back != null) {
+                    back.setNewValues(record.getValues());
+                    indexImage(byImage, creationSeq, back);
+                    continue;
+                }
                 final StreamNetChange change =
                     new StreamNetChange(null, record.getValues(), record.getRowId(), record.getSourceTable());
                 creationSeq.put(change, Integer.valueOf(nextSeq++));
@@ -280,12 +294,14 @@ public class Stream implements Named, Taggable {
                         new StreamNetChange(record.getValues(), null, record.getRowId(), record.getSourceTable());
                     creationSeq.put(change, Integer.valueOf(nextSeq++));
                     net.add(change);
+                    deletedById.put(idKey(record), change);
                 } else if (existing.getOldValues() == null) {
                     unindexImage(byImage, existing);
                     net.remove(existing);
                 } else {
                     unindexImage(byImage, existing);
                     existing.setNewValues(null);
+                    deletedById.put(idKey(record), existing);
                 }
             }
         }
@@ -299,12 +315,23 @@ public class Stream implements Named, Taggable {
                 out.add(new StreamRecord(change.getNewValues(), ChangeType.INSERT, false, change.getRowId(), change.getSourceTable()));
             } else if (change.getNewValues() == null) {
                 out.add(new StreamRecord(change.getOldValues(), ChangeType.DELETE, false, change.getRowId(), change.getSourceTable()));
+            } else if (change.getOldValues().equals(change.getNewValues())) {
+                // An update that leaves the row as it was is no change of it (live-verified).
+                continue;
             } else {
                 out.add(new StreamRecord(change.getOldValues(), ChangeType.DELETE, true, change.getRowId(), change.getSourceTable()));
                 out.add(new StreamRecord(change.getNewValues(), ChangeType.INSERT, true, change.getRowId(), change.getSourceTable()));
             }
         }
         return out;
+    }
+
+    /** A record's row id with the table it is of, which another record of the row shares. */
+    private static List<Object> idKey(final StreamRecord record) {
+        final List<Object> key = new ArrayList<>(2);
+        key.add(record.getSourceTable());
+        key.add(Long.valueOf(record.getRowId()));
+        return key;
     }
 
     private static List<Object> imageKey(final List<Object> image, final String sourceTable) {
@@ -371,45 +398,74 @@ public class Stream implements Named, Taggable {
         // Consuming a stream advances the offset
         currentOffset = records.size();
         offsetSequence = SnapshotSequence.mark();
+        dropConsumedVersions();
     }
 
-    /** Total records ever captured (consumed + unconsumed) — the read-time cut for scoped consumption. */
+    /**
+     * Notes a version a commit wrote of a table the stream reads.
+     *
+     * @param version the version
+     */
+    public void addVersion(final StreamVersion version) {
+        versions.add(version);
+    }
+
+    /** @return the versions past the stream's offset, the oldest first, as SYSTEM$STREAM_BACKLOG lists them */
+    public List<StreamVersion> getPendingVersions() {
+        final List<StreamVersion> pending = new ArrayList<>();
+        for (final StreamVersion version : versions) {
+            if (version.getSequence() > offsetSequence) {
+                pending.add(version);
+            }
+        }
+        return pending;
+    }
+
+    private void dropConsumedVersions() {
+        for (int i = versions.size() - 1; i >= 0; i--) {
+            if (versions.get(i).getSequence() <= offsetSequence) {
+                versions.remove(i);
+            }
+        }
+    }
+
+    /** Total records ever captured (consumed + unconsumed): the window a read outside any transaction ends at. */
     public long recordCount() {
         return records.size();
     }
 
     /**
-     * Consume exactly what a reader SAW, not everything present at commit: advance past the committed
-     * prefix visible at read time ({@code committedCut} records) and remove the records this
-     * transaction's commit re-emitted for changes that were already buffered when the read happened
-     * ({@code seenTransient} — matched by change kind, values and capture tag, at or after the cut).
-     * Records appended after the read — by another transaction, or by this transaction's own LATER
-     * DML — stay unconsumed. This mirrors Snowflake, where the common flush-then-load procedure
-     * pattern runs each statement in its own autocommit transaction: a mid-procedure stream flush
-     * must not consume rows the procedure inserts after it.
+     * How many of the records were captured before a moment: a read inside a transaction that began at it lists the
+     * changes up to there, and the changes committed since, by any session, wait for a later read (live-verified).
+     *
+     * @param sequence the snapshot number the transaction began at
+     * @return the records captured before it, never fewer than the consumed ones
      */
-    public void consumeSeen(final long committedCut, final List<StreamRecord> seenTransient) {
+    public long recordsBefore(final long sequence) {
+        int cut = records.size();
+        while (cut > currentOffset && records.get(cut - 1).getSequence() >= sequence) {
+            cut--;
+        }
+        return cut;
+    }
+
+    /**
+     * Consume the changes a transaction's reads listed: advance the offset to {@code cut}, the records captured before
+     * the transaction began, and no further. The changes committed since, the transaction's own among them, stay for
+     * the next read (live-verified).
+     *
+     * @param cut      the records the reads ended at
+     * @param sequence the snapshot number the transaction began at, where the offset now falls among the snapshots
+     */
+    public void consumeTo(final long cut, final long sequence) {
         if (initialRecords != null) {
             initialRecords = null;
             return;
         }
-        offsetSequence = SnapshotSequence.mark();
-        for (final StreamRecord seen : seenTransient) {
-            // Only records at/after the cut can be this transaction's own re-emitted changes; matching
-            // below it would eat an identical-valued committed record and then over-advance the offset.
-            for (int i = (int) Math.max(currentOffset, committedCut); i < records.size(); i++) {
-                final StreamRecord candidate = records.get(i);
-                if (candidate.getChangeType() == seen.getChangeType()
-                        && candidate.isUpdate() == seen.isUpdate()
-                        && Objects.equals(candidate.getValues(), seen.getValues())
-                        && Objects.equals(candidate.getSourceTable(), seen.getSourceTable())) {
-                    records.remove(i);
-                    break;
-                }
-            }
-        }
-        if (committedCut > currentOffset) {
-            currentOffset = Math.min(committedCut, records.size());
+        offsetSequence = Math.max(offsetSequence, sequence);
+        dropConsumedVersions();
+        if (cut > currentOffset) {
+            currentOffset = Math.min(cut, records.size());
         }
     }
 
@@ -486,6 +542,16 @@ public class Stream implements Named, Taggable {
         this.sourceTable = table;
     }
 
+    /** The view this view stream is bound to, or null while it is not bound yet. */
+    public View getSourceView() {
+        return sourceView;
+    }
+
+    /** Binds this view stream to its view, which it follows through a rename or a move. */
+    public void bindSourceView(final View view) {
+        this.sourceView = view;
+    }
+
     /** The tables this view stream is bound to, or null while it is not bound yet. */
     public List<Table> getBaseTables() {
         return baseTables;
@@ -494,6 +560,69 @@ public class Stream implements Named, Taggable {
     /** Binds this view stream to the tables its view reads, in the order its view's query names them. */
     public void bindBaseTables(final List<Table> tables) {
         this.baseTables = tables == null ? null : new ArrayList<>(tables);
+    }
+
+    /**
+     * Binds this view stream, which holds no change it has not read, to the tables its view's names read now in place
+     * of tables that were dropped or replaced: it reads those from then on, its offset where it was.
+     *
+     * @param tables the tables, in the order its view's query names them
+     */
+    public void restartOn(final List<Table> tables) {
+        bindBaseTables(tables);
+        rebound = true;
+        shownTables = null;
+        initialRecords = null;
+        currentOffset = records.size();
+        versions.clear();
+        stale = false;
+    }
+
+    /**
+     * Lists this view stream as reading the tables its view's names read now, while it keeps the changes it has not
+     * read of the tables it was bound to, and reads those tables still (live-verified: after UNDROP brings one back the
+     * stream reads its changes, while SHOW STREAMS lists the table that replaced it, renamed or not).
+     *
+     * @param tables the tables, in the order its view's query names them
+     */
+    public void showOn(final List<Table> tables) {
+        shownTables = new ArrayList<>(tables);
+    }
+
+    /** @return the tables a re-bind that kept the stream's changes lists it as reading, or null */
+    public List<Table> getShownTables() {
+        return shownTables;
+    }
+
+    /**
+     * Whether this view stream was re-bound to tables that replaced the ones it read: its range then begins before
+     * the time those tables tracked changes from (see StreamSources#trackingGapOf).
+     *
+     * @return true for such a stream
+     */
+    public boolean isRebound() {
+        return rebound;
+    }
+
+    /** Marks this stream re-bound, as a restored one whose snapshot says so. */
+    public void markRebound() {
+        rebound = true;
+    }
+
+    /**
+     * Whether this stream holds a version a commit wrote of a table after a point.
+     *
+     * @param baseTable the table, {@code DB.SCHEMA.TABLE}
+     * @param sequence  the point
+     * @return true when one of its pending versions of that table comes after it
+     */
+    public boolean holdsVersionAfter(final String baseTable, final long sequence) {
+        for (final StreamVersion version : versions) {
+            if (version.getSequence() > sequence && baseTable.equalsIgnoreCase(version.getBaseTable())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public StreamSourceType getSourceType() {
@@ -561,6 +690,18 @@ public class Stream implements Named, Taggable {
         return records.size() - (int) currentOffset;
     }
 
+    /**
+     * Whether SYSTEM$STREAM_HAS_DATA answers TRUE: the stream lists changes, or a table it reads took a version past
+     * its offset, a change the stream does not list among them - a DELETE under an APPEND_ONLY stream, a row a view
+     * does not show. The function diffs the tables' versions, not the stream's rows (documented; live-verified for an
+     * APPEND_ONLY view stream after a DELETE), so it may answer TRUE where a read lists nothing.
+     *
+     * @return whether the stream has data
+     */
+    public boolean hasData() {
+        return getUnconsumedCount() > 0 || !getPendingVersions().isEmpty();
+    }
+
     /** The initial rows pending before the first consumption, or null when none are. */
     public List<StreamRecord> getInitialRecords() {
         return initialRecords;
@@ -595,6 +736,25 @@ public class Stream implements Named, Taggable {
 
     public void setRefreshImage(final List<List<Object>> refreshImage) {
         this.refreshImage = refreshImage;
+        this.refreshImageIds = null;
+    }
+
+    /**
+     * A dynamic-table stream's image with each row's identity, in its order (see
+     * {@link DynamicTableRefresh#getRowIds()}).
+     *
+     * @param refreshImage the rows
+     * @param ids          their identities, or null when not known
+     */
+    public void setRefreshImage(final List<List<Object>> refreshImage, final List<String> ids) {
+        this.refreshImage = refreshImage;
+        this.refreshImageIds = ids == null || refreshImage == null || ids.size() != refreshImage.size() ? null
+            : new ArrayList<>(ids);
+    }
+
+    /** The identities of the image's rows, in its order, or null when not known. */
+    public List<String> getRefreshImageIds() {
+        return refreshImageIds;
     }
 
     public String getComment() {
@@ -613,7 +773,10 @@ public class Stream implements Named, Taggable {
         records.addAll(source.records);
         currentOffset = source.currentOffset;
         stale = source.stale;
+        rebound = source.rebound;
         offsetSequence = source.offsetSequence;
+        versions.clear();
+        versions.addAll(source.versions);
     }
 
     /** Takes over another stream's pending changes and offset, as a clone of that stream does. */
@@ -622,9 +785,13 @@ public class Stream implements Named, Taggable {
         records.addAll(source.records);
         currentOffset = source.currentOffset;
         stale = source.stale;
+        rebound = source.rebound;
         offsetSequence = source.offsetSequence;
+        versions.clear();
+        versions.addAll(source.versions);
         initialRecords = source.initialRecords == null ? null : new ArrayList<>(source.initialRecords);
         refreshImage = source.refreshImage == null ? null : new ArrayList<>(source.refreshImage);
+        refreshImageIds = source.refreshImageIds == null ? null : new ArrayList<>(source.refreshImageIds);
     }
 
     /** Object tags applied via ALTER ... SET TAG (canonical upper-cased tag name -&gt; value). */

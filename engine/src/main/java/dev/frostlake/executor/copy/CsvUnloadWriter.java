@@ -24,10 +24,12 @@ import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.VariantValue;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -108,6 +110,10 @@ final class CsvUnloadWriter {
             }
             // A NULL is written as a value of its column would be: enclosed where the column's values are.
             return options.getEnclosure() != null && isEnclosedKind(type) ? enclosed(marker) : unenclosed(marker);
+        }
+        if (value instanceof Number && NumericType.isDecfloat(type)) {
+            // A DECFLOAT's text is its own, as a cast to VARCHAR writes it: 1e16384, not its 16385 digits.
+            return unenclosed(Decfloats.text(Decfloats.of((Number) value, "TO_DECFLOAT")));
         }
         if (value instanceof Number || value instanceof Boolean) {
             return unenclosed(String.valueOf(toText.evaluate(Arrays.asList(value))));

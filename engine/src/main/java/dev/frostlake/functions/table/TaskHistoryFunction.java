@@ -30,7 +30,10 @@ import dev.frostlake.task.TaskGraphs;
 import dev.frostlake.task.TaskTrigger;
 import dev.frostlake.types.ObjectType;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -89,17 +92,28 @@ public class TaskHistoryFunction extends TableFunction {
                         // 7 days 23 hours out is listed and one 8 days out is not.
                         if (rows.size() < resultLimit && task.isActive() && task.getSchedule() != null
                                 && task.getNextRunTime() != null
-                                && !task.getNextRunTime().isAfter(LocalDateTime.now().plusDays(LOOK_AHEAD_DAYS))) {
+                                && !task.getNextRunTime().isAfter(Instant.now().plus(Duration.ofDays(
+                                    LOOK_AHEAD_DAYS)))) {
                             rows.add(row(task, schema, "SCHEDULED", null, task.getNextRunTime(), null, null, root,
-                                task.getNextRunTime(), TaskTrigger.SCHEDULE.reported(), 1));
+                                task.getNextRunTime(), TaskTrigger.SCHEDULE.reported(), 1, null,
+                                task.getResumedBy()));
+                        }
+                        for (final TaskExecution running : task.getRunningRuns()) {
+                            if (rows.size() >= resultLimit) break;
+                            rows.add(row(task, schema, running.getState(), null, instantOf(running.getScheduledTime()),
+                                running.getStartTime(), null, root, instantOf(graphRunTime(root, task, running)),
+                                running.getScheduledFrom(), running.getAttempt(), running,
+                                running.getScheduledByUser()));
                         }
                         final List<TaskExecution> history = task.getExecutionHistory();
                         for (int i = 0; i < history.size(); i++) {
                             if (rows.size() >= resultLimit) break;
                             final TaskExecution exec = history.get(i);
                             rows.add(row(task, schema, exec.getState(), exec.getErrorMessage(),
-                                exec.getScheduledTime(), exec.getStartTime(), exec.getEndTime(), root,
-                                graphRunTime(root, task, exec), exec.getScheduledFrom(), exec.getAttempt()));
+                                instantOf(exec.getScheduledTime()), exec.getStartTime(), exec.getEndTime(), root,
+                                instantOf(graphRunTime(root, task, exec)), exec.getScheduledFrom(), exec.getAttempt(),
+                                exec,
+                                exec.getScheduledByUser()));
                         }
                         if (rows.size() >= resultLimit) break;
                     }
@@ -154,27 +168,31 @@ public class TaskHistoryFunction extends TableFunction {
 
     /**
      * One run's row. ROOT_TASK_ID, RUN_ID and GRAPH_RUN_GROUP_ID name the graph run it belongs to, as the task
-     * graph functions name it; the engine keeps one version of a graph, computes no query hash and records no
-     * configuration, container job or scheduling user, so those cells are NULL.
+     * graph functions name it. A run that ran tells the query that ran the task's statement — its id, the code of
+     * the error it failed with, and the hashes QUERY_HISTORY gives the statement — and the user it was scheduled by;
+     * a scheduled run tells no query, the user who resumed the task, and the fire after its own (live-verified). The
+     * engine keeps one version of a graph and records no configuration or container job, so those cells are NULL.
      */
     private static Row row(final Task task, final Schema schema, final String state, final String errorMessage,
-                           final LocalDateTime scheduled, final LocalDateTime started, final LocalDateTime ended,
-                           final Task root, final LocalDateTime graphRunTime, final String scheduledFrom,
-                           final int attempt) {
+                           final Instant scheduled, final LocalDateTime started, final LocalDateTime ended,
+                           final Task root, final Instant graphRunTime, final String scheduledFrom,
+                           final int attempt, final TaskExecution ran, final String scheduledBy) {
         final Long runId = root == null ? null : TaskGraphs.runId(graphRunTime);
+        final String queryId = ran == null ? null : ran.getQueryId();
+        final String hash = queryId == null ? null : QueryHistoryFunction.textHash(task.getSqlStatement());
         return new Row(Arrays.<Object>asList(
-            null,
+            queryId,
             task.getName(),
             schema.getDatabaseName(),
             schema.getName(),
             task.getSqlStatement(),
             task.getCondition(),
             state,
-            null,
+            ran == null ? null : ran.getErrorCode(),
             errorMessage,
             ShowResultHelpers.createdOn(scheduled),
             ShowResultHelpers.createdOn(started),
-            null,
+            ran == null ? ShowResultHelpers.createdOn(TaskGraphs.fireAfter(task, scheduled)) : null,
             ShowResultHelpers.createdOn(ended),
             root == null ? null : root.getId(),
             Long.valueOf(1L),
@@ -182,9 +200,10 @@ public class TaskHistoryFunction extends TableFunction {
             null,
             scheduledFrom,
             Long.valueOf(attempt),
-            null, null, null, null, null,
+            null,
+            hash, hash == null ? null : Long.valueOf(2L), hash, hash == null ? null : Long.valueOf(1L),
             runId == null ? null : TaskGraphs.graphRunGroupId(root, runId),
-            null, null, null));
+            null, null, scheduledBy));
     }
 
     /** The root of the graph a task runs in: the task itself when nothing precedes it, or null when none is found. */
@@ -204,6 +223,11 @@ public class TaskHistoryFunction extends TableFunction {
      * When the graph run a task's run belongs to was scheduled: a root's first-attempt run's own time, and for a
      * retry's run or another task's the time of the root's last first-attempt run that began no later than it.
      */
+    /** A run's host-local stamp as the instant it stands for, or null. */
+    private static Instant instantOf(final LocalDateTime stamp) {
+        return stamp == null ? null : stamp.atZone(ZoneId.systemDefault()).toInstant();
+    }
+
     private static LocalDateTime graphRunTime(final Task root, final Task task, final TaskExecution run) {
         if (root == null || root == task && run.getAttempt() == 1) {
             return run.getScheduledTime();

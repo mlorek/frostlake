@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
@@ -82,6 +83,22 @@ final class RegionsListing {
     static RuntimeException scopeRefusal(final FrostlakeParser.ShowStatementContext ctx) {
         return new RuntimeException("Unsupported feature '" + written(ctx)
             + "'; use 'SHOW REGIONS IN DATA EXCHANGE <exchange_name>' instead.");
+    }
+
+    /**
+     * The refusal of the scope the listing's other refusals recommend, a data exchange's: named, the exchange is not
+     * there — no data exchange is modelled — and unnamed, the statement is an unsupported one (live-verified).
+     *
+     * @param ctx  the statement, written with IN DATA EXCHANGE
+     * @param name the exchange's canonical name, or null for none written
+     * @return the refusal
+     */
+    static RuntimeException dataExchangeRefusal(final FrostlakeParser.ShowStatementContext ctx, final String name) {
+        if (name == null) {
+            return new RuntimeException("Unsupported feature '" + text(ctx.getStart(), ctx.EXCHANGE().getSymbol())
+                + "'; use 'SHOW REGIONS IN DATA EXCHANGE <exchange_name>' instead.");
+        }
+        return new RuntimeException(SqlCompilationError.doesNotExist("Data exchange", name));
     }
 
     /**

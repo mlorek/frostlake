@@ -249,14 +249,19 @@ final class JavaScriptSourceScan {
         return callPlaceAt(opening(close));
     }
 
-    /** The text that names what a call calls - {@code Math.max} - or null when it is no plain dotted name. */
-    String calledName() {
+    /** The source of what a call calls, before its argument list, or null when the text is no call. */
+    String callee() {
         final int close = lastBefore(text.length());
         if (close < 0 || text.charAt(close) != ')' || opening(close) < 0) {
             return null;
         }
-        final String callee = text.substring(0, opening(close)).trim();
-        if (callee.isEmpty() || Character.isDigit(callee.charAt(0))) {
+        return text.substring(0, opening(close)).trim();
+    }
+
+    /** The text that names what a call calls - {@code Math.max} - or null when it is no plain dotted name. */
+    String calledName() {
+        final String callee = callee();
+        if (callee == null || callee.isEmpty() || Character.isDigit(callee.charAt(0))) {
             return null;
         }
         for (int i = 0; i < callee.length(); i++) {

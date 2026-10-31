@@ -93,11 +93,22 @@ public class TableColumn implements Taggable {
     // A DERIVED relation's column projecting a double live's compiler folds, which TO_VARIANT wraps keeping
     // its FLOAT origin (see isFoldedDouble); false for every other column.
     private boolean foldedDouble;
+    // A DERIVED relation's column projecting a number or boolean literal a FROM-less select writes, which a wrap
+    // into a VARIANT converts unchecked (see isLiteralConstant); false for every other column.
+    private boolean literalConstant;
     // Whether the column holds nothing but an untyped NULL (see isUntypedNull); false for every other column.
     private boolean untypedNull;
     // Whether a DERIVED relation's column projects the word NULL cast to a text type (see isNullText); false for
     // every other column.
     private boolean nullText;
+    // How a DERIVED relation's column reads a stored table's column (see getStoredRead); NONE for every other column.
+    private StoredRead storedRead = StoredRead.NONE;
+    // Whether a DERIVED relation's column's values can be NULL, as its projection judged its item (see
+    // getValuesNullable); null for a column no projection judged.
+    private Boolean valuesNullable;
+    // Whether a row of the VALUES clause the column belongs to holds NULL in it (see getHeldNull); null for every
+    // other column.
+    private Boolean heldNull;
 
     // Whether a DERIVED relation's column holds its collation because a COLLATE named it (see
     // isCollationExplicit); false for every other column, a catalog column's among them.
@@ -106,6 +117,11 @@ public class TableColumn implements Taggable {
     // The type in the Iceberg format's own terms of an Iceberg table's column a column definition typed (see
     // getFormatType); null for every other column.
     private DataType formatType;
+
+    // The expression a virtual column's values are computed from, as written (see getVirtualExpression), and as the
+    // account tells it back (see getVirtualText); null for every other column.
+    private String virtualExpression;
+    private String virtualText;
 
     public TableColumn(final String name, final DataType dataType, final boolean nullable,
                  final Object defaultValue, final boolean primaryKey, final boolean unique,
@@ -233,6 +249,45 @@ public class TableColumn implements Taggable {
     }
 
     /**
+     * The expression a virtual column's values are computed from, as its definition wrote it: {@code a + 1} for
+     * {@code b INT AS (a + 1)}. No statement writes such a column; its value follows the row's other columns.
+     *
+     * @return the expression, or null for a column that is not virtual
+     */
+    public String getVirtualExpression() {
+        return virtualExpression;
+    }
+
+    /**
+     * The expression as DESCRIBE TABLE, SHOW COLUMNS and GET_DDL tell it: {@code A + 1} for {@code a + 1}.
+     *
+     * @return the text, or null for a column that is not virtual
+     */
+    public String getVirtualText() {
+        return virtualText;
+    }
+
+    /**
+     * Makes the column virtual.
+     *
+     * @param expression the expression as written
+     * @param text       the expression as the account tells it back
+     */
+    public void setVirtualExpression(final String expression, final String text) {
+        this.virtualExpression = expression;
+        this.virtualText = text;
+    }
+
+    /**
+     * Whether the column is virtual.
+     *
+     * @return true when {@link #getVirtualExpression()} is not null
+     */
+    public boolean isVirtual() {
+        return virtualExpression != null;
+    }
+
+    /**
      * The NUMBER this column's values spell when a derived relation projects a bare string literal as
      * it — {@code (SELECT '12.5' AS t, …)} — or projects another such column; null for every other
      * column. A conditional folds the column by it as it folds the literal itself: live types
@@ -303,12 +358,71 @@ public class TableColumn implements Taggable {
         this.nullText = nullText;
     }
 
+    /**
+     * How this DERIVED relation's column reads a stored table's column: the column whole or an element or a path of
+     * it, carried through every relation that projects it as it is (see StoredRead). A catalog column answers NONE;
+     * its own table is the stored one.
+     *
+     * @return how it reads one
+     */
+    public StoredRead getStoredRead() {
+        return storedRead;
+    }
+
+    public void setStoredRead(final StoredRead storedRead) {
+        this.storedRead = storedRead;
+    }
+
+    /**
+     * Whether a derived relation's column's values can be NULL, as the projection that made it judged its item: a
+     * literal, a cast of one and an operation over such items cannot, which a refusal spells {@code {not null}}.
+     *
+     * @return the judgement, or null where no projection made one
+     */
+    public Boolean getValuesNullable() {
+        return valuesNullable;
+    }
+
+    public void setValuesNullable(final Boolean valuesNullable) {
+        this.valuesNullable = valuesNullable;
+    }
+
+    /**
+     * Whether a row of the VALUES clause this column belongs to holds NULL in it: what a result's metadata tells of
+     * a column read from the clause, nullable only then (live-verified).
+     *
+     * @return whether a row holds NULL, or null for a column of no VALUES clause
+     */
+    public Boolean getHeldNull() {
+        return heldNull;
+    }
+
+    public void setHeldNull(final Boolean heldNull) {
+        this.heldNull = heldNull;
+    }
+
     public boolean isFoldedDouble() {
         return foldedDouble;
     }
 
     public void setFoldedDouble(final boolean foldedDouble) {
         this.foldedDouble = foldedDouble;
+    }
+
+    /**
+     * Whether this DERIVED relation's column projects a number or boolean literal a FROM-less select writes:
+     * live folds the literal through the relation, so a wrap of the column into a VARIANT converts to a sized
+     * VARCHAR unchecked as the wrap of the literal does - {@code SELECT 'x' v UNION ALL SELECT TO_VARIANT(z) FROM
+     * (SELECT 12 z)} answers {@code 12} (live-verified). A catalog column never is one.
+     *
+     * @return true for such a column
+     */
+    public boolean isLiteralConstant() {
+        return literalConstant;
+    }
+
+    public void setLiteralConstant(final boolean literalConstant) {
+        this.literalConstant = literalConstant;
     }
 
     /**
@@ -385,7 +499,11 @@ public class TableColumn implements Taggable {
         copy.foldedDouble = foldedDouble;
         copy.untypedNull = untypedNull;
         copy.nullText = nullText;
+        copy.valuesNullable = valuesNullable;
+        copy.heldNull = heldNull;
         copy.formatType = formatType;
+        copy.virtualExpression = virtualExpression;
+        copy.virtualText = virtualText;
         return copy;
     }
 
@@ -419,6 +537,8 @@ public class TableColumn implements Taggable {
         copy.foldedDouble = foldedDouble;
         copy.untypedNull = untypedNull;
         copy.nullText = nullText;
+        copy.valuesNullable = valuesNullable;
+        copy.heldNull = heldNull;
         return copy;
     }
 

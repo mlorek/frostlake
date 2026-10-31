@@ -54,9 +54,7 @@ public class SecondaryRolesSessionTest extends MeasuredCellsTestSupport {
                     + "granted on DATABASE NOSUCH_DB_W7.",
                 "DROP DATABASE nosuch_db_w7");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized. Your "
-                    + "primary role <ROLE> or one of your secondary roles must have USAGE granted on ACCOUNT "
-                    + "<ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized.",
                 "DROP USER nosuch_user_w7");
             assertAnswer(
                 "REFUSED SQL compilation error: | Table 'NOSUCH_T' does not exist or not authorized. Your primary "

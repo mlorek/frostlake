@@ -58,6 +58,8 @@ import javax.xml.parsers.DocumentBuilderFactory;
  */
 public class ParseXml extends BuiltInFunction {
 
+    /** The element a staged file's top-level elements are read under, which is no record itself. */
+    private static final String RECORDS = "frostlake-records";
     private static final Pattern INTEGER_TEXT = Pattern.compile("-?(0|[1-9][0-9]*)");
     private static final Pattern DECIMAL_TEXT = Pattern.compile("-?(0|[1-9][0-9]*)\\.[0-9]+");
     private static final Pattern EXPONENT_TEXT = Pattern.compile("-?(0|[1-9][0-9]*)(\\.[0-9]+)?[eE][+-]?[0-9]+");
@@ -107,7 +109,75 @@ public class ParseXml extends BuiltInFunction {
             throw new IllegalArgumentException(terseMessage(e));
         }
         document.normalize();
-        return buildElement(document.getDocumentElement(), disableAutoConvert);
+        return buildElement(document.getDocumentElement(), disableAutoConvert, false);
+    }
+
+    /**
+     * The records a staged XML file reads as, each in this model: every top-level element of the text a record of
+     * its own, or, under STRIP_OUTER_ELEMENT, every element those hold; the XML declaration and comments are no records
+     * (live-verified). PRESERVE_SPACE keeps a text run whole, its element marked {@code xml:space="preserve"} where
+     * the run had space to trim (live-verified).
+     *
+     * @param xml                the file's text
+     * @param disableAutoConvert DISABLE_AUTO_CONVERT: text stays text
+     * @param preserveSpace      PRESERVE_SPACE
+     * @param stripOuterElement  STRIP_OUTER_ELEMENT
+     * @return the records, in document order
+     * @throws IllegalArgumentException with the parser's message for text that is no XML
+     */
+    public static List<JsonNode> parseRecords(final String xml, final boolean disableAutoConvert,
+                                              final boolean preserveSpace, final boolean stripOuterElement) {
+        String text = xml;
+        if (!text.isEmpty() && text.charAt(0) == '\uFEFF') {
+            text = text.substring(1);
+        }
+        text = withoutDeclaration(text);
+        final List<JsonNode> records = new ArrayList<JsonNode>();
+        if (text.trim().isEmpty()) {
+            return records;
+        }
+        // The top-level elements are read as the children of one element round them all, which takes several.
+        final Document document;
+        try {
+            document = newDocumentBuilder().parse(new InputSource(new StringReader(
+                "<" + RECORDS + ">" + XmlAttributeQuoting.quoted(text) + "</" + RECORDS + ">")));
+        } catch (final Exception e) {
+            throw new IllegalArgumentException(terseMessage(e));
+        }
+        document.normalize();
+        for (final Element top : childElements(document.getDocumentElement())) {
+            if (stripOuterElement) {
+                for (final Element held : childElements(top)) {
+                    records.add(buildElement(held, disableAutoConvert, preserveSpace));
+                }
+            } else {
+                records.add(buildElement(top, disableAutoConvert, preserveSpace));
+            }
+        }
+        return records;
+    }
+
+    /** A text without the XML declaration it opens with, which may stand nowhere but first. */
+    private static String withoutDeclaration(final String text) {
+        final String opened = text.stripLeading();
+        if (opened.startsWith("<?xml") && opened.length() > 5
+                && (Character.isWhitespace(opened.charAt(5)) || opened.charAt(5) == '?')) {
+            final int end = opened.indexOf("?>");
+            return end < 0 ? opened : opened.substring(end + 2);
+        }
+        return text;
+    }
+
+    /** An element's child elements, in document order. */
+    private static List<Element> childElements(final Element parent) {
+        final List<Element> elements = new ArrayList<Element>();
+        final NodeList children = parent.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            if (children.item(i).getNodeType() == Node.ELEMENT_NODE) {
+                elements.add((Element) children.item(i));
+            }
+        }
+        return elements;
     }
 
     private static DocumentBuilder newDocumentBuilder() throws Exception {
@@ -149,9 +219,12 @@ public class ParseXml extends BuiltInFunction {
         return String.valueOf(e.getMessage());
     }
 
-    private static ObjectNode buildElement(final Element element, final boolean disableAutoConvert) {
+    private static ObjectNode buildElement(final Element element, final boolean disableAutoConvert,
+                                           final boolean preserveSpace) {
         // Content pieces in document order: trimmed non-empty text runs and child elements.
         final List<JsonNode> pieces = new ArrayList<JsonNode>();
+        // Whether PRESERVE_SPACE kept a text run whole that had space to trim.
+        boolean preserved = false;
         // First-occurrence content index per child element name (part of Snowflake's model).
         final Map<String, Integer> childIndexes = new LinkedHashMap<String, Integer>();
         final NodeList children = element.getChildNodes();
@@ -162,11 +235,13 @@ public class ParseXml extends BuiltInFunction {
                 if (!childIndexes.containsKey(childElement.getTagName())) {
                     childIndexes.put(childElement.getTagName(), pieces.size());
                 }
-                pieces.add(buildElement(childElement, disableAutoConvert));
+                pieces.add(buildElement(childElement, disableAutoConvert, preserveSpace));
             } else if (child.getNodeType() == Node.TEXT_NODE || child.getNodeType() == Node.CDATA_SECTION_NODE) {
                 final String piece = child.getNodeValue().trim();
                 if (!piece.isEmpty()) {
-                    pieces.add(convertText(piece, disableAutoConvert));
+                    final boolean kept = preserveSpace && !piece.equals(child.getNodeValue());
+                    preserved = preserved || kept;
+                    pieces.add(convertText(kept ? child.getNodeValue() : piece, disableAutoConvert));
                 }
             }
         }
@@ -179,6 +254,9 @@ public class ParseXml extends BuiltInFunction {
         for (int i = 0; i < attributes.getLength(); i++) {
             final Attr attribute = (Attr) attributes.item(i);
             members.put("@" + attribute.getName(), convertText(attribute.getValue(), disableAutoConvert));
+        }
+        if (preserved) {
+            members.put("@xml:space", ArrayFunctionHelper.MAPPER.getNodeFactory().textNode("preserve"));
         }
         for (final Map.Entry<String, Integer> childIndex : childIndexes.entrySet()) {
             members.put(childIndex.getKey(),

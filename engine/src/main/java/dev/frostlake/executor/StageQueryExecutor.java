@@ -24,6 +24,7 @@ import dev.frostlake.executor.copy.StageFileReader;
 import dev.frostlake.executor.copy.StageReaderFactory;
 import dev.frostlake.executor.copy.StagedFileIo;
 import dev.frostlake.executor.operators.RowsProvider;
+import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Stage;
@@ -45,6 +46,9 @@ import dev.frostlake.types.WidthlessStringType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ArrayNode;
+import tools.jackson.databind.node.JsonNodeFactory;
+import tools.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -59,6 +63,7 @@ import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
@@ -88,9 +93,18 @@ final class StageQueryExecutor {
         this.executor = executor;
     }
 
-    /** {@code FROM @stage[/path] [(params)]} as a virtual table of staged-file fields. */
-    TableData queryStage(final String location,
-                         final FrostlakeParser.StageQueryParamsContext params, final String alias) {
+    /**
+     * {@code FROM @stage[/path] [(params)]} as a virtual table of staged-file fields.
+     *
+     * @param location       the stage location
+     * @param params         the FILE_FORMAT and PATTERN written for it, or null
+     * @param alias          its alias, or null
+     * @param readsPositions whether the query reading it reads one of the files' positional columns (see
+     *                       StagePositionalReads)
+     * @return the source
+     */
+    TableData queryStage(final String location, final FrostlakeParser.StageQueryParamsContext params,
+                         final String alias, final boolean readsPositions) {
         // The options reach the stage-query path at their defaults, a named format's in their place: an unenclosed
         // empty field reads as SQL NULL (EMPTY_FIELD_AS_NULL), so does the text \N (NULL_IF), a backslash takes
         // the delimiter or itself literally (ESCAPE_UNENCLOSED_FIELD), TRIM_SPACE trims an unenclosed field, and a
@@ -113,6 +127,9 @@ final class StageQueryExecutor {
         }
         // A JSON format's STRIP_OUTER_ARRAY and STRIP_NULL_VALUES read the file as a load reads it (live-verified).
         options.takeAll(kept);
+        if (!readsPositions) {
+            options.readNoPositionalColumn();
+        }
         final String fileFormat = options.getType();
         final String pattern = arguments.pattern();
 
@@ -153,16 +170,21 @@ final class StageQueryExecutor {
             long rowNumber = 0;
             try {
                 if (recordReader != null) {
-                    // A JSON file's refusal of a byte that is no UTF-8 names it under its stage's storage path.
+                    // A file's refusal of a byte that is no UTF-8 names it under its stage's storage path, and
+                    // every format reads under its own options.
                     final List<JsonNode> records = recordReader instanceof JsonStageReader
                         ? ((JsonStageReader) recordReader).readRecords(file, options.stripsOuterArray(),
-                            options.replacesInvalidCharacters(), storedName(staged, relativeName))
-                        : recordReader.readRecords(file);
+                            options.replacesInvalidCharacters(), storedName(staged, relativeName), readsPositions)
+                        : recordReader.readRecords(file, options, storedName(staged, relativeName));
                     for (final JsonNode record : records) {
                         if (options.stripsNullValues()) {
                             JsonNullStripping.strip(record);
                         }
-                        fieldRows.add(new ArrayList<>(Arrays.asList((Object) record.toString())));
+                        // An XML record is the variant PARSE_XML answers, which reads and prints as XML; any other is
+                        // the OBJECT the account holds, its keys sorted.
+                        fieldRows.add(new ArrayList<>(Arrays.asList("XML".equals(fileFormat)
+                            ? (Object) ArrayFunctionHelper.toCanonicalVariant(record)
+                            : (Object) keysSorted(record).toString())));
                         fileNames.add(relativeName);
                         rowNumbers.add(++rowNumber);
                     }
@@ -405,5 +427,33 @@ final class StageQueryExecutor {
             throw new RuntimeException("Stage query: cannot resolve stage location " + location);
         }
         return staged;
+    }
+
+    /**
+     * A staged record as the OBJECT the account holds it as: its keys sorted at every level, its values as read —
+     * {@code {"a":"x","m":{"b":3,"y":2},"z":1}} for a JSON, Parquet, ORC or Avro record written {@code z, a, m(y, b)}
+     * (live-verified).
+     */
+    private static JsonNode keysSorted(final JsonNode node) {
+        if (node.isObject()) {
+            final List<String> keys = new ArrayList<>();
+            for (final String key : node.propertyNames()) {
+                keys.add(key);
+            }
+            Collections.sort(keys);
+            final ObjectNode sorted = JsonNodeFactory.instance.objectNode();
+            for (final String key : keys) {
+                sorted.set(key, keysSorted(node.get(key)));
+            }
+            return sorted;
+        }
+        if (node.isArray()) {
+            final ArrayNode sorted = JsonNodeFactory.instance.arrayNode();
+            for (final JsonNode element : node) {
+                sorted.add(keysSorted(element));
+            }
+            return sorted;
+        }
+        return node;
     }
 }

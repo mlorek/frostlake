@@ -196,7 +196,7 @@ public class IntervalColumnDriverTest {
             assertEquals("INTERVAL_DAY_TIME", rs.getMetaData().getColumnTypeName(1), on);
             assertEquals(3, rs.getMetaData().getScale(1), on);
             assertEquals("90000000000000", rs.getString(1), on);
-            assertEquals(new BigDecimal("-90000000000000"), rs.getObject("y"), on);
+            assertEquals(new BigDecimal("-90000000000000"), rs.getObject("Y"), on);
             assertEquals(Duration.ofHours(-25), rs.getObject(2, Duration.class), on);
             assertEquals(1L, ((Number) rs.getObject(3)).longValue(), on);
         }

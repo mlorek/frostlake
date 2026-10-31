@@ -36,11 +36,11 @@
     ]},
     {"name": "return-array-built-from-cursor", "steps": [
       {"sql": "DECLARE c1 CURSOR FOR SELECT 1 as c UNION SELECT 2 as c;\nBEGIN\n    LET a ARRAY := [];\n    FOR rec IN c1 DO\n        a := array_append(a, rec.c);\n    END FOR;\n    RETURN a;\nEND;",
-       "expect": {"rowCount": 1, "value": "[1,2]"}}
+       "expect": {"rowCount": 1, "value": "[\n1,\n2\n]"}}
     ]},
     {"name": "return-object-built-from-cursor", "steps": [
       {"sql": "DECLARE c1 CURSOR FOR SELECT 1 as c;\nBEGIN\n    LET o OBJECT := {};\n    FOR rec IN c1 DO\n        o := object_insert(o, 'k', rec.c);\n    END FOR;\n    RETURN o;\nEND;",
-       "expect": {"rowCount": 1, "value": "{\"k\":1}"}}
+       "expect": {"rowCount": 1, "value": "{\n\"k\": 1\n}"}}
     ]},
     {"name": "plain-select-sanity-two-rows", "steps": [
       {"sql": "CREATE TABLE simple_test (id INTEGER)"},

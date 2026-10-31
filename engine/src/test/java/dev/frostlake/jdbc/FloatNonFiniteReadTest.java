@@ -22,8 +22,16 @@ import java.sql.SQLException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/** A FLOAT's NaN and infinities read through the in-process driver as the account's driver reads them. */
+/**
+ * A FLOAT's NaN and infinities read through the in-process driver as the account's driver reads them on its default
+ * results (see {@link DefaultResultFormat}).
+ */
 public class FloatNonFiniteReadTest extends BaseJdbcTest {
+
+    @Override
+    protected void setupTest() throws SQLException {
+        DefaultResultFormat.use(statement);
+    }
 
     @Test
     public void nonFiniteFloatsAreDoubles() throws SQLException {

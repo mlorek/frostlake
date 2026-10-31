@@ -72,12 +72,14 @@ public class NonTableDdlPrivilegeEnforcementTest {
     public void nonOwnerCustomRoleCannotDropView() {
         engine.execute("CREATE VIEW v AS SELECT 1 AS x"); // owned by SYSADMIN (created as SYSTEM)
         asAppRole();
-        assertThrows(SecurityException.class, new Executable() {
+        final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
                 engine.execute("DROP VIEW v");
             }
         });
+        assertEquals("SQL access control error:\nInsufficient privileges to operate on view 'V'. "
+            + "Your primary role APP_ROLE must have OWNERSHIP granted on TABLE DB.PUBLIC.V.", refused.getMessage());
     }
 
     @Test
@@ -97,12 +99,14 @@ public class NonTableDdlPrivilegeEnforcementTest {
     public void nonOwnerCustomRoleCannotDropSchema() {
         engine.execute("CREATE SCHEMA sch1");
         asAppRole();
-        assertThrows(SecurityException.class, new Executable() {
+        final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
                 engine.execute("DROP SCHEMA sch1");
             }
         });
+        assertEquals("SQL access control error:\nInsufficient privileges to operate on schema 'SCH1'. "
+            + "Your primary role APP_ROLE must have OWNERSHIP granted on SCHEMA DB.SCH1.", refused.getMessage());
     }
 
     /** DROP is no privilege of a stream either: dropping one takes its OWNERSHIP. */
@@ -123,12 +127,14 @@ public class NonTableDdlPrivilegeEnforcementTest {
     public void nonOwnerCustomRoleCannotDropStage() {
         engine.execute("CREATE STAGE stg URL='s3://bucket/path/'");
         asAppRole();
-        assertThrows(SecurityException.class, new Executable() {
+        final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
                 engine.execute("DROP STAGE stg");
             }
         });
+        assertEquals("SQL access control error:\nInsufficient privileges to operate on stage 'STG'. "
+            + "Your primary role APP_ROLE must have OWNERSHIP granted on STAGE DB.PUBLIC.STG.", refused.getMessage());
     }
 
     @Test

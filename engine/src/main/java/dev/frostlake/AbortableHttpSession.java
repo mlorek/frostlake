@@ -39,13 +39,20 @@ final class AbortableHttpSession implements AbortableSession {
 
     @Override
     public void abort() {
-        // The session ends as soon as the aborting request is over; a statement it is waiting in for a table lock
-        // ends now, rather than going on once the lock is free (see TableLockWait).
-        session.getSettings().markAborted();
+        // The session ends as soon as the aborting request is over. What it runs now ends at its next checkpoint, and
+        // a statement it is waiting in for a table lock at once, rather than going on once the lock is free (see
+        // StatementCancellation and TableLockWait) - unless what it runs now is the abort itself: a session that
+        // aborts itself gets its answer first.
+        if (engine.getEngine().getSecurityManager().getSessionContext().getBoundSettings() != session.getSettings()) {
+            session.getSettings().markAborted();
+        }
     }
 
     @Override
     public void endAborted() {
+        // A session that aborted itself was not marked while its request ran; it is now, so that its context, kept by
+        // a client, runs nothing more either (see ConcurrentDatabaseEngine#execute).
+        session.getSettings().markAborted();
         engine.endSession(session);
     }
 }

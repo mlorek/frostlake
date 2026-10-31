@@ -85,6 +85,22 @@ public final class DerivedColumnLineage {
         return null;
     }
 
+    /**
+     * The stored column a relation's column reads: the column itself on a catalog table, else its lineage.
+     *
+     * @param relation any relation
+     * @param column   the column's name
+     * @return the lineage, or null where the column is no stored column's and projects no literal
+     */
+    public static DerivedColumnLineage stored(final Table relation, final String column) {
+        final Table resident = relation.residentSource();
+        if (resident == null) {
+            return of(relation, column);
+        }
+        return resident.hasColumn(column) ? new DerivedColumnLineage(resident, resident.getColumn(column).getName())
+            : null;
+    }
+
     /** The source's column an item names, by name or by position, or null where the item is no such column. */
     private static String sourceColumn(final Expression item, final Table source) {
         if (!(item instanceof ColumnReferenceExpression)) {

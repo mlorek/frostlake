@@ -20,6 +20,7 @@ import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.SqlCompilationError;
 import java.util.ArrayList;
 import java.util.List;
+import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.TokenStream;
@@ -71,6 +72,9 @@ public final class EmptySchemaPartSyntax {
     /** The most lines live reports for the dots past a column reference's fourth part. */
     private static final int MAX_EXTRA_PART_LINES = 2;
 
+    /** The most words before a parse's fault a statement is read again without. */
+    private static final int MAX_CUT_WORDS = 2;
+
     private EmptySchemaPartSyntax() {
     }
 
@@ -119,18 +123,87 @@ public final class EmptySchemaPartSyntax {
         }
         final List<EmptyPartFault> written = new ArrayList<>();
         collect(script, tokens, written);
+        final List<EmptyPartFault> before = writtenBefore(written, parseFaultAt, sql);
+        List<Token> reported = new ArrayList<>();
+        boolean complete = !before.isEmpty() && report(before, tokens, reported);
+        if (!complete) {
+            // A parse that broke off at the statement's end keeps no tree of what came before it: the statement is
+            // read again without the words it broke off at, and that reading speaks when it tells the names whole.
+            final List<EmptyPartFault> again = new ArrayList<>();
+            final TokenStream cut = cutBack(sql, tokens, parseFaultAt, again);
+            final List<EmptyPartFault> againBefore = writtenBefore(again, parseFaultAt, sql);
+            final List<Token> againReported = new ArrayList<>();
+            if (cut != null && !againBefore.isEmpty() && report(againBefore, cut, againReported)) {
+                reported = againReported;
+                complete = true;
+            }
+        }
+        if (reported.isEmpty()) {
+            return;
+        }
+        refuse(reported, complete ? new ArrayList<String>() : parserLines, sql);
+    }
+
+    /** The refusals written before the parse's fault, in order. */
+    private static List<EmptyPartFault> writtenBefore(final List<EmptyPartFault> written, final int[] parseFaultAt,
+                                                      final String sql) {
         final List<EmptyPartFault> before = new ArrayList<>();
         for (final EmptyPartFault fault : written) {
             if (precedes(fault.first(), parseFaultAt, sql)) {
                 before.add(fault);
             }
         }
-        if (before.isEmpty()) {
-            return;
+        return before;
+    }
+
+    /**
+     * The statement read again without its last words up to the parse's fault, one more each time, until it reads
+     * cleanly: {@code SELECT COUNT(T..x) FROM} is read as {@code SELECT COUNT(T..x)}. Collects the refusals of that
+     * reading into {@code faults} and answers its token stream, or null when no such reading is clean.
+     */
+    private static TokenStream cutBack(final String sql, final TokenStream tokens, final int[] parseFaultAt,
+                                       final List<EmptyPartFault> faults) {
+        if (sql == null) {
+            return null;
         }
-        final List<Token> reported = new ArrayList<>();
-        final boolean complete = report(before, tokens, reported);
-        refuse(reported, complete ? new ArrayList<String>() : parserLines, sql);
+        final List<Token> spoken = new ArrayList<>();
+        int fault = -1;
+        for (int i = 0; i < tokens.size(); i++) {
+            final Token token = tokens.get(i);
+            if (token.getChannel() != Token.DEFAULT_CHANNEL) {
+                continue;
+            }
+            final int[] at = shownAt(token, sql);
+            if (fault < 0 && (token.getType() == Token.EOF || at[0] > parseFaultAt[0]
+                    || at[0] == parseFaultAt[0] && at[1] >= parseFaultAt[1])) {
+                fault = spoken.size();
+            }
+            spoken.add(token);
+        }
+        for (int cut = 1; cut <= MAX_CUT_WORDS && fault - cut > 0; cut++) {
+            final StringBuilder text = new StringBuilder(sql);
+            for (int c = spoken.get(fault - cut).getStartIndex(); c < text.length(); c++) {
+                if (text.charAt(c) != '\n' && text.charAt(c) != '\r') {
+                    text.setCharAt(c, ' ');
+                }
+            }
+            final SyntaxErrorListener listener = new SyntaxErrorListener(text.toString(), true);
+            listener.statementParse();
+            final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(text.toString()));
+            lexer.removeErrorListeners();
+            lexer.addErrorListener(listener);
+            final CommonTokenStream stream = new CommonTokenStream(lexer);
+            final FrostlakeParser parser = new FrostlakeParser(stream);
+            ColdPrediction.arm(parser);
+            parser.removeErrorListeners();
+            parser.addErrorListener(listener);
+            final FrostlakeParser.SqlScriptContext read = parser.sqlScript();
+            if (!listener.hasErrors()) {
+                collect(read, stream, faults);
+                return stream;
+            }
+        }
+        return null;
     }
 
     /**
@@ -263,7 +336,127 @@ public final class EmptySchemaPartSyntax {
             lines.add(name.DOT(0).getSymbol());
             return new EmptyPartFault(EmptyPartShape.COLUMN_IN_CALL, lines, name, null, true);
         }
+        final List<Token> deeper = bracket == null ? null : deeperLines(name, next, bracket, tokens);
+        if (deeper != null) {
+            return new EmptyPartFault(EmptyPartShape.COLUMN_IN_CALL, deeper, name, null, true);
+        }
         return new EmptyPartFault(EmptyPartShape.COLUMN, one(next), name, null, false);
+    }
+
+    /**
+     * The lines of a three-part column reference whose bracket stands deeper than a select item, each after the token
+     * after the reference (all live-verified):
+     *
+     * <pre>
+     *   SELECT ABS((T..x)) FROM T                    ')', then 'T' and '.': the bracket read again from the name
+     *   SELECT CAST((T..x) AS INT) FROM T            ')', then the CAST's ')'
+     *   SELECT IFF(ABS(T..x) &gt; 0, 1, 2) FROM T      ')', then the ')' of the call around it, past an operator
+     *   SELECT CASE WHEN ABS(T..x) = 1 THEN 1 END     ')' twice, then the THEN
+     *   SELECT (SELECT ABS(T..x) FROM T)             the query's SELECT, then the call's '('
+     *   … WHERE x IN (SELECT ABS(T..x) FROM T)       the query's SELECT, then the token past the call
+     * </pre>
+     *
+     * Null for any other place.
+     */
+    private static List<Token> deeperLines(final FrostlakeParser.QualifiedNameContext name, final Token next,
+                                           final ParserRuleContext bracket, final TokenStream tokens) {
+        if (bracket instanceof FrostlakeParser.ParenExprContext) {
+            if (((FrostlakeParser.ParenExprContext) bracket).RPAREN() == null
+                    || ((FrostlakeParser.ParenExprContext) bracket).RPAREN().getSymbol() != next) {
+                return null;
+            }
+            final ParserRuleContext holder = holderOf(bracket);
+            if (holder instanceof FrostlakeParser.FunctionArgContext && holder.getParent() != null
+                    && holder.getParent().getParent() != null && inSelectItem(holder.getParent().getParent())) {
+                final List<Token> lines = one(next);
+                lines.add(name.getStart());
+                lines.add(name.DOT(0).getSymbol());
+                return lines;
+            }
+            if (holder instanceof FrostlakeParser.CastExprContext && inSelectItem(holder)) {
+                final List<Token> lines = one(next);
+                lines.add(((FrostlakeParser.CastExprContext) holder).RPAREN().getSymbol());
+                return lines;
+            }
+            return null;
+        }
+        if (!(bracket instanceof FrostlakeParser.FunctionCallExprContext)) {
+            return null;
+        }
+        final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) bracket;
+        final ParserRuleContext holder = holderOf(call);
+        // A call that is another call's argument as it stands keeps its one line: ABS(ABS(T..x)) is ')' alone.
+        if (holder instanceof FrostlakeParser.FunctionArgContext && underAnOperator(call) && holder.getParent() != null
+                && holder.getParent().getParent() instanceof FrostlakeParser.FunctionCallExprContext) {
+            final FrostlakeParser.FunctionCallExprContext outer =
+                (FrostlakeParser.FunctionCallExprContext) holder.getParent().getParent();
+            if (inSelectItem(outer) && outer.RPAREN() != null) {
+                final List<Token> lines = one(next);
+                lines.add(outer.RPAREN().getSymbol());
+                return lines;
+            }
+            return null;
+        }
+        if (holder instanceof FrostlakeParser.WhenClauseContext
+                && topOf(call) == ((FrostlakeParser.WhenClauseContext) holder).booleanExpr(0)
+                && holder.getParent() != null
+                && holder.getParent().getParent() instanceof FrostlakeParser.CaseExprContext
+                && inSelectItem(holder.getParent().getParent())) {
+            final List<Token> lines = one(next);
+            lines.add(next);
+            lines.add(((FrostlakeParser.WhenClauseContext) holder).THEN().getSymbol());
+            return lines;
+        }
+        if (!(holder instanceof FrostlakeParser.ExprItemContext) || call.LPAREN() == null || call.RPAREN() == null) {
+            return null;
+        }
+        ParserRuleContext query = holder.getParent();
+        if (!(query instanceof FrostlakeParser.SelectListContext)
+                || ((FrostlakeParser.SelectListContext) query).selectItem(0) != holder) {
+            return null;
+        }
+        while (query != null && !(query instanceof FrostlakeParser.SelectStatementContext)) {
+            query = query.getParent();
+        }
+        if (query == null) {
+            return null;
+        }
+        final ParserRuleContext subquery = query.getParent();
+        if (subquery instanceof FrostlakeParser.ScalarSubqueryExprContext && inSelectItem(subquery)) {
+            final List<Token> lines = one(query.getStart());
+            lines.add(call.LPAREN().getSymbol());
+            return lines;
+        }
+        if (subquery instanceof FrostlakeParser.InSubqueryExprContext) {
+            final List<Token> lines = one(query.getStart());
+            lines.add(nextSpoken(tokens, call.RPAREN().getSymbol().getTokenIndex()));
+            return lines;
+        }
+        return null;
+    }
+
+    /** What holds an expression, through the operators of which it is the left-most operand. */
+    private static ParserRuleContext holderOf(final ParserRuleContext expression) {
+        return topOf(expression).getParent();
+    }
+
+    /** Whether an expression is the left-most operand of an operator, past the pass-throughs between tiers. */
+    private static boolean underAnOperator(final ParserRuleContext expression) {
+        for (ParserRuleContext node = expression; node != topOf(expression); node = node.getParent()) {
+            if (!(node.getParent() instanceof FrostlakeParser.ValueExprContext)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The outermost operator an expression is the left-most operand of, or the expression itself. */
+    private static ParserRuleContext topOf(final ParserRuleContext expression) {
+        ParserRuleContext node = expression;
+        while (node.getParent() != null && isOperator(node.getParent()) && node.getParent().getChild(0) == node) {
+            node = node.getParent();
+        }
+        return node;
     }
 
     private static EmptyPartFault castFault(final Token next, final FrostlakeParser.QualifiedNameContext name,

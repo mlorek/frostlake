@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions;
 
+import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.executor.expressions.ImpliedTextNumber;
 import dev.frostlake.values.VariantValue;
 
@@ -89,6 +90,13 @@ public final class WholeNumbers {
             // A VARIANT gives the number it holds, or the one its text spells; one that spells none is refused as
             // the VARIANT's cast: "Failed to cast variant value "abc" to FIXED" (live-verified).
             final JsonNode held = ((VariantValue) value).node();
+            if (nonFiniteIn(held)) {
+                // A VARIANT's NaN or infinity is refused as the VARIANT's cast to NUMBER refuses it, the type the bare
+                // family and NaN in its own case (live-verified for the cast; see NonFiniteCastRefusal).
+                final double approximate = held.doubleValue();
+                throw new RuntimeException("Number out of representable range: type FIXED, value "
+                    + (Double.isNaN(approximate) ? "NaN" : NumericRangeRefusal.nonFiniteWord(approximate)));
+            }
             if (held.isNumber()) {
                 return held.decimalValue();
             }
@@ -120,9 +128,34 @@ public final class WholeNumbers {
         }
         if (value instanceof Double || value instanceof Float) {
             final double approximate = ((Number) value).doubleValue();
-            return Double.isNaN(approximate) || Double.isInfinite(approximate) ? BigDecimal.ZERO
-                : BigDecimal.valueOf(approximate);
+            if (!Double.isFinite(approximate)) {
+                // A NaN or an infinity has no NUMBER value, so it is refused as the FLOAT's cast to NUMBER refuses
+                // it (live-verified for the cast), never read as a position of 0.
+                throw new RuntimeException(NumericRangeRefusal.typedText("SB16", 38, 0, false,
+                    NumericRangeRefusal.nonFiniteWord(approximate)));
+            }
+            return BigDecimal.valueOf(approximate);
         }
         return BigDecimal.valueOf(((Number) value).longValue());
+    }
+
+    /**
+     * Whether an argument is a NaN or an infinity, a FLOAT's or one a VARIANT holds: a number with no NUMBER value,
+     * which {@link #decimalOf} refuses. A function that answers NULL for an argument naming nothing asks this first.
+     *
+     * @param value the argument's value
+     * @return whether it is a non-finite number
+     */
+    public static boolean isNonFinite(final Object value) {
+        if (value instanceof Double || value instanceof Float) {
+            return !Double.isFinite(((Number) value).doubleValue());
+        }
+        return value instanceof VariantValue && nonFiniteIn(((VariantValue) value).node());
+    }
+
+    /** Whether a VARIANT's value is a floating-point NaN or infinity. */
+    private static boolean nonFiniteIn(final JsonNode held) {
+        return held != null && held.isFloatingPointNumber() && !held.isBigDecimal()
+            && !Double.isFinite(held.doubleValue());
     }
 }

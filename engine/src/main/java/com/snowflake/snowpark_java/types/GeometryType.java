@@ -18,4 +18,10 @@ package com.snowflake.snowpark_java.types;
 
 /** Snowpark's {@code Geometry} type. Instances are handed out by {@link DataTypes}. */
 public class GeometryType extends DataType {
+
+    /** A field prints this type by its whole class name, {@code StructField(G, GeometryType, Nullable = true)}. */
+    @Override
+    String shortName() {
+        return typeName();
+    }
 }

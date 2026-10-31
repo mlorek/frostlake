@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.context;
 
 import dev.frostlake.executor.expressions.RowOrdinal;
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -125,11 +126,11 @@ public class SeqFn extends BuiltInFunction {
 
     private BigDecimal asNumber(final Object argument) {
         if (argument instanceof Number) {
-            return new BigDecimal(argument.toString());
+            return DecimalText.parse(argument.toString());
         }
         final String text = String.valueOf(argument).trim();
         try {
-            return new BigDecimal(text);
+            return DecimalText.parse(text);
         } catch (final NumberFormatException e) {
             throw new RuntimeException("Numeric value '" + text + "' is not recognized");
         }

@@ -76,8 +76,12 @@ public final class CsvRecordReader {
     private final Character escape;
     private final Character escapeUnenclosed;
     private final boolean trimSpace;
+    /** Whether the file's first character is still to be read, to be passed over when it is a byte order mark. */
+    private boolean markPending;
     /** Whether a staged-file query reads the file, whose refusals are worded as its own. */
     private final boolean stagedQuery;
+    /** Whether the staged-file query reading the file reads one of its positional columns, which refusals name. */
+    private final boolean positionsRead;
 
     /** Whether a field holding bytes its file's encoding could not read is settled here (see settlingUnreadable). */
     private boolean settlesUnreadable;
@@ -166,8 +170,10 @@ public final class CsvRecordReader {
         this.escape = options.getEscape();
         this.escapeUnenclosed = options.getEscapeUnenclosed();
         this.trimSpace = options.trimsSpace();
+        this.markPending = options.skipsByteOrderMark();
         this.skipBlankLines = options.skipsBlankLines() || !stagedQuery && !load;
         this.stagedQuery = stagedQuery;
+        this.positionsRead = !options.readsNoPositionalColumn();
         this.load = load;
     }
 
@@ -606,8 +612,10 @@ public final class CsvRecordReader {
     /** A refusal of the last record against a table: the sentence, the file and place, the row and the column. */
     private RuntimeException tableRefusal(final String detail, final int atLine, final int atColumn, final long row,
                                           final String against) {
-        return new RuntimeException(detail + "\n  File '" + relativeName + "', line " + atLine + ", character "
-            + atColumn + "\n  Row " + row + startingAt(atLine, recordStartLine) + ", column " + against);
+        final int shownAt = shownLine(atLine, recordStartLine);
+        return new RuntimeException(detail + "\n  File '" + relativeName + "', line " + shownAt + ", character "
+            + atColumn + "\n  Row " + row + startingAt(shownAt, shownLine(recordStartLine, recordStartLine))
+            + ", column " + against);
     }
 
     /**
@@ -664,29 +672,45 @@ public final class CsvRecordReader {
     /** A refusal of a record's width, in the header's words. */
     private RuntimeException widthRefusal(final String detail, final int atLine, final int atColumn, final long row,
                                           final int startLine, final int index) {
+        final int shownAt = shownLine(atLine, startLine);
         return new RuntimeException("Error with CSV header: " + detail + "\n  File '" + relativeName + "', line "
-            + atLine + ", character " + atColumn + "\n  Row " + row + startingAt(atLine, startLine) + ", column "
-            + columnReference(index) + "\n  File '" + relativeName + "'" + HEADER_TAIL);
+            + shownAt + ", character " + atColumn + "\n  Row " + row + startingAt(shownAt,
+            shownLine(startLine, startLine)) + ", column " + columnReference(index) + "\n  File '" + relativeName
+            + "'" + HEADER_TAIL);
     }
 
     /** A refusal of a record that does not parse. */
     private RuntimeException parseRefusal(final String detail, final int atLine, final int atColumn, final long row,
                                           final int startLine, final int index) {
-        final String where = "\n  File '" + relativeName + "', line " + atLine + ", character " + atColumn;
-        final String at = detail + where + "\n  Row " + row + startingAt(atLine, startLine) + ", column "
-            + columnReference(index);
+        final int shownAt = shownLine(atLine, startLine);
+        final String where = "\n  File '" + relativeName + "', line " + shownAt + ", character " + atColumn;
+        final String at = detail + where + "\n  Row " + row + startingAt(shownAt, shownLine(startLine, startLine))
+            + ", column " + columnReference(index);
         final String message = stagedQuery ? at
             : at + where + "\n  Row 0 starts at line 0, column " + columnReference(index);
-        return new CsvParseFault(message, detail, atLine, atColumn, index);
+        return new CsvParseFault(message, detail, shownAt, atColumn, index);
+    }
+
+    /**
+     * The line a refusal names: the file's, or under a FIELD_DELIMITER of several characters the record's own, counted
+     * from the line it starts on, where the character stays the line's own (live-verified: the third record of a
+     * file whose records end at line breaks is refused at line 1, character 4).
+     */
+    private int shownLine(final int atLine, final int startLine) {
+        return fieldDelimiter != null && fieldDelimiter.length() > 1 ? atLine - startLine + 1 : atLine;
     }
 
     private static String startingAt(final int atLine, final int startLine) {
         return atLine == startLine ? "" : " starts at line " + startLine;
     }
 
+    /**
+     * The column a refusal names. A staged-file query that reads none of the file's positional columns names each by
+     * its place alone, {@code "TRANSIENT_STAGE_TABLE"[1]} (live-verified).
+     */
     private String columnReference(final int index) {
-        return "\"TRANSIENT_STAGE_TABLE\"" + (index == 1 || stagedQuery ? "[\"$" + index + "\":" + index + "]"
-            : "[" + index + "]");
+        final boolean named = stagedQuery ? positionsRead : index == 1;
+        return "\"TRANSIENT_STAGE_TABLE\"" + (named ? "[\"$" + index + "\":" + index + "]" : "[" + index + "]");
     }
 
     /** A delimiter as a refusal spells it, a newline, a carriage return and a tab escaped. */
@@ -724,9 +748,11 @@ public final class CsvRecordReader {
     private int peek(final int offset) throws IOException {
         while (ahead.length() <= offset && !exhausted) {
             final int c = source.read();
+            final boolean mark = markPending && c == StagedFileIo.BYTE_ORDER_MARK;
+            markPending = false;
             if (c < 0) {
                 exhausted = true;
-            } else {
+            } else if (!mark) {
                 ahead.append((char) c);
             }
         }

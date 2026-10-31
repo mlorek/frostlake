@@ -77,6 +77,7 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.functions.scalar.semistructured.ParseJson;
 import dev.frostlake.jdbc.JdbcMarshaling;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.SqlCharStream;
@@ -91,12 +92,14 @@ import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.ConvertedValueType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericLiteralTypes;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringResultWidths;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.TypeCategory;
 import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
@@ -112,6 +115,13 @@ import tools.jackson.databind.node.ArrayNode;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.temporal.ChronoField;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -133,6 +143,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class ProceduralExecutor {
+
+    /** A time as TO_OBJECT's refusal echoes it, its fraction only where it has one: 10:00:00. */
+    private static final DateTimeFormatter ECHO_TIME = new DateTimeFormatterBuilder().appendPattern("HH:mm:ss")
+        .appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).toFormatter();
+
+    /** A timestamp as TO_OBJECT's refusal echoes it: 2024-01-02 03:04:05. */
+    private static final DateTimeFormatter ECHO_TIMESTAMP = new DateTimeFormatterBuilder()
+        .appendPattern("yyyy-MM-dd HH:mm:ss").appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).toFormatter();
+
+    /** A zoned timestamp as TO_OBJECT's refusal echoes it: 2024-01-02 03:04:05 +05:00. */
+    private static final DateTimeFormatter ECHO_ZONED = new DateTimeFormatterBuilder().append(ECHO_TIMESTAMP)
+        .appendLiteral(' ').appendOffset("+HH:MM", "+00:00").toFormatter();
+
 
     private static final Logger logger = LoggerFactory.getLogger(ProceduralExecutor.class);
 
@@ -157,8 +180,8 @@ public class ProceduralExecutor {
     /**
      * The type the CONVERSION produced, for the names whose conversion types narrower than the
      * declaration. A bare RETURN reports this, while the variable itself keeps its declared type:
-     * over {@code x NUMBER DEFAULT TRUE} the account answers NUMBER(38,0) to SYSTEM$TYPEOF(x) and
-     * NUMBER(2,0) to RETURN x. Empty for every name whose conversion kept the declared type.
+     * over {@code x TIMESTAMP_NTZ DEFAULT 5} the conversion is a TIMESTAMP_NTZ(0) (see ConvertedValueType).
+     * Empty for every name whose conversion kept the declared type.
      */
     private final Map<String, DataType> conversionTypes = new HashMap<>();
     /**
@@ -257,6 +280,9 @@ public class ProceduralExecutor {
     private int blockDepth;
     /** Whether the statement running now is a block's own SELECT … INTO, run as text. */
     private boolean runningBlockSelectInto;
+
+    /** The results of the flow chain stages a body has run so far, for the stage that follows them. */
+    private List<ResultSet> runningStages;
     /** The place of the CALL an assignment being re-read from its own text runs, or null. */
     private int[] assignedCallPlace;
 
@@ -600,7 +626,8 @@ public class ProceduralExecutor {
         }
         rememberConversionType(stmt.getVariableName(), stmt.getDefaultValue(), declaredType);
         try {
-            setVariable(stmt.getVariableName(), heldUnder(stmt.getDefaultValue(), declaredType));
+            setVariable(stmt.getVariableName(), heldUnder(variantIntoContainer(stmt.getDefaultValue(), declaredType),
+                declaredType));
         } catch (final RuntimeException failed) {
             // A coercion fault is an EXPRESSION fault, anchored on the initialiser (live).
             if (stmt.getInitializerLine() > 0) {
@@ -667,7 +694,12 @@ public class ProceduralExecutor {
         rememberConversionType(stmt.getVariableName(), value,
             variableTypes.get(stmt.getVariableName().toUpperCase(Locale.ROOT)));
         try {
-            value = heldUnder(value, variableTypes.get(stmt.getVariableName().toUpperCase(Locale.ROOT)));
+            final DataType assignedTo = variableTypes.get(stmt.getVariableName().toUpperCase(Locale.ROOT));
+            if (!stmt.isHeldAnswer()) {
+                value = variantIntoContainer(writtenIntoArray(stmt.getExpression() == null ? null
+                    : stmt.getExpression().getJudgedFrom(), value, assignedTo), assignedTo);
+            }
+            value = heldUnder(value, assignedTo);
         } catch (final RuntimeException failed) {
             // A coercion fault is an EXPRESSION fault, anchored on the right side (live).
             final BaseExpression rhs = stmt.getExpression();
@@ -991,7 +1023,7 @@ public class ProceduralExecutor {
             parsed = value instanceof BigDecimal ? (BigDecimal) value
                 : value instanceof Double || value instanceof Float ? BigDecimal.valueOf(((Number) value).doubleValue())
                 : value instanceof Long || value instanceof Integer ? BigDecimal.valueOf(((Number) value).longValue())
-                : value instanceof String ? new BigDecimal(((String) value).trim()) : null;
+                : value instanceof String ? DecimalText.parse(((String) value).trim()) : null;
         } catch (final NumberFormatException unread) {
             return;
         }
@@ -1211,8 +1243,8 @@ public class ProceduralExecutor {
                 return field;
             }
             // A bare name whose value was converted reports the CONVERSION's type, not the
-            // declaration's: over x NUMBER(10,2) DEFAULT TRUE the account returns 1 as NUMBER(2,0),
-            // never 1.00. Bound as :x the name is its declared type, as it is everywhere else.
+            // declaration's (see ConvertedValueType). Bound as :x the name is its declared type, as it
+            // is everywhere else.
             final DataType converted = variable.isBindForm() ? null
                 : conversionTypes.get(variable.getName().toUpperCase(Locale.ROOT));
             return converted != null ? converted : getDeclaredVariableType(variable.getName());
@@ -1327,6 +1359,28 @@ public class ProceduralExecutor {
         }
     }
 
+    /**
+     * Judge a value of a SQL function's body as the body compiles, before any of it runs: over the names declared up
+     * to it, every name written out as a bind (see {@link BlockExpressionTypes}).
+     *
+     * @param expression the value as parsed in the body
+     * @param types      the types of the names declared up to it
+     */
+    public void judgeAsCompiled(final ParserRuleContext expression, final Map<String, DataType> types) {
+        BlockExpressionTypes.judge(expression, types, counterTypes.keySet(), true, null, scope.variables(),
+            queryExecutor);
+    }
+
+    /**
+     * The types of the names in scope as a block expression is judged over them: a text variable at its value's
+     * width (see {@link #judgedTypes}).
+     *
+     * @return the types, keyed as the resolver folds the names
+     */
+    public Map<String, DataType> typesForJudging() {
+        return judgedTypes();
+    }
+
     /** Judge a block expression unless it passed already over the same types (see {@link #judgedPasses}). */
     private void judge(final ParserRuleContext expression, final DataType target) {
         final Map<String, DataType> types = judgedTypes();
@@ -1341,12 +1395,12 @@ public class ProceduralExecutor {
     }
 
     /**
-     * Whether the account writes every name of the running block out as a bind: in a stored procedure's body, and
-     * in a block whose outermost DECLARE section declares a cursor or a RESULTSET with a query (see {@link
-     * BlockExpressionTypes}).
+     * Whether the account writes every name of the running block out as a bind: in a stored procedure's body and a
+     * SQL function's, and in a block whose outermost DECLARE section declares a cursor or a RESULTSET with a query
+     * (see {@link BlockExpressionTypes}).
      */
     private boolean bindsBlockNames() {
-        return declaredReturn != null || namesBoundByDeclarations;
+        return declaredReturn != null || namesBoundByDeclarations || functionBodies > 0;
     }
 
     /**
@@ -1422,47 +1476,6 @@ public class ProceduralExecutor {
         final String text = held instanceof BigDecimal ? ((BigDecimal) held).toPlainString()
             : String.valueOf(held).toLowerCase(Locale.ROOT);
         return "CAST(" + SqlStringLiterals.encode(text) + " AS " + SqlTypeNames.canonical(declared) + ")";
-    }
-
-    /**
-     * A refusal of a rebuilt call naming each NUMBER variable it bound as the conversion the block wrote: the plan
-     * prints a text cast to a NUMBER through TO_NUMBER, where the account's echo keeps a bound variable's CAST —
-     * {@code invalid use of 'all' for function 'ABS(ALL CAST('5' AS NUMBER(38,0)))'} (live-verified).
-     *
-     * @param refused  the rebuilt call's refusal
-     * @param funcExpr the call as the block wrote it
-     * @return the refusal as the account words it
-     */
-    private RuntimeException namingBoundCasts(final RuntimeException refused, final FunctionCallExpression funcExpr) {
-        // A unit's place keeps the plan's TO_NUMBER spelling (live-verified: DATEADD(day, …) over a NUMBER variable
-        // is "Date/time component [TO_NUMBER('5') ]…").
-        if (refused.getClass() != RuntimeException.class || refused.getMessage() == null
-                || refused.getMessage().contains("Date/time component [")) {
-            return refused;
-        }
-        String message = refused.getMessage();
-        for (final BaseExpression argument : funcExpr.getArguments()) {
-            if (!(argument instanceof VariableExpression)
-                    || !hasVariable(((VariableExpression) argument).getName())) {
-                continue;
-            }
-            final DataType declared = variableTypes.get(
-                ((VariableExpression) argument).getName().toUpperCase(Locale.ROOT));
-            if (!(declared instanceof NumericType) || NumericType.isApproximate(declared)) {
-                continue;
-            }
-            final String cast = boundConversion(argument, evaluateExpression(argument));
-            if (cast == null) {
-                continue;
-            }
-            final NumericType number = (NumericType) declared;
-            final String text = cast.substring("CAST(".length(), cast.lastIndexOf(" AS "));
-            final String printed = number.getPrecision() == NumericType.NUMBER.getPrecision() && number.getScale() == 0
-                ? "TO_NUMBER(" + text + ")"
-                : "TO_NUMBER(" + text + ", " + number.getPrecision() + ", " + number.getScale() + ")";
-            message = message.replace(printed, cast);
-        }
-        return message.equals(refused.getMessage()) ? refused : new RuntimeException(message, refused.getCause());
     }
 
     private String declaredNullOf(final BaseExpression argument) {
@@ -1610,9 +1623,11 @@ public class ProceduralExecutor {
      * to its scale (1.7777 into NUMBER(5,2) is 1.78, '2.5' into NUMBER is 3), and a value past its width is the
      * number's range refusal. A FLOAT parameter reads a text, a text parameter takes the value's text — its
      * width is NOT enforced ('abcdef' into a VARCHAR(2) parameter answers abcdef) — and a DATE, TIME or TIMESTAMP
-     * parameter reads a text as one. An ARRAY parameter wraps a variant that is no array ([1]) and an OBJECT
-     * parameter refuses one that is no object; a VARIANT that holds a text or a number converts as that value
-     * does, and one that does not fit is "Failed to cast variant value …".
+     * parameter reads a text as one, its fraction cut to the parameter's precision: '10:11:12.9876'::TIME(4) into
+     * a TIME(3) parameter is 10:11:12.987, for a handler in any language (live-verified). An ARRAY parameter
+     * wraps a variant that is no array ([1]) and an OBJECT parameter refuses one that is no object; a VARIANT that
+     * holds a text or a number converts as that value does, and one that does not fit is "Failed to cast variant
+     * value …".
      *
      * @param value   the argument as evaluated
      * @param type    the parameter's declared type
@@ -1643,8 +1658,11 @@ public class ProceduralExecutor {
         }
         final String name = type.getName() == null ? "" : type.getName().toUpperCase(Locale.ROOT);
         if (name.startsWith("TIMESTAMP") || "DATE".equals(name) || "TIME".equals(name) || "DATETIME".equals(name)) {
-            return value instanceof VariantValue ? variantTemporal((VariantValue) value, name)
+            final Object temporal = value instanceof VariantValue ? variantTemporal((VariantValue) value, name)
                 : ValueCaster.castValue(value, name);
+            // A number keeps every digit it carries, as it does under a cast to the type.
+            return value instanceof Number || !(type instanceof DateTimeType) ? temporal
+                : SharedFunctionHelpers.atDeclaredPrecision(temporal, ((DateTimeType) type).getPrecision());
         }
         if (value instanceof VariantValue) {
             final VariantValue variant = (VariantValue) value;
@@ -1831,6 +1849,8 @@ public class ProceduralExecutor {
                 final String bound = bindSubstitutor.substitute(rsv.getSelectQuery(), true, binds);
                 final int[] lead = rsv.getParenthesisLead();
                 final List<ResultSet> r;
+                // A source chained with the flow arrow runs as a request's chain does (see runsOwnChain).
+                final int displaced = queryExecutor.runsOwnChain();
                 try {
                     r = issuePlaced(bound, binds, 0);
                 } catch (final RuntimeException refused) {
@@ -1838,8 +1858,12 @@ public class ProceduralExecutor {
                     final RuntimeException echoed = BoundText.echoedAsWritten(refused, rsv.getSelectQuery(), bound,
                         binds);
                     throw lead == null ? echoed : BoundText.displaced(echoed, lead[0], lead[1]);
+                } finally {
+                    queryExecutor.endsOwnChain(displaced);
                 }
-                rsv.setResultSet(r.isEmpty() ? null : r.get(0));
+                // An unaliased column is named by the query as the block wrote it.
+                rsv.setResultSet(r.isEmpty() ? null
+                    : BindColumnNames.asWritten(r.get(0), rsv.getSelectQuery(), bound, queryExecutor));
             }
             return rsv.getResultSet();
         }
@@ -1899,6 +1923,14 @@ public class ProceduralExecutor {
             boolean sawResult = false;
             final boolean outerSelectInto = runningBlockSelectInto;
             runningBlockSelectInto = stmt.isSelectInto();
+            // A stage of a flow chain reads the results of the stages before it (see BlockFlowChains).
+            final List<ResultSet> outerStages = queryExecutor.getFlowChainResults();
+            final List<ResultSet> stages = stmt.followsAStage() ? runningStages : null;
+            runningStages = null;
+            ResultSet stageResult = null;
+            if (stages != null) {
+                queryExecutor.setFlowChainResults(stages);
+            }
             try {
                 // A statement that keeps its :names is still held to what a statement can bind.
                 final List<int[]> binds = new ArrayList<>();
@@ -1912,11 +1944,17 @@ public class ProceduralExecutor {
                     recordSqlRowCount(result);
                     if (result != null) {
                         sawResult = true;
+                        stageResult = result;
                     }
                 }
             } finally {
                 assignedCallPlace = null;
                 runningBlockSelectInto = outerSelectInto;
+                queryExecutor.setFlowChainResults(outerStages);
+            }
+            if (stmt.feedsTheNext()) {
+                runningStages = stages != null ? stages : new ArrayList<ResultSet>();
+                runningStages.add(stageResult);
             }
             if (!sawResult) {
                 // TRUNCATE and some DDL complete without a result set here; live still resets the
@@ -2027,8 +2065,11 @@ public class ProceduralExecutor {
         // A CALL is a statement too — commit its implicit transaction like any other (Snowflake).
         queryExecutor.getTransactionManager().autocommitStatementEnd();
         if (stmt.getIntoTarget() != null) {
-            // A value the variable does not take is the statement's own expression failing, where it stands.
-            final LiteralExpression assigned = new LiteralExpression(procedureReturnValue(results));
+            // A value the variable does not take is the statement's own expression failing, where it stands; a text
+            // given INTO an OBJECT or an ARRAY is read as a SELECT … INTO reads one (see textIntoContainer).
+            final LiteralExpression assigned = new LiteralExpression(textIntoContainer(stmt.getIntoTarget(),
+                procedureReturnValue(results), procedureAnswerType(results), stmt.getSourceLine(),
+                stmt.getSourcePosition()));
             assigned.setSourcePosition(stmt.getSourceLine(), stmt.getSourcePosition());
             executeStatement(new SetStatement(stmt.getIntoTarget(), assigned));
         }
@@ -2062,6 +2103,25 @@ public class ProceduralExecutor {
         return answer;
     }
 
+    /**
+     * The static type of the value a CALL hands back INTO a variable: the type of the first column the procedure
+     * answered, or null where it answered no result set.
+     *
+     * @param result the CALL's result: a result set, a list of them, or the value itself
+     * @return the type, or null
+     */
+    public static DataType procedureAnswerType(final Object result) {
+        Object answer = result;
+        if (answer instanceof List) {
+            final List<?> results = (List<?>) answer;
+            answer = results.isEmpty() ? null : results.get(0);
+        }
+        if (!(answer instanceof ResultSet) || ((ResultSet) answer).getColumns().isEmpty()) {
+            return null;
+        }
+        return ((ResultSet) answer).getColumns().get(0).getDataType();
+    }
+
     /** Whether a block expression is the NULL literal itself. */
     private static boolean isNullLiteral(final BaseExpression expression) {
         return expression instanceof LiteralExpression && ((LiteralExpression) expression).getValue() == null;
@@ -2086,22 +2146,38 @@ public class ProceduralExecutor {
     }
 
     /**
-     * Arithmetic over numbers and the block's NUMBER and FLOAT variables as the SQL that computes it: each variable
-     * written as its value's conversion to its declared type (see {@link #boundConversion}), each number as written,
-     * each operation in parentheses. Null for anything else, which is written out from its value.
+     * Arithmetic and concatenation over literals and the block's variables as the SQL that computes it: a NUMBER or
+     * FLOAT variable written as its value's conversion to its declared type (see {@link #boundConversion}), a text one
+     * as the literal of its value, each literal as written, each operation in parentheses and a negation as one. A
+     * refusal of the call then echoes the expression as the account does —
+     * {@code ABS(ALL (CAST('5' AS NUMBER(38,0))) + 1)}, {@code ABS(ALL NEGATE(CAST('5' AS NUMBER(38,0))))},
+     * {@code UPPER(DISTINCT 'a' || 'b')} (live-verified). Null for anything else, which is written out from its value.
      */
     private String boundArithmetic(final BaseExpression argument) {
         if (argument instanceof VariableExpression) {
             if (!hasVariable(((VariableExpression) argument).getName())) {
                 return null;
             }
-            final String bound = boundConversion(argument, evaluateExpression(argument));
+            final Object value = evaluateExpression(argument);
+            final String bound = boundConversion(argument, value);
+            if (bound == null && value instanceof String && variableTypes.get(
+                    ((VariableExpression) argument).getName().toUpperCase(Locale.ROOT)) instanceof StringType) {
+                return SqlStringLiterals.encode((String) value);
+            }
             return bound == null ? null : "(" + bound + ")";
         }
         if (argument instanceof LiteralExpression) {
             final Object value = ((LiteralExpression) argument).getValue();
+            if (value instanceof String) {
+                return SqlStringLiterals.encode((String) value);
+            }
             return value instanceof BigDecimal || value instanceof Long || value instanceof Integer
                 ? numberLiteral((Number) value) : null;
+        }
+        if (argument instanceof UnaryExpression
+                && ((UnaryExpression) argument).getOperator() == UnaryOperator.NEGATE) {
+            final String operand = boundArithmetic(((UnaryExpression) argument).getOperand());
+            return operand == null ? null : "(-" + operand + ")";
         }
         if (!(argument instanceof BinaryExpression)) {
             return null;
@@ -2113,7 +2189,7 @@ public class ProceduralExecutor {
         return right == null ? null : "(" + left + " " + symbol + " " + right + ")";
     }
 
-    /** The symbol of an arithmetic operator, or null for any other. */
+    /** The symbol of an arithmetic or concatenation operator, or null for any other. */
     private static String arithmeticSymbol(final BinaryOperator operator) {
         switch (operator) {
             case ADD:
@@ -2126,6 +2202,8 @@ public class ProceduralExecutor {
                 return "/";
             case MODULO:
                 return "%";
+            case CONCAT:
+                return "||";
             default:
                 return null;
         }
@@ -2517,7 +2595,7 @@ public class ProceduralExecutor {
                     // The fault's own sentence travels bare — live's uncaught wrapper says
                     // "Numeric value 'a' is not recognized", never a Frostlake-invented
                     // "Error evaluating function TO_NUMBER:" preamble around it.
-                    throw e instanceof RuntimeException ? namingBoundCasts((RuntimeException) e, funcExpr)
+                    throw e instanceof RuntimeException ? (RuntimeException) e
                         : new RuntimeException(e.getMessage(), e);
                 }
             }
@@ -2558,8 +2636,9 @@ public class ProceduralExecutor {
             }
             final String bound = boundConversion(argExprs.get(i), av);
             final String asWritten = av instanceof BigDecimal ? writtenExpressionArgument(funcExpr, i) : null;
-            final String asBound = asWritten == null && av instanceof BigDecimal
-                && argExprs.get(i) instanceof BinaryExpression ? boundArithmetic(argExprs.get(i)) : null;
+            final String asBound = asWritten == null && (av instanceof Number || av instanceof String)
+                && (argExprs.get(i) instanceof BinaryExpression || argExprs.get(i) instanceof UnaryExpression)
+                ? boundArithmetic(argExprs.get(i)) : null;
             if (bound != null) {
                 callExpr.append(bound);
             } else if (asBound != null) {
@@ -3121,12 +3200,24 @@ public class ProceduralExecutor {
     }
 
     /**
+     * Whether a name the running block binds holds a RESULTSET or names a cursor, which a statement it runs cannot
+     * bind (see {@link RowSourceBinds}).
+     *
+     * @param name the name as written
+     * @return true for a RESULTSET or a cursor of the block
+     */
+    public boolean holdsRowSource(final String name) {
+        return scope.getVariable(name) instanceof ResultSetVariable || cursorManager.getCursor(name) != null;
+    }
+
+    /**
      * Gives a variable the answer of {@code x := (CALL p())}, held as the CALL handed it back. The conversion to the
      * variable's type waits for an expression that reads the variable, and fails there as an EXPRESSION_ERROR at that
      * expression: {@code DECLARE x DATE … x := (CALL pv('abc'))} assigns, {@code RETURN x} answers abc, and
-     * {@code RETURN TO_VARCHAR(x)} is refused, {@code Date 'abc' is not recognized} (live-verified). A variable of a
-     * semi-structured type, one holding a result set or a cursor, and one declared without a type take the answer as
-     * any assignment converts it.
+     * {@code RETURN TO_VARCHAR(x)} is refused, {@code Date 'abc' is not recognized} (live-verified). A text given to an
+     * OBJECT, an ARRAY or a VARIANT is held so too, and read as JSON where an expression reads it (see
+     * {@link #readHeld}). A variable of a structured type, one holding a result set or a cursor, and one declared
+     * without a type take the answer as any assignment converts it.
      *
      * @param name   the variable
      * @param answer the CALL's answer
@@ -3135,9 +3226,12 @@ public class ProceduralExecutor {
         final String key = name.toUpperCase(Locale.ROOT);
         final DataType declared = variableTypes.get(key);
         final Object current = getVariable(name);
-        if (answer == null || declared == null || VariantJsonText.isSemiStructured(declared)
+        final boolean heldText = answer instanceof String && !StructuredTypes.isStructured(declared);
+        if (answer == null || declared == null || VariantJsonText.isSemiStructured(declared) && !heldText
                 || current instanceof ResultSetVariable || current instanceof ResultSet || current instanceof Cursor) {
-            executeStatement(new SetStatement(name, new LiteralExpression(answer)));
+            final SetStatement held = new SetStatement(name, new LiteralExpression(answer));
+            held.markHeldAnswer();
+            executeStatement(held);
             return;
         }
         initialiserTypes.remove(key);
@@ -3169,8 +3263,12 @@ public class ProceduralExecutor {
 
     /**
      * A variable's value as an expression reads it: a CALL's answer held unconverted converts to the variable's type
-     * here, a text keeping its length - over a VARCHAR(2), {@code LENGTH(x)} of the answer abcdef is 6 - and a number
-     * taking the type's scale (live-verified). Any other value is read as held.
+     * here, a text keeping its length - over a VARCHAR(2), {@code LENGTH(x)} of the answer abcdef is 6 - a number
+     * taking the type's scale, and a text held for an OBJECT, an ARRAY or a VARIANT read as JSON, refused in the
+     * reader's words where it is none - {@code Error parsing JSON: unknown keyword "x", pos 2} - and then taken as a
+     * VARIANT given to the variable is: an OBJECT takes an object alone, {@code Failed to cast variant value [1] to
+     * OBJECT}, and an ARRAY makes any other value its one element. A JSON null read so is SQL NULL for an OBJECT or
+     * an ARRAY, and stays itself for a VARIANT (live-verified). Any other value is read as held.
      *
      * @param name  the variable
      * @param value the value it holds
@@ -3181,6 +3279,13 @@ public class ProceduralExecutor {
             return value;
         }
         final DataType declared = variableTypes.get(name.toUpperCase(Locale.ROOT));
+        if (VariantJsonText.isSemiStructured(declared) && value instanceof String) {
+            final Object parsed = new ParseJson().evaluate(Collections.<Object>singletonList(value));
+            if (!(declared instanceof VariantType) && isJsonNull(parsed)) {
+                return null;
+            }
+            return heldUnder(variantIntoContainer(parsed, declared), declared);
+        }
         return declared instanceof StringType && value instanceof String ? value : heldUnder(value, declared);
     }
 
@@ -4090,8 +4195,9 @@ public class ProceduralExecutor {
             // The scalar-into-container cells, each measured: a number assigned to a VARIANT stays
             // itself as a variant, to an ARRAY it wraps ([5]), and to an OBJECT it is TO_OBJECT's
             // own refusal — the echo says CAST, so the assignment is the cast machinery. A STRING
-            // assigned to a container is left as it always was: the vendor loaders assign JSON
-            // text to OBJECT variables and live accepts it, so the refusal is scalar-only.
+            // value is left as it is here: a procedure's OBJECT answer reaches this point as its JSON
+            // text (the vendor loaders assign CALLs to OBJECT variables), so a text the block writes
+            // is judged by its static type (see writtenIntoArray and BlockExpressionTypes).
             if ("VARIANT".equals(declaredName)) {
                 // Held AS a variant, so a later conversion reads it as one: a VARIANT holding 5 under
                 // RETURNS DATE fails "Failed to cast variant value 5 to DATE" (live-verified).
@@ -4105,12 +4211,150 @@ public class ProceduralExecutor {
                     + castEchoLiteral(value) + " AS OBJECT)] for parameter 'TO_OBJECT'"));
             }
         }
-        if (type instanceof ObjectType && value instanceof LocalDate) {
-            // A DATE into an OBJECT is the same refusal, echoing the date as the call that makes one.
-            throw new RuntimeException(SqlCompilationError.of("invalid type [CAST(TO_DATE('" + value
-                + "') AS OBJECT)] for parameter 'TO_OBJECT'"));
+        if (type instanceof ObjectType && SharedFunctionHelpers.isNativeTemporal(value)) {
+            // A date, a time or a timestamp into an OBJECT is the same refusal, echoing the value as the call that
+            // makes one: CAST(TO_TIME('10:00:00') AS OBJECT) (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("invalid type [CAST(" + temporalCallEcho(value)
+                + " AS OBJECT)] for parameter 'TO_OBJECT'"));
         }
         return value;
+    }
+
+    /** A date, a time or a timestamp as the conversion of its text that makes it, as TO_OBJECT's refusal echoes it. */
+    private static String temporalCallEcho(final Object value) {
+        if (value instanceof LocalDate) {
+            return "TO_DATE('" + value + "')";
+        }
+        if (value instanceof LocalTime) {
+            return "TO_TIME('" + ECHO_TIME.format((LocalTime) value) + "')";
+        }
+        if (value instanceof LocalDateTime) {
+            return "TO_TIMESTAMP_NTZ('" + ECHO_TIMESTAMP.format((LocalDateTime) value) + "')";
+        }
+        if (value instanceof ZonedDateTime) {
+            return "TO_TIMESTAMP_TZ('" + ECHO_ZONED.format((ZonedDateTime) value) + "')";
+        }
+        return "TO_TIMESTAMP_LTZ('" + ECHO_TIMESTAMP.format(((OffsetDateTime) value).toLocalDateTime()) + "')";
+    }
+
+    /**
+     * A value the block writes for an ARRAY variable, as the assignment's TO_ARRAY reads it: a text by its static type
+     * is the one element — {@code a := '[1, 2]'} holds ["[1, 2]"], {@code a := 'x' || 'y'} ["xy"], and a DEFAULT, a
+     * typed LET and a text variable alike (live-verified). A text given to an OBJECT is refused before the value is
+     * reached (see {@link BlockExpressionTypes}). Any other value, and one no written expression gave — a CALL's
+     * answer, held as the CALL handed it back — is handed back as it is.
+     *
+     * @param written  the value's expression as parsed in the block, or null
+     * @param value    the value
+     * @param declared the variable's declared type, or null
+     * @return the value the variable takes
+     */
+    public Object writtenIntoArray(final ParserRuleContext written, final Object value, final DataType declared) {
+        if (!(value instanceof String) || !(declared instanceof ArrayType) || StructuredTypes.isStructured(declared)
+                || written == null) {
+            return value;
+        }
+        return BlockExpressionTypes.staticType(written, judgedTypes(), queryExecutor) instanceof StringType
+            ? singleElementArray(value) : value;
+    }
+
+    /**
+     * A VARIANT given to an OBJECT or an ARRAY variable, as the assignment's TO_OBJECT and TO_ARRAY read it when the
+     * value arrives: an OBJECT takes only an object, anything else failing as the variant's cast — {@code Failed to
+     * cast variant value "y" to OBJECT}, {@code … [1] to OBJECT} — and an ARRAY takes an array as it is and makes
+     * anything else its one element, [5] and [{"k":1}]; a JSON null stays as it is (all live-verified). Any other
+     * value is handed back as it is.
+     */
+    private static Object variantIntoContainer(final Object value, final DataType type) {
+        if (!(value instanceof VariantValue) || StructuredTypes.isStructured(type)) {
+            return value;
+        }
+        final JsonNode node = ((VariantValue) value).node();
+        if (node == null || node.isNull()) {
+            return value;
+        }
+        if (type instanceof ObjectType && !node.isObject()) {
+            throw new RuntimeException("Failed to cast variant value " + ((VariantValue) value).text() + " to OBJECT");
+        }
+        return type instanceof ArrayType && !node.isArray() ? singleElementArray(value) : value;
+    }
+
+    /**
+     * A SELECT … INTO's value for an OBJECT or an ARRAY target, by the selected column's static type, as the
+     * assignment's TO_OBJECT and TO_ARRAY read a selected text when its row arrives: TO_ARRAY makes it the one
+     * element, {@code SELECT c INTO :a} holding ["x"], and TO_OBJECT refuses it, echoing the value under identity —
+     * {@code invalid type [CAST(identity('x') AS OBJECT)] for parameter 'TO_OBJECT'}, the SELECT's EXPRESSION_ERROR;
+     * no row selected leaves the target NULL (all live-verified). Any other value is handed back as it is.
+     *
+     * @param name     the target
+     * @param value    the selected value, or null when no row was selected
+     * @param selected the selected column's static type, or null when no row was selected
+     * @param line     the SELECT's line
+     * @param position the SELECT's position on its line
+     * @return the value the target takes
+     */
+    public Object selectedIntoContainer(final String name, final Object value, final DataType selected,
+                                        final int line, final int position) {
+        return selected instanceof StringType ? textIntoContainer(name, value, selected, line, position) : value;
+    }
+
+    /**
+     * A value given INTO an OBJECT or an ARRAY target, by a SELECT or a CALL, read by its static type as the
+     * assignment's TO_ARRAY and TO_OBJECT read it (see {@link #selectedIntoContainer}): TO_ARRAY makes a text the one
+     * element and leaves a NULL one NULL, and TO_OBJECT refuses a text, NULL among them, echoing it under identity -
+     * {@code invalid type [CAST(identity('{"a": 1}') AS OBJECT)] for parameter 'TO_OBJECT'}, {@code identity(NULL)} -
+     * and a CALL's whole number under TO_NUMBER, {@code TO_NUMBER('5')} and {@code TO_NUMBER(NULL, 0, 0)}: the
+     * statement's EXPRESSION_ERROR (live-verified). Any other value is handed back as it is.
+     *
+     * @param name     the target
+     * @param value    the value given, or null
+     * @param given    the value's static type, or null where none is known
+     * @param line     the statement's line
+     * @param position the statement's position on its line
+     * @return the value the target takes
+     */
+    public Object textIntoContainer(final String name, final Object value, final DataType given, final int line,
+                                    final int position) {
+        final DataType declared = getDeclaredVariableType(name);
+        if (StructuredTypes.isStructured(declared) || !(declared instanceof ObjectType)
+                && !(declared instanceof ArrayType)) {
+            return value;
+        }
+        // A procedure's OBJECT answer may arrive as its JSON text: the static type decides, where one is known.
+        final boolean text = given == null ? value instanceof String
+            : given instanceof StringType && (value == null || value instanceof String);
+        String echo = null;
+        if (text) {
+            if (declared instanceof ArrayType) {
+                return value == null ? null : singleElementArray(value);
+            }
+            echo = "identity(" + castEchoLiteral(value) + ")";
+        } else if (declared instanceof ObjectType && wholeNumberType(given)
+                && (value == null || value instanceof Number)) {
+            echo = value == null ? "TO_NUMBER(NULL, 0, 0)" : "TO_NUMBER('" + (value instanceof BigDecimal
+                ? ((BigDecimal) value).toPlainString() : String.valueOf(value)) + "')";
+        }
+        if (echo == null) {
+            return value;
+        }
+        recordExpressionFailure(line, position);
+        throw new RuntimeException(SqlCompilationError.of("invalid type [CAST(" + echo
+            + " AS OBJECT)] for parameter 'TO_OBJECT'"));
+    }
+
+    /** Whether a type is an exact number of no fraction: a NUMBER of scale 0, never a FLOAT or a DECFLOAT. */
+    private static boolean wholeNumberType(final DataType type) {
+        return type instanceof NumericType && !NumericType.isApproximate(type) && !NumericType.isDecfloat(type)
+            && ((NumericType) type).getScale() == 0;
+    }
+
+    /** Whether a value is a JSON null, the variant PARSE_JSON makes of the text {@code null}. */
+    private static boolean isJsonNull(final Object value) {
+        if (!(value instanceof VariantValue)) {
+            return false;
+        }
+        final JsonNode node = ((VariantValue) value).node();
+        return node == null || node.isNull();
     }
 
     /**
@@ -4137,8 +4381,11 @@ public class ProceduralExecutor {
         return type instanceof VariantType || value instanceof VariantValue ? JsonHeldValue.of(value) : value;
     }
 
-    /** How a value spells inside the cast echo: numbers and booleans bare, text quoted. */
+    /** How a value spells inside the cast echo: NULL, numbers and booleans bare, text quoted. */
     private static String castEchoLiteral(final Object value) {
+        if (value == null) {
+            return "NULL";
+        }
         if (value instanceof Number || value instanceof Boolean) {
             return String.valueOf(value);
         }
@@ -4180,15 +4427,12 @@ public class ProceduralExecutor {
         if (value instanceof BigDecimal) {
             parsed = (BigDecimal) value;
         } else if (value instanceof Boolean) {
-            // A BOOLEAN converts with a type of its own, NUMBER(2,0): under RETURNS NUMBER(5,2) TRUE is
-            // 1 and not 1.00, the declared scale ignored (live-verified), as TRUE::NUMBER(5,1) is 1.
-            if (!NumericType.isApproximate(type)) {
-                return ((Boolean) value) ? 1L : 0L;
-            }
+            // A BOOLEAN converts to 1 or 0 at the declared scale: under RETURNS NUMBER(5,2) TRUE is 1.00, as
+            // CAST(TRUE AS NUMBER(5,1)) is 1.0 (live-verified).
             parsed = ((Boolean) value) ? BigDecimal.ONE : BigDecimal.ZERO;
         } else {
             try {
-                parsed = new BigDecimal(value.toString().trim());
+                parsed = DecimalText.parse(value.toString().trim());
             } catch (final NumberFormatException e) {
                 // A text spelling NaN or an infinity is one for an approximate name, as it is for the cast:
                 // LET z REAL := 'inf' holds the infinity (live-verified).

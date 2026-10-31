@@ -135,7 +135,8 @@ public class SessionPolicyTest extends MeasuredCellsTestSupport {
             {"SELECT GET_DDL('POLICY', 'sq1')",
                 "create or replace session policy SQ1 SESSION_IDLE_TIMEOUT_MINS=30 "
                 + "SESSION_UI_IDLE_TIMEOUT_MINS=1080 SESSION_MAX_LIFESPAN_MINS=0 SESSION_UI_MAX_LIFESPAN_MINS=0 "
-                + "ALLOWED_SECONDARY_ROLES=('ALL') BLOCKED_SECONDARY_ROLES=() AGENT_RESTRICTED_SESSION_SCOPE=NULL ;"},
+                + "ALLOWED_SECONDARY_ROLES=('ALL') BLOCKED_SECONDARY_ROLES=() AGENT_RESTRICTED_SESSION_SCOPE=NULL "
+                + "COMMENT='c' ;"},
             {"SELECT GET_DDL('POLICY', 'sq2')",
                 "create or replace session policy SQ2 SESSION_IDLE_TIMEOUT_MINS=240 SESSION_UI_IDLE_TIMEOUT_MINS=7 "
                 + "SESSION_MAX_LIFESPAN_MINS=60 SESSION_UI_MAX_LIFESPAN_MINS=90 ALLOWED_SECONDARY_ROLES=() "
@@ -238,7 +239,7 @@ public class SessionPolicyTest extends MeasuredCellsTestSupport {
             {"SELECT GET_DDL('POLICY', 'sq1')",
                 "create or replace session policy SQ1 SESSION_IDLE_TIMEOUT_MINS=45 "
                 + "SESSION_UI_IDLE_TIMEOUT_MINS=1080 SESSION_MAX_LIFESPAN_MINS=0 SESSION_UI_MAX_LIFESPAN_MINS=0 "
-                + "ALLOWED_SECONDARY_ROLES=() BLOCKED_SECONDARY_ROLES=('ALL') AGENT_RESTRICTED_SESSION_SCOPE=NULL ;"},
+                + "ALLOWED_SECONDARY_ROLES=() BLOCKED_SECONDARY_ROLES=('ALL') AGENT_RESTRICTED_SESSION_SCOPE=NULL COMMENT='c' ;"},
             {"ALTER SESSION POLICY sq1 UNSET ALLOWED_SECONDARY_ROLES, BLOCKED_SECONDARY_ROLES, "
                 + "SESSION_IDLE_TIMEOUT_MINS, COMMENT",
                 "Statement executed successfully."},
@@ -353,6 +354,39 @@ public class SessionPolicyTest extends MeasuredCellsTestSupport {
             {"DROP SESSION POLICY sq1 CASCADE", "SQ1 successfully dropped."},
             {"DROP SESSION POLICY IF EXISTS sq1 RESTRICT",
                 "Drop statement executed successfully (SQ1 already dropped)."},
+        });
+    }
+
+    /** A policy's DDL ends with its comment, escaped as a string is, and an empty comment is none. */
+    @Test
+    public void itsDdlEndsWithItsComment() {
+        final String defaults = "SESSION_IDLE_TIMEOUT_MINS=240 SESSION_UI_IDLE_TIMEOUT_MINS=1080 "
+            + "SESSION_MAX_LIFESPAN_MINS=0 SESSION_UI_MAX_LIFESPAN_MINS=0 ALLOWED_SECONDARY_ROLES=('ALL') "
+            + "BLOCKED_SECONDARY_ROLES=() AGENT_RESTRICTED_SESSION_SCOPE=NULL ";
+        engine.execute("CREATE SESSION POLICY sc1 COMMENT = 'it''s'");
+        engine.execute("CREATE SESSION POLICY sc2 COMMENT = 'a\\\\b'");
+        engine.execute("CREATE SESSION POLICY sc3 COMMENT = 'a\nb'");
+        engine.execute("CREATE SESSION POLICY sc4 COMMENT = ''");
+        engine.execute("CREATE SESSION POLICY sc5");
+        engine.execute("ALTER SESSION POLICY sc5 SET COMMENT = 'later'");
+        engine.execute("CREATE PASSWORD POLICY sc6 COMMENT = 'c'");
+        assertCells(new String[][] {
+            {"SELECT GET_DDL('POLICY', 'sc1')", "create or replace session policy SC1 " + defaults + "COMMENT='it''s' ;"},
+            {"SELECT GET_DDL('POLICY', 'sc2')", "create or replace session policy SC2 " + defaults + "COMMENT='a\\\\b' ;"},
+            {"SELECT GET_DDL('POLICY', 'sc3')", "create or replace session policy SC3 " + defaults + "COMMENT='a\\nb' ;"},
+            {"SELECT GET_DDL('POLICY', 'sc4')", "create or replace session policy SC4 " + defaults + ";"},
+            {"SELECT GET_DDL('POLICY', 'sc5')", "create or replace session policy SC5 " + defaults + "COMMENT='later' ;"},
+            {"SELECT GET_DDL('POLICY', 'sc1', TRUE)",
+                "create or replace session policy TEST_DB.TEST_SCHEMA.SC1 " + defaults + "COMMENT='it''s' ;"},
+            {"SELECT GET_DDL('POLICY', 'sc6')", "create or replace password policy SC6 PASSWORD_MIN_LENGTH=14 "
+                + "PASSWORD_MAX_LENGTH=256 PASSWORD_MIN_UPPER_CASE_CHARS=1 PASSWORD_MIN_LOWER_CASE_CHARS=1 "
+                + "PASSWORD_MIN_NUMERIC_CHARS=1 PASSWORD_MIN_SPECIAL_CHARS=0 PASSWORD_MIN_AGE_DAYS=0 "
+                + "PASSWORD_MAX_AGE_DAYS=90 PASSWORD_MAX_RETRIES=5 PASSWORD_LOCKOUT_TIME_MINS=15 PASSWORD_HISTORY=5 "
+                + "COMMENT='c' ;"},
+        });
+        engine.execute("ALTER SESSION POLICY sc5 UNSET COMMENT");
+        assertCells(new String[][] {
+            {"SELECT GET_DDL('POLICY', 'sc5')", "create or replace session policy SC5 " + defaults + ";"},
         });
     }
 }

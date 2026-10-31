@@ -21,8 +21,10 @@ import dev.frostlake.executor.StatementTokens;
 import dev.frostlake.metastore.Named;
 import dev.frostlake.metastore.Taggable;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -34,7 +36,7 @@ import java.util.TreeMap;
 /**
  * Represents a Snowflake Task - Scheduled SQL execution
  */
-public class Task implements Named, Taggable {
+public class Task implements Named, Taggable, ContactHolder {
 
     private final String name;
     /** The task's id, drawn by the statement creating it so that a replay of the statement keeps it. */
@@ -51,8 +53,11 @@ public class Task implements Named, Taggable {
     private LocalDateTime createdAt;
     private TaskState state;
     private LocalDateTime lastRunTime;
-    private LocalDateTime nextRunTime;
+    /** The instant the next fire is due at, kept on the instant line so a schedule counts elapsed time. */
+    private Instant nextRunTime;
     private final List<TaskExecution> executionHistory;
+    /** The runs going on now, which TASK_HISTORY lists EXECUTING until they end. */
+    private final List<TaskExecution> runningRuns = Collections.synchronizedList(new ArrayList<TaskExecution>());
     private int successCount;
     private int failureCount;
     private String comment;
@@ -118,6 +123,27 @@ public class Task implements Named, Taggable {
 
     public String getLastReturnValue() {
         return lastReturnValue;
+    }
+
+    /** The user who last resumed the task: whom its scheduled runs are scheduled by. */
+    private String resumedBy;
+
+    /**
+     * The user who last resumed the task, as SCHEDULED_BY_USER tells it for the task's scheduled runs.
+     *
+     * @return the user's name, or null when nobody resumed it
+     */
+    public String getResumedBy() {
+        return resumedBy;
+    }
+
+    /**
+     * Records who resumed the task.
+     *
+     * @param resumedBy the user's name
+     */
+    public void setResumedBy(final String resumedBy) {
+        this.resumedBy = resumedBy;
     }
 
     public void setLastReturnValue(final String lastReturnValue) {
@@ -228,12 +254,37 @@ public class Task implements Named, Taggable {
         this.lastRunTime = lastRunTime;
     }
 
-    public LocalDateTime getNextRunTime() {
+    public Instant getNextRunTime() {
         return nextRunTime;
     }
 
-    public void setNextRunTime(final LocalDateTime nextRunTime) {
+    public void setNextRunTime(final Instant nextRunTime) {
         this.nextRunTime = nextRunTime;
+    }
+
+    /**
+     * A run of the task starts: it is listed EXECUTING until {@link #endRun} is told of it.
+     *
+     * @param run the run, EXECUTING
+     */
+    public void beginRun(final TaskExecution run) {
+        runningRuns.add(run);
+    }
+
+    /**
+     * A run {@link #beginRun} was told of has ended.
+     *
+     * @param run the run
+     */
+    public void endRun(final TaskExecution run) {
+        runningRuns.remove(run);
+    }
+
+    /** The runs going on now, as they stand. */
+    public List<TaskExecution> getRunningRuns() {
+        synchronized (runningRuns) {
+            return new ArrayList<>(runningRuns);
+        }
     }
 
     public List<TaskExecution> getExecutionHistory() {
@@ -386,16 +437,19 @@ public class Task implements Named, Taggable {
     }
 
     /** The contacts attached to the task, by purpose in the order a description tells them. */
+    @Override
     public Map<String, String> getContacts() {
         return new TreeMap<>(contacts);
     }
 
     /** Attach a contact for a purpose, replacing whatever that purpose held. */
+    @Override
     public void setContact(final String purpose, final String contactName) {
         contacts.put(purpose.toUpperCase(Locale.ROOT), contactName);
     }
 
     /** Detach the contact held for a purpose; one that held none is left as it is. */
+    @Override
     public void unsetContact(final String purpose) {
         contacts.remove(purpose.toUpperCase(Locale.ROOT));
     }
@@ -429,6 +483,45 @@ public class Task implements Named, Taggable {
      *
      * @return the copy
      */
+    /**
+     * Takes another task's definition, as CREATE OR ALTER TASK changes a task to what the statement writes: its
+     * schedule, warehouse, body, predecessors, condition, comment, contacts and every parameter, a property the
+     * statement leaves out taken unset. The task keeps its name, owner, state, runs and tags.
+     *
+     * @param written the task as the statement writes it
+     */
+    public void redefineAs(final Task written) {
+        schedule = written.schedule;
+        scheduleType = written.scheduleType;
+        sqlStatement = written.sqlStatement;
+        warehouse = written.warehouse;
+        predecessors.clear();
+        predecessors.addAll(written.predecessors);
+        comment = written.comment;
+        condition = written.condition;
+        explicitParameters.clear();
+        explicitParameters.addAll(written.explicitParameters);
+        suspendTaskAfterNumFailures = written.suspendTaskAfterNumFailures;
+        taskAutoRetryAttempts = written.taskAutoRetryAttempts;
+        userTaskManagedInitialWarehouseSize = written.userTaskManagedInitialWarehouseSize;
+        serverlessTaskMaxStatementSize = written.serverlessTaskMaxStatementSize;
+        targetCompletionInterval = written.targetCompletionInterval;
+        errorIntegration = written.errorIntegration;
+        userTaskMinimumTriggerIntervalInSeconds = written.userTaskMinimumTriggerIntervalInSeconds;
+        allowOverlappingExecution = written.allowOverlappingExecution;
+        userTaskTimeoutMs = written.userTaskTimeoutMs;
+        config = written.config;
+        overlapPolicy = written.overlapPolicy;
+        sessionParameters.clear();
+        sessionParameters.putAll(written.sessionParameters);
+        contacts.clear();
+        contacts.putAll(written.contacts);
+        successIntegration = written.successIntegration;
+        finalizedRootTask = written.finalizedRootTask;
+        executeAsUser = written.executeAsUser;
+        serverlessTaskMinStatementSize = written.serverlessTaskMinStatementSize;
+    }
+
     public Task cloneDefinition() {
         final Task copy = new Task(name, schedule, scheduleType, sqlStatement, warehouse);
         copy.explicitParameters.addAll(explicitParameters);

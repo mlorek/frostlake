@@ -246,9 +246,9 @@ public class ProjectOperator implements Operator {
     @Override
     public String getDescription() {
         if (projectionExpressions.size() <= 3) {
-            return String.format("PROJECT[%s]", String.join(", ", projectionExpressions));
+            return String.format(Locale.ROOT, "PROJECT[%s]", String.join(", ", projectionExpressions));
         }
-        return String.format("PROJECT[%d columns]", projectionExpressions.size());
+        return String.format(Locale.ROOT, "PROJECT[%d columns]", projectionExpressions.size());
     }
 
     /**

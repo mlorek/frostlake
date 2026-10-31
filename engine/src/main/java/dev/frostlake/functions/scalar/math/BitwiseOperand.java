@@ -16,6 +16,8 @@
 
 package dev.frostlake.functions.scalar.math;
 
+import dev.frostlake.types.DecimalText;
+
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
@@ -44,7 +46,7 @@ public final class BitwiseOperand {
             return ((Number) value).longValue();
         }
         requireFinite(value);
-        return new BigDecimal(value.toString()).setScale(0, RoundingMode.HALF_UP).longValue();
+        return DecimalText.parse(value.toString()).setScale(0, RoundingMode.HALF_UP).longValue();
     }
 
     /**
@@ -78,7 +80,7 @@ public final class BitwiseOperand {
             return (BigInteger) value;
         }
         requireFinite(value);
-        return new BigDecimal(value.toString()).setScale(0, RoundingMode.HALF_UP).toBigInteger();
+        return DecimalText.parse(value.toString()).setScale(0, RoundingMode.HALF_UP).toBigInteger();
     }
 
     /**

@@ -18,7 +18,7 @@ package dev.frostlake.executor;
 
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.parser.FrostlakeParser;
-import java.math.BigDecimal;
+import dev.frostlake.types.DecimalText;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -307,7 +307,7 @@ public final class ParseTreeText {
             try {
                 return Long.parseLong(intText);
             } catch (final NumberFormatException tooWide) {
-                return new BigDecimal(intText);   // wider than a long — keep it exact (NUMBER(38,0))
+                return DecimalText.parse(intText);   // wider than a long — keep it exact (NUMBER(38,0))
             }
         } else if (ctx.FLOAT_LITERAL() != null) {
             return Double.parseDouble(ctx.FLOAT_LITERAL().getText());

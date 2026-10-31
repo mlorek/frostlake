@@ -17,7 +17,9 @@
 package dev.frostlake.persistence;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.LoadRecord;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.CheckConstraint;
@@ -28,6 +30,7 @@ import dev.frostlake.metastore.model.DefaultValueExpression;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.DynamicTableColumn;
 import dev.frostlake.metastore.model.DynamicTableRefresh;
+import dev.frostlake.metastore.model.DynamicTableRefreshRecord;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Function;
@@ -47,6 +50,7 @@ import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamRecord;
 import dev.frostlake.metastore.model.StreamSourceType;
+import dev.frostlake.metastore.model.StreamVersion;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.TableStructure;
@@ -117,7 +121,7 @@ final class CatalogSnapshotWriter {
                                          final TableDataStore tableData) throws IOException {
         final CatalogSnapshot snapshot = new CatalogSnapshot();
         snapshot.currentDatabase = catalog.getCurrentDatabase();
-        snapshot.currentSchema = catalog.getCurrentSchema();
+        snapshot.currentSchema = catalog.heldSchemaName();
         snapshot.currentWarehouse = catalog.getCurrentWarehouse();
 
         // Save databases
@@ -175,6 +179,7 @@ final class CatalogSnapshotWriter {
             userSnapshot.defaultWarehouse = user.getDefaultWarehouse();
             userSnapshot.defaultNamespace = user.getDefaultNamespace();
             userSnapshot.defaultSecondaryRoles = user.getDefaultSecondaryRoles();
+            userSnapshot.defaultSecondaryRolesWritten = Boolean.valueOf(user.isDefaultSecondaryRolesWritten());
             userSnapshot.mustChangePassword = user.isMustChangePassword();
             userSnapshot.userType = user.getUserType();
             userSnapshot.expiresAt = user.getExpiresAt();
@@ -200,6 +205,23 @@ final class CatalogSnapshotWriter {
         snapshot.copyLoadedFiles = new HashMap<>();
         for (final Map.Entry<String, Set<String>> loaded : catalog.getCopyLoadedFiles().entrySet()) {
             snapshot.copyLoadedFiles.put(loaded.getKey(), new ArrayList<>(loaded.getValue()));
+        }
+        // And what each load did, which LOAD_HISTORY and COPY_HISTORY list after the restore as before it.
+        snapshot.loadHistory = new ArrayList<>();
+        for (final LoadRecord load : catalog.getLoadHistory().records()) {
+            snapshot.loadHistory.add(LoadRecordSnapshot.of(load));
+        }
+        // And the dynamic tables' refreshes, which DYNAMIC_TABLE_REFRESH_HISTORY lists after the restore as before it.
+        snapshot.dynamicTableRefreshes = new ArrayList<>();
+        for (final DynamicTableRefreshRecord refresh : catalog.getDynamicTableRefreshHistory().records()) {
+            snapshot.dynamicTableRefreshes.add(DynamicTableRefreshRecordSnapshot.of(refresh));
+        }
+        // And the statements a time-travel point may name by query ID, at the places the histories saved here keep.
+        snapshot.queryPoints = new ArrayList<>();
+        if (catalog.getQueryHistory() != null) {
+            for (final Map.Entry<String, QueryHistory> point : catalog.getQueryHistory().pointsById().entrySet()) {
+                snapshot.queryPoints.add(QueryPointSnapshot.of(point.getKey(), point.getValue()));
+            }
         }
 
         // Every history saved above drew its numbers by now.
@@ -356,8 +378,11 @@ final class CatalogSnapshotWriter {
             }
         }
 
-        // Save view metadata
+        // Save view metadata. A temporary view ends with its session, which no restore brings back.
         for (final View view : schema.getViews()) {
+            if (view.isTemporary()) {
+                continue;
+            }
             final ViewSnapshot viewSnapshot = new ViewSnapshot();
             viewSnapshot.name = view.getName();
             viewSnapshot.tags = SnapshotTags.of(view);
@@ -379,6 +404,13 @@ final class CatalogSnapshotWriter {
             viewSnapshot.rowAccessPolicyName = view.getRowAccessPolicyName();
             viewSnapshot.rowAccessPolicyColumns = view.hasRowAccessPolicy()
                 ? new ArrayList<>(view.getRowAccessPolicyColumns()) : null;
+            viewSnapshot.aggregationPolicyName = view.getAggregationPolicyName();
+            viewSnapshot.aggregationEntityKey = view.hasAggregationPolicy()
+                ? new ArrayList<>(view.getAggregationEntityKey()) : null;
+            viewSnapshot.joinPolicyName = view.getJoinPolicyName();
+            viewSnapshot.contacts = view.getContacts().isEmpty() ? null : view.getContacts();
+            viewSnapshot.dataMetrics = DataMetricSnapshots.of(view.dataMetricAttachments());
+            viewSnapshot.dataMetricSchedule = view.dataMetricAttachments().getSchedule();
             viewSnapshot.columns = derivedColumnSnapshots(view.getResolvedColumns());
             schemaSnapshot.views.add(viewSnapshot);
         }
@@ -436,6 +468,7 @@ final class CatalogSnapshotWriter {
             serviceSnapshot.requestLogging = service.isRequestLogging();
             serviceSnapshot.autoSuspend = service.getAutoSuspend();
             serviceSnapshot.tags = new LinkedHashMap<>(service.getTagValues());
+            serviceSnapshot.scoringProfiles = new LinkedHashMap<>(service.getScoringProfiles());
             schemaSnapshot.cortexSearchServices.add(serviceSnapshot);
         }
 
@@ -456,10 +489,24 @@ final class CatalogSnapshotWriter {
                 && (stream.getSourceType() == StreamSourceType.TABLE && StreamSources.sourceOf(catalog, schema, stream) == null
                 || StreamSources.missingBaseOf(catalog, stream) != null);
             streamSnapshot.lostInClone = stream.isLostInClone();
+            streamSnapshot.rebound = stream.isRebound();
+            streamSnapshot.shownTables = catalog == null ? null : StreamSources.shownTablePlaces(catalog, stream);
             streamSnapshot.comment = stream.getComment();
             streamSnapshot.owner = stream.getOwner();
             streamSnapshot.createdAt = stream.getCreatedAt();
             streamSnapshot.offsetSequence = stream.getOffsetSequence();
+            streamSnapshot.versions = new ArrayList<>();
+            for (final StreamVersion version : stream.getPendingVersions()) {
+                final StreamVersionSnapshot saved = new StreamVersionSnapshot();
+                saved.baseTable = version.getBaseTable();
+                saved.time = version.getTime();
+                saved.kind = version.getKind().name();
+                saved.rowsAdded = version.getRowsAdded();
+                saved.rowsRemoved = version.getRowsRemoved();
+                saved.inserted = version.getInserted();
+                saved.sequence = version.getSequence();
+                streamSnapshot.versions.add(saved);
+            }
             for (final StreamRecord rec : stream.getUnconsumedRecords()) {
                 streamSnapshot.records.add(recordSnapshot(rec));
             }
@@ -474,6 +521,8 @@ final class CatalogSnapshotWriter {
                 for (final List<Object> row : stream.getRefreshImage()) {
                     streamSnapshot.refreshImage.add(new ArrayList<>(row));
                 }
+                streamSnapshot.refreshImageIds = stream.getRefreshImageIds() == null ? null
+                    : new ArrayList<>(stream.getRefreshImageIds());
             }
             schemaSnapshot.streams.add(streamSnapshot);
         }
@@ -485,6 +534,7 @@ final class CatalogSnapshotWriter {
             taskSnapshot.tags = SnapshotTags.of(task);
             taskSnapshot.id = task.getId();
             taskSnapshot.createdByUser = task.getCreatedByUser();
+            taskSnapshot.resumedBy = task.getResumedBy();
             taskSnapshot.explicitParameters = new ArrayList<>(task.getExplicitParameters());
             taskSnapshot.schedule = task.getSchedule();
             taskSnapshot.scheduleType = task.getScheduleType() != null ? task.getScheduleType().name() : null;
@@ -524,6 +574,9 @@ final class CatalogSnapshotWriter {
                 run.rowsAffected = execution.getRowsAffected();
                 run.scheduledFrom = execution.getScheduledFrom();
                 run.attempt = Integer.valueOf(execution.getAttempt());
+                run.queryId = execution.getQueryId();
+                run.errorCode = execution.getErrorCode();
+                run.scheduledByUser = execution.getScheduledByUser();
                 taskSnapshot.history.add(run);
             }
             schemaSnapshot.tasks.add(taskSnapshot);
@@ -615,8 +668,12 @@ final class CatalogSnapshotWriter {
             schemaSnapshot.fileFormats.add(ffSnapshot);
         }
 
-        // Save user-defined functions (all languages, scalar and table)
+        // Save user-defined functions (all languages, scalar and table), but a temporary one, which ends with its
+        // session as a temporary file format does.
         for (final Function fn : schema.allFunctions()) {
+            if (fn.isTemporary()) {
+                continue;
+            }
             final FunctionSnapshot fnSnapshot = new FunctionSnapshot();
             fnSnapshot.name = fn.getName();
             fnSnapshot.tags = SnapshotTags.of(fn);
@@ -650,8 +707,11 @@ final class CatalogSnapshotWriter {
             schemaSnapshot.functions.add(fnSnapshot);
         }
 
-        // Save stored procedures (all languages)
+        // Save stored procedures (all languages), but a temporary one, which ends with its session.
         for (final Procedure proc : schema.allProcedures()) {
+            if (proc.isTemporary()) {
+                continue;
+            }
             final ProcedureSnapshot procSnapshot = new ProcedureSnapshot();
             procSnapshot.name = proc.getName();
             procSnapshot.tags = SnapshotTags.of(proc);
@@ -710,6 +770,7 @@ final class CatalogSnapshotWriter {
             dtSnapshot.targetLag = dt.getTargetLag();
             dtSnapshot.warehouse = dt.getWarehouse();
             dtSnapshot.refreshMode = dt.getRefreshMode() != null ? dt.getRefreshMode().name() : null;
+            dtSnapshot.fullRefreshReason = dt.getFullRefreshReason();
             dtSnapshot.initialize = dt.getInitialize() != null ? dt.getInitialize().name() : null;
             dtSnapshot.state = dt.getState() != null ? dt.getState().name() : null;
             dtSnapshot.comment = dt.getComment();
@@ -718,6 +779,7 @@ final class CatalogSnapshotWriter {
             dtSnapshot.lastDdlAt = dt.getLastDdlTime();
             dtSnapshot.lastDdlBy = dt.getLastDdlBy();
             dtSnapshot.clusterKeys = dt.getClusterKeys();
+            dtSnapshot.clusterByText = dt.getClusterByText();
             dtSnapshot.refreshedRows = Long.valueOf(dt.getRefreshedRows());
             dtSnapshot.lastRefreshedTime = dt.getLastRefreshedTime();
             dtSnapshot.firstRefreshedSequence = Long.valueOf(dt.getFirstRefreshedSequence());
@@ -728,14 +790,23 @@ final class CatalogSnapshotWriter {
                     dtSnapshot.refreshImage.add(new ArrayList<>(row));
                 }
             }
+            // Where those rows lie and what each input held, so a refresh after the restore counts as one before it.
+            dtSnapshot.refreshImagePartitions = dt.getImagePartitions() == null ? null
+                : new ArrayList<>(dt.getImagePartitions());
+            dtSnapshot.inputPartitions = new HashMap<>();
+            for (final Map.Entry<String, Map<Long, Long>> input : dt.getAllInputPartitions().entrySet()) {
+                dtSnapshot.inputPartitions.put(input.getKey(), new HashMap<>(input.getValue()));
+            }
             // The refreshes it keeps for time travel, so a read at a point before a restart still reaches them.
             dtSnapshot.refreshSequences = new ArrayList<>();
             dtSnapshot.refreshMillis = new ArrayList<>();
             dtSnapshot.refreshRows = new ArrayList<>();
+            dtSnapshot.refreshRowIds = new ArrayList<>();
             for (final DynamicTableRefresh refresh : dt.getRefreshes()) {
                 dtSnapshot.refreshSequences.add(Long.valueOf(refresh.getSequence()));
                 dtSnapshot.refreshMillis.add(Long.valueOf(refresh.getMillis()));
                 dtSnapshot.refreshRows.add(refresh.getRows());
+                dtSnapshot.refreshRowIds.add(refresh.getRowIds());
             }
             if (dt.getResolvedColumns() != null) {
                 dtSnapshot.resolvedColumns = derivedColumnSnapshots(dt.getResolvedColumns());
@@ -937,6 +1008,9 @@ final class CatalogSnapshotWriter {
         colSnapshot.primaryKey = col.isPrimaryKey();
         colSnapshot.defaultValue = col.getDefaultValue() != null ? col.getDefaultValue().toString() : null;
         colSnapshot.defaultIsExpression = col.getDefaultValue() instanceof DefaultValueExpression;
+        if (colSnapshot.defaultIsExpression) {
+            colSnapshot.defaultTold = ((DefaultValueExpression) col.getDefaultValue()).toldTextOrNull();
+        }
         if (!colSnapshot.defaultIsExpression && col.getDefaultValue() instanceof Serializable) {
             // A literal keeps its value, so a number stays a number rather than coming back as its text.
             colSnapshot.defaultLiteral = (Serializable) col.getDefaultValue();
@@ -952,6 +1026,8 @@ final class CatalogSnapshotWriter {
         colSnapshot.identityOrdered = col.isIdentityOrdered();
         colSnapshot.collation = col.getCollation();
         colSnapshot.formatType = col.getFormatType();
+        colSnapshot.virtualExpression = col.getVirtualExpression();
+        colSnapshot.virtualText = col.getVirtualText();
         colSnapshot.ordinalPosition = col.getOrdinalPosition();
         colSnapshot.tags = SnapshotTags.of(col);
         colSnapshot.referencedTable = col.getReferencedTable();
@@ -982,8 +1058,8 @@ final class CatalogSnapshotWriter {
     }
 
     /**
-     * A table's storage as a snapshot value: its rows, their identities and its time-travel history — a live table's,
-     * or a dropped table's that waits for its UNDROP.
+     * A table's storage as a snapshot value: its rows, their identities, its time-travel history and its write mark — a
+     * live table's, or a dropped table's that waits for its UNDROP.
      *
      * @param database the table's database
      * @param schema   its schema
@@ -1004,6 +1080,7 @@ final class CatalogSnapshotWriter {
         }
         dataSnapshot.rowIds = new ArrayList<>(ids);
         dataSnapshot.history = buildHistory(table, storage, current, ids);
+        dataSnapshot.writeMark = storage.writeMark();
         return dataSnapshot;
     }
 

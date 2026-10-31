@@ -107,6 +107,12 @@ final class ScriptingNameValidator {
     private static final String NO_FIELDS = "\u0001";
 
     /**
+     * What marks, likewise, a variable a DECLARE or a LET gives a value of whatever type, which a dotted name cannot
+     * read: {@code x.a} over a VARIANT or an OBJECT {@code x} is "invalid identifier 'X'" (live-verified).
+     */
+    private static final String NO_PATH = "\u0002";
+
+    /**
      * Names a script may use without declaring them. SQLCODE and the row counts resolve anywhere, NULL where
      * nothing has set them; SQLERRM and SQLSTATE are names inside an exception handler alone (see
      * {@code HANDLER_SUPPLIED}).
@@ -248,6 +254,9 @@ final class ScriptingNameValidator {
                 if (item instanceof FrostlakeParser.DeclarationItemContext) {
                     final FrostlakeParser.DeclarationItemContext typed = (FrostlakeParser.DeclarationItemContext) item;
                     declare(typed.identifier(), scope, counters);
+                    if (typed.dataTypeName() != null) {
+                        holdsValue(typed.identifier(), scope);
+                    }
                     if (holdsPlainValue(typed)) {
                         // A plain value holds no fields: y.v over an INT y is "invalid identifier 'Y'"
                         // (live-verified).
@@ -267,6 +276,7 @@ final class ScriptingNameValidator {
                             untyped.identifier().getStart());
                     }
                     declare(untyped.identifier(), scope, counters);
+                    holdsValue(untyped.identifier(), scope);
                     if (returns != null) {
                         returns.declared(untyped);
                     }
@@ -430,6 +440,9 @@ final class ScriptingNameValidator {
                 }
             }
             declare(let.variableName(), scope, counters);
+            if (let.CURSOR() == null && let.RESULTSET() == null) {
+                holdsValue(let.variableName(), scope);
+            }
             return;
         }
         if (node instanceof FrostlakeParser.SetStatementContext
@@ -516,6 +529,7 @@ final class ScriptingNameValidator {
             if (loop.variableName() != null) {
                 final String counter = canonical(text(loop.variableName()));
                 body.add(counter);
+                body.remove(NO_PATH + counter);
                 // An integer range's counter is read-only inside its loop; a cursor loop's record is
                 // not, and hides any counter of the same name.
                 if (loop.TO() != null) {
@@ -821,8 +835,25 @@ final class ScriptingNameValidator {
     private static void requireBind(final FrostlakeParser.BindVarExprContext bind, final Set<String> scope) {
         if (bind.variableName() != null) {
             requireName(text(bind.variableName()), bind, scope, true);
+            refuseMisusedBind(bind);
         } else if (bind.INTEGER_LITERAL() != null) {
             requireName(bind.INTEGER_LITERAL().getText(), bind, scope, true);
+        }
+    }
+
+    /**
+     * A bind of a cursor or a RESULTSET in a block's own expression, or in a query written in one, is refused while the
+     * block compiles, on a branch that never runs too, at the bind and by the name as written: n := (SELECT :rs) and
+     * TABLE(:rs) in an assignment's, a LET's, a RETURN's or a condition's query are " Invalid use of resultset 'rs'.",
+     * TABLE(:c) " Invalid use of cursor 'c'." (live-verified). A query the block runs as a statement of its own, or as
+     * a RESULTSET's, reads its binds when it runs.
+     */
+    private static void refuseMisusedBind(final FrostlakeParser.BindVarExprContext bind) {
+        final String written = text(bind.variableName());
+        final String misuse = DeclarationLookup.misuse(DeclarationLookup.declarationOf(bind, canonical(written)));
+        if (misuse != null) {
+            throw new RuntimeException(SqlCompilationError.at(bind.getStart().getLine(),
+                bind.getStart().getCharPositionInLine(), " Invalid use of " + misuse + " '" + written + "'."));
         }
     }
 
@@ -963,6 +994,27 @@ final class ScriptingNameValidator {
     private static void checkCall(final FrostlakeParser.CallStatementContext call, final Set<String> scope) {
         CallNamedShape.require(call);
         checkEmbeddedBinds(call, scope);
+        refuseMisusedCallBinds(call);
+    }
+
+    /**
+     * A CALL's argument that binds a cursor or a RESULTSET is refused while the block compiles, as a bind in a block's
+     * own expression is (see {@link #refuseMisusedBind}): the account fails such a CALL, on a branch that never runs
+     * too, with an internal error (live-verified), which is not mirrored.
+     */
+    private static void refuseMisusedCallBinds(final ParseTree node) {
+        if (node instanceof FrostlakeParser.BeginEndBlockContext) {
+            return;
+        }
+        if (node instanceof FrostlakeParser.BindVarExprContext) {
+            if (((FrostlakeParser.BindVarExprContext) node).variableName() != null) {
+                refuseMisusedBind((FrostlakeParser.BindVarExprContext) node);
+            }
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            refuseMisusedCallBinds(node.getChild(i));
+        }
     }
 
     /** A RESULTSET's statement other than a query, a CALL or an EXECUTE IMMEDIATE: a DML statement's binds compile. */
@@ -1228,7 +1280,8 @@ final class ScriptingNameValidator {
             return;
         }
         final String root = canonical(text(name.nameStartPart()));
-        if (!name.namePart().isEmpty() && (scope.contains(NO_RECORD + root) || scope.contains(NO_FIELDS + root))) {
+        if (!name.namePart().isEmpty() && (scope.contains(NO_RECORD + root) || scope.contains(NO_FIELDS + root)
+                || scope.contains(NO_PATH + root))) {
             // A range's counter is named alone, {@code r.v} over FOR r IN 1 TO 2 being "invalid identifier 'R'".
             final Token at = name.getStart();
             throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
@@ -1311,7 +1364,15 @@ final class ScriptingNameValidator {
                                 final Set<String> scope, final Set<String> counters) {
         if (identifier != null) {
             scope.add(canonical(text(identifier)));
+            scope.remove(NO_PATH + canonical(text(identifier)));
             counters.remove(canonical(text(identifier)));
+        }
+    }
+
+    /** Marks a declared variable as one holding a value, which no dotted name reads (see NO_PATH). */
+    private static void holdsValue(final ParserRuleContext identifier, final Set<String> scope) {
+        if (identifier != null) {
+            scope.add(NO_PATH + canonical(text(identifier)));
         }
     }
 
@@ -1448,7 +1509,7 @@ final class ScriptingNameValidator {
      * An untyped declaration whose initialiser gives it no type is refused while the block compiles —
      * " variable 'A' cannot have its type inferred from initializer", at the LET or at a DECLARE item's
      * name, ahead of anything later in the body. A bare name that resolves to nothing (a context word
-     * written without its parentheses is one), a bare NULL, a ROW, a
+     * written without its parentheses is one), a bare NULL, a ROW, a query of more than one item, a
      * cursor record's field and an initialiser that reads a bind (see {@link #readsABindUntyped}) are such
      * initialisers; an unknown name inside a larger expression is the ordinary invalid identifier instead,
      * and a bind no variable declares is refused ahead of all of them (live-verified).
@@ -1474,6 +1535,39 @@ final class ScriptingNameValidator {
         if (compiler != null && initialiser != null) {
             compileFromlessSubqueries(initialiser, compiler);
         }
+        // A query of several items is judged once its names resolve: (SELECT missing, 2) names MISSING first.
+        if (name != null && initialiser != null && selectsSeveralItems(initialiser)) {
+            throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                " variable '" + canonical(text(name)) + "' cannot have its type inferred from initializer"));
+        }
+    }
+
+    /**
+     * Whether an initialiser is a query whose select list holds more than one item, {@code LET q := (SELECT 1, 2
+     * x)}: no one type is inferred from it (live-verified).
+     */
+    private static boolean selectsSeveralItems(final FrostlakeParser.BooleanExprContext initialiser) {
+        if (!(initialiser instanceof FrostlakeParser.ValueExprContext) || !(((FrostlakeParser.ValueExprContext)
+                initialiser).expression() instanceof FrostlakeParser.ScalarSubqueryExprContext)) {
+            return false;
+        }
+        final FrostlakeParser.SelectListContext list = firstSelectList(((FrostlakeParser.ScalarSubqueryExprContext)
+            ((FrostlakeParser.ValueExprContext) initialiser).expression()).selectStatement());
+        return list != null && list.selectItem().size() > 1;
+    }
+
+    /** The first select list under a node, in the order written: a query's own, before any its clauses hold. */
+    private static FrostlakeParser.SelectListContext firstSelectList(final ParseTree node) {
+        if (node == null || node instanceof FrostlakeParser.SelectListContext) {
+            return (FrostlakeParser.SelectListContext) node;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final FrostlakeParser.SelectListContext found = firstSelectList(node.getChild(i));
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
     }
 
     /**

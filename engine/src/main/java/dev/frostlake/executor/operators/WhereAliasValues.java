@@ -18,6 +18,7 @@ package dev.frostlake.executor.operators;
 
 import dev.frostlake.storage.Row;
 
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Map;
 
@@ -27,7 +28,8 @@ import java.util.Map;
  * SEQ4() — is then computed once for such a row, and that one value is both filtered on and shown, as it is over a
  * single relation on the account (live-verified, through ORDER BY, LIMIT, DISTINCT and an ungrouped HAVING alike).
  * Over a join, or under a QUALIFY, the account computes the item again for the projection, and no values are
- * carried there.
+ * carried there. A QUALIFY, a window call and an ORDER BY key that read an alias over a single relation keep the
+ * values they compute here alike, for the projection to show.
  */
 public final class WhereAliasValues {
 
@@ -55,6 +57,22 @@ public final class WhereAliasValues {
      */
     public void keep(final Row row, final Map<String, Object> values) {
         byRow.put(row, values);
+    }
+
+    /**
+     * Keeps the value computed for one alias of a row, beside any kept for its other aliases.
+     *
+     * @param row   the row
+     * @param alias the alias, upper-cased
+     * @param value its value
+     */
+    public void remember(final Row row, final String alias, final Object value) {
+        Map<String, Object> values = byRow.get(row);
+        if (values == null) {
+            values = new HashMap<>();
+            byRow.put(row, values);
+        }
+        values.put(alias, value);
     }
 
     /**

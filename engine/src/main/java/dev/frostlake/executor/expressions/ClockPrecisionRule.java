@@ -18,6 +18,7 @@ package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
@@ -119,7 +120,7 @@ final class ClockPrecisionRule {
                 || !(((LiteralExpression) argument).getValue() instanceof Number)) {
             return null;
         }
-        return new BigDecimal(((LiteralExpression) argument).getValue().toString());
+        return DecimalText.parse(((LiteralExpression) argument).getValue().toString());
     }
 
     private static boolean isNull(final Expression argument) {

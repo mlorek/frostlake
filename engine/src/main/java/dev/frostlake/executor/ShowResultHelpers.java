@@ -177,7 +177,19 @@ public final class ShowResultHelpers {
      * {@code 'active'}, not {@code active}).
      */
     public static String renderDefaultExpression(final Object def) {
-        if (def instanceof DefaultValueExpression || def instanceof Number || def instanceof Boolean) {
+        // A default that reads the clock is printed as the account prints it (see ClockDefaultSpelling).
+        final String clock = ClockDefaultSpelling.of(def);
+        if (clock != null) {
+            return clock;
+        }
+        if (def instanceof DefaultValueExpression) {
+            return ((DefaultValueExpression) def).getToldText();
+        }
+        if (def instanceof Boolean) {
+            // A boolean default is told in capitals, TRUE (live-verified).
+            return def.toString().toUpperCase(Locale.ROOT);
+        }
+        if (def instanceof Number) {
             return def.toString();
         }
         final String s = def.toString();

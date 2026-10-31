@@ -16,6 +16,7 @@
 
 package dev.frostlake.system;
 
+import dev.frostlake.executor.ClockDefaultSpelling;
 import dev.frostlake.executor.ClusteringKeySpelling;
 import dev.frostlake.executor.JsonTextList;
 import dev.frostlake.executor.ShowResultHelpers;
@@ -23,8 +24,10 @@ import dev.frostlake.functions.scalar.context.DefinitionOwnership;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.RetentionChain;
+import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.SystemSchema;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.DefaultValueExpression;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
@@ -66,9 +69,12 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -145,6 +151,10 @@ public class SystemViews {
             col("REPLICABLE_WITH_FAILOVER_GROUPS"), col("OWNER_ROLE_TYPE")
         ));
         for (final Database db : catalog.getAllDatabases()) {
+            if (SystemDatabase.is(db.getName())) {
+                // The account's DATABASES view leaves the SNOWFLAKE database out (live-verified).
+                continue;
+            }
             result.addRow(new Row(
                 // The same fact SHOW spells as the word TRANSIENT reads YES/NO here — the two
                 // metadata surfaces disagree on spelling by design.
@@ -195,7 +205,10 @@ public class SystemViews {
                             ? Long.valueOf(db.getDataRetentionTimeInDays().longValue())
                             : DEFAULT_RETENTION_TIME,
                     null, null, null, null,
-                    schema.getCreatedTime(), schema.getLastDdlTime(), schema.getComment(),
+                    // Every database's INFORMATION_SCHEMA was made at no instant it tells (live-verified).
+                    "INFORMATION_SCHEMA".equals(schema.getName()) ? null : schema.getCreatedTime(),
+                    "INFORMATION_SCHEMA".equals(schema.getName()) ? null : schema.getLastDdlTime(),
+                    schema.getComment(),
                     "UNSET", OWNER_ROLE_TYPE
                 ));
             }
@@ -432,7 +445,8 @@ public class SystemViews {
                         continue;
                     }
                     if (matchesName(view.getName(), tableName)) {
-                        addDerivedColumnRows(result, db, schema, view.getName(), view.getResolvedColumns());
+                        addDerivedColumnRows(result, db, schema, view.getName(),
+                            InformationSchemaColumns.resolvedColumns(view, schema.getName()));
                     }
                 }
                 for (final MaterializedView view : schema.getMaterializedViews()) {
@@ -487,6 +501,19 @@ public class SystemViews {
     }
 
     /**
+     * COLUMN_DEFAULT's text: a default that reads the clock as the account prints it, an expression as it is told
+     * back, any other as stored.
+     */
+    private static String columnDefault(final Object stored) {
+        final String clock = ClockDefaultSpelling.of(stored);
+        if (clock != null) {
+            return clock;
+        }
+        return stored instanceof DefaultValueExpression ? ((DefaultValueExpression) stored).getToldText()
+            : stored.toString();
+    }
+
+    /**
      * One COLUMNS row. {@code fromBaseTable} tells apart the columns of a real table — which carry a
      * DEFAULT, an IDENTITY and a PRIMARY KEY — from a view's, which live reports without any of the
      * three however the underlying column was declared.
@@ -534,7 +561,7 @@ public class SystemViews {
         return new Row(
             db.getName(), schema.getName(), relationName,
             col.getName(), position,
-            fromBaseTable && col.getDefaultValue() != null ? col.getDefaultValue().toString() : null,
+            fromBaseTable && col.getDefaultValue() != null ? columnDefault(col.getDefaultValue()) : null,
             // A view's column carries its NOT NULL here exactly as it does in DESCRIBE VIEW's null?
             // cell — live-verified, including an expression column reading YES and an outer join's
             // null-extended side losing it. This cell is NOT one of the three the fromBaseTable flag
@@ -556,7 +583,9 @@ public class SystemViews {
             identity ? YES_NO_FALSE : null,
             // An identity declared ORDER hands its numbers out in order; NOORDER is the default (live-verified).
             identity ? yesNo(col.isIdentityOrdered()) : null,
-            null, dataType.getName(), fromBaseTable ? col.getComment() : null,
+            // INFORMATION_SCHEMA's own views carry the account's description of each column (live-verified).
+            null, dataType.getName(), fromBaseTable || "INFORMATION_SCHEMA".equals(schema.getName())
+                ? col.getComment() : null,
             null, null
         );
     }
@@ -974,24 +1003,69 @@ public class SystemViews {
 
     // ── ENABLED_ROLES ─────────────────────────────────────────────────────────
 
-    public ResultSet queryEnabledRoles() {
+    /**
+     * ENABLED_ROLES: a row for each role enabled in the session (documented), or for every role where nothing tells
+     * the session's.
+     *
+     * @param enabled the session's enabled roles, or null
+     * @return the view's rows
+     */
+    public ResultSet queryEnabledRoles(final Collection<String> enabled) {
         // Live carries exactly these two columns — no COMMENT.
         final ResultSet result = new ResultSet(Arrays.asList(col("ROLE_NAME"), col("ROLE_OWNER")));
         for (final Role role : catalog.getAllRoles()) {
-            result.addRow(new Row(role.getName(), role.getOwner()));
+            if (enabled == null || enabled.contains(role.getName())) {
+                result.addRow(new Row(role.getName(), role.getOwner()));
+            }
         }
         return inSessionZone(result);
     }
 
     // ── APPLICABLE_ROLES ──────────────────────────────────────────────────────
 
-    public ResultSet queryApplicableRoles() {
+    /**
+     * APPLICABLE_ROLES: a row for each role grant applied to the user the session authenticated as (documented) -
+     * each role granted to the user, then each role granted to one of those, however many levels down - or for every
+     * user's grants where nothing tells the session's user.
+     *
+     * @param userName the session's user, or null
+     * @return the view's rows
+     */
+    public ResultSet queryApplicableRoles(final String userName) {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("GRANTEE"), col("ROLE_NAME"), col("ROLE_OWNER"), colText("IS_GRANTABLE", 2)
         ));
+        final Set<String> reached = new LinkedHashSet<>();
         for (final User user : catalog.getAllUsers()) {
+            if (userName != null && !user.getName().equalsIgnoreCase(userName)) {
+                continue;
+            }
             for (final String role : user.getGrantedRoles()) {
+                if (!catalog.roleExists(role)) {
+                    // A grant of a role no longer there names nothing to list.
+                    continue;
+                }
                 result.addRow(new Row(user.getName(), role, catalog.getRole(role).getOwner(), "NO"));
+                reached.add(role);
+            }
+        }
+        if (userName != null) {
+            final List<String> pending = new ArrayList<>(reached);
+            while (!pending.isEmpty()) {
+                final String grantee = pending.remove(0);
+                if (!catalog.roleExists(grantee)) {
+                    continue;
+                }
+                for (final String role : catalog.getRole(grantee).getGrantedRoles()) {
+                    if (!catalog.roleExists(role)) {
+                        // A grant of a role no longer there names nothing to list.
+                        continue;
+                    }
+                    result.addRow(new Row(grantee, role, catalog.getRole(role).getOwner(), "NO"));
+                    if (reached.add(role)) {
+                        pending.add(role);
+                    }
+                }
             }
         }
         return inSessionZone(result);

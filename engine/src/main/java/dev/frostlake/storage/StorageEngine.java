@@ -22,6 +22,7 @@ import dev.frostlake.metastore.StatementSession;
 import dev.frostlake.metastore.model.Table;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -137,6 +138,27 @@ public class StorageEngine {
         }
         writtenTables.clear();
         return total;
+    }
+
+    /**
+     * The tables written since the last call, and start the record again: set aside while a statement that another
+     * one runs counts its own (see {@link #takeWrittenRows}).
+     *
+     * @return the tables
+     */
+    public Set<TableStorage> takeWrittenTables() {
+        final Set<TableStorage> taken = new HashSet<>(writtenTables);
+        writtenTables.clear();
+        return taken;
+    }
+
+    /**
+     * Put tables back on the record {@link #takeWrittenRows} reads.
+     *
+     * @param tables the tables
+     */
+    public void noteWrittenTables(final Set<TableStorage> tables) {
+        writtenTables.addAll(tables);
     }
 
     /** Take one time-travel snapshot of every table mutated since the last call, then reset. */
@@ -395,14 +417,35 @@ public class StorageEngine {
 
     /** ALTER TABLE a SWAP WITH b: exchange the row storage of two tables (their structure is assumed compatible). */
     public void swapTables(final String fqNameA, final String fqNameB) {
-        final TableStorage a = tables.get(fqNameA);
-        final TableStorage b = tables.get(fqNameB);
+        // A session's own temporary tables trade their rows among its own, above any shared table of their names.
+        final Map<String, TableStorage> own = ownTables();
+        final Map<String, TableStorage> holderA = own != null && own.containsKey(fqNameA) ? own : tables;
+        final Map<String, TableStorage> holderB = own != null && own.containsKey(fqNameB) ? own : tables;
+        final TableStorage a = holderA.get(fqNameA);
+        final TableStorage b = holderB.get(fqNameB);
         if (a == null || b == null) {
             throw new RuntimeException("Cannot SWAP: table storage missing for "
                 + (a == null ? fqNameA : fqNameB));
         }
-        tables.put(fqNameA, b);
-        tables.put(fqNameB, a);
+        holderA.put(fqNameA, b);
+        holderB.put(fqNameB, a);
+    }
+
+    /**
+     * The sessions whose own temporary table a key holds: what such a session's transaction writes under that key
+     * it writes into its own table, which no other session's write meets.
+     *
+     * @param qualifiedName the table's key
+     * @return the sessions' numbers, none when no session holds one
+     */
+    public Set<Long> sessionsHoldingTable(final String qualifiedName) {
+        final Set<Long> holders = new HashSet<>();
+        for (final Map.Entry<Long, Map<String, TableStorage>> held : sessionTables.entrySet()) {
+            if (held.getValue().containsKey(qualifiedName)) {
+                holders.add(held.getKey());
+            }
+        }
+        return holders;
     }
 
     /** ALTER TABLE a RENAME TO b: move the row storage from the old key to the new one. */

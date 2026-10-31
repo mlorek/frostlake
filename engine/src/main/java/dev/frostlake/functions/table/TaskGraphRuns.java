@@ -34,6 +34,8 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
@@ -159,7 +161,7 @@ public final class TaskGraphRuns {
      */
     static List<Row> current(final Catalog catalog, final String rootTaskName, final int limit) {
         final List<Row> rows = new ArrayList<>();
-        final LocalDateTime horizon = LocalDateTime.now().plusDays(LOOK_AHEAD_DAYS);
+        final Instant horizon = Instant.now().plus(Duration.ofDays(LOOK_AHEAD_DAYS));
         for (final Database database : catalog.getAllDatabases()) {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final Task root : schema.getTasks()) {
@@ -170,7 +172,7 @@ public final class TaskGraphRuns {
                     }
                     final OffsetDateTime scheduled = ShowResultHelpers.createdOn(root.getNextRunTime());
                     rows.add(row(false, root, schema, "SCHEDULED", TaskTrigger.SCHEDULE.reported(), null, null,
-                        scheduled, null, null));
+                        null, scheduled, null, null, root.getResumedBy()));
                 }
             }
         }
@@ -260,10 +262,12 @@ public final class TaskGraphRuns {
         }
         rows.add(row(true, root, schema, state,
             retry ? TaskTrigger.MANUAL_RETRY.reported() : graphRun.getScheduledFrom(), firstErrorTask,
+            firstError == null ? null : firstError.getErrorCode(),
             firstError == null ? null : firstError.getErrorMessage(),
             ShowResultHelpers.createdOn(retry ? first.getScheduledTime() : graphRun.getScheduledTime()),
             ShowResultHelpers.createdOn(queryStart), ShowResultHelpers.createdOn(completed),
-            TaskGraphs.runId(graphRun.getScheduledTime()), attempt));
+            TaskGraphs.runId(graphRun.getScheduledTime()), attempt,
+            (retry ? first : graphRun).getScheduledByUser()));
     }
 
     private static boolean before(final TaskExecution a, final TaskExecution b) {
@@ -275,28 +279,35 @@ public final class TaskGraphRuns {
     }
 
     private static Row row(final boolean completedShape, final Task root, final Schema schema, final String state,
-                           final String scheduledFrom, final String firstErrorTask, final String firstErrorMessage,
-                           final OffsetDateTime scheduled, final OffsetDateTime queryStart,
-                           final OffsetDateTime completed) {
-        return row(completedShape, root, schema, state, scheduledFrom, firstErrorTask, firstErrorMessage, scheduled,
-            queryStart, completed, scheduled == null ? null : Long.valueOf(scheduled.toInstant().toEpochMilli()), 1);
+                           final String scheduledFrom, final String firstErrorTask, final String firstErrorCode,
+                           final String firstErrorMessage, final OffsetDateTime scheduled,
+                           final OffsetDateTime queryStart, final OffsetDateTime completed, final String scheduledBy) {
+        return row(completedShape, root, schema, state, scheduledFrom, firstErrorTask, firstErrorCode,
+            firstErrorMessage, scheduled, queryStart, completed,
+            scheduled == null ? null : Long.valueOf(scheduled.toInstant().toEpochMilli()), 1, scheduledBy);
     }
 
+    /**
+     * One graph run's row. A completed one tells the code of its first error and the user it was scheduled by; a
+     * scheduled one tells the user who resumed the root and the fire after its own (live-verified).
+     */
     private static Row row(final boolean completedShape, final Task root, final Schema schema, final String state,
-                           final String scheduledFrom, final String firstErrorTask, final String firstErrorMessage,
-                           final OffsetDateTime scheduled, final OffsetDateTime queryStart,
-                           final OffsetDateTime completed, final Long runId, final int attempt) {
+                           final String scheduledFrom, final String firstErrorTask, final String firstErrorCode,
+                           final String firstErrorMessage, final OffsetDateTime scheduled,
+                           final OffsetDateTime queryStart, final OffsetDateTime completed, final Long runId,
+                           final int attempt, final String scheduledBy) {
         final String group = GraphRunGroup.id(root.getId(), runId);
         final OffsetDateTime next = root.isActive() && root.getSchedule() != null
-            ? ShowResultHelpers.createdOn(root.getNextRunTime()) : null;
+            ? ShowResultHelpers.createdOn(completedShape ? root.getNextRunTime()
+                : TaskGraphs.fireAfter(root, root.getNextRunTime())) : null;
         final List<Object> cells = new ArrayList<>(Arrays.<Object>asList(
             root.getName(), schema.getDatabaseName(), schema.getName(), state,
-            firstErrorTask, null, firstErrorMessage, scheduled, queryStart, completedShape ? next : null));
+            firstErrorTask, firstErrorCode, firstErrorMessage, scheduled, queryStart, next));
         if (completedShape) {
             cells.add(completed);
         }
         cells.addAll(Arrays.<Object>asList(root.getId(), Long.valueOf(1L), runId, Long.valueOf(attempt), scheduledFrom,
-            null, group, null, null));
+            null, group, null, scheduledBy));
         return new Row(cells);
     }
 

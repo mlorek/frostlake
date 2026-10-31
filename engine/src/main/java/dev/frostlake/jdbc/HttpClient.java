@@ -16,6 +16,7 @@
 
 package dev.frostlake.jdbc;
 
+import dev.frostlake.executor.SessionZone;
 import dev.frostlake.http.SessionNamespace;
 import dev.frostlake.http.SqlRequest;
 import dev.frostlake.http.SqlResponse;
@@ -36,6 +37,8 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executors;
@@ -66,7 +69,9 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>A statement may carry a query timeout, and {@link #cancelRunning()} cancels the one running from another thread
  * through {@code POST /api/sessions/{id}/cancel}; either ends it with "SQL execution canceled", which is raised with
- * the SQLSTATE and vendor code the server's answer carries, as the account's driver raises it.
+ * the SQLSTATE and vendor code the server's answer carries, as the account's driver raises it. A statement object
+ * cancels its own request alone ({@link #cancelRunning(Object)}): one waiting behind another object's request on the
+ * connection cancels nothing of it.
  *
  * <p>With CLIENT_SESSION_KEEP_ALIVE on, as the connection's properties or the session's own ALTER SESSION set it,
  * the transport sends {@code POST /api/sessions/{id}/heartbeat} every CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY
@@ -116,6 +121,10 @@ class HttpClient {
     private final String baseUrl;
     private final java.net.http.HttpClient client;
     private volatile String sessionId;
+    // The statement object whose request is in flight, which alone cancelRunning(Object) cancels; it changes, and a
+    // cancel is sent, under cancelLock, so that no cancel meant for one request reaches the next.
+    private Object runningOwner;
+    private final Object cancelLock = new Object();
     // A session the caller named may be shared, so closing this client never releases it, and losing it
     // is never papered over with a fresh one.
     private volatile boolean callerNamedSession;
@@ -137,6 +146,11 @@ class HttpClient {
     private volatile int heartbeatSecondsProperty = MAX_HEARTBEAT_SECONDS;
     private volatile Boolean sessionKeepAlive;
     private volatile Integer sessionHeartbeatSeconds;
+    // Whether a column label is matched ignoring case: once an answer says the session set
+    // CLIENT_RESULT_COLUMN_CASE_INSENSITIVE to TRUE, for the rest of the connection (see ResultColumnCase).
+    private volatile boolean labelsIgnoreCase;
+    // The zone the session's TIMEZONE named when the last answer reported one (see SessionZoneSource).
+    private volatile String sessionTimezone;
     // Where the session stood after the last answer that said, or null before one has (or from a server that
     // predates the report).
     private volatile SessionNamespace namespace;
@@ -191,6 +205,62 @@ class HttpClient {
         }
         follow(sql);
         return response;
+    }
+
+    /**
+     * Execute SQL for a statement object as {@link #execute(String, Integer, int)} does, the request that object's
+     * own while it is in flight: {@link #cancelRunning(Object)} from the object cancels it, and from another object
+     * does nothing, even from one whose own request waits behind it.
+     *
+     * @param sql the statement, or a pack of them
+     * @param multiStatementCount the count this statement declares, or null
+     * @param queryTimeout the query timeout in seconds, 0 for none
+     * @param owner the statement object the request is
+     * @return the server's answer
+     * @throws SQLException when the request fails or the server refuses it
+     */
+    public synchronized SqlResponse execute(final String sql, final Integer multiStatementCount,
+                                            final int queryTimeout, final Object owner) throws SQLException {
+        synchronized (cancelLock) {
+            runningOwner = owner;
+        }
+        try {
+            return execute(sql, multiStatementCount, queryTimeout);
+        } finally {
+            synchronized (cancelLock) {
+                runningOwner = null;
+            }
+        }
+    }
+
+    /**
+     * Cancel what this connection's session runs when it is {@code owner}'s request, from any thread
+     * (see {@link #cancelRunning()}): a statement object cancels its own statement, and nothing when none of its
+     * requests is in flight (java.sql.Statement#cancel cancels "this Statement object").
+     *
+     * @param owner the statement object asking
+     * @throws SQLException when the server cannot be reached
+     */
+    public void cancelRunning(final Object owner) throws SQLException {
+        synchronized (cancelLock) {
+            if (owner != null && runningOwner == owner) {
+                cancelRunning();
+            }
+        }
+    }
+
+    /**
+     * Cancel the statement a statement object of this connection has in flight, from any thread (see
+     * {@link #cancelRunning()}); nothing when none is.
+     *
+     * @throws SQLException when the server cannot be reached
+     */
+    public void cancelInFlight() throws SQLException {
+        synchronized (cancelLock) {
+            if (runningOwner != null) {
+                cancelRunning();
+            }
+        }
     }
 
     /** A refused statement's exception: its message, with the SQLSTATE and vendor code when the answer carries them. */
@@ -410,6 +480,12 @@ class HttpClient {
                 }
                 this.sessionId = response.getSessionId();
                 followKeepAlive(response);
+                if (Boolean.TRUE.equals(response.getClientResultColumnCaseInsensitive())) {
+                    labelsIgnoreCase = true;
+                }
+                if (response.getTimezone() != null) {
+                    sessionTimezone = response.getTimezone();
+                }
             }
             if (response.getNamespace() != null) {
                 namespace = response.getNamespace();
@@ -569,6 +645,21 @@ class HttpClient {
         this.keepAliveProperty = enabled;
         this.heartbeatSecondsProperty = seconds != null ? seconds : MAX_HEARTBEAT_SECONDS;
         rescheduleHeartbeat();
+    }
+
+    /**
+     * @return whether the connection's result sets match a column label ignoring case (see ResultColumnCase)
+     */
+    boolean labelsIgnoreCase() {
+        return labelsIgnoreCase;
+    }
+
+    /**
+     * @return the zone the session's TIMEZONE named when the last answer reported one, UTC before any did
+     */
+    ZoneId sessionZone() {
+        final ZoneId zone = sessionTimezone == null ? null : SessionZone.named(sessionTimezone);
+        return zone != null ? zone : ZoneOffset.UTC;
     }
 
     /** Follows what the answer says the session keeps itself alive by, as an ALTER SESSION may have changed it. */

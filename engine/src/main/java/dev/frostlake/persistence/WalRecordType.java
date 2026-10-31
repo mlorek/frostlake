@@ -17,10 +17,12 @@
 package dev.frostlake.persistence;
 
 /**
- * Kind of {@link WalRecord} in the write-ahead log: the statements of one committed transaction, or a
- * checkpoint marker that records a durable state snapshot every preceding record folds into.
+ * Kind of {@link WalRecord} in the write-ahead log: the statements of one committed transaction, a checkpoint
+ * marker that records a durable state snapshot every preceding record folds into, or the marks of the counters a
+ * statement drew from that no committed record may carry (see {@link CounterMark}).
  */
 public enum WalRecordType {
     TRANSACTION,
-    CHECKPOINT
+    CHECKPOINT,
+    COUNTERS
 }

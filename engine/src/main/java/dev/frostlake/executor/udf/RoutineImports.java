@@ -35,6 +35,8 @@ import java.util.Locale;
  *   IMPORTS=('@stg')                           IMPORT must specify the path of a file on a stage, but only …
  *   IMPORTS=('@nosuchstage/handlers.jar')      Stage 'DB.SCHEMA.NOSUCHSTAGE' does not exist or not authorized.
  *   IMPORTS=('@stg/lib/a.jar'), no such jar    Remote file 'lib/a.jar' was not found. …
+ *   IMPORTS=('s3://b/a.jar'), ('/tmp/a.jar')    invalid URL prefix found in: 's3://b/a.jar' — any import that
+ *                                              names no stage, a URL, a path or an empty text
  * </pre>
  */
 public final class RoutineImports {
@@ -49,19 +51,23 @@ public final class RoutineImports {
      * table is — and then a file the stage does not hold, named by its path below the stage as written. A path
      * that ends in a slash names a directory, which is not judged here.
      *
-     * <p>A stage whose files the engine cannot see — an external URL it does not resolve — is left alone, and so
-     * is a path with no {@code @}, a local file the loader resolves itself.
+     * <p>An import with no {@code @} is refused, {@code invalid URL prefix found in: '…'} as written, unless the
+     * engine opts in to local files ({@code stage.file.urlEnabled}): then it is a local path or a URL the loader
+     * resolves itself, and a stage whose files the engine cannot see — an external URL it does not resolve — is left
+     * alone.
      *
-     * @param imports the imports as written
-     * @param catalog the catalog the stages resolve in
-     * @param stages  where the stages the engine keeps itself hold their files, or null
+     * @param imports    the imports as written
+     * @param catalog    the catalog the stages resolve in
+     * @param stages     where the stages the engine keeps itself hold their files, or null
+     * @param localFiles whether an import may name a local path or a URL, the local-development affordance
      */
-    public static void validate(final List<String> imports, final Catalog catalog, final ImportLocalizer stages) {
+    public static void validate(final List<String> imports, final Catalog catalog, final ImportLocalizer stages,
+                                final boolean localFiles) {
         if (imports == null || imports.isEmpty() || catalog == null) {
             return;
         }
         for (final String entry : imports) {
-            validateOne(entry, catalog, stages);
+            validateOne(entry, catalog, stages, localFiles);
         }
     }
 
@@ -103,12 +109,16 @@ public final class RoutineImports {
             + (slash >= 0 ? trimmed.substring(slash) : "");
     }
 
-    private static void validateOne(final String entry, final Catalog catalog, final ImportLocalizer stages) {
+    private static void validateOne(final String entry, final Catalog catalog, final ImportLocalizer stages,
+                                    final boolean localFiles) {
         if (entry == null) {
             return;
         }
         final String trimmed = entry.trim();
         if (!trimmed.startsWith("@")) {
+            if (!localFiles) {
+                throw new RuntimeException(SqlCompilationError.of("invalid URL prefix found in: '" + trimmed + "'"));
+            }
             return;
         }
         final String reference = trimmed.substring(1);

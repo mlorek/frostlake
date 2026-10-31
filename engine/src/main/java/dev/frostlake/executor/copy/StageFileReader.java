@@ -41,6 +41,21 @@ public interface StageFileReader {
     /** Parse {@code file} into its records. An unreadable/malformed file throws (a bad load is never silent). */
     List<JsonNode> readRecords(final Path file) throws IOException;
 
+    /**
+     * Parse {@code file} into its records under its format's options: what a staged-file query and a load read. A
+     * reader that takes no option reads the file as {@link #readRecords(Path)} does.
+     *
+     * @param file      the staged file
+     * @param options   the format's options
+     * @param shownName the file as a refusal names it
+     * @return the records
+     * @throws IOException when the file cannot be read
+     */
+    default List<JsonNode> readRecords(final Path file, final FileFormatOptions options, final String shownName)
+            throws IOException {
+        return readRecords(file);
+    }
+
     /** The FILE_FORMAT TYPE this reader handles (e.g. {@code "JSON"}), matched case-insensitively. */
     String formatType();
 

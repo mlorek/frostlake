@@ -35,7 +35,7 @@ import java.util.Set;
  * also records the outer columns that carry a collation under the keys their values are bound by, so a comparison
  * inside the subquery reads an outer column under the column's collation, as a comparison beside it does.
  */
-final class OuterNameBindings {
+public final class OuterNameBindings {
 
     /** The value a bare name is bound to when two relations of the outer row carry it. */
     static final Object AMBIGUOUS = new Object() {
@@ -44,6 +44,17 @@ final class OuterNameBindings {
             return "ambiguous outer name";
         }
     };
+
+    /**
+     * Bind a bare name two relations of the outer row carry as ambiguous: reading it is live's {@code ambiguous
+     * column name}.
+     *
+     * @param bindings the bindings
+     * @param key      the name, as the column spells it
+     */
+    public static void bindAmbiguous(final Map<String, Object> bindings, final String key) {
+        bindings.put(key, AMBIGUOUS);
+    }
 
     /** The key the outer columns' canonical spellings are recorded under; no identifier spells it. */
     private static final String SPELLINGS = "\u0000outer column spellings";
@@ -73,7 +84,7 @@ final class OuterNameBindings {
      * @param collated this row's collated columns, by the keys their values are bound by
      * @param bound    every key this row binds, or null where no row further out recorded a collated column
      */
-    static void recordCollations(final Map<String, Object> bindings, final Map<String, TableColumn> collated,
+    public static void recordCollations(final Map<String, Object> bindings, final Map<String, TableColumn> collated,
                                  final Set<String> bound) {
         final Object earlier = bindings.get(COLLATED);
         if (!(earlier instanceof Map) && collated.isEmpty()) {

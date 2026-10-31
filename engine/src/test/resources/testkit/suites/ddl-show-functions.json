@@ -1,6 +1,6 @@
 {
   "suite": "ddl-show-functions",
-  "description": "SHOW FUNCTIONS lists the whole dispatchable library: built-ins beside user functions, the 14 window functions, the higher-order three, dispatch aliases (each really dispatching under its own name), operator-implemented names (||, [], IS NULL, COUNT(*), ...), SYSTEM$ functions; description defaults to the user-defined placeholder or carries the routine's comment; and the non-registry families really dispatch. Converted from ddl/ShowFunctionsTest (9 of its 11 tests; the two engine-internal ones - the registry-equality sweep and the every-name-resolves loop - stay in the trimmed Java class). DIV-absence and the SYSTEM$TYPEOF/STREAM_HAS_DATA listings are engine-only facts split into skip-snowflake tests, as the Java's assumptions gated them.",
+  "description": "SHOW FUNCTIONS lists the whole dispatchable library: built-ins beside user functions, the 14 window functions, the higher-order three, dispatch aliases (each really dispatching under its own name), operator-implemented names (||, [], IS NULL, COUNT(*), ...), SYSTEM$ functions; description defaults to the user-defined placeholder or carries the routine's comment; and the non-registry families really dispatch. Converted from ddl/ShowFunctionsTest (9 of its 11 tests; the two engine-internal ones - the registry-equality sweep and the every-name-resolves loop - stay in the trimmed Java class). DIV-absence is an engine-only fact split into a skip-snowflake test, as the Java's assumption gated it; SYSTEM$TYPEOF, SYSTEM$STREAM_HAS_DATA and the other SYSTEM$ names the account's own listing leaves out stay out on every backend.",
   "tags": ["ddl", "converted"],
   "tests": [
     {"name": "lists-builtins-when-no-user-functions-exist", "steps": [
@@ -50,12 +50,11 @@
       {"sql": "SELECT COUNT(DISTINCT UPPER(\"name\")) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"name\") IN ('SYSTEM$WAIT', 'SYSTEM$SET_RETURN_VALUE')",
        "expect": {"value": "2"}}
     ]},
-    {"name": "lists-the-engine-only-system-functions",
-     "skip": {"backends": ["snowflake"], "reason": "a real account omits SYSTEM$TYPEOF and SYSTEM$STREAM_HAS_DATA from its own listing (Java test had the same assumption); this engine dispatches both"},
+    {"name": "omits-the-system-functions-the-account-leaves-out",
      "steps": [
       {"sql": "SHOW FUNCTIONS"},
-      {"sql": "SELECT COUNT(DISTINCT UPPER(\"name\")) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"name\") IN ('SYSTEM$TYPEOF', 'SYSTEM$STREAM_HAS_DATA')",
-       "expect": {"value": "2"}}
+      {"sql": "SELECT COUNT(DISTINCT UPPER(\"name\")) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"name\") IN ('SYSTEM$TYPEOF', 'SYSTEM$STREAM_HAS_DATA', 'SYSTEM$AUTO_REFRESH_STATUS', 'SYSTEM$ALLOWLIST', 'SYSTEM$WHITELIST')",
+       "expect": {"value": "0"}}
     ]},
     {"name": "description-defaults-to-the-placeholder-and-otherwise-carries-the-comment", "steps": [
       {"sql": "CREATE FUNCTION d_plain(x INTEGER) RETURNS INTEGER AS 'x + 1'"},

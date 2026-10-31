@@ -28,7 +28,8 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.LocalDateTime;
+import java.time.Duration;
+import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -88,16 +89,18 @@ public class TaskSchedulingTest {
 
     @Test
     public void nextRunTimeReflectsMinutesInterval() {
-        final LocalDateTime before = LocalDateTime.now();
+        final Instant before = Instant.now();
         engine.startTaskScheduler();
         engine.execute("CREATE TASK every5 WAREHOUSE = 'COMPUTE_WH' SCHEDULE = '5 MINUTES' AS SELECT 1");
         engine.execute("ALTER TASK every5 RESUME");
 
-        final LocalDateTime next = task("EVERY5").getNextRunTime();
+        final Instant next = task("EVERY5").getNextRunTime();
         assertNotNull(next, "a resumed scheduled task must have a next run time");
         // next == scheduled-at + 5 minutes; bound generously so the assertion is not clock-flaky.
-        assertTrue(next.isAfter(before.plusMinutes(4)), "next run should be ~5 minutes out, was " + next);
-        assertTrue(next.isBefore(before.plusMinutes(7)), "next run should be ~5 minutes out, was " + next);
+        assertTrue(next.isAfter(before.plus(Duration.ofMinutes(4))),
+            "next run should be ~5 minutes out, was " + next);
+        assertTrue(next.isBefore(before.plus(Duration.ofMinutes(7))),
+            "next run should be ~5 minutes out, was " + next);
     }
 
     @Test

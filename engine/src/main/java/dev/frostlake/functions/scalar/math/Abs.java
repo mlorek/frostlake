@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.functions.NumericArgumentFunction;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.ApproximateValues;
 
@@ -41,7 +42,7 @@ public class Abs extends NumericArgumentFunction {
             final double value = ((Number) args.get(0)).doubleValue();
             return Double.valueOf(value < 0 ? -value : value);
         }
-        final BigDecimal magnitude = new BigDecimal(args.get(0).toString()).abs();
+        final BigDecimal magnitude = DecimalText.parse(args.get(0).toString()).abs();
         // The carrier is the only ceiling, as for the operators: ABS(-2^127) is the one exact value
         // past it and is refused in the raw-result form, while a 39-digit magnitude still inside the
         // window — ABS(-a - 1) over 38 nines, 2^127 - 1 — answers (live-verified).

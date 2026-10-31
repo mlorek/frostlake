@@ -20,6 +20,7 @@ import dev.frostlake.executor.GrantedObject;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DatabaseRole;
@@ -42,6 +43,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -151,6 +153,20 @@ final class OwnershipTransfer {
         }
     }
 
+    /**
+     * Refuses to pass a managed access schema to a different role while a future OWNERSHIP grant in it is open: every
+     * such grant is revoked first (documented).
+     *
+     * @param schema the schema
+     */
+    private void requireNoOpenFutureOwnership(final Schema schema) {
+        if (schema.isManagedAccess() && FutureGrants.ownershipOpenIn(catalog, schema)) {
+            throw new SecurityException(String.format(Locale.ROOT, "Cannot transfer the ownership of managed access"
+                + " schema '%s': the future grants of OWNERSHIP in it must be revoked first",
+                QualifiedName.join(schema.getDatabaseName(), schema.getName())));
+        }
+    }
+
     private static Pipe pipeOrNull(final Schema schema, final String name) {
         try {
             return schema.getPipe(name);
@@ -218,6 +234,9 @@ final class OwnershipTransfer {
             return false;
         }
         requirePrerequisites(objectType, parts);
+        if ("SCHEMA".equals(objectType) && !owner.equals(granted.getOwner())) {
+            requireNoOpenFutureOwnership(catalog.resolveSchema(QualifiedName.of(parts)));
+        }
         final List<String> spellings = new ArrayList<>();
         spellings.add(writtenName);
         spellings.addAll(granted.getSpellings());
@@ -347,6 +366,14 @@ final class OwnershipTransfer {
             }
         }
         Collections.sort(names);
+        // A managed access schema the move cannot take stops it before any schema moves.
+        final String owner = catalog.getRoleExact(roleName).getName();
+        for (final String name : names) {
+            final Schema schema = catalog.databaseExact(database).getSchema(name);
+            if (!owner.equals(schema.getOwner())) {
+                requireNoOpenFutureOwnership(schema);
+            }
+        }
         for (final String name : names) {
             final String[] parts = {database, name};
             transfer("SCHEMA", parts, null, QualifiedName.join(parts), roleName, tail);
@@ -358,7 +385,8 @@ final class OwnershipTransfer {
     private static boolean movableKind(final String kind) {
         return "TABLE".equals(kind) || "VIEW".equals(kind) || "SEQUENCE".equals(kind)
             || "STAGE".equals(kind) || "STREAM".equals(kind) || "FUNCTION".equals(kind)
-            || "PROCEDURE".equals(kind) || "TASK".equals(kind) || "PIPE".equals(kind);
+            || "PROCEDURE".equals(kind) || "TASK".equals(kind) || "PIPE".equals(kind)
+            || "MATERIALIZED_VIEW".equals(kind);
     }
 
     /**

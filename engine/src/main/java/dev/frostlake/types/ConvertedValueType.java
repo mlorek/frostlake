@@ -21,18 +21,14 @@ import java.util.Locale;
 /**
  * The static type a conversion to a declared type produces, which is not always the declared type.
  *
- * <p>Two conversions type as something other than what was written, and both are the source's doing:</p>
+ * <p>One conversion types as something other than what was written, and it is the source's doing: an exact
+ * number into a TIMESTAMP flavour declares the NUMBER's own scale as its precision, the written one ignored —
+ * {@code 5::TIMESTAMP_NTZ} is {@code TIMESTAMP_NTZ(0)} while {@code '2024-01-01'::TIMESTAMP_NTZ}, whose source is a
+ * text, keeps the default nine.</p>
  *
- * <ul>
- *   <li>a BOOLEAN into an exact number is {@code NUMBER(2,0)} whatever width the target spells —
- *       {@code TRUE::NUMBER(5,1)} is {@code NUMBER(2,0)} and its value prints {@code 1}, not
- *       {@code 1.0};</li>
- *   <li>an exact number into a TIMESTAMP flavour declares the NUMBER's own scale as its precision, the
- *       written one ignored — {@code 5::TIMESTAMP_NTZ} is {@code TIMESTAMP_NTZ(0)} while
- *       {@code '2024-01-01'::TIMESTAMP_NTZ}, whose source is a text, keeps the default nine.</li>
- * </ul>
- *
- * <p>Everything else keeps the declared type. The same rule governs a {@code ::} cast in a query and the
+ * <p>Everything else keeps the declared type: a BOOLEAN into an exact number is the number the target spells,
+ * {@code TRUE::NUMBER(5,1)} the {@code 1.0} of a NUMBER(5,1) and {@code TRUE::NUMBER} a NUMBER(38,0)
+ * (live-verified). The same rule governs a {@code ::} cast in a query and the
  * conversion a typed scripting declaration or assignment applies, which is why both ask here.</p>
  */
 public final class ConvertedValueType {
@@ -55,10 +51,6 @@ public final class ConvertedValueType {
                 && source instanceof NumericType && !NumericType.isApproximate(source)) {
             return new DateTimeType(declared.getName(), epochPrecision((NumericType) source),
                 ((DateTimeType) declared).hasTimeZone());
-        }
-        if (declared instanceof NumericType && !NumericType.isApproximate(declared)
-                && source instanceof BooleanType) {
-            return new NumericType("NUMBER", 2, 0);
         }
         return declared;
     }

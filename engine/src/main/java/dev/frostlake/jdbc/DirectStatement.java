@@ -19,8 +19,8 @@ package dev.frostlake.jdbc;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.ExecutionResult;
 import dev.frostlake.executor.DynamicStatementCount;
-import dev.frostlake.executor.StatementCanceledException;
 import dev.frostlake.executor.StatementCancellation;
+import dev.frostlake.executor.commands.FailureCode;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -29,8 +29,6 @@ import dev.frostlake.types.NumericType;
 import java.sql.BatchUpdateException;
 import java.sql.Connection;
 import java.sql.SQLException;
-import java.sql.SQLFeatureNotSupportedException;
-import java.sql.SQLWarning;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
@@ -39,17 +37,13 @@ import java.util.Locale;
 /**
  * Direct Statement implementation for embedded DatabaseEngine
  */
-public class DirectStatement implements Statement {
-
-    /** The query timeout in seconds, 0 for none (see {@link #setQueryTimeout}). */
-    private volatile int queryTimeoutSeconds;
+public class DirectStatement extends AbstractFrostlakeStatement {
 
     /** The token of the statement running now, which {@link #cancel()} reaches; null between statements. */
     private volatile StatementCancellation running;
 
     private final Connection connection;
     private final DatabaseEngine engine;
-    private boolean closed = false;
     // Every result the last (possibly multi-statement) execution produced, one per statement, and the walk
     // over them: which answer rows and which an update count, and where getMoreResults() stands.
     private List<ResultSet> results = new ArrayList<>();
@@ -125,6 +119,7 @@ public class DirectStatement implements Statement {
      */
     private List<ResultSet> run(final String sql) throws SQLException {
         checkClosed();
+        requireSqlText(sql);
         if (connection instanceof DirectConnection) {
             ((DirectConnection) connection).requireSession();
         }
@@ -133,17 +128,18 @@ public class DirectStatement implements Statement {
         final Integer displacedCount = DynamicStatementCount.beginRequest(desiredCount(),
             JdbcMultiStatement.countStatements(sql));
         // The statement runs under a token cancel() reaches from another thread and the query timeout bounds.
-        final StatementCancellation token = new StatementCancellation(queryTimeoutSeconds);
+        final StatementCancellation token = new StatementCancellation(queryTimeout());
         running = token;
         StatementCancellation.offer(token);
         try {
             result = connection instanceof DirectConnection
                 ? ((DirectConnection) connection).executeScoped(sql)
                 : engine.execute(sql);
-        } catch (final StatementCanceledException e) {
-            throw new SQLException(e.getMessage(), StatementCanceledException.SQL_STATE, e.getCode(), e);
         } catch (final RuntimeException e) {
-            throw new SQLException(e.getMessage(), e);
+            // The exception carries the account's code and SQLSTATE of its family (live-verified).
+            final FailureCode family = FailureCode.ofClient(e);
+            throw family == null ? new SQLException(e.getMessage(), e)
+                : new SQLException(e.getMessage(), family.state(), family.code(), e);
         } finally {
             StatementCancellation.offer(null);
             running = null;
@@ -151,11 +147,9 @@ public class DirectStatement implements Statement {
         }
         lastQueryId = result.getQueryId();
         if (!result.isSuccess()) {
-            // A timeout or a cancel carries the account's SQLSTATE and vendor code (live-verified).
-            final Integer canceled = StatementCanceledException.codeOf(result.getErrorMessage());
-            throw canceled != null
-                ? new SQLException(result.getErrorMessage(), StatementCanceledException.SQL_STATE, canceled.intValue())
-                : new SQLException(result.getErrorMessage());
+            final FailureCode family = FailureCode.ofClientMessage(result.getErrorMessage());
+            throw family == null ? new SQLException(result.getErrorMessage())
+                : new SQLException(result.getErrorMessage(), family.state(), family.code());
         }
         return result.getResultSets();
     }
@@ -294,81 +288,18 @@ public class DirectStatement implements Statement {
         walk = JdbcResultWalk.none();
     }
 
-    @Override
-    public boolean isClosed() throws SQLException {
-        return closed;
-    }
-
-    protected void checkClosed() throws SQLException {
-        if (closed) {
-            throw new SQLException("Statement is closed");
-        }
-    }
-
     // Unimplemented methods
 
-    @Override
-    public int getMaxFieldSize() throws SQLException {
-        return 0;
-    }
-
-    @Override
-    public void setMaxFieldSize(final int max) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public int getMaxRows() throws SQLException {
-        return 0;
-    }
-
-    @Override
-    public void setMaxRows(final int max) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public void setEscapeProcessing(final boolean enable) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public int getQueryTimeout() throws SQLException {
-        return queryTimeoutSeconds;
-    }
-
-    @Override
-    public void setQueryTimeout(final int seconds) throws SQLException {
-        if (seconds < 0) {
-            throw new SQLException("Query timeout must be zero or more seconds, not " + seconds);
-        }
-        // The statements this object runs are canceled once they run this long: "SQL execution canceled".
-        queryTimeoutSeconds = seconds;
-    }
-
+    /** The most rows a result of this statement hands out from now on, 0 for every row (live-verified). */
     @Override
     public void cancel() throws SQLException {
+        checkClosed();
         // From any thread: the running statement ends at its next check with "SQL execution canceled", and this
         // object runs the next one as usual (live-verified).
         final StatementCancellation token = running;
         if (token != null) {
             token.cancel();
         }
-    }
-
-    @Override
-    public SQLWarning getWarnings() throws SQLException {
-        return null;
-    }
-
-    @Override
-    public void clearWarnings() throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public void setCursorName(final String name) throws SQLException {
-        throw new SQLFeatureNotSupportedException("setCursorName not supported");
     }
 
     /** The current result's update count: -1 when it answers rows, and once the walk has passed the end. */
@@ -389,36 +320,6 @@ public class DirectStatement implements Statement {
     public boolean getMoreResults() throws SQLException {
         checkClosed();
         return walk.next();
-    }
-
-    @Override
-    public void setFetchDirection(final int direction) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public int getFetchDirection() throws SQLException {
-        return java.sql.ResultSet.FETCH_FORWARD;
-    }
-
-    @Override
-    public void setFetchSize(final int rows) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public int getFetchSize() throws SQLException {
-        return 0;
-    }
-
-    @Override
-    public int getResultSetConcurrency() throws SQLException {
-        return java.sql.ResultSet.CONCUR_READ_ONLY;
-    }
-
-    @Override
-    public int getResultSetType() throws SQLException {
-        return java.sql.ResultSet.TYPE_FORWARD_ONLY;
     }
 
     @Override
@@ -478,6 +379,7 @@ public class DirectStatement implements Statement {
 
     @Override
     public Connection getConnection() throws SQLException {
+        checkClosed();
         return connection;
     }
 
@@ -490,11 +392,6 @@ public class DirectStatement implements Statement {
     }
 
     /** As {@link #getMoreResults()}: a result set already handed out stays readable either way. */
-    @Override
-    public boolean getMoreResults(final int current) throws SQLException {
-        return getMoreResults();
-    }
-
     @Override
     public java.sql.ResultSet getGeneratedKeys() throws SQLException {
         checkClosed();
@@ -557,41 +454,4 @@ public class DirectStatement implements Statement {
         return execute(sql, Statement.RETURN_GENERATED_KEYS);
     }
 
-    @Override
-    public int getResultSetHoldability() throws SQLException {
-        return java.sql.ResultSet.HOLD_CURSORS_OVER_COMMIT;
-    }
-
-    @Override
-    public void setPoolable(final boolean poolable) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public boolean isPoolable() throws SQLException {
-        return false;
-    }
-
-    @Override
-    public void closeOnCompletion() throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public boolean isCloseOnCompletion() throws SQLException {
-        return false;
-    }
-
-    @Override
-    public <T> T unwrap(final Class<T> iface) throws SQLException {
-        if (iface.isInstance(this)) {
-            return iface.cast(this);
-        }
-        throw new SQLException("Not a wrapper");
-    }
-
-    @Override
-    public boolean isWrapperFor(final Class<?> iface) throws SQLException {
-        return iface.isInstance(this);
-    }
 }

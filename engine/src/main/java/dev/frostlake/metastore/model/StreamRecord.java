@@ -16,6 +16,7 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.storage.SnapshotSequence;
 
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -29,6 +30,8 @@ public class StreamRecord {
     private final long rowId;
     private final LocalDateTime timestamp;
     private final String sourceTable;
+    /** The latest snapshot number drawn when the change was captured (see {@link #getSequence}). */
+    private final long sequence;
 
     public StreamRecord(final List<Object> values, final ChangeType changeType, final boolean isUpdate, final long rowId) {
         this(values, changeType, isUpdate, rowId, null);
@@ -44,6 +47,7 @@ public class StreamRecord {
         // UTC-domain statement clocks.
         this.timestamp = LocalDateTime.now(ZoneOffset.UTC);
         this.sourceTable = sourceTable;
+        this.sequence = SnapshotSequence.current();
     }
 
     private StreamRecord(final StreamRecord from, final List<Object> values) {
@@ -53,6 +57,7 @@ public class StreamRecord {
         this.rowId = from.rowId;
         this.timestamp = from.timestamp;
         this.sourceTable = from.sourceTable;
+        this.sequence = from.sequence;
     }
 
     /**
@@ -114,6 +119,16 @@ public class StreamRecord {
 
     public LocalDateTime getTimestamp() {
         return timestamp;
+    }
+
+    /**
+     * Where the change falls among the snapshot numbers: a transaction that drew its start after the change reads it,
+     * and one that began before it does not, however close in time the two are.
+     *
+     * @return the latest snapshot number drawn when the change was captured
+     */
+    public long getSequence() {
+        return sequence;
     }
 
     /**

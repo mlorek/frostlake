@@ -34,6 +34,7 @@ import org.antlr.v4.runtime.Token;
  *   SELECT UPPER(CAST(1 2)) FROM t              '2' at 20, then ')' at 22
  *   SELECT (CAST(1 2) + 1) FROM t               '2' at 15, then ')' at 21
  *   SELECT a FROM t WHERE CAST(1 2) = 1 ORDER BY a      '2' at 29, then 'ORDER' at 36
+ *   … WHERE CAST(1 2) = 1 AND CAST(3 4) = 2             '2', '4', then the end of the input
  * </pre>
  *
  * <p>A cast whose fault lies at or after its AS, and a select item's own cast, is read past as a whole. A token
@@ -108,7 +109,20 @@ final class CastFaultLines {
         }
         final int before = spoken.get(cast - 1).getType();
         if (before == FrostlakeLexer.WHERE || before == FrostlakeLexer.HAVING) {
-            lines.add(SyntaxErrorListener.sentence(spoken.get(clauseEnd(spoken, close))));
+            // The rest of the condition is read on, the cast standing for a value, and a later fault in it is told
+            // before the token that ends the clause.
+            final Token end = spoken.get(clauseEnd(spoken, close));
+            final char[] text = CastFaultPlace.blanked(sql.toCharArray(), spoken, cast, close);
+            text[spoken.get(cast).getStartIndex()] = '1';
+            for (final String later : SyntaxErrorListener.linesReportedFor(new String(text), true)) {
+                final int[] at = SyntaxErrorListener.sentenceCoordinates(later);
+                if (at == null || at[0] > end.getLine()
+                        || at[0] == end.getLine() && at[1] >= end.getCharPositionInLine()) {
+                    break;
+                }
+                lines.add(later);
+            }
+            lines.add(SyntaxErrorListener.sentence(end));
         }
         return lines;
     }

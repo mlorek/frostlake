@@ -275,7 +275,7 @@
       {"sql": "CREATE OR REPLACE TABLE loop_test_event_log (event_id INT, event_date DATE, event_description VARCHAR)"},
       {"sql": "INSERT INTO loop_test_event_log VALUES (1,'2020-01-01','old one'), (2,'2020-01-02','old two')"},
       {"sql": "CREATE OR REPLACE TABLE loop_test_event_log_archive (event_id INT, event_date DATE, event_description VARCHAR, archived_on DATE)"},
-      {"sql": "BEGIN LET inner_counter := 0; LET outer_counter := 0; LOOP LOOP IF (inner_counter < 5) THEN inner_counter := inner_counter + 1; CONTINUE OUTER; ELSE BREAK OUTER; END IF; END LOOP INNER; outer_counter := outer_counter + 1; BREAK; END LOOP OUTER; RETURN ARRAY_CONSTRUCT(outer_counter, inner_counter); END", "expect": {"value": "[0,5]"}}
+      {"sql": "BEGIN LET inner_counter := 0; LET outer_counter := 0; LOOP LOOP IF (inner_counter < 5) THEN inner_counter := inner_counter + 1; CONTINUE OUTER; ELSE BREAK OUTER; END IF; END LOOP INNER; outer_counter := outer_counter + 1; BREAK; END LOOP OUTER; RETURN ARRAY_CONSTRUCT(outer_counter, inner_counter); END", "expect": {"value": "[\n0,\n5\n]"}}
     ]}
   ]
 }

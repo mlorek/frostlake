@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.IntegrationUsage;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
@@ -26,12 +27,17 @@ import dev.frostlake.executor.udf.JavaFunctionCompiler;
 import dev.frostlake.executor.udf.JavaRuntimeLevel;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.model.Integration;
+import dev.frostlake.metastore.model.IntegrationKind;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.RoutineEnvironment;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.SecurityObject;
 import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.security.SecurityManager;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.io.IOException;
@@ -299,7 +305,8 @@ final class RoutineEnvironments {
 
     /**
      * The integrations a list names, canonical. The list is parenthesized and each name plain: a value written
-     * any other way is refused as the property's value, echoed as written. An integration has to exist.
+     * any other way is refused as the property's value, echoed as written. An integration has to exist, and be an
+     * external access integration.
      *
      * @param list the value written after EXTERNAL_ACCESS_INTEGRATIONS
      * @return the integrations' names, in written order
@@ -317,9 +324,16 @@ final class RoutineEnvironments {
                 throw invalidIntegration(item);
             }
             final String name = ParseTreeText.qualifiedNameParts(item.qualifiedName())[0];
-            if (catalog.getIntegrations().find(name) == null) {
+            final Integration integration = catalog.getIntegrations().find(name);
+            if (integration == null || !IntegrationUsage.usable(queryExecutor.getSecurityManager(), integration)) {
+                // An integration the role may not use is one it is not told about.
                 throw new RuntimeException(SqlCompilationError.of("Integration '" + name
                     + "' does not exist or not authorized."));
+            }
+            // Only an external access integration lets a handler out (documented).
+            if (integration.getKind() != IntegrationKind.EXTERNAL_ACCESS) {
+                throw new RuntimeException(SqlCompilationError.of("Integration '" + name
+                    + "' is not an external access integration."));
             }
             names.add(name);
         }
@@ -333,7 +347,10 @@ final class RoutineEnvironments {
 
     /**
      * The secrets a list names: the handler's variable for each, and the secret's full name. A variable is a
-     * string and a secret a name; no variable is named twice; every secret has to exist.
+     * string and a secret a name; no variable is named twice; every secret has to exist, and be one the session may
+     * read: READ or OWNERSHIP on it, and USAGE on its database and schema (documented, CREATE FUNCTION's access
+     * control table). A routine that names a secret hands its value to the handler, so binding one the role was never
+     * granted read the secret. A secret the role may not read is refused as one that is not there.
      *
      * @param written the value written after SECRETS
      * @return the secrets by variable, in written order
@@ -370,13 +387,24 @@ final class RoutineEnvironments {
                 .qualifiedName());
             final String last = parts[parts.length - 1];
             final Schema owner = owningSchema(parts);
-            if (owner == null || owner.getSecurityObjects().get(SecurityObjectKind.SECRET, last) == null) {
+            final SecurityObject secret = owner == null ? null
+                : owner.getSecurityObjects().get(SecurityObjectKind.SECRET, last);
+            if (secret == null || !readable(owner, secret)) {
                 throw new RuntimeException(SqlCompilationError.of("Secret '" + last
                     + "' does not exist or operation not authorized."));
             }
             named.put(variables.get(i), owner.qualifiedName(last));
         }
         return named;
+    }
+
+    /** Whether the session may read a secret: READ or OWNERSHIP on it, and USAGE on its database and schema. */
+    private boolean readable(final Schema home, final SecurityObject secret) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        return security == null
+            || security.holdsPrivilege(Privilege.READ, "SECRET", home.qualifiedName(secret.getName()),
+                secret.getOwner())
+            && security.missedContainer(home.getDatabaseName(), home.getName()) == null;
     }
 
     /**

@@ -73,7 +73,8 @@ public class ReferenceFunctionMissingObjectTest extends MeasuredCellsTestSupport
             {String.format(entity, "DYNAMIC TABLE"), String.format(invalid, "DYNAMIC_TABLE")},
             {String.format(entity, "EXTERNAL TABLE"), ""},
             {String.format(entity, "TAG"), any("Tag", "PR1449", "TAG")},
-            {String.format(entity, "USER"), missing("User", "PR1449", "USAGE granted on ACCOUNT <ACCOUNT>")},
+            {String.format(entity, "USER"),
+                "REFUSED SQL compilation error: | User 'PR1449' does not exist or not authorized."},
             {String.format(entity, "ACCOUNT"), missing("Account", "PR1449",
                 "at least one privilege granted on ACCOUNT <ACCOUNT>")},
         });

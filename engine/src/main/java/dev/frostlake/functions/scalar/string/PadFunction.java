@@ -1,0 +1,112 @@
+/*
+ * Copyright 2026 MLorek
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+
+package dev.frostlake.functions.scalar.string;
+
+import dev.frostlake.functions.SemiStructuredRejection;
+import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.functions.scalar.WholeNumberArgument;
+import dev.frostlake.types.StringType;
+import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.CodePointText;
+import dev.frostlake.values.LobSize;
+
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.List;
+
+/**
+ * LPAD and RPAD: a VARCHAR padded to a length in characters, or a BINARY padded to a length in BYTES, on the side each
+ * names; an input already longer is cut to that length from its start.
+ */
+public abstract class PadFunction extends TextArgumentFunction {
+
+    /** Whether the pad goes before the input. */
+    private final boolean left;
+
+    protected PadFunction(final String name, final boolean left) {
+        super(name, StringType.VARCHAR);
+        this.left = left;
+    }
+
+    @Override
+    public Object evaluate(final List<Object> args) {
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
+        }
+        if (args.get(0) instanceof BinaryValue) {
+            return padBytes((BinaryValue) args.get(0), args);
+        }
+        final String str = SharedFunctionHelpers.textOf(args.get(0));
+        final long targetLength = WholeNumberArgument.padLength(args.get(1));
+        final String padStr = args.size() > 2 ? SharedFunctionHelpers.textOf(args.get(2)) : " ";
+
+        // Live-verified: an input longer than the target length is TRUNCATED to it (LPAD('world', 3, '*') and
+        // RPAD('world', 3, '*') are 'wor'), not returned unchanged.
+        // Lengths count characters, a supplementary one included: LPAD('😀', 3, 'x') is xx😀, RPAD's 😀xx.
+        final int characters = CodePointText.length(str);
+        if (characters >= targetLength) return CodePointText.slice(str, 0, (int) Math.max(targetLength, 0));
+        if (padStr.isEmpty()) return str;
+        // The size is judged before the pad is built: past the largest text the call is refused (see LobSize).
+        LobSize.requireText(saturatedSum(str.getBytes(StandardCharsets.UTF_8).length,
+            CodePointText.repeatedUtf8Length(padStr, targetLength - characters)));
+        final String fill = CodePointText.repeatTo(padStr, (int) (targetLength - characters));
+        return left ? fill + str : str + fill;
+    }
+
+    /** The BINARY form: pad bytes on this function's side, truncating to the leading bytes when already longer. */
+    private Object padBytes(final BinaryValue value, final List<Object> args) {
+        final byte[] bytes = value.bytes();
+        final long wanted = WholeNumberArgument.padLength(args.get(1));
+        if (bytes.length >= wanted) {
+            return BinaryValue.of(Arrays.copyOfRange(bytes, 0, (int) Math.max(wanted, 0)));
+        }
+        final byte[] pad = args.size() > 2 ? SharedFunctionHelpers.toUtf8(args.get(2)) : new byte[] { (byte) ' ' };
+        if (pad.length == 0) {
+            return value;
+        }
+        LobSize.requireBinary(wanted);
+        final int targetLength = (int) wanted;
+        final int padLength = targetLength - bytes.length;
+        final int padStart = left ? 0 : bytes.length;
+        final byte[] padded = new byte[targetLength];
+        for (int i = 0; i < padLength; i++) {
+            padded[padStart + i] = pad[i % pad.length];
+        }
+        System.arraycopy(bytes, 0, padded, left ? padLength : 0, bytes.length);
+        return BinaryValue.of(padded);
+    }
+
+    /** Two sizes added, held to Long.MAX_VALUE. */
+    private static long saturatedSum(final long a, final long b) {
+        return b > Long.MAX_VALUE - a ? Long.MAX_VALUE : a + b;
+    }
+
+    @Override
+    public int getMinArgCount() { return 2; }
+
+    @Override
+    public int getMaxArgCount() { return 3; }
+
+    /** A BOOLEAN length is refused by the argument types as the call compiles, for either side (live-verified). */
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
+}

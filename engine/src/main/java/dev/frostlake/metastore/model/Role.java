@@ -39,6 +39,7 @@ public class Role implements Taggable {
     private String comment;
     /** Privileges granted on the future objects of a kind in a schema or database. */
     private final List<FutureGrant> futureGrants = new ArrayList<>();
+    private final List<CallerGrant> callerGrants = new ArrayList<>();
     private final Map<String, String> tags = new HashMap<>();
 
     public Role(final String name) {
@@ -183,6 +184,17 @@ public class Role implements Taggable {
         return grants.getRoleGrantor(roleName);
     }
 
+    /**
+     * Whether a role reached this one through a GRANT ROLE, which records its grantor, rather than as part of the
+     * account's own role hierarchy.
+     *
+     * @param roleName the role held
+     * @return whether a GRANT ROLE granted it
+     */
+    public boolean hasExplicitRoleGrant(final String roleName) {
+        return grants.hasExplicitRoleGrant(roleName);
+    }
+
     public void grantColumnPrivilege(final String objectType, final String objectName, final String columnName, final Privilege privilege) {
         grants.grantColumnPrivilege(objectType, objectName, columnName, privilege);
     }
@@ -270,6 +282,55 @@ public class Role implements Taggable {
         }
     }
 
+    /** The caller grants this role holds, in the order they were made. */
+    public List<CallerGrant> getCallerGrants() {
+        return new ArrayList<>(callerGrants);
+    }
+
+    /**
+     * Records a caller grant, or keeps the same one made before.
+     *
+     * @param privilege     the privilege, as the grant names it, or ALL
+     * @param objectKind    the object's kind, singular
+     * @param objectName    the object's name in full, or null for an inherited grant
+     * @param inheritedFrom ACCOUNT, DATABASE or SCHEMA for an inherited grant, or null
+     * @param scopeName     the database or schema an inherited grant covers, or null
+     * @param createdOn     when the grant was made
+     * @return the grant as recorded
+     */
+    public CallerGrant addCallerGrant(final String privilege, final String objectKind, final String objectName,
+                                      final String inheritedFrom, final String scopeName, final Instant createdOn) {
+        for (final CallerGrant existing : callerGrants) {
+            if (existing.matches(privilege, objectKind, objectName, inheritedFrom, scopeName)) {
+                return existing;
+            }
+        }
+        final CallerGrant grant = new CallerGrant(privilege, objectKind, objectName, inheritedFrom, scopeName,
+            createdOn);
+        callerGrants.add(grant);
+        return grant;
+    }
+
+    /**
+     * Takes back a caller grant; ALL takes back every caller grant on those objects.
+     *
+     * @param privilege     the privilege, as the grant names it, or ALL
+     * @param objectKind    the object's kind, singular
+     * @param objectName    the object's name in full, or null for an inherited grant
+     * @param inheritedFrom ACCOUNT, DATABASE or SCHEMA for an inherited grant, or null
+     * @param scopeName     the database or schema an inherited grant covers, or null
+     */
+    public void revokeCallerGrant(final String privilege, final String objectKind, final String objectName,
+                                  final String inheritedFrom, final String scopeName) {
+        for (int i = callerGrants.size() - 1; i >= 0; i--) {
+            final CallerGrant existing = callerGrants.get(i);
+            final String held = "ALL".equals(privilege) ? existing.getPrivilege() : privilege;
+            if (existing.matches(held, objectKind, objectName, inheritedFrom, scopeName)) {
+                callerGrants.remove(i);
+            }
+        }
+    }
+
     /** Grants a database role, by its qualified name. */
     public void grantDatabaseRole(final String qualifiedName, final String grantor) {
         grants.grantDatabaseRole(qualifiedName, grantor);
@@ -340,6 +401,15 @@ public class Role implements Taggable {
     /** Takes back the privileges held on one object: all of them, or with {@code ownershipOnly} OWNERSHIP alone. */
     public void purgeGrants(final String objectType, final String objectName, final boolean ownershipOnly) {
         grants.purgeGrants(objectType, objectName, ownershipOnly);
+    }
+
+    /**
+     * Takes back the privileges but OWNERSHIP, and the database roles, a dropped role granted this one.
+     *
+     * @param grantor the dropped role's canonical name
+     */
+    public void revokeGrantedBy(final String grantor) {
+        grants.revokeGrantedBy(grantor);
     }
 
     public void rename(final String newName) {

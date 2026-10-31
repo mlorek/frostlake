@@ -45,4 +45,13 @@ public class TaskExecutionSnapshot implements Serializable {
 
     /** The attempt of its graph run it belongs to; null in a snapshot taken before attempts were kept. */
     public Integer attempt;
+
+    /** The id of the query that ran the task's statement; null when none is known. */
+    public String queryId;
+
+    /** The code of the error the run failed with, as text; null for a run that succeeded. */
+    public String errorCode;
+
+    /** The user the run was scheduled by; null when none is known. */
+    public String scheduledByUser;
 }

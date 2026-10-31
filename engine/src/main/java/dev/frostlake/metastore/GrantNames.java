@@ -25,6 +25,7 @@ import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.RoutineSignatures;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.User;
 
 import java.util.ArrayList;
@@ -76,6 +77,11 @@ public final class GrantNames {
 
     /** The two relation kinds: a new table or view takes the name of either. */
     private static final Set<String> RELATIONS = new HashSet<>(Arrays.asList("TABLE", "VIEW"));
+
+    /** The policies and the contact {@link #present} looks up, each a member of its schema named exactly. */
+    private static final Set<String> POLICIES = new HashSet<>(Arrays.asList("MASKING_POLICY", "ROW_ACCESS_POLICY",
+        "AGGREGATION_POLICY", "JOIN_POLICY", "PROJECTION_POLICY", "PASSWORD_POLICY", "SESSION_POLICY",
+        "AUTHENTICATION_POLICY", "PACKAGES_POLICY", "CONTACT"));
 
     /** The part a set-aside name carries after the object's own: no object's name has four parts. */
     private static final String SET_ASIDE = "#COPY_GRANTS";
@@ -160,8 +166,8 @@ public final class GrantNames {
     /**
      * Whether an object of the kind carries the recorded name now. A dropped object's privileges stay recorded, for
      * an UNDROP to find them and for {@link #created} to take back, and are not listed meanwhile: SHOW GRANTS TO
-     * names no table, sequence, schema or routine that is gone (live-verified). A kind this cannot look up is
-     * taken to be there.
+     * names no table, sequence, schema or routine that is gone (live-verified), and no policy or contact either. A
+     * kind this cannot look up is taken to be there.
      *
      * @param catalog    the catalog
      * @param objectType the object's kind, as grants record it
@@ -172,7 +178,7 @@ public final class GrantNames {
         final String kind = kindOf(objectType);
         final boolean routine = "FUNCTION".equals(kind) || "PROCEDURE".equals(kind);
         if (!routine && !RELATIONS.contains(kind) && !"SEQUENCE".equals(kind) && !"SCHEMA".equals(kind)
-                && !"DATABASE".equals(kind)) {
+                && !"DATABASE".equals(kind) && !POLICIES.contains(kind)) {
             return true;
         }
         final int signature = routine ? signatureStart(recorded) : -1;
@@ -198,6 +204,9 @@ public final class GrantNames {
         if ("SEQUENCE".equals(kind)) {
             return schema.hasSequenceExact(object);
         }
+        if (POLICIES.contains(kind)) {
+            return policyPresent(schema, kind, object);
+        }
         if ("FUNCTION".equals(kind)) {
             for (final Function overload : schema.getFunctionOverloads(object)) {
                 if (routine(schema, overload.getName(), overload.getParameters()).equals(recorded)) {
@@ -217,6 +226,52 @@ public final class GrantNames {
         return schema.hasTable(object) && schema.getTable(object).getName().equals(object)
             || schema.hasView(object) && schema.getView(object).getName().equals(object)
             || schema.hasMaterializedView(object) || schema.hasDynamicTable(object);
+    }
+
+    /** Whether the schema holds the policy or the contact of the kind under the exact name recorded. */
+    private static boolean policyPresent(final Schema schema, final String kind, final String object) {
+        switch (kind) {
+            case "MASKING_POLICY":
+                return schema.getMaskingPolicyExact(object) != null;
+            case "ROW_ACCESS_POLICY":
+                return schema.getRowAccessPolicyExact(object) != null;
+            case "AGGREGATION_POLICY":
+                return schema.getAggregationPolicyExact(object) != null;
+            case "JOIN_POLICY":
+                return schema.getJoinPolicy(object) != null;
+            case "PROJECTION_POLICY":
+                return schema.getProjectionPolicyExact(object) != null;
+            case "CONTACT":
+                return schema.getContact(object) != null;
+            default:
+                return schema.getSecurityObjects().get(SecurityObjectKind.valueOf(kind), object) != null;
+        }
+    }
+
+    /**
+     * The containers an object's recorded name names: a schema-level object's database and schema, a schema's
+     * database; none for a database, an account-level object or a name not written in full.
+     *
+     * @param objectType the object's kind, as grants record it
+     * @param recorded   the name the grant is recorded under, a routine's with its argument types or without
+     * @return the database's name, then the schema's, where the kind has them
+     */
+    public static String[] containers(final String objectType, final String recorded) {
+        if (objectType == null || recorded == null || !MEMBERS.contains(kindOf(objectType))) {
+            return new String[0];
+        }
+        final String kind = kindOf(objectType);
+        final int signature = "FUNCTION".equals(kind) || "PROCEDURE".equals(kind) ? signatureStart(recorded) : -1;
+        final String[] name;
+        try {
+            name = parts(signature < 0 ? recorded : recorded.substring(0, signature));
+        } catch (final RuntimeException unreadable) {
+            return new String[0];
+        }
+        if ("SCHEMA".equals(kind)) {
+            return name.length == 2 ? new String[] {name[0]} : new String[0];
+        }
+        return name.length == 3 ? new String[] {name[0], name[1]} : new String[0];
     }
 
     /** Where a recorded routine name's signature opens, at the parenthesis its last one closes; -1 for none. */

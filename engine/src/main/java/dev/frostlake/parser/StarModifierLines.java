@@ -262,12 +262,73 @@ final class StarModifierLines {
         }
         lines.add(SyntaxErrorListener.sentence(next));
         final int opener = StarModifierResync.indexOf(spoken, place.queryOpener());
+        final Token after = keyword + 2 < spoken.size() ? spoken.get(keyword + 2) : null;
         if (place.inCte() && next.getType() == FrostlakeLexer.LPAREN) {
-            lines.addAll(SelectListResync.cteBracketLines(spoken, keyword + 1));
-        } else if (!place.inCte() && !braces && opener >= 0 && StarModifierResync.isName(next)) {
+            final int bracketClose = matchingCloser(spoken, keyword + 1);
+            if (after != null && (after.getType() == FrostlakeLexer.SELECT || after.getType() == FrostlakeLexer.WITH)) {
+                // A bracketed query is read whole, and the token after it is refused.
+                if (bracketClose >= 0 && bracketClose + 1 < spoken.size()) {
+                    lines.add(SyntaxErrorListener.sentence(spoken.get(bracketClose + 1)));
+                }
+            } else {
+                lines.addAll(SelectListResync.cteBracketLines(spoken, keyword + 1));
+            }
+        } else if (!place.inCte() && opener >= 0 && next.getType() == FrostlakeLexer.LPAREN) {
+            lines.addAll(derivedBracketLines(sql, spoken, keyword, opener));
+        } else if (!place.inCte() && !braces && opener >= 0 && (StarModifierResync.isName(next)
+                || next.getType() == FrostlakeLexer.STRING_LITERAL)) {
             lines.addAll(SelectListResync.derivedNameLines(sql, spoken, keyword, keyword + 1, opener));
+        } else if (!place.inCte() && next.getType() == FrostlakeLexer.AS && after != null
+                && StarModifierResync.isName(after) && closer == keyword + 3) {
+            // AS and a name read as the item's alias written again: the call's ')' after it is refused.
+            lines.add(SyntaxErrorListener.sentence(spoken.get(closer)));
+        } else if (!place.inCte() && braces && StarModifierResync.isName(next) && closer == keyword + 2) {
+            lines.add(SyntaxErrorListener.sentence(spoken.get(closer)));
         }
         return lines;
+    }
+
+    /**
+     * The lines after the '(' right after the keyword in a derived table's item (live-verified): a lone name or a
+     * literal with an alias stacks the bracket's ')', a list the token after its first comma, a lone literal nothing
+     * of the bracket — the statement around the derived table is read on — and anything else nothing.
+     *
+     * <pre>
+     *   SELECT a FROM (SELECT HASH(* REPLACE (id)) a FROM fz)              '(', then ')' at 40
+     *   SELECT a FROM (SELECT HASH(* REPLACE (1 AS id)) a FROM fz)         '(', then ')' at 45
+     *   SELECT a FROM (SELECT HASH(* REPLACE (1, 2)) a FROM fz)            '(', then '2'
+     *   SELECT a FROM (SELECT HASH(* REPLACE (1)) a FROM fz) WHERE x y     '(', then 'y' at 61
+     *   SELECT a FROM (SELECT HASH(* REPLACE (id AS k)) a FROM fz)         '(' alone
+     * </pre>
+     */
+    private static List<String> derivedBracketLines(final String sql, final List<Token> spoken, final int keyword,
+                                                    final int opener) {
+        final int open = keyword + 1;
+        final int bracketClose = matchingCloser(spoken, open);
+        if (bracketClose < 0) {
+            return Collections.emptyList();
+        }
+        int depth = 0;
+        for (int i = open + 1; i < bracketClose; i++) {
+            final int type = spoken.get(i).getType();
+            depth += type == FrostlakeLexer.LPAREN ? 1 : type == FrostlakeLexer.RPAREN ? -1 : 0;
+            if (depth == 0 && type == FrostlakeLexer.COMMA) {
+                return Collections.singletonList(SyntaxErrorListener.sentence(spoken.get(i + 1)));
+            }
+        }
+        final int width = bracketClose - open - 1;
+        final Token first = spoken.get(open + 1);
+        final boolean literal = first.getType() == FrostlakeLexer.INTEGER_LITERAL
+            || first.getType() == FrostlakeLexer.FLOAT_LITERAL || first.getType() == FrostlakeLexer.STRING_LITERAL;
+        if (width == 1 && StarModifierResync.isName(first)
+                || width == 3 && literal && spoken.get(open + 2).getType() == FrostlakeLexer.AS
+                    && StarModifierResync.isName(spoken.get(open + 3))) {
+            return Collections.singletonList(SyntaxErrorListener.sentence(spoken.get(bracketClose)));
+        }
+        if (width == 1 && literal) {
+            return SelectListResync.derivedNameLines(sql, spoken, keyword, bracketClose, opener);
+        }
+        return Collections.emptyList();
     }
 
     /**

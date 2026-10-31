@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.file;
 import dev.frostlake.config.EngineConfig;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.StagePathSegments;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.StringType;
 
 import java.math.BigDecimal;
@@ -86,7 +87,7 @@ public class GetPresignedUrl extends StageUrlFunction {
             final double d = ((Number) value).doubleValue();
             seconds = Double.isFinite(d) ? BigDecimal.valueOf(d) : null;
         } else if (value instanceof Number) {
-            seconds = new BigDecimal(value.toString());
+            seconds = DecimalText.parse(value.toString());
         }
         if (seconds == null || seconds.signum() < 0 || seconds.compareTo(BigDecimal.valueOf(MAX_EXPIRATION)) > 0
                 || seconds.stripTrailingZeros().scale() > 0) {

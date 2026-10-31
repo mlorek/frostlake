@@ -32,7 +32,7 @@
       {"sql": "SELECT n.n\nFROM numbers n\nCROSS JOIN LATERAL GENERATOR(ROWCOUNT => 2) g",
        "expect": {"rowCount": 2}},
       {"sql": "SELECT n.n\nFROM numbers n\nCROSS JOIN LATERAL GENERATOR(ROWCOUNT => n.n) g",
-       "expect": {"error": {"messageContains": "argument 1 to function GENERATOR needs to be constant, found 'N.N'"}}}
+       "expect": {"rowCount": 2, "rows": [["2"], ["2"]]}}
     ]},
     {"name": "with-a-where-filter", "steps": [
       {"sql": "CREATE TABLE ranges (id INTEGER, count INTEGER)"},

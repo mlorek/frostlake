@@ -112,10 +112,13 @@ public final class CloneReferences {
                 }
             }
             if (column.getDefaultValue() instanceof DefaultValueExpression) {
-                final String text = ((DefaultValueExpression) column.getDefaultValue()).getExpressionText();
+                final DefaultValueExpression stored = (DefaultValueExpression) column.getDefaultValue();
+                final String text = stored.getExpressionText();
                 final String rewritten = withSequencesRespelled(text, sourceHome, cloneHome, from, to);
                 if (!rewritten.equals(text)) {
-                    column.setDefaultValue(new DefaultValueExpression(rewritten));
+                    final String told = stored.toldTextOrNull();
+                    column.setDefaultValue(new DefaultValueExpression(rewritten,
+                        told == null ? null : withSequencesRespelled(told, sourceHome, cloneHome, from, to)));
                 }
             }
         }

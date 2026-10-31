@@ -16,6 +16,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.security.SessionDirectory;
+import dev.frostlake.types.DecimalText;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -56,7 +57,7 @@ final class SessionAbort {
 
     private static long number(final Object argument) {
         if (argument instanceof Number) {
-            final BigDecimal value = new BigDecimal(argument.toString());
+            final BigDecimal value = DecimalText.parse(argument.toString());
             if (value.stripTrailingZeros().scale() > 0) {
                 throw notConstant("CAST(" + value.toPlainString() + " AS NUMBER(18,0))");
             }

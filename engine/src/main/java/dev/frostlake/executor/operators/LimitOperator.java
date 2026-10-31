@@ -22,6 +22,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * LIMIT operator - restricts the number of rows returned.
@@ -68,8 +69,8 @@ public class LimitOperator implements Operator {
     @Override
     public String getDescription() {
         if (offset > 0) {
-            return String.format("LIMIT[%d OFFSET %d]", limit, offset);
+            return String.format(Locale.ROOT, "LIMIT[%d OFFSET %d]", limit, offset);
         }
-        return String.format("LIMIT[%d]", limit);
+        return String.format(Locale.ROOT, "LIMIT[%d]", limit);
     }
 }

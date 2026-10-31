@@ -337,7 +337,7 @@ final class BlockQueryLines {
      * bracket, a FROM, a colon in the list of names a FOR … IN takes, the parenthesis that closes a star's EXCLUDE
      * list, and a closing parenthesis that is the
      * query's one fault where its own bracket wants an operand — {@code OVER (ORDER BY)}, {@code ABS(1,)},
-     * {@code IN ()}.
+     * {@code IN ()} — or ends a list after its comma, however many lists do.
      *
      * @param alone whether the token is the only one the query refused
      */
@@ -360,6 +360,10 @@ final class BlockQueryLines {
         }
         if (type == FrostlakeLexer.RPAREN) {
             if (alone && depth > 0) {
+                return true;
+            }
+            if (spoken.get(token - 1).getType() == FrostlakeLexer.COMMA) {
+                // A list that ends in a comma, each such list refused in turn: ABS(1,), ABS(2,) (live-verified).
                 return true;
             }
             for (int i = token - 1, nested = 0; i > start; i--) {

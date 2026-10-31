@@ -79,7 +79,7 @@ public class SystemFunctionEvaluator {
         // reads them from (through FunctionRegistry.allDispatchableNames()) — they are in none of the
         // registry maps. Checking it here, ahead of the switch, keeps the two in step: a case added below
         // but not declared there does not dispatch, so the listing cannot fall behind unnoticed.
-        if (SystemFunctionNames.isLoggingStatement(funcName)) {
+        if (SystemFunctionNames.isScriptingStatement(funcName)) {
             throw SystemFunctionNames.unknownLoggingFunction(funcName);
         }
         if (!SystemFunctionNames.contains(funcName)) {
@@ -159,6 +159,7 @@ public class SystemFunctionEvaluator {
                 return null;
             }
             case "SYSTEM$SET_RETURN_VALUE": {
+                TaskOnlyFunctions.requireTask("SYSTEM$SET_RETURN_VALUE");
                 final Task current = TaskScheduler.currentTask();
                 final Object value = args.isEmpty() ? null : args.get(0);
                 if (current != null) {
@@ -190,10 +191,12 @@ public class SystemFunctionEvaluator {
                 }
                 return "{\"executionState\": \"RUNNING\", \"pendingFileCount\": 0}";
             }
+            case "SYSTEM$PIPE_FORCE_RESUME":
+                return forcePipeResume(args);
             case "SYSTEM$EXTERNAL_TABLE_PIPE_STATUS":
                 return "{\"executionState\": \"RUNNING\", \"pendingFileCount\": 0}";
             case "SYSTEM$AUTO_REFRESH_STATUS":
-                return "{\"state\": \"Active\"}";
+                return AutoRefreshStatus.answer(catalog, args.isEmpty() ? null : args.get(0));
             case "SYSTEM$QUERY_REFERENCE":
                 return UUID.randomUUID().toString();
             case "SYSTEM$GENERATE_SCIM_ACCESS_TOKEN":
@@ -210,21 +213,69 @@ public class SystemFunctionEvaluator {
             case "SYSTEM$VERIFY_CATALOG_INTEGRATION":
                 return "{\"status\": \"OK\"}";
             case "SYSTEM$TASK_DEPENDENTS_ENABLE": {
-                if (!args.isEmpty() && args.get(0) != null) {
-                    final String dbN = catalog.getCurrentDatabase();
-                    final String scN = catalog.getCurrentSchema();
-                    if (dbN != null && scN != null) {
-                        try {
-                            enableTaskDependents(
-                                args.get(0).toString().replaceAll("^'|'$", ""),
-                                catalog.getDatabase(dbN).getSchema(scN).getTasks());
-                        } catch (final Exception ignored) {}
-                    }
+                if (args.isEmpty() || args.get(0) == null) {
+                    // A NULL names no task, and answers NULL (live-verified).
+                    return null;
+                }
+                if (namedTask(args.get(0).toString()) == null) {
+                    // A name no task answers to is refused by the parameter the call sets, as written (live-verified).
+                    throw new RuntimeException(SqlCompilationError.of("invalid value [" + args.get(0)
+                        + "] for parameter 'RECURSIVE_TASK_ENABLE'"));
+                }
+                final String dbN = catalog.getCurrentDatabase();
+                final String scN = catalog.getCurrentSchema();
+                if (dbN != null && scN != null) {
+                    try {
+                        enableTaskDependents(
+                            args.get(0).toString().replaceAll("^'|'$", ""),
+                            catalog.getDatabase(dbN).getSchema(scN).getTasks());
+                    } catch (final Exception ignored) {}
                 }
                 return "Statement executed successfully.";
             }
             default:
                 throw new RuntimeException("Unsupported system function: " + funcName);
+        }
+    }
+
+    /** The task a SYSTEM$ call names by a text, bare or qualified, or null where none answers to it. */
+    private Task namedTask(final String written) {
+        try {
+            return catalog.getTask(SqlIdentifiers.canonicalText(written));
+        } catch (final RuntimeException unresolved) {
+            return null;
+        }
+    }
+
+    /**
+     * SYSTEM$PIPE_FORCE_RESUME(name [, options]) resumes a pipe, as unsetting its PIPE_EXECUTION_PAUSED does. Each
+     * argument must be a text, anything else refused by its value — "argument needs to be a string: '1'", and
+     * {@code 'null'} for a NULL — and a pipe that is not there is refused as SYSTEM$PIPE_STATUS refuses it, named as
+     * the argument writes it, before the options are read (live-verified). A view over the call is created.
+     */
+    private Object forcePipeResume(final List<Object> args) {
+        requireText(args.get(0));
+        final String pipeName = (String) args.get(0);
+        final Pipe pipe;
+        try {
+            pipe = catalog.getPipe(SqlIdentifiers.canonicalText(pipeName));
+        } catch (final RuntimeException missing) {
+            throw new RuntimeException(SqlCompilationError.of("Pipe '" + pipeName
+                + "' does not exist or not authorized."));
+        }
+        for (int i = 1; i < args.size(); i++) {
+            requireText(args.get(i));
+        }
+        pipe.setPaused(false);
+        return "Statement executed successfully.";
+    }
+
+    /** Refuse a constant argument that is no text, by its value: '1', 'TRUE', and a NULL as 'null' (live-verified). */
+    private static void requireText(final Object argument) {
+        if (!(argument instanceof String)) {
+            final String shown = argument instanceof Boolean ? argument.toString().toUpperCase(Locale.ROOT)
+                : String.valueOf(argument);
+            throw new RuntimeException(SqlCompilationError.of("argument needs to be a string: '" + shown + "'"));
         }
     }
 
@@ -273,9 +324,9 @@ public class SystemFunctionEvaluator {
     }
 
     /**
-     * SYSTEM$CANCEL_QUERY: the running statement its query ID names is canceled, from any session; an ID that names no
-     * running statement answers that it is not executing, and a text that is no UUID that it is invalid
-     * (live-verified).
+     * SYSTEM$CANCEL_QUERY: the running statement its query ID names is canceled, from any session, and the answer names
+     * it, {@code query [<id>] terminated.}; an ID that names no running statement answers that it is not executing,
+     * and a text that is no UUID that it is invalid (live-verified).
      */
     private static String cancelQuery(final Object id) {
         if (id == null) {
@@ -287,7 +338,7 @@ public class SystemFunctionEvaluator {
         } catch (final IllegalArgumentException notAUuid) {
             return "invalid UUID";
         }
-        return StatementCancellation.cancelRunning(text) ? "Query cancelled."
+        return StatementCancellation.cancelRunning(text) ? "query [" + text + "] terminated."
             : "Identified SQL statement is not currently executing.";
     }
 }

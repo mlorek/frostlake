@@ -17,7 +17,7 @@
 package dev.frostlake.http;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import dev.frostlake.executor.StatementCanceledException;
+import dev.frostlake.executor.commands.FailureCode;
 import dev.frostlake.storage.ResultSet;
 
 import java.util.ArrayList;
@@ -44,8 +44,15 @@ public class SqlResponse {
     // them: the driver keeps the session alive by them. Absent when the session sets none.
     private Boolean clientSessionKeepAlive;
     private Integer clientSessionKeepAliveHeartbeatFrequency;
-    // The SQLSTATE and vendor code of a failed statement, where the account's are known: a canceled statement's
-    // 57014, with 604 for a cancel or a query timeout and 630 for the session's STATEMENT_TIMEOUT_IN_SECONDS.
+    // TRUE once the session has set CLIENT_RESULT_COLUMN_CASE_INSENSITIVE to TRUE: the driver then matches a column
+    // label ignoring case. Absent otherwise.
+    private Boolean clientResultColumnCaseInsensitive;
+    // The zone the session's TIMEZONE names once the request has run, its own or inherited: what the driver reads a
+    // DATE's midnight and a wall clock of no zone in.
+    private String timezone;
+    // The SQLSTATE and vendor code of a failed statement, where the account's are known (see FailureCode#ofClient):
+    // a canceled statement's 57014, with 604 for a cancel or a query timeout and 630 for the session's
+    // STATEMENT_TIMEOUT_IN_SECONDS, a missing table's 42S02 with 2003.
     private String sqlState;
     private Integer errorCode;
     // Where the session stands once the request has run; absent from an answer that concerns no session's statement.
@@ -73,12 +80,27 @@ public class SqlResponse {
     }
 
     public static SqlResponse error(final String sessionId, final String errorMessage) {
+        return refused(sessionId, errorMessage, FailureCode.ofClientMessage(errorMessage));
+    }
+
+    /**
+     * A statement's failure: its sentence, with the code and the state its exception carries.
+     *
+     * @param sessionId    the session the statement ran in
+     * @param errorMessage the sentence
+     * @param failure      what the statement failed with
+     * @return the answer
+     */
+    public static SqlResponse error(final String sessionId, final String errorMessage, final Throwable failure) {
+        return refused(sessionId, errorMessage, FailureCode.ofClient(failure));
+    }
+
+    private static SqlResponse refused(final String sessionId, final String errorMessage, final FailureCode family) {
         final SqlResponse response = new SqlResponse(false, sessionId);
         response.setErrorMessage(errorMessage);
-        final Integer canceled = StatementCanceledException.codeOf(errorMessage);
-        if (canceled != null) {
-            response.setSqlState(StatementCanceledException.SQL_STATE);
-            response.setErrorCode(canceled);
+        if (family != null) {
+            response.setSqlState(family.state());
+            response.setErrorCode(Integer.valueOf(family.code()));
         }
         return response;
     }
@@ -166,6 +188,25 @@ public class SqlResponse {
         this.clientSessionKeepAliveHeartbeatFrequency = clientSessionKeepAliveHeartbeatFrequency;
     }
 
+    /** The zone the session's TIMEZONE names once the request has run, or null where none was reported. */
+    public String getTimezone() {
+        return timezone;
+    }
+
+    public void setTimezone(final String timezone) {
+        this.timezone = timezone;
+    }
+
+    /** TRUE when the session has set CLIENT_RESULT_COLUMN_CASE_INSENSITIVE to TRUE, or null. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public Boolean getClientResultColumnCaseInsensitive() {
+        return clientResultColumnCaseInsensitive;
+    }
+
+    public void setClientResultColumnCaseInsensitive(final Boolean clientResultColumnCaseInsensitive) {
+        this.clientResultColumnCaseInsensitive = clientResultColumnCaseInsensitive;
+    }
+
     /** The failed statement's SQLSTATE, or null when the answer carries none. */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public String getSqlState() {
@@ -231,6 +272,29 @@ public class SqlResponse {
                 // Left out: the driver keeps the frequency it had.
             }
         }
+    }
+
+    /**
+     * Reports that the session has set CLIENT_RESULT_COLUMN_CASE_INSENSITIVE to TRUE, after which the driver matches
+     * a column label ignoring case for the rest of the connection; while it has not, nothing is reported.
+     *
+     * @param session the session the statement ran in
+     */
+    public void reportResultColumnCase(final SessionContext session) {
+        if (session.getSettings().resultColumnsCaseInsensitive()) {
+            this.clientResultColumnCaseInsensitive = Boolean.TRUE;
+        }
+    }
+
+    /**
+     * Reports the zone the session's TIMEZONE names once the request has run — its own, its user's or the account's —
+     * which the driver reads a DATE's midnight and a wall clock of no zone in, as the account's driver reads them in
+     * the zone its result names.
+     *
+     * @param zone the zone's name, or null where the session names none
+     */
+    public void reportTimezone(final String zone) {
+        this.timezone = zone;
     }
 
 }

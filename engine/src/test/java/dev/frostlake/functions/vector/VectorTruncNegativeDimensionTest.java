@@ -92,7 +92,8 @@ public class VectorTruncNegativeDimensionTest extends BaseDatabaseTest {
 
     @Test
     public void aBadCastInsideStillFailsItsRow() {
-        assertEquals("Array-like value being cast to a float vector has elements that are not real numbers",
+        assertEquals("Cannot convert an array with missing elements to a vector. Compact the array to a dense "
+                + "representation first using ARRAY_COMPACT.",
             refusal("SELECT VECTOR_TRUNC([1,2,NULL]::VECTOR(FLOAT,3), -2)"));
     }
 }

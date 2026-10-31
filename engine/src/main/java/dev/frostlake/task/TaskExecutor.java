@@ -16,6 +16,7 @@
 
 package dev.frostlake.task;
 
+import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.storage.ResultSet;
 import java.util.List;
 import java.util.Map;
@@ -50,6 +51,26 @@ public interface TaskExecutor {
      */
     default List<ResultSet> evaluateCondition(final String sql) {
         return executeQuery(sql);
+    }
+
+    /**
+     * The history row of the statement this executor ran last, which a task run reports: its query id and the code
+     * of the error it failed with. This default knows none.
+     *
+     * @return the row, or null
+     */
+    default QueryHistory lastRecordedQuery() {
+        return null;
+    }
+
+    /**
+     * The user the calling session runs as, as CURRENT_USER() names it: who an EXECUTE TASK or a RESUME is by. This
+     * default knows none.
+     *
+     * @return the user's name, or null
+     */
+    default String currentUser() {
+        return null;
     }
 
     /**

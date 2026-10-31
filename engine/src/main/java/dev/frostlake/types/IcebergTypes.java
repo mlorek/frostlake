@@ -153,10 +153,11 @@ public final class IcebergTypes {
         }
         if (type instanceof MapType) {
             final MapType map = (MapType) type;
-            return new MapType(tableType(map.getKeyType()), tableType(map.getValueType()));
+            return new MapType(tableType(map.getKeyType()), tableType(map.getValueType()), map.isValueNotNull());
         }
         if (type instanceof StructuredArrayType) {
-            return new StructuredArrayType(tableType(((StructuredArrayType) type).getElementType()));
+            return new StructuredArrayType(tableType(((StructuredArrayType) type).getElementType()),
+                ((StructuredArrayType) type).isElementNotNull());
         }
         if (type instanceof StructuredObjectType) {
             final List<StructuredField> fields = new ArrayList<>();

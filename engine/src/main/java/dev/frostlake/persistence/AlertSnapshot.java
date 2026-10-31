@@ -19,6 +19,7 @@ import java.io.Serializable;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Map;
 
 /** An alert, as a snapshot holds it. Its execution history is runtime state and is not kept. */
 public class AlertSnapshot implements Serializable {
@@ -53,6 +54,9 @@ public class AlertSnapshot implements Serializable {
 
     /** SUSPEND_ALERT_AFTER_NUM_FAILURES, or null. */
     public Integer suspendAfterNumFailures;
+
+    /** The parameters set on the alert itself, by name, or null. */
+    public Map<String, String> parameters;
 
     /** The alert's state, as the enum constant's name. */
     public String state;

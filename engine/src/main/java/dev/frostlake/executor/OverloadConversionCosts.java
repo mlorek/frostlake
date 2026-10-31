@@ -31,7 +31,7 @@ import java.util.Map;
  *   argument   parameter, with its weight
  *   NUMBER     NUMBER 0, FLOAT 1, BOOLEAN 2, VARIANT 3, VARCHAR 4, TIMESTAMP 5
  *   FLOAT      FLOAT 0, BOOLEAN 1, VARIANT 2, VARCHAR 4, NUMBER 8
- *   VARCHAR    VARCHAR 0, BOOLEAN 1, FLOAT 2, DATE 2, TIME 2, TIMESTAMP 2, NUMBER 3, VARIANT 4
+ *   VARCHAR    VARCHAR 0, BOOLEAN 1, FLOAT 2, DATE 2, TIMESTAMP 2, NUMBER 3, TIME 3, VARIANT 4
  *   BOOLEAN    BOOLEAN 0, VARCHAR 1, VARIANT 2, FLOAT 4, NUMBER 8
  *   DATE       DATE 0, TIMESTAMP 1, VARCHAR 4
  *   TIME       TIME 0, TIMESTAMP 1, VARCHAR 2
@@ -47,6 +47,11 @@ import java.util.Map;
  * state.} The rows of the other families keep the order each was measured in over pairs of one-argument
  * overloads. A TIME reaches a timestamp parameter of any kind before a text one, and is then refused there, since
  * no TIME converts to a timestamp: {@code incompatible types: [TIME(9)] and [TIMESTAMP_NTZ(9)]}.
+ *
+ * <p>A text weighs more for a TIME than for a timestamp, a DATE or a FLOAT, and goes to a NUMBER before a TIME:
+ * {@code ('10:00:00')} runs the TIMESTAMP_NTZ, the TIMESTAMP_LTZ or the NUMBER overload beside a TIME one. The
+ * timestamp kinds sort among themselves by their own names, so a text or a NULL runs TIMESTAMP_NTZ before
+ * TIMESTAMP_TZ, and a NULL TIME before any of them (live-verified).
  */
 public final class OverloadConversionCosts {
 
@@ -55,7 +60,7 @@ public final class OverloadConversionCosts {
 
     /** The parameter families in the order of the account's internal type names, which is how signatures sort. */
     private static final List<String> SIGNATURE_ORDER = Arrays.asList("ARRAY", "BINARY", "BOOLEAN", "DATE",
-        "NUMBER", "OBJECT", "FLOAT", "VARCHAR", "TIME", "TIMESTAMP", "VARIANT");
+        "NUMBER", "OBJECT", "FLOAT", "VARCHAR", "TIME", "TIMESTAMP_LTZ", "TIMESTAMP_NTZ", "TIMESTAMP_TZ", "VARIANT");
 
     /** What each conversion weighs, by the argument's family and then the parameter's. */
     private static final Map<String, Map<String, Integer>> WEIGHTS = new HashMap<String, Map<String, Integer>>();
@@ -64,8 +69,8 @@ public final class OverloadConversionCosts {
         row("NUMBER", new String[] {"NUMBER", "FLOAT", "BOOLEAN", "VARIANT", "VARCHAR", "TIMESTAMP"},
             new int[] {0, 1, 2, 3, 4, 5});
         row("FLOAT", new String[] {"FLOAT", "BOOLEAN", "VARIANT", "VARCHAR", "NUMBER"}, new int[] {0, 1, 2, 4, 8});
-        row("VARCHAR", new String[] {"VARCHAR", "BOOLEAN", "FLOAT", "DATE", "TIME", "TIMESTAMP", "NUMBER", "VARIANT"},
-            new int[] {0, 1, 2, 2, 2, 2, 3, 4});
+        row("VARCHAR", new String[] {"VARCHAR", "BOOLEAN", "FLOAT", "DATE", "TIMESTAMP", "NUMBER", "TIME", "VARIANT"},
+            new int[] {0, 1, 2, 2, 2, 3, 3, 4});
         row("DECFLOAT", new String[] {"DECFLOAT", "NUMBER", "FLOAT", "VARCHAR", "VARIANT", "BOOLEAN"},
             new int[] {0, 1, 2, 3, 4, 5});
         row("UUID", new String[] {"UUID", "VARCHAR", "BOOLEAN", "FLOAT", "NUMBER", "VARIANT"},
@@ -111,9 +116,9 @@ public final class OverloadConversionCosts {
     }
 
     /**
-     * Where a parameter's family stands in the order signatures sort by.
+     * Where a parameter's family stands in the order signatures sort by, a timestamp by its kind.
      *
-     * @param parameter the parameter's family
+     * @param parameter the parameter's family, or a timestamp's kind (TIMESTAMP_LTZ, TIMESTAMP_NTZ or TIMESTAMP_TZ)
      * @return the position, a family the order does not name last
      */
     public static int signatureOrder(final String parameter) {

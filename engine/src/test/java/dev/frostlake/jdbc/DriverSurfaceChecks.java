@@ -122,17 +122,86 @@ final class DriverSurfaceChecks {
     }
 
     /**
-     * The integer getters parse a cell's text: a FLOAT's cut at its point, a text that spells an integer, a BOOLEAN's
-     * 1; a number past the getter's type and a text that is no integer are refused.
+     * The numeric getters over a VARCHAR or a VARIANT read the cell's text as a number of their kind and refuse, in the
+     * driver's conversion sentence, a text that spells none: every getter a word, a JSON string, an ARRAY or an OBJECT,
+     * an integer getter a fraction, a padded number or an exponent; getBigDecimal a padded number, getDouble a word;
+     * getBoolean a number (live-verified, the account's getByte aside, whose parser's exception escapes).
+     *
+     * @param c the connection
+     */
+    static void textAndVariantReads(final Connection c) throws SQLException {
+        final String[] numbers = {"int", "long", "short", "big decimal", "double", "float", "boolean"};
+        final String[][] spellNone = {
+            {"SELECT 'jd.004'::VARCHAR", "jd.004"}, {"SELECT PARSE_JSON('\"1.5\"')", "\"1.5\""},
+            {"SELECT ARRAY_CONSTRUCT(1)", "[1]"}, {"SELECT OBJECT_CONSTRUCT('a', 1)", "{\"a\":1}"}};
+        for (final String[] cell : spellNone) {
+            for (final String target : numbers) {
+                unconvertible(12, target, cell[1], reading(firstRow(c, cell[0]), target));
+            }
+        }
+        final String[][] integerRefusals = {
+            {"SELECT '1.25'::VARCHAR", "1.25"}, {"SELECT ' 42 '::VARCHAR", " 42 "}, {"SELECT '1e3'::VARCHAR", "1e3"},
+            {"SELECT PARSE_JSON('1.5')", "1.5"}, {"SELECT PARSE_JSON('true')", "true"},
+            {"SELECT PARSE_JSON('1e3')", "1.000000000000000e+03"}};
+        for (final String[] cell : integerRefusals) {
+            for (final String target : new String[] {"int", "long", "short"}) {
+                unconvertible(12, target, cell[1], reading(firstRow(c, cell[0]), target));
+            }
+        }
+        assertEquals(42, firstRow(c, "SELECT '42'::VARCHAR").getInt(1));
+        assertEquals(new BigDecimal("1.25"), firstRow(c, "SELECT '1.25'::VARCHAR").getBigDecimal(1));
+        assertEquals(new BigDecimal("1E+3"), firstRow(c, "SELECT '1e3'::VARCHAR").getBigDecimal(1));
+        assertEquals(42.0, firstRow(c, "SELECT ' 42 '::VARCHAR").getDouble(1));
+        assertEquals(7L, firstRow(c, "SELECT PARSE_JSON('7')").getLong(1));
+        assertEquals(new BigDecimal("1.5"), firstRow(c, "SELECT PARSE_JSON('1.5')").getBigDecimal(1));
+        assertEquals(new BigDecimal("1000.000000000000"), firstRow(c, "SELECT PARSE_JSON('1e3')").getBigDecimal(1));
+        assertTrue(firstRow(c, "SELECT 'true'::VARCHAR").getBoolean(1));
+        assertTrue(firstRow(c, "SELECT PARSE_JSON('true')").getBoolean(1));
+        unconvertible(12, "big decimal", " 42 ", reading(firstRow(c, "SELECT ' 42 '::VARCHAR"), "big decimal"));
+        unconvertible(12, "double", "true", reading(firstRow(c, "SELECT 'true'::VARCHAR"), "double"));
+        unconvertible(12, "boolean", "7", reading(firstRow(c, "SELECT PARSE_JSON('7')"), "boolean"));
+    }
+
+    /** A read of the first column by the getter the driver's refusal names as its target. */
+    private static Executable reading(final ResultSet rs, final String target) {
+        return new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                switch (target) {
+                    case "int":
+                        rs.getInt(1);
+                        break;
+                    case "long":
+                        rs.getLong(1);
+                        break;
+                    case "short":
+                        rs.getShort(1);
+                        break;
+                    case "big decimal":
+                        rs.getBigDecimal(1);
+                        break;
+                    case "double":
+                        rs.getDouble(1);
+                        break;
+                    case "float":
+                        rs.getFloat(1);
+                        break;
+                    default:
+                        rs.getBoolean(1);
+                        break;
+                }
+            }
+        };
+    }
+
+    /**
+     * The integer getters parse a cell's text: a text that spells an integer, a BOOLEAN's 1; a number past the getter's
+     * type and a text that is no integer are refused. A FLOAT is read by its double instead (see FloatColumnChecks).
      *
      * @param c the connection
      */
     static void integerReads(final Connection c) throws SQLException {
-        final ResultSet rs = firstRow(c, """
-            SELECT 2.5::FLOAT AS F, '12' AS T, TRUE AS B, 'x' AS W, 9999999999 AS BIG, 70000 AS MID,
-                   1e10::FLOAT AS FBIG""");
-        assertEquals(2, rs.getInt("F"));
-        assertEquals(2L, rs.getLong("F"));
+        final ResultSet rs = firstRow(c, "SELECT '12' AS T, TRUE AS B, 'x' AS W, 9999999999 AS BIG, 70000 AS MID");
         assertEquals(12, rs.getInt("T"));
         assertEquals(1, rs.getInt("B"));
         assertEquals(9999999999L, rs.getLong("BIG"));
@@ -154,13 +223,6 @@ final class DriverSurfaceChecks {
                 rs.getShort("MID");
             }
         });
-        unconvertible(8, "int", "10000000000", new Executable() {
-            @Override
-            public void execute() throws Throwable {
-                rs.getInt("FBIG");
-            }
-        });
-        assertEquals(10000000000L, rs.getLong("FBIG"));
     }
 
     /**
@@ -170,8 +232,7 @@ final class DriverSurfaceChecks {
      */
     static void booleanReads(final Connection c) throws SQLException {
         final ResultSet rs = firstRow(c, """
-            SELECT 1 AS ONE, 0 AS ZERO, 'true' AS T, '1' AS TONE, 'yes' AS YES, 2 AS TWO, 1.5::FLOAT AS F,
-                   NULL::BOOLEAN AS N""");
+            SELECT 1 AS ONE, 0 AS ZERO, 'true' AS T, '1' AS TONE, 'yes' AS YES, 2 AS TWO, NULL::BOOLEAN AS N""");
         assertTrue(rs.getBoolean("ONE"));
         assertFalse(rs.getBoolean("ZERO"));
         assertTrue(rs.getBoolean("T"));
@@ -188,12 +249,6 @@ final class DriverSurfaceChecks {
             @Override
             public void execute() throws Throwable {
                 rs.getBoolean("TWO");
-            }
-        });
-        unconvertible(8, "boolean", "1.5", new Executable() {
-            @Override
-            public void execute() throws Throwable {
-                rs.getBoolean("F");
             }
         });
     }
@@ -472,10 +527,11 @@ final class DriverSurfaceChecks {
         assertTrue(ts.wasNull());
         ts.close();
 
+        // A SQL procedure's VARIANT answer reads laid out, as its result column does (see ScriptingAnswerLayoutTest).
         final CallableStatement variant = c.prepareCall("CALL dss_v()");
         variant.execute();
-        assertEquals("{\"a\":1}", variant.getObject(1));
-        assertEquals("{\"a\":1}", variant.getString(1));
+        assertEquals("{\n\"a\": 1\n}", variant.getObject(1));
+        assertEquals("{\n\"a\": 1\n}", variant.getString(1));
         variant.close();
 
         final CallableStatement named = c.prepareCall("CALL dss_n(:x)");

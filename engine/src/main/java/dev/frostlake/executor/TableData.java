@@ -37,6 +37,10 @@ class TableData {
     Table table;
     List<Row> rows;
     String alias;
+    /** The rows a GENERATOR holding one of them counts (see GeneratorRowReads), or -1. */
+    long countedRows = -1L;
+    /** The rows a GENERATOR holding none of them streams (see GeneratorRowReads), or -1. */
+    long streamedRows = -1L;
     /** The rows as a stage reads them: produced once, when first asked. */
     final MemoizedRows source;
     private String description;

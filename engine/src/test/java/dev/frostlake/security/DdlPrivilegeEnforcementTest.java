@@ -69,12 +69,14 @@ public class DdlPrivilegeEnforcementTest {
     public void nonOwnerCustomRoleCannotDropTable() {
         engine.execute("CREATE TABLE t (id INTEGER)"); // owned by SYSADMIN (created as SYSTEM)
         asAppRole();
-        assertThrows(SecurityException.class, new Executable() {
+        final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
                 engine.execute("DROP TABLE t");
             }
         });
+        assertEquals("SQL access control error:\nInsufficient privileges to operate on table 'T'. "
+            + "Your primary role APP_ROLE must have OWNERSHIP granted on TABLE DB.PUBLIC.T.", refused.getMessage());
     }
 
     @Test

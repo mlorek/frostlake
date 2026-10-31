@@ -28,6 +28,10 @@ import dev.frostlake.storage.StorageEngine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Set;
+
 
 /**
  * The end of what was created TEMPORARY: tables, and equally the views, functions, procedures, stages and file
@@ -35,8 +39,7 @@ import org.slf4j.LoggerFactory;
  * (live-verified for every kind), so a session that ends - a released or expired one of the HTTP server, a closed
  * connection, a task's run, the replay of a log - takes its temporary objects with it, and the engine's own session
  * takes the rest when the engine shuts down. Another session neither reaches nor lists a temporary object, and may
- * create a temporary table or view of the same name, its own (live-verified); a temporary stage of a name another
- * session holds is still refused here.
+ * create a temporary table, view or stage of the same name, its own (live-verified).
  */
 public final class TemporaryObjects {
 
@@ -55,11 +58,76 @@ public final class TemporaryObjects {
      * @return how many objects were dropped
      */
     public static int drop(final Catalog catalog, final StorageEngine storageEngine, final Long session) {
+        return drop(catalog, storageEngine, session, Collections.emptySet());
+    }
+
+    /**
+     * The temporary objects a catalog holds: what an engine's own sessions created, before a copy of another engine's
+     * state comes in (see {@link #dropAllBut}).
+     *
+     * @param catalog the catalog
+     * @return the objects, by identity
+     */
+    public static Set<Object> held(final Catalog catalog) {
+        final Set<Object> held = Collections.newSetFromMap(new IdentityHashMap<Object, Boolean>());
+        for (final Database db : catalog.getAllDatabases()) {
+            for (final Schema schema : db.getAllSchemas()) {
+                for (final Table table : schema.allTables()) {
+                    if (table.isTemporary()) {
+                        held.add(table);
+                    }
+                }
+                for (final View view : schema.allViews()) {
+                    if (view.isTemporary()) {
+                        held.add(view);
+                    }
+                }
+                for (final Function function : schema.allFunctions()) {
+                    if (function.isTemporary()) {
+                        held.add(function);
+                    }
+                }
+                for (final Procedure procedure : schema.allProcedures()) {
+                    if (procedure.isTemporary()) {
+                        held.add(procedure);
+                    }
+                }
+                for (final FileFormat format : schema.allFileFormats()) {
+                    if (format.isTemporary()) {
+                        held.add(format);
+                    }
+                }
+                for (final Stage stage : schema.allStages()) {
+                    if (stage.isTemporary()) {
+                        held.add(stage);
+                    }
+                }
+            }
+        }
+        return held;
+    }
+
+    /**
+     * Drop every temporary object but those kept: what a copy of another engine's state brought in belonged to
+     * sessions of that engine, none of which this engine has, so it ends here as it does when an engine restarts on
+     * its data, while what this engine's own sessions hold stays theirs.
+     *
+     * @param catalog       the catalog that holds them
+     * @param storageEngine the storage their rows live in
+     * @param kept          the objects to keep (see {@link #held})
+     * @return how many objects were dropped
+     */
+    public static int dropAllBut(final Catalog catalog, final StorageEngine storageEngine, final Set<Object> kept) {
+        return drop(catalog, storageEngine, null, kept);
+    }
+
+    private static int drop(final Catalog catalog, final StorageEngine storageEngine, final Long session,
+                            final Set<Object> kept) {
         int dropped = 0;
         for (final Database db : catalog.getAllDatabases()) {
             for (final Schema schema : db.getAllSchemas()) {
                 for (final Table table : schema.allTables()) {
-                    if (table.isTemporary() && endsWith(session, table)) {
+                    if (table.isTemporary() && endsWith(session, table) && !kept.contains(table)) {
                         final String fqn = db.getName() + "." + schema.getName() + "." + table.getName();
                         if (table.isSessionTemporary()) {
                             // A session's own table is dropped from its session, whichever session ends it.
@@ -81,7 +149,7 @@ public final class TemporaryObjects {
                     TableShadows.settle(schema, storageEngine, db.getName(), hidden.getName());
                 }
                 for (final View view : schema.allViews()) {
-                    if (view.isTemporary() && endsWith(session, view)) {
+                    if (view.isTemporary() && endsWith(session, view) && !kept.contains(view)) {
                         if (!schema.removeSessionView(view)) {
                             schema.dropView(view.getName());
                         }
@@ -90,29 +158,30 @@ public final class TemporaryObjects {
                     }
                 }
                 for (final Function function : schema.allFunctions()) {
-                    if (function.isTemporary() && endsWith(session, function)) {
+                    if (function.isTemporary() && endsWith(session, function) && !kept.contains(function)) {
                         schema.removeFunction(function);
                         dropped++;
                         LOGGER.debug("Dropped temporary function: {}", function.getName());
                     }
                 }
                 for (final Procedure procedure : schema.allProcedures()) {
-                    if (procedure.isTemporary() && endsWith(session, procedure)) {
+                    if (procedure.isTemporary() && endsWith(session, procedure) && !kept.contains(procedure)) {
                         schema.removeProcedure(procedure);
                         dropped++;
                         LOGGER.debug("Dropped temporary procedure: {}", procedure.getName());
                     }
                 }
                 for (final FileFormat format : schema.allFileFormats()) {
-                    if (format.isTemporary() && (session == null || session.equals(format.getCreatedInSession()))) {
+                    if (format.isTemporary() && (session == null || session.equals(format.getCreatedInSession()))
+                            && !kept.contains(format)) {
                         schema.dropFileFormat(format.getName());
                         dropped++;
                         LOGGER.debug("Dropped temporary file format: {}", format.getName());
                     }
                 }
                 for (final Stage stage : schema.allStages()) {
-                    if (stage.isTemporary() && endsWith(session, stage)) {
-                        schema.dropStage(stage.getName());
+                    if (stage.isTemporary() && endsWith(session, stage) && !kept.contains(stage)) {
+                        schema.removeStage(stage);
                         dropped++;
                         LOGGER.debug("Dropped temporary stage: {}", stage.getName());
                     }

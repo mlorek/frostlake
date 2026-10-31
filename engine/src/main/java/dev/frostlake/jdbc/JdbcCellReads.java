@@ -16,9 +16,13 @@
 
 package dev.frostlake.jdbc;
 
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.Decfloats;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.sql.Types;
 
@@ -30,15 +34,16 @@ import java.sql.Types;
  * <ul>
  *   <li>{@code getBoolean} reads TRUE and FALSE, and the texts {@code 1}, {@code 0}, {@code true} and {@code false}
  *       of an integer, a fixed-point number, a BOOLEAN or a text; anything else is refused.</li>
- *   <li>{@code getShort}, {@code getInt} and {@code getLong} parse the text, a FLOAT's cut at its point: 2.5 reads 2,
- *       while a fixed-point number with a fraction (3.50, 3.00), a number past the getter's type and a text that is
- *       no integer are refused. {@code getByte} parses the text as it stands.</li>
+ *   <li>{@code getShort}, {@code getInt} and {@code getLong} parse the text: a fixed-point number with a fraction
+ *       (3.50, 3.00), a number past the getter's type and a text that is no integer are refused. {@code getByte}
+ *       parses the text as it stands.</li>
  *   <li>{@code getFloat}, {@code getDouble} and {@code getBigDecimal} read a number as itself and parse any other
  *       text ({@code inf} and {@code -inf} included); a time or a timestamp is refused.</li>
  * </ul>
  * A refusal is {@code Cannot convert value in the driver from type:<jdbc type> to type:<getter>, value=<text>.},
  * SQLSTATE 0A000 and code 200038. Where the account's driver lets a parser's own exception escape — {@code getByte}
- * over 300 or 3.50 — the same refusal is raised instead.
+ * over 300 or 3.50 — the same refusal is raised instead. A FLOAT column is read by its double, see
+ * {@link FloatColumnReads}.
  */
 final class JdbcCellReads {
 
@@ -113,7 +118,7 @@ final class JdbcCellReads {
      */
     static short shortOf(final int type, final String wire) throws SQLException {
         try {
-            return Short.parseShort(integerText(type, wire));
+            return Short.parseShort(wire);
         } catch (final NumberFormatException notAShort) {
             throw JdbcMarshaling.unconvertible(type, "short", wire);
         }
@@ -135,7 +140,7 @@ final class JdbcCellReads {
             return decfloatWhole(cell, wire, "int").intValue();
         }
         try {
-            return Integer.parseInt(integerText(type, wire));
+            return Integer.parseInt(wire);
         } catch (final NumberFormatException notAnInt) {
             throw JdbcMarshaling.unconvertible(type, "int", wire);
         }
@@ -157,16 +162,10 @@ final class JdbcCellReads {
             return decfloatWhole(cell, wire, "long").longValue();
         }
         try {
-            return Long.parseLong(integerText(type, wire));
+            return Long.parseLong(wire);
         } catch (final NumberFormatException notALong) {
             throw JdbcMarshaling.unconvertible(type, "long", wire);
         }
-    }
-
-    /** The text an integer getter parses: a FLOAT's cut at its point, any other text as it stands. */
-    private static String integerText(final int type, final String wire) {
-        final int point = wire.indexOf('.');
-        return point >= 0 && (type == Types.FLOAT || type == Types.DOUBLE) ? wire.substring(0, point) : wire;
     }
 
     /**
@@ -177,7 +176,7 @@ final class JdbcCellReads {
     private static BigDecimal decfloatWhole(final Object cell, final String wire, final String target)
             throws SQLException {
         final BigDecimal held = cell instanceof Number ? Decfloats.of((Number) cell, "TO_DECFLOAT")
-            : Decfloats.held(new BigDecimal(wire.trim()));
+            : Decfloats.held(DecimalText.parse(wire.trim()));
         final boolean whole = held.signum() == 0 || held.stripTrailingZeros().scale() <= 0;
         final BigDecimal limit = BigDecimal.valueOf("int".equals(target) ? Integer.MAX_VALUE : Long.MAX_VALUE);
         final BigDecimal floor = BigDecimal.valueOf("int".equals(target) ? Integer.MIN_VALUE : Long.MIN_VALUE);
@@ -262,10 +261,58 @@ final class JdbcCellReads {
             return (BigDecimal) cell;
         }
         try {
-            return cell instanceof Double || cell instanceof Float ? new BigDecimal(cell.toString())
-                : new BigDecimal(wire);
+            return cell instanceof Double || cell instanceof Float ? DecimalText.parse(cell.toString())
+                : DecimalText.parse(wire);
         } catch (final NumberFormatException notADecimal) {
             throw JdbcMarshaling.unconvertible(type, "big decimal", wire);
+        }
+    }
+
+    /**
+     * A cell read by {@code getBytes}, as the account's driver reads one (live-verified): a BINARY's own bytes, a
+     * BOOLEAN's one byte 1 or 0, a whole number's two's-complement bytes ({@code [1, 44]} for 300, {@code [-1]} for
+     * -1), a FLOAT's eight IEEE 754 bytes, and the UTF-8 bytes of the text getString reads for a text, a VARIANT, an
+     * OBJECT, an ARRAY or a VECTOR. A NUMBER with digits after its point, a DECFLOAT, a DATE, a TIME and every
+     * timestamp are refused, quoting the cell's wire form.
+     *
+     * @param type the column's JDBC type
+     * @param cell the cell, not null
+     * @param text the cell's text, as getString reads it
+     * @param wire the cell's wire text
+     * @return the bytes
+     * @throws SQLException when the column's type reads as no bytes
+     */
+    static byte[] bytesOf(final int type, final Object cell, final String text, final String wire)
+            throws SQLException {
+        switch (type) {
+            case Types.BINARY:
+            case Types.VARBINARY:
+            case Types.LONGVARBINARY:
+                return JdbcMarshaling.toBytes(cell);
+            case Types.BOOLEAN:
+                return new byte[] {(byte) (booleanOf(type, cell, wire) ? 1 : 0)};
+            case Types.TINYINT:
+            case Types.SMALLINT:
+            case Types.INTEGER:
+            case Types.BIGINT:
+                try {
+                    return new BigInteger(wire).toByteArray();
+                } catch (final NumberFormatException notWhole) {
+                    throw JdbcMarshaling.unconvertible(type, "byte array", wire);
+                }
+            case Types.REAL:
+            case Types.FLOAT:
+            case Types.DOUBLE:
+                return ByteBuffer.allocate(Double.BYTES).putDouble(doubleOf(type, cell, wire)).array();
+            case Types.DECIMAL:
+            case Types.NUMERIC:
+            case Types.DATE:
+            case Types.TIME:
+            case Types.TIMESTAMP:
+            case Types.TIMESTAMP_WITH_TIMEZONE:
+                throw JdbcMarshaling.unconvertible(type, "byte array", wire);
+            default:
+                return text.getBytes(StandardCharsets.UTF_8);
         }
     }
 

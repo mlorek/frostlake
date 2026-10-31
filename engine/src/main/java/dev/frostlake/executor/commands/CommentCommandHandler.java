@@ -27,6 +27,7 @@ import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SystemDatabase;
+import dev.frostlake.metastore.model.Contact;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.FileFormat;
@@ -289,7 +290,10 @@ public class CommentCommandHandler implements CommandHandler {
                 queryExecutor.requireOnRelation(Privilege.MODIFY, viewName);
                 final View view;
                 try {
-                    view = catalog.resolveView(QualifiedName.of(qualifiedNameParts(ctx.qualifiedName())));
+                    // Named exactly, as ALTER VIEW names it: an unquoted LX_V reaches no "lx_v".
+                    final String[] viewParts = qualifiedNameParts(ctx.qualifiedName());
+                    view = catalog.requireOwningSchema(QualifiedName.of(viewParts))
+                        .getViewExact(viewParts[viewParts.length - 1]);
                 } catch (final RuntimeException e) {
                     if (ifExists) {
                         logger.debug("View does not exist (IF EXISTS): {}", viewName);
@@ -566,6 +570,29 @@ public class CommentCommandHandler implements CommandHandler {
                 }
                 tag.setComment(comment);
                 logger.trace("Set comment on tag: {}", tagName);
+            } else if (ctx.CONTACT() != null) {
+                // COMMENT ON CONTACT, the contact named exactly as ALTER CONTACT names it (live-verified).
+                final String contactName = visitor.getText(ctx.qualifiedName());
+                final Contact contact;
+                try {
+                    contact = catalog.findContact(contactName);
+                } catch (final RuntimeException e) {
+                    if (ifExists) {
+                        logger.debug("Contact does not exist (IF EXISTS): {}", contactName);
+                        return null;
+                    }
+                    throw e;
+                }
+                if (contact == null) {
+                    if (ifExists) {
+                        logger.debug("Contact does not exist (IF EXISTS): {}", contactName);
+                        return null;
+                    }
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Contact",
+                        catalog.qualifiedExactName(contactName)));
+                }
+                contact.setComment(comment);
+                logger.trace("Set comment on contact: {}", contactName);
             } else if (ctx.SEQUENCE() != null) {
                 final String n = visitor.getText(ctx.qualifiedName());
                 try {

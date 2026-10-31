@@ -21,32 +21,33 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * A partition's SUM or AVG over every cumulative RANGE frame from its first row: the value through each peer group,
- * by the position of the group's last row. A value may be the refusal its frame meets.
+ * A partition's SUM or AVG over every cumulative RANGE frame pinned to one of its edges: the value through each peer
+ * group, by the position at which the group's frame stops — the group's last row for a frame from the partition's first
+ * row, its first row for a frame to the partition's last. A value may be the refusal its frame meets.
  */
 final class CumulativeFrameValues {
 
-    private final List<Integer> ends;
+    private final List<Integer> stops;
     private final List<Object> values;
 
     /**
-     * @param ends   each peer group's last position, ascending
+     * @param stops  each peer group's stopping position, ascending
      * @param values each group's frame value, in the same order
      */
-    CumulativeFrameValues(final List<Integer> ends, final List<Object> values) {
-        this.ends = new ArrayList<Integer>(ends);
+    CumulativeFrameValues(final List<Integer> stops, final List<Object> values) {
+        this.stops = new ArrayList<Integer>(stops);
         this.values = new ArrayList<Object>(values);
     }
 
     /**
-     * The value of the frame that ends at a position.
+     * The value of the frame that stops at a position.
      *
-     * @param end        the frame's last position
-     * @param noSuchEnd  what to answer when no peer group ends there
-     * @return the value, the refusal its frame meets, or {@code noSuchEnd}
+     * @param stop        the frame's stopping position
+     * @param noSuchStop  what to answer when no peer group's frame stops there
+     * @return the value, the refusal its frame meets, or {@code noSuchStop}
      */
-    Object through(final int end, final Object noSuchEnd) {
-        final int group = Collections.binarySearch(ends, Integer.valueOf(end));
-        return group < 0 ? noSuchEnd : values.get(group);
+    Object through(final int stop, final Object noSuchStop) {
+        final int group = Collections.binarySearch(stops, Integer.valueOf(stop));
+        return group < 0 ? noSuchStop : values.get(group);
     }
 }

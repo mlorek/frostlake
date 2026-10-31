@@ -56,6 +56,12 @@ public final class ScriptingStatementPlacement {
     public static void requireSqlStatementsBefore(final FrostlakeParser.SqlScriptContext script,
                                                   final TokenStream tokens, final String sql,
                                                   final SyntaxErrorListener listener) {
+        if (listener.unknownTypes() != null || listener.readsBlockCalls()) {
+            // The parse's faults are words where types belong, or a block's statement opening with a call: once the
+            // words are types, or the call is read as the statement live reads it, the statements after it stand in
+            // the block (BEGIN LET q r; RETURN q; END is 'R', BEGIN ABS(1); RETURN 1 END is 'END', live-verified).
+            return;
+        }
         Token word = firstScriptingStatement(script);
         if (word == null && listener.hasErrors()) {
             word = strayOpeningKeyword(tokens);
@@ -106,14 +112,27 @@ public final class ScriptingStatementPlacement {
         return new SqlSyntaxException(SqlCompilationError.of(lines.get(0)), lines, sql);
     }
 
-    /** The first word of the script's first scripting statement that opens a statement, or null. */
+    /**
+     * The first word of the script's first scripting statement that opens a statement, or null. An END after a block
+     * this parse closed with an END of its own making is that block's own END, which the parse ran past: no
+     * statement opens with it.
+     */
     private static Token firstScriptingStatement(final FrostlakeParser.SqlScriptContext script) {
         if (script == null) {
             return null;
         }
+        boolean endMadeUp = false;
         for (final FrostlakeParser.FlowChainContext chain : script.flowChain()) {
             for (final FrostlakeParser.StatementContext statement : chain.statement()) {
                 final FrostlakeParser.ProceduralStatementContext procedural = statement.proceduralStatement();
+                if (procedural != null && procedural.beginEndBlock() != null) {
+                    final TerminalNode end = procedural.beginEndBlock().END();
+                    endMadeUp = endMadeUp || end != null && end.getSymbol().getTokenIndex() < 0;
+                }
+                if (endMadeUp && procedural != null && procedural.getStart() != null
+                        && procedural.getStart().getType() == FrostlakeLexer.END) {
+                    continue;
+                }
                 if (procedural != null && procedural.getStart() != null && isScriptingOnly(procedural)
                         && opensAStatement(statement)) {
                     return procedural.getStart();

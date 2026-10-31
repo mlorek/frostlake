@@ -24,6 +24,7 @@ import dev.frostlake.executor.expressions.IntervalCasts;
 import dev.frostlake.executor.expressions.IntervalCells;
 import dev.frostlake.executor.expressions.RawOverflowKind;
 import dev.frostlake.executor.expressions.RawRangeOverflow;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.VariantValue;
 
 import tools.jackson.databind.JsonNode;
@@ -542,7 +543,7 @@ public final class AggregateNumerics {
             return null;
         }
         try {
-            final BigDecimal decimal = new BigDecimal(v.toString().trim());
+            final BigDecimal decimal = DecimalText.parse(v.toString().trim());
             if (decimal.stripTrailingZeros().scale() <= 0) {
                 return decimal.toBigIntegerExact();
             }
@@ -572,7 +573,7 @@ public final class AggregateNumerics {
             return null;
         }
         try {
-            final BigDecimal decimal = new BigDecimal(v.toString().trim());
+            final BigDecimal decimal = DecimalText.parse(v.toString().trim());
             if (decimal.stripTrailingZeros().scale() <= 0) {
                 return new BigDecimal(decimal.toBigIntegerExact());
             }
@@ -968,7 +969,7 @@ public final class AggregateNumerics {
             }
         } else if (v instanceof Number) {
             shown = v.toString();
-            number = new BigDecimal(shown);
+            number = DecimalText.parse(shown);
         } else if (IntervalCells.isInterval(v)) {
             // An interval converts as its cast to a number does: its span in units of its trailing field, so
             // MEDIAN over a TIMESTAMP difference reads whole seconds (live-verified).
@@ -991,7 +992,7 @@ public final class AggregateNumerics {
 
     private static BigDecimal numberSpelledBy(final String text, final String refusal) {
         try {
-            return new BigDecimal(text.trim());
+            return DecimalText.parse(text.trim());
         } catch (final NumberFormatException notNumeric) {
             throw new NumericConversionException(refusal);
         }
@@ -1034,9 +1035,69 @@ public final class AggregateNumerics {
         return Double.valueOf(Math.sqrt(((Number) atScale).doubleValue()));
     }
 
+    /**
+     * A variance of exact inputs, computed exactly and presented at the scale its column declares (see
+     * {@link #varianceAtDeclaredScale}).
+     *
+     * @param moments       the inputs' moments
+     * @param sample        whether it is the sample's variance rather than the population's
+     * @param maxInputScale the largest scale among the inputs
+     * @return the variance
+     */
+    public static BigDecimal exactVarianceAtDeclaredScale(final ExactMoments moments, final boolean sample,
+                                                          final int maxInputScale) {
+        return moments.variance(sample, varianceScale(maxInputScale));
+    }
+
+    /**
+     * The STDDEV family's value over exact inputs: the root of the variance computed exactly and rounded to its
+     * declared scale (see {@link #rootOfDeclaredVariance}).
+     *
+     * @param moments       the inputs' moments
+     * @param sample        whether it is the sample's deviation rather than the population's
+     * @param maxInputScale the largest scale among the inputs
+     * @return the deviation
+     */
+    public static Double rootOfExactVariance(final ExactMoments moments, final boolean sample,
+                                             final int maxInputScale) {
+        return Double.valueOf(Math.sqrt(exactVarianceAtDeclaredScale(moments, sample, maxInputScale).doubleValue()));
+    }
+
     /** The scale an accumulated input contributes: a decimal's own, zero for an integral value. */
     public static int scaleOfInput(final Object value) {
         return value instanceof BigDecimal ? ((BigDecimal) value).scale() : 0;
+    }
+
+    /**
+     * The sum of the values' deviations from their mean, each over the sample standard deviation and raised to the
+     * power — the third for SKEW, the fourth for KURTOSIS. A series that does not vary divides by its zero
+     * deviation, whatever its type (live-verified).
+     *
+     * @param values the values, two or more
+     * @param power the moment's power
+     * @return the sum
+     */
+    static double standardizedMomentSum(final List<Double> values, final int power) {
+        final int n = values.size();
+        double total = 0;
+        for (final Double value : values) {
+            total += value.doubleValue();
+        }
+        final double mean = total / n;
+        double squares = 0;
+        for (final Double value : values) {
+            squares += Math.pow(value.doubleValue() - mean, 2);
+        }
+        final double variance = squares / (n - 1);
+        if (variance == 0) {
+            throw new RuntimeException("Division by zero");
+        }
+        final double stddev = Math.sqrt(variance);
+        double sum = 0;
+        for (final Double value : values) {
+            sum += Math.pow((value.doubleValue() - mean) / stddev, power);
+        }
+        return sum;
     }
 
     /** Whether an accumulated input is APPROXIMATE, which keeps the whole result a double. */

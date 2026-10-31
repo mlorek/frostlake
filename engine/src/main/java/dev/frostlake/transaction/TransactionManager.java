@@ -106,6 +106,12 @@ public class TransactionManager {
         if (sessionContext != null) {
             txn.setSessionNumber(sessionContext.getSessionNumber());
         }
+        txn.setStatementScoped(isAutoCommit());
+        if (!txn.isStatementScoped()) {
+            // Under AUTOCOMMIT = FALSE the transaction a statement opens is its scope's, as one a BEGIN opens is: a
+            // block or a procedure that leaves it open is refused for it (live-verified).
+            txn.setScope(scopeDepth.get().intValue());
+        }
         activeTransactions.put(txnId, txn);
         currentTransaction.set(txn);
         return txn;
@@ -163,7 +169,8 @@ public class TransactionManager {
 
     /**
      * Leaves the scope {@link #enterScope} entered. A transaction the scope began and left open is rolled back
-     * here, and the enclosing scope's transaction it was begun beside is the session's again.
+     * here - one a BEGIN opened, and under AUTOCOMMIT = FALSE one its first write opened - and the enclosing scope's
+     * transaction it was begun beside is the session's again.
      *
      * @return whether the scope left a transaction of its own open, which its statement reports as
      *         {@link #SCOPE_LEFT_OPEN}
@@ -172,7 +179,7 @@ public class TransactionManager {
         final int depth = scopeDepth.get().intValue();
         final Transaction txn = currentTransaction.get();
         boolean leftOpen = false;
-        if (depth > 0 && txn != null && txn.isExplicit() && txn.getScope() >= depth) {
+        if (depth > 0 && txn != null && (txn.isExplicit() || !txn.isStatementScoped()) && txn.getScope() >= depth) {
             leftOpen = true;
             try {
                 rollback();
@@ -346,6 +353,21 @@ public class TransactionManager {
     }
 
     /**
+     * Whether an open transaction has written the storage of this name, a table's that was set aside among them.
+     *
+     * @param storageName the storage's name
+     * @return whether one has
+     */
+    public boolean isWrittenByOpenTransaction(final String storageName) {
+        for (final Transaction open : activeTransactions.values()) {
+            if (open.hasWritten(storageName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Discard any buffered (uncommitted) writes for a table being dropped or replaced, so a later COMMIT
      * doesn't try to flush them to storage that no longer exists — and so a drop-then-recreate of the same
      * name within one transaction doesn't resurrect the pre-drop rows. No-op when there is no active
@@ -393,7 +415,8 @@ public class TransactionManager {
      * session's (live-verified): its writes are rolled back and its locks released at once. The session that held
      * it is left holding an aborted transaction, and each of its statements is refused until it issues a COMMIT,
      * which fails, or a ROLLBACK. A transaction a running block began and ends this way is simply over: the block
-     * goes on outside any transaction.
+     * goes on outside any transaction. An autocommit statement's own transaction is that statement's to end: SHOW
+     * TRANSACTIONS lists it, but it is not aborted (live-verified).
      *
      * @param publicId    the id CURRENT_TRANSACTION() answers inside the transaction
      * @param insideBlock whether a Snowflake Scripting block or a procedure is running the abort
@@ -407,9 +430,11 @@ public class TransactionManager {
                 break;
             }
         }
-        if (named == null) {
+        if (named == null || named.isStatementScoped()) {
             return false;
         }
+        // The user the refusal names is the one CURRENT_USER() names in the aborting session.
+        named.setAbortedBy(sessionContext != null ? sessionContext.getDisplayUser() : null);
         final boolean own = named == currentTransaction.get();
         try {
             named.rollback();
@@ -430,6 +455,22 @@ public class TransactionManager {
             abortedCurrent.set(named);
         }
         return true;
+    }
+
+    /**
+     * The transaction this thread's statement runs in, when SYSTEM$ABORT_TRANSACTION ended it while the statement
+     * waited for another session's lock: the thread then holds it as aborted, as the session's next statement does.
+     *
+     * @return the aborted transaction, or null while it is open or the statement runs in none
+     */
+    public Transaction abortedWhileWaiting() {
+        final Transaction txn = currentTransaction.get();
+        if (txn == null || abortedTransactions.get(txn.getId()) != txn) {
+            return null;
+        }
+        currentTransaction.remove();
+        abortedCurrent.set(txn);
+        return txn;
     }
 
     /** The transaction this thread's session holds although it was aborted, or null when it holds none. */
@@ -517,6 +558,22 @@ public class TransactionManager {
             activeTransactions.remove(txn.getId());
             currentTransaction.remove();
             resumeOuter(txn);
+        }
+    }
+
+    /**
+     * Rolls back a transaction its session left open as the session ends, from whichever thread ends it: its writes
+     * undone and its locks released, and nothing kept of it, since no session is left to hold it. The thread's own
+     * session records nothing of it.
+     *
+     * @param left the transaction
+     */
+    public void rollBackLeft(final Transaction left) {
+        try {
+            left.rollback();
+            left.setState(TransactionState.ROLLED_BACK);
+        } finally {
+            activeTransactions.remove(left.getId());
         }
     }
 
@@ -660,6 +717,21 @@ public class TransactionManager {
 
     public Collection<Transaction> getActiveTransactions() {
         return activeTransactions.values();
+    }
+
+    /**
+     * Whether a transaction of any session is open and has statements in the log: a checkpoint taken now would hold
+     * what other sessions committed since, and those statements would replay over it at recovery.
+     *
+     * @return whether such a transaction is open
+     */
+    public boolean holdsLoggedStatements() {
+        for (final Transaction open : activeTransactions.values()) {
+            if (!open.getWalStatements().isEmpty()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

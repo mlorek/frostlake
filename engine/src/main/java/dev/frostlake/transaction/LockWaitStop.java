@@ -24,4 +24,19 @@ public interface LockWaitStop {
 
     /** Throws the statement's refusal when something has ended it; returns when it may go on waiting. */
     void check();
+
+    /**
+     * The query ID the waiting statement runs under, which its refusal names and LAST_QUERY_ID answers once it is
+     * refused.
+     *
+     * @return the ID, or null when the statement runs under none
+     */
+    String waitingQueryId();
+
+    /**
+     * The refusal of a statement whose thread was interrupted while it waited: the cancel it is.
+     *
+     * @return the refusal
+     */
+    RuntimeException interrupted();
 }

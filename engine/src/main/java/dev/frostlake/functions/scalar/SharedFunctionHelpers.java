@@ -25,6 +25,7 @@ import dev.frostlake.executor.SessionZone;
 import dev.frostlake.executor.expressions.IntervalUnit;
 import dev.frostlake.executor.expressions.RawOverflowKind;
 import dev.frostlake.executor.expressions.RawRangeOverflow;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
@@ -225,7 +226,7 @@ public final class SharedFunctionHelpers {
      * TO_VARCHAR, ||, a value embedded in a VARIANT) differed from Snowflake's.
      */
     public static String timestampText(final LocalDateTime dt) {
-        return yearText(dt.getYear()) + String.format("-%02d-%02d %02d:%02d:%02d.%03d",
+        return yearText(dt.getYear()) + String.format(Locale.ROOT, "-%02d-%02d %02d:%02d:%02d.%03d",
             dt.getMonthValue(), dt.getDayOfMonth(),
             dt.getHour(), dt.getMinute(), dt.getSecond(), dt.getNano() / 1_000_000);
     }
@@ -240,7 +241,7 @@ public final class SharedFunctionHelpers {
      * @return the year's text
      */
     public static String yearText(final int prolepticYear) {
-        return String.format("%04d", prolepticYear > 0 ? prolepticYear : 1 - prolepticYear);
+        return String.format(Locale.ROOT, "%04d", prolepticYear > 0 ? prolepticYear : 1 - prolepticYear);
     }
 
     /**
@@ -256,7 +257,8 @@ public final class SharedFunctionHelpers {
         if (date.getYear() > 0) {
             return textOf(date);
         }
-        return signedYearText(date.getYear()) + String.format("-%02d-%02d", date.getMonthValue(), date.getDayOfMonth());
+        return signedYearText(date.getYear()) + String.format(Locale.ROOT, "-%02d-%02d", date.getMonthValue(),
+            date.getDayOfMonth());
     }
 
     /** A year before the first as a VARIANT's text spells it: its proleptic number, {@code 0000} for the year 0. */
@@ -362,13 +364,13 @@ public final class SharedFunctionHelpers {
             return "Z";
         }
         final int absolute = Math.abs(seconds);
-        return String.format("%s%02d%02d", seconds < 0 ? "-" : "+",
+        return String.format(Locale.ROOT, "%s%02d%02d", seconds < 0 ? "-" : "+",
             absolute / 3600, absolute % 3600 / 60);
     }
 
     /** Snowflake's default TIME output text — {@code HH24:MI:SS}, no fractional part. */
     public static String timeText(final LocalTime t) {
-        return String.format("%02d:%02d:%02d", t.getHour(), t.getMinute(), t.getSecond());
+        return String.format(Locale.ROOT, "%02d:%02d:%02d", t.getHour(), t.getMinute(), t.getSecond());
     }
 
     /**
@@ -383,7 +385,7 @@ public final class SharedFunctionHelpers {
         }
         if (value instanceof LocalDate) {
             final LocalDate date = (LocalDate) value;
-            return yearText(date.getYear()) + String.format("-%02d-%02d", date.getMonthValue(),
+            return yearText(date.getYear()) + String.format(Locale.ROOT, "-%02d-%02d", date.getMonthValue(),
                 date.getDayOfMonth());
         }
         if (value instanceof ZonedDateTime) {
@@ -523,12 +525,12 @@ public final class SharedFunctionHelpers {
         }
         if (value instanceof String) {
             try {
-                return new BigDecimal(((String) value).trim());
+                return DecimalText.parse(((String) value).trim());
             } catch (final NumberFormatException notANumber) {
                 throw new RuntimeException(NumericRangeRefusal.unreadableText(value));
             }
         }
-        return new BigDecimal(value.toString());
+        return DecimalText.parse(value.toString());
     }
 
     // --- shared date/datetime parsing helpers ---
@@ -824,6 +826,8 @@ public final class SharedFunctionHelpers {
         if (epoch != null) return epoch;
         try { return LocalTime.parse(s); } catch (final Exception ignored) {}
         try { return LocalTime.parse(s, DateTimeFormatter.ofPattern("HH:mm")); } catch (final Exception ignored) {}
+        final LocalTime auto = AutoTemporalParser.parseTime(s);
+        if (auto != null) return auto;
         // Live names the TYPE it could not read the text as, exactly as the DATE and TIMESTAMP
         // readers do: 'abc'::TIME and TO_TIME('abc') are both "Time 'abc' is not recognized".
         throw new RuntimeException("Time '" + s + "' is not recognized");
@@ -1004,7 +1008,7 @@ public final class SharedFunctionHelpers {
             return (BigDecimal) value;
         }
         if (value instanceof Double || value instanceof Float) {
-            return new BigDecimal(value.toString());
+            return DecimalText.parse(value.toString());
         }
         return BigDecimal.valueOf(value.longValue());
     }

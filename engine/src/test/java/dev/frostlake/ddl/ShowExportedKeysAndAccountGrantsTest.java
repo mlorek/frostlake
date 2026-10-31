@@ -187,7 +187,8 @@ public class ShowExportedKeysAndAccountGrantsTest extends MeasuredCellsTestSuppo
         assertShape(
             "created_on:TIMESTAMP_LTZ, privilege:VARCHAR(16777216), granted_on:VARCHAR(16777216), "
                 + "name:VARCHAR(16777216), role:VARCHAR(16777216), granted_to:VARCHAR(16777216), "
-                + "grantee_name:VARCHAR(16777216), grant_option:VARCHAR(16777216), granted_by:VARCHAR(16777216)",
+                + "grantee_name:VARCHAR(16777216), grant_option:VARCHAR(16777216), granted_by:VARCHAR(16777216), "
+                + "expires_on:TIMESTAMP_LTZ",
             "SHOW TERSE GRANTS");
         assertShapes(GRANTS_COLUMNS,
             "SHOW TERSE GRANTS ON TABLE ab");
@@ -195,7 +196,7 @@ public class ShowExportedKeysAndAccountGrantsTest extends MeasuredCellsTestSuppo
             "SHOW TERSE GRANTS TO ROLE PUBLIC");
         assertShape(
             "created_on:TIMESTAMP_LTZ, role:VARCHAR(16777216), granted_to:VARCHAR(16777216), "
-                + "grantee_name:VARCHAR(16777216), granted_by:VARCHAR(16777216)",
+                + "grantee_name:VARCHAR(16777216), granted_by:VARCHAR(16777216), expires_on:TIMESTAMP_LTZ",
             "SHOW TERSE GRANTS OF ROLE PUBLIC");
         assertShape(
             "REFUSED SQL compilation error: | Object does not exist, or operation cannot be performed.",

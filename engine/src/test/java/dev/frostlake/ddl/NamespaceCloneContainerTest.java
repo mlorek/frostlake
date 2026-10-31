@@ -97,7 +97,8 @@ public class NamespaceCloneContainerTest {
         engine.execute("CREATE STAGE stg FILE_FORMAT = (TYPE = CSV FIELD_DELIMITER = '|' SKIP_HEADER = 1)"
             + " COPY_OPTIONS = (ON_ERROR = CONTINUE) DIRECTORY = (ENABLE = TRUE)");
         engine.execute("CREATE STAGE ext URL = 's3://bucket/clone' DIRECTORY = (ENABLE = TRUE)");
-        engine.execute("CREATE DATABASE d2 CLONE d1");
+        // An internal stage is part of a clone that includes the internal stages (see SchemaCloneStagesTest).
+        engine.execute("CREATE DATABASE d2 CLONE d1 INCLUDE INTERNAL STAGES");
 
         engine.executeQuery("DESCRIBE STAGE d2.PUBLIC.stg");
         assertEquals(List.of("ENABLE=true", "FIELD_DELIMITER=|", "ON_ERROR=CONTINUE", "SKIP_HEADER=1"),

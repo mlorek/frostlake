@@ -37,6 +37,7 @@ import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.CodePointText;
+import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
 
@@ -44,10 +45,13 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Casting TO a STRUCTURED type — the legality rules and the value transformation for
@@ -252,6 +256,22 @@ public final class StructuredCast {
     }
 
     /**
+     * A stored value of a structured column an ALTER evolved to another type of its kind: each OBJECT holds the
+     * new type's keys in its order, a key the type adds NULL and one it drops gone - or, with RENAME FIELDS, the old
+     * keys under the new names by their place - and each member in its new type (live-verified).
+     *
+     * @param value        the stored value, or null
+     * @param evolved      the column's new type
+     * @param renameFields whether the change renamed the fields
+     * @param stored       the column's type the value was stored in
+     * @return the value in the new type
+     */
+    public static Object evolved(final Object value, final DataType evolved, final boolean renameFields,
+                                 final DataType stored) {
+        return apply(value, evolved, renameFields ? CastFieldsModifier.RENAME : CastFieldsModifier.ADD, stored);
+    }
+
+    /**
      * Reshape {@code value} to the declared structured type. SQL NULL stays SQL NULL — live,
      * {@code CAST(NULL::OBJECT(x VARCHAR) AS OBJECT(y VARCHAR) RENAME FIELDS)} is NULL, not an empty
      * object.
@@ -345,8 +365,12 @@ public final class StructuredCast {
         }
         // A MAP has no declared field names, so the modifiers have nothing to rename or add at this
         // level (live: CAST(<MAP(VARCHAR,VARCHAR)> AS MAP(VARCHAR,VARCHAR) RENAME FIELDS) is the
-        // unchanged map); only the value type is applied, and a text key is held to its declared width.
+        // unchanged map); only the value type is applied, a text key is held to its declared width, and a NUMBER key
+        // is converted to its number.
         final ObjectNode out = ArrayFunctionHelper.MAPPER.createObjectNode();
+        // Keys that convert to one number are one entry, the value of the source key that sorts last as text:
+        // {'01':'x', '1':'y', '1.0':'z'}::MAP(INT, VARCHAR) is {1: 'z'} (live-verified).
+        final Map<String, String> sourceOf = new HashMap<>();
         final Iterator<String> keys = value.propertyNames().iterator();
         while (keys.hasNext()) {
             final String key = keys.next();
@@ -354,9 +378,33 @@ public final class StructuredCast {
             if (value.get(key).isNull() && target.isValueNotNull()) {
                 throw new RuntimeException(NON_NULLABLE);
             }
-            out.set(key, convert(value.get(key), target.getValueType(), modifier, null));
+            final String held = numberKey(key, target.getKeyType());
+            final String earlier = sourceOf.get(held);
+            if (earlier != null && earlier.compareTo(key) > 0) {
+                continue;
+            }
+            sourceOf.put(held, key);
+            out.set(held, convert(value.get(key), target.getValueType(), modifier, null));
         }
         return out;
+    }
+
+    /**
+     * A MAP's key as its declared key type holds it. A NUMBER key is the text of the number it converts to, as a cast
+     * converts it: the documentation has a cast convert keys and values that do not match the declared types, and
+     * compares a numeric key as a number, so {@code {'01': 'x'}::MAP(INT, VARCHAR)} is the map {1: 'x'} that
+     * {@code m[1]} reads, where the key used to stay the text 01 that no numeric lookup ever named. A key that converts
+     * to no number fails the cast as that text's cast fails: {@code {'abc':'x'}::MAP(INT, VARCHAR)} is
+     * {@code Numeric value 'abc' is not recognized} (live-verified). A text key, and any other, is kept as written.
+     */
+    private static String numberKey(final String key, final DataType keyType) {
+        if (!(keyType instanceof NumericType) || NumericType.isApproximate(keyType)
+                || NumericType.isDecfloat(keyType)) {
+            return key;
+        }
+        final Object converted = ValueCaster.castValue(key, castTypeName(keyType));
+        return converted instanceof BigDecimal ? ((BigDecimal) converted).stripTrailingZeros().toPlainString()
+            : String.valueOf(converted);
     }
 
     private static JsonNode convertArray(final JsonNode value, final StructuredArrayType target,
@@ -408,6 +456,12 @@ public final class StructuredCast {
         if (value.isObject() || value.isArray()) {
             throw new RuntimeException(SCHEMA_MISMATCH);
         }
+        if (NumericType.isDecfloat(target) && (value.isNumber() || value.isBoolean())) {
+            // Only a text or a DECFLOAT member converts to a DECFLOAT one: [1.5]::ARRAY(DECFLOAT), a FLOAT member, a
+            // JSON number and TRUE are each "Typed object schema mismatch in conversion", where ['1.5'] and
+            // [DECFLOAT '1.5'] hold the DECFLOAT 1.5 (live-verified).
+            throw new RuntimeException(SCHEMA_MISMATCH);
+        }
         final Object converted;
         try {
             converted = ValueCaster.castValue(ArrayFunctionHelper.fromNode(value), castTypeName(target));
@@ -416,6 +470,12 @@ public final class StructuredCast {
         }
         if (converted instanceof String) {
             requireWithinWidth((String) converted, target);
+        }
+        if (NumericType.isDecfloat(target)) {
+            // A DECFLOAT keeps its type inside the structured value as TO_VARIANT keeps it, the string of its text
+            // (see DecfloatTextNode): [1.5]::ARRAY(DECFLOAT) holds the DECFLOAT 1.5, where a FLOAT leaf held the
+            // double 1.5 and a 23-digit text lost its digits.
+            return DecfloatTextNode.of((BigDecimal) converted);
         }
         return ArrayFunctionHelper.canonicalize(
             ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, converted));
@@ -478,7 +538,7 @@ public final class StructuredCast {
      * Refuse a text longer than the declared text type it is written as, with the scalar cast's sentence. A UUID
      * and a type with no width (or any other type) take no part.
      */
-    private static void requireWithinWidth(final String text, final DataType target) {
+    static void requireWithinWidth(final String text, final DataType target) {
         if (!(target instanceof StringType) || target instanceof UuidType) {
             return;
         }
@@ -500,6 +560,10 @@ public final class StructuredCast {
         if (target instanceof UuidType) {
             // A UUID field takes only a UUID's text, canonical and lower-case, as the scalar cast does.
             return "UUID";
+        }
+        if (NumericType.isDecfloat(target)) {
+            // Tested before the FLOAT spellings, whose name test DECFLOAT passes.
+            return "DECFLOAT";
         }
         if (target instanceof NumericType) {
             final NumericType numeric = (NumericType) target;

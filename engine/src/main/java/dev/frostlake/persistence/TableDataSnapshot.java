@@ -34,4 +34,6 @@ public class TableDataSnapshot implements Serializable {
     public List<Long> rowIds;
     /** The table's time-travel history; null in a snapshot written before history was kept, which restores none. */
     public TableHistorySnapshot history;
+    /** The rows' write mark (see TableStorage#writeMark); 0 in a snapshot written before marks were kept. */
+    public long writeMark;
 }

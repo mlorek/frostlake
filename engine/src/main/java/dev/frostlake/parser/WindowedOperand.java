@@ -21,6 +21,7 @@ import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.expressions.ParsedEchoPrinter;
+import dev.frostlake.types.DecimalText;
 import java.math.BigDecimal;
 import java.util.Locale;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -100,6 +101,23 @@ public final class WindowedOperand {
             return new OperandRefusal("invalid function '" + spelled + "'", order, true);
         }
         return new OperandRefusal(kindSentence(functionOf(value)), order, false);
+    }
+
+    /**
+     * Whether a node is SYSTEM$GET_TAG written with OVER. The account answers the call while the statement compiles,
+     * and judges the window after the call's arguments, domain and tag: the operand is refused as the statement's
+     * expressions are read, not ahead of them (live-verified).
+     *
+     * @param node a node of the parsed statement
+     * @return true for such an operand
+     */
+    static boolean waitsForCompilation(final ParseTree node) {
+        if (!(node instanceof FrostlakeParser.WindowedOperandExprContext)) {
+            return false;
+        }
+        final ParseTree value = unwrapped(((FrostlakeParser.WindowedOperandExprContext) node).expression());
+        return value instanceof FrostlakeParser.SystemFuncExprContext && "SYSTEM$GET_TAG".equalsIgnoreCase(
+            ((FrostlakeParser.SystemFuncExprContext) value).SYSTEM_FUNC().getText());
     }
 
     private static String kindSentence(final String function) {
@@ -199,7 +217,7 @@ public final class WindowedOperand {
         }
         if (literal.INTEGER_LITERAL() != null || literal.FLOAT_LITERAL() != null) {
             try {
-                final BigDecimal number = new BigDecimal(text);
+                final BigDecimal number = DecimalText.parse(text);
                 return number.signum() == 0 ? "0" : number.stripTrailingZeros().toPlainString();
             } catch (final NumberFormatException unread) {
                 return text;

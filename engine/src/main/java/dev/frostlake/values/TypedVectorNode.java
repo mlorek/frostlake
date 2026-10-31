@@ -15,6 +15,7 @@
  */
 package dev.frostlake.values;
 
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.VectorElementType;
 import java.math.BigDecimal;
 import java.util.Locale;
@@ -68,7 +69,7 @@ public final class TypedVectorNode extends ArrayNode {
      * at one place rather than producing a bare integer.
      */
     private static BigDecimal embeddedElementText(final double element) {
-        final BigDecimal exact = new BigDecimal(String.format(Locale.ROOT, "%.16g", element));
+        final BigDecimal exact = DecimalText.parse(String.format(Locale.ROOT, "%.16g", element));
         final BigDecimal trimmed = exact.stripTrailingZeros();
         return trimmed.scale() < 1 ? trimmed.setScale(1) : trimmed;
     }

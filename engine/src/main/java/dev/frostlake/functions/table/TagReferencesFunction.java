@@ -38,6 +38,7 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.metastore.model.View;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -249,8 +250,9 @@ public class TagReferencesFunction extends TableFunction {
     }
 
     /**
-     * SYSTEM$GET_TAG(tag, object, domain): {@link #valueOf} of three arguments, none of them NULL and each a text
-     * — a number is "argument needs to be a string: 'SYSTEM$GET_TAG'". The domain is judged first and as it is
+     * SYSTEM$GET_TAG(tag, object, domain): {@link #valueOf} of three arguments, none of them NULL and each a text,
+     * as is any written after them — a number is "argument needs to be a string: 'SYSTEM$GET_TAG'", a fourth
+     * argument's too. The domain is judged first and as it is
      * written, with no blank about it: {@code 'nosuch_domain'} is "Unknown domain: nosuch_domain." whatever tag
      * is named, {@code 'TABLE '} is unknown too, and {@code 'tag'} is "Object tagging not supported for object
      * type TAG." A name of more parts than its kind has is "Object does not exist, or operation cannot be
@@ -270,7 +272,7 @@ public class TagReferencesFunction extends TableFunction {
         if (args.size() < 3) {
             return null;
         }
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < args.size(); i++) {
             if (!(args.get(i) instanceof String)) {
                 throw new RuntimeException(SqlCompilationError.of("argument needs to be a string: 'SYSTEM$GET_TAG'"));
             }
@@ -382,6 +384,12 @@ public class TagReferencesFunction extends TableFunction {
             addDatabaseRoleTags(parts, objectName, rows);
         } else if ("CORTEX SEARCH SERVICE".equals(domain)) {
             requireCortexSearchService(parts, objectName);
+        } else if ("ACCOUNT".equals(domain) && parts.length == 1
+                && parts[0].equalsIgnoreCase(catalog.getAccountLocator())) {
+            // The account is named by its locator, as CURRENT_ACCOUNT() answers it; by its name it is refused as any
+            // account no session can see is (live-verified).
+            addLineage(rows, new Taggable[] {catalog.getAccountTags()}, new String[] {domain}, null, null, parts[0],
+                domain, null);
         } else if (UNMODELLED_NOUNS.containsKey(domain)) {
             refuseUnmodelled(domain, parts, objectName);
         }
@@ -582,15 +590,18 @@ public class TagReferencesFunction extends TableFunction {
         final String[] name = qualify(written, 4, "Table", objectName);
         final Schema schema = resolveSchema(name[0], name[1], "Table", objectName);
         final Table table = schema.tableExact(name[2]);
-        if (table == null) {
+        final View view = table == null && schema.hasViewExact(name[2]) ? schema.getViewExact(name[2]) : null;
+        if (table == null && (view == null || !view.hasResolvedColumns())) {
             // A column whose table is not there is refused as a column, by its full name (live-verified).
             throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Column",
                 QualifiedName.join(name)));
         }
-        for (final TableColumn column : table.getColumns()) {
+        // A view's column is tagged as a table's is, the view in the table's place (live-verified).
+        final Taggable relation = table != null ? table : view;
+        for (final TableColumn column : table != null ? table.getColumns() : view.getResolvedColumns()) {
             // The column is matched as an identifier is, too: fz."id" names no column ID.
             if (name[3].equals(column.getName())) {
-                addLineage(rows, new Taggable[] {column, table, schema, catalog.getDatabase(name[0])},
+                addLineage(rows, new Taggable[] {column, relation, schema, catalog.getDatabase(name[0])},
                     new String[] {"COLUMN", "TABLE", "SCHEMA", "DATABASE"}, name[0], name[1], name[2], "COLUMN",
                     column.getName());
                 return;
@@ -773,23 +784,26 @@ public class TagReferencesFunction extends TableFunction {
         return null;
     }
 
-    /** The schema object of the domain and name, or null when there is none. */
+    /**
+     * The schema object of the domain and exactly that name, or null when there is none: a name that differs only in
+     * case is another object's.
+     */
     private static Object schemaObject(final Schema schema, final String domain, final String name) {
         try {
             if ("ALERT".equals(domain)) {
-                return schema.hasAlert(name) ? schema.getAlert(name) : null;
+                return schema.hasAlertExact(name) ? schema.getAlertExact(name) : null;
             }
             if ("STAGE".equals(domain)) {
-                return schema.getStage(name);
+                return schema.getStageExact(name);
             }
             if ("STREAM".equals(domain)) {
-                return schema.getStream(name);
+                return schema.getStreamExact(name);
             }
             if ("TASK".equals(domain)) {
-                return schema.getTask(name);
+                return schema.getTaskExact(name);
             }
             if ("PIPE".equals(domain)) {
-                return schema.getPipe(name);
+                return schema.getPipeExact(name);
             }
             if ("PASSWORD POLICY".equals(domain)) {
                 return schema.getSecurityObjects().get(SecurityObjectKind.PASSWORD_POLICY, name);

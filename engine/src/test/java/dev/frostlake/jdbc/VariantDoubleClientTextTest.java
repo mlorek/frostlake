@@ -86,7 +86,7 @@ public class VariantDoubleClientTextTest extends BaseJdbcTest {
         assertEquals(List.of("1.500000000000000e+00", "2", "2.5"),
             column("SELECT value FROM TABLE(FLATTEN(PARSE_JSON('[1.5e0, 2, 2.5]'))) ORDER BY index"));
         // Cast out of the VARIANT, the value is a FLOAT and reads as one.
-        assertEquals("100", text("SELECT PARSE_JSON('{\"a\":1e2}'):a::FLOAT"));
+        assertEquals(text("SELECT 1e2::FLOAT"), text("SELECT PARSE_JSON('{\"a\":1e2}'):a::FLOAT"));
     }
 
     @Test

@@ -32,6 +32,7 @@ import dev.frostlake.metastore.SqlObject;
 import dev.frostlake.metastore.StreamSources;
 import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.TemporaryObjects;
+import dev.frostlake.metastore.model.CloneContent;
 import dev.frostlake.metastore.model.ContainerType;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
@@ -113,6 +114,7 @@ public class CreateNamespaceHandler implements CommandHandler {
             SystemDatabase.refuseChange(dbName);
         }
         final NamespaceProperties properties = NamespaceProperties.ofDatabase(ctx.databaseProperty());
+        properties.requireCatalogParameter(catalog);
         // AT | BEFORE is resolved, and the source required to have existed then, before anything changes, so a
         // refused point leaves even a database it would replace in place.
         final ClonePoint point = ctx.CLONE() != null && ctx.timeTravelClause() != null
@@ -141,7 +143,7 @@ public class CreateNamespaceHandler implements CommandHandler {
         try {
             if (ctx.CLONE() != null) {
                 final String sourceDbName = getText(ctx.identifier(1));
-                catalog.cloneDatabase(sourceDbName, dbName);
+                catalog.cloneDatabase(sourceDbName, dbName, cloneContent(ctx));
                 made = true;
                 ddl.cloneDatabaseData(sourceDbName, dbName, point);
                 logger.trace("Cloned database: {} from {}", dbName, sourceDbName);
@@ -193,10 +195,33 @@ public class CreateNamespaceHandler implements CommandHandler {
         return null;
     }
 
+    /** What a CLONE clause asks a database or schema clone to copy beyond its own objects (see CloneContent). */
+    private static CloneContent cloneContent(final FrostlakeParser.CreateStatementContext ctx) {
+        final List<FrostlakeParser.CloneContentOptionContext> options =
+            new ArrayList<FrostlakeParser.CloneContentOptionContext>(ctx.cloneContentOption());
+        for (final FrostlakeParser.CloneTimedOptionContext timed : ctx.cloneTimedOption()) {
+            if (timed.cloneContentOption() != null) {
+                options.add(timed.cloneContentOption());
+            }
+        }
+        boolean internalStages = false;
+        boolean hybridTablesIgnored = false;
+        for (final FrostlakeParser.CloneContentOptionContext option : options) {
+            if (option.INTERNAL() != null) {
+                internalStages = true;
+            }
+            if (option.HYBRID() != null) {
+                hybridTablesIgnored = true;
+            }
+        }
+        return new CloneContent(internalStages, hybridTablesIgnored);
+    }
+
     /**
-     * A CLONE's AT | BEFORE point, refused when the database or schema being cloned did not exist yet then. The
-     * documentation says such a clone returns an error naming the object; the account's usual "does not exist"
-     * wording is used for it here, not verified against a live account.
+     * A CLONE's AT | BEFORE point, refused when the database or schema being cloned did not exist yet then, the
+     * object named by its own name: {@code Time travel data is not available for schema S. The requested time is
+     * either beyond the allowed time travel period or before the object creation time.} (live-verified for a
+     * schema; the documentation gives the sentence for every kind).
      *
      * @param ctx    the statement
      * @param source the database or schema being cloned
@@ -205,9 +230,10 @@ public class CreateNamespaceHandler implements CommandHandler {
     private ClonePoint clonePoint(final FrostlakeParser.CreateStatementContext ctx, final SqlObject source) {
         final ClonePoint point = queryExecutor.clonePoint(ctx.timeTravelClause());
         if (DDLCommandHandler.createdAfter(source, point)) {
-            final String spelled = source instanceof Schema && ((Schema) source).getDatabaseName() != null
-                ? QualifiedName.join(((Schema) source).getDatabaseName(), source.getName()) : source.getName();
-            throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Object", spelled));
+            throw new RuntimeException("Time travel data is not available for "
+                + (source instanceof Schema ? "schema " : "database ") + source.getName()
+                + ". The requested time is either beyond the allowed time travel period or before the object"
+                + " creation time.");
         }
         return point;
     }
@@ -287,7 +313,11 @@ public class CreateNamespaceHandler implements CommandHandler {
     public Object handleCreateSchema(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         rejectCommaAfterManagedAccess(ctx);
         rejectUnsupportedSchemaModifier(ctx);
+        if (ctx.or_alter() != null && alterSchemaInPlace(ctx, ifNotExists)) {
+            return null;
+        }
         final NamespaceProperties properties = NamespaceProperties.ofSchema(ctx.schemaProperty());
+        properties.requireCatalogParameter(catalog);
         final String schemaName = getText(ctx.qualifiedName(0));
         // A schema name has at most two parts (db..s counts three): live refuses a longer one with its
         // generic sentence, IF NOT EXISTS or not, and reads a leading locator of this account.
@@ -361,27 +391,34 @@ public class CreateNamespaceHandler implements CommandHandler {
                     final Database db = catalog.databaseExact(catalog.getCurrentDatabase());
 
                     if (sourceParts.length == 1) {
-                        schema = db.cloneSchema(sourceParts[0], parts[0]);
+                        schema = db.cloneSchema(sourceParts[0], parts[0], cloneContent(ctx));
                         sourceDbName = catalog.getCurrentDatabase();
                         sourceSchema = sourceParts[0];
-                        targetDbName = sourceDbName;
-                        targetSchema = parts[0];
+                    } else if (sourceParts.length == 2) {
+                        // An unqualified clone lands in the current database, whichever database the source it
+                        // names in full lives in (live-verified for the current one).
+                        final Database sourceDb = catalog.databaseExact(sourceParts[0]);
+                        schema = sourceDb.cloneSchemaTo(sourceParts[1], db, parts[0], cloneContent(ctx));
+                        sourceDbName = sourceParts[0];
+                        sourceSchema = sourceParts[1];
                     } else {
-                        throw new RuntimeException("Source schema must be in current database when target is unqualified");
+                        throw new RuntimeException("Invalid source schema name: " + sourceSchemaName);
                     }
+                    targetDbName = catalog.getCurrentDatabase();
+                    targetSchema = parts[0];
                 } else if (parts.length == 2) {
                     final Database db = catalog.databaseExact(parts[0]);
 
                     if (sourceParts.length == 1) {
                         final Database sourceDb = catalog.databaseExact(catalog.getCurrentDatabase());
-                        schema = sourceDb.cloneSchemaTo(sourceParts[0], db, parts[1]);
+                        schema = sourceDb.cloneSchemaTo(sourceParts[0], db, parts[1], cloneContent(ctx));
                         sourceDbName = catalog.getCurrentDatabase();
                         sourceSchema = sourceParts[0];
                         targetDbName = parts[0];
                         targetSchema = parts[1];
                     } else if (sourceParts.length == 2) {
                         final Database sourceDb = catalog.databaseExact(sourceParts[0]);
-                        schema = sourceDb.cloneSchemaTo(sourceParts[1], db, parts[1]);
+                        schema = sourceDb.cloneSchemaTo(sourceParts[1], db, parts[1], cloneContent(ctx));
                         sourceDbName = sourceParts[0];
                         sourceSchema = sourceParts[1];
                         targetDbName = parts[0];
@@ -466,6 +503,78 @@ public class CreateNamespaceHandler implements CommandHandler {
             logger.debug("Schema already exists (IF NOT EXISTS): {}", schemaName);
         }
         return null;
+    }
+
+    /**
+     * Refuse a CREATE OR ALTER SCHEMA that writes a tag clause, before any tag it names is looked for:
+     * {@code options CREATE OR ALTER and TAG are incompatible.} (live-verified, over a tag that does not exist too).
+     *
+     * @param statement the statement
+     */
+    public static void refuseOrAlterSchemaTags(final FrostlakeParser.StatementContext statement) {
+        final FrostlakeParser.CreateStatementContext create = statement.ddlStatement() == null ? null
+            : statement.ddlStatement().createStatement();
+        if (create == null || create.or_alter() == null || create.SCHEMA() == null || create.STREAM() != null) {
+            return;
+        }
+        for (final FrostlakeParser.SchemaPropertyContext property : create.schemaProperty()) {
+            if (property.databaseProperty() != null && property.databaseProperty().tagList() != null) {
+                throw new RuntimeException(SqlCompilationError.of("options CREATE OR ALTER and TAG are incompatible."));
+            }
+        }
+    }
+
+    /**
+     * A CREATE OR ALTER SCHEMA over a schema that exists makes it the schema the statement writes: the properties it
+     * names are set and every other one unset - a COMMENT, a retention, a parameter, MANAGED ACCESS - and the
+     * session stays in its own schema, where a schema the statement creates becomes the current one
+     * (live-verified). It takes no IF NOT EXISTS, no CLONE and no tag, and does not change whether the schema is
+     * transient.
+     *
+     * @param ctx         the statement
+     * @param ifNotExists whether it says IF NOT EXISTS
+     * @return whether the schema existed and was altered; false where the statement creates it as a CREATE does
+     */
+    private boolean alterSchemaInPlace(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
+        if (ifNotExists) {
+            throw new RuntimeException(SqlCompilationError.of("options IF NOT EXISTS and OR ALTER are incompatible."));
+        }
+        if (ctx.CLONE() != null) {
+            throw new RuntimeException("Unsupported feature 'CREATE OR ALTER SCHEMA with CLONE'.");
+        }
+        final NamespaceProperties properties = NamespaceProperties.ofSchema(ctx.schemaProperty());
+        properties.requireCatalogParameter(catalog);
+        if (!properties.tags().isEmpty()) {
+            throw new RuntimeException(SqlCompilationError.of("options CREATE OR ALTER and TAG are incompatible."));
+        }
+        final String[] parts = catalog.withoutAccount(qualifiedNameParts(ctx.qualifiedName(0)), 2);
+        final String containerName = parts.length == 2 ? parts[0] : catalog.getCurrentDatabase();
+        if (containerName == null) {
+            return false;
+        }
+        final Database container = catalog.databaseExact(containerName);
+        final String schemaName = parts[parts.length - 1];
+        if (!container.hasSchemaExact(schemaName)) {
+            return false;
+        }
+        SystemDatabase.refuseChange(containerName);
+        final Schema schema = container.schemaExact(schemaName);
+        queryExecutor.requireOwnership("SCHEMA", parts, null);
+        final boolean transientSchema = ctx.TRANSIENT() != null || container.isTransientObject();
+        if (transientSchema != schema.isTransientObject()) {
+            throw new RuntimeException("SQL compilation error: Property 'TRANSIENT_DATA' cannot be changed in CREATE"
+                + " OR ALTER.");
+        }
+        final Integer retention = requestedRetention(properties.retention(), transientSchema);
+        schema.setDataRetentionTimeInDays(retention);
+        schema.setComment(ddl.extractCommentFromList(properties.comments()));
+        for (final String parameter : new ArrayList<>(schema.getParameters().entries().keySet())) {
+            schema.getParameters().unset(parameter);
+        }
+        properties.applyParameters(schema.getParameters());
+        schema.setManagedAccess(properties.managedAccess());
+        ConditionalDdlOutcome.alteredInPlace();
+        return true;
     }
 
     /**

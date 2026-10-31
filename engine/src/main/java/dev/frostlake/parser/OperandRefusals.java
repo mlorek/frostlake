@@ -54,12 +54,40 @@ public final class OperandRefusals {
     }
 
     /**
+     * As {@link #require}, for a statement ahead of its compilation: an operand the compilation judges first waits
+     * for it (see {@link WindowedOperand#waitsForCompilation}).
+     *
+     * @param script the parsed script or one statement of it
+     */
+    public static void requireOfStatement(final ParseTree script) {
+        final OperandRefusal refusal = firstOfStatement(script);
+        if (refusal != null) {
+            throw new RuntimeException(SqlCompilationError.of(refusal.message()));
+        }
+    }
+
+    /**
+     * As {@link #first}, for a statement ahead of its compilation: an operand the compilation judges first waits for
+     * it (see {@link WindowedOperand#waitsForCompilation}).
+     *
+     * @param script the parsed script or one statement of it
+     * @return the refusal, or null when the text makes none ahead of its compilation
+     */
+    public static OperandRefusal firstOfStatement(final ParseTree script) {
+        return first(script, true);
+    }
+
+    /**
      * The first such refusal a parsed text makes.
      *
      * @param script the parsed script, one statement of it, or an expression
      * @return the refusal, or null when the text makes none
      */
     public static OperandRefusal first(final ParseTree script) {
+        return first(script, false);
+    }
+
+    private static OperandRefusal first(final ParseTree script, final boolean ofStatement) {
         if (script == null) {
             return null;
         }
@@ -73,7 +101,7 @@ public final class OperandRefusals {
             final ParseTree node = pending.pop();
             final boolean named = pendingNamed.pop() || node instanceof FrostlakeParser.CteDefinitionContext;
             OperandRefusal found = QuantifiedComparisonOperand.of(node);
-            if (found == null) {
+            if (found == null && !(ofStatement && WindowedOperand.waitsForCompilation(node))) {
                 found = WindowedOperand.of(node);
             }
             if (found != null && (best == null || precedes(found, named, best, bestNamed))) {

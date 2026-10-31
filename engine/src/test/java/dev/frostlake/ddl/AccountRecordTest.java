@@ -17,6 +17,7 @@
 package dev.frostlake.ddl;
 
 import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.LiveFeatureGate;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 
@@ -66,12 +67,26 @@ public class AccountRecordTest extends BaseDatabaseTest {
     private String status(final String sql) {
         return String.valueOf(engine.executeQuery(sql).getRows().get(0).getValue(0));
     }
+
+    /** On a live account whose role may not manage accounts, the test is skipped with the account's sentence. */
+    private static void requireAccountManagement(final String message) {
+        if (isLiveSnowflake()) {
+            LiveFeatureGate.skipIfOrganizationRightsMissing(message);
+        }
+    }
     @Test
     public void anAccountIsCreatedListedDroppedAndRestored() {
         final int before = rows("SHOW ACCOUNTS", "account_name").size();
-        assertEquals("Account ACC_ONE successfully created.", status("""
-            CREATE ACCOUNT acc_one ADMIN_NAME = admin ADMIN_PASSWORD = 'TestPassword1' FIRST_NAME = 'Jane'
-              EMAIL = 'jane@example.com' EDITION = ENTERPRISE REGION = AWS_US_WEST_2 COMMENT = 'first'"""));
+        final String created;
+        try {
+            created = status("""
+                CREATE ACCOUNT acc_one ADMIN_NAME = admin ADMIN_PASSWORD = 'TestPassword1' FIRST_NAME = 'Jane'
+                  EMAIL = 'jane@example.com' EDITION = ENTERPRISE REGION = AWS_US_WEST_2 COMMENT = 'first'""");
+        } catch (final RuntimeException refused) {
+            requireAccountManagement(refused.getMessage());
+            throw refused;
+        }
+        assertEquals("Account ACC_ONE successfully created.", created);
         assertEquals(List.of("ACC_ONE|ENTERPRISE|AWS_US_WEST_2|first|false"),
             rows("SHOW ACCOUNTS LIKE 'acc_%'", "account_name", "edition", "snowflake_region", "comment",
                 "is_org_admin"));
@@ -100,8 +115,9 @@ public class AccountRecordTest extends BaseDatabaseTest {
 
     @Test
     public void createAccountRequiresItsOptionsAndAValidEdition() {
-        assertEquals("SQL compilation error:\nMissing option(s): [ADMIN_PASSWORD, EDITION].",
-            refusal("CREATE ACCOUNT acc_two ADMIN_NAME = admin EMAIL = 'e@x.io'"));
+        final String missing = refusal("CREATE ACCOUNT acc_two ADMIN_NAME = admin EMAIL = 'e@x.io'");
+        requireAccountManagement(missing);
+        assertEquals("SQL compilation error:\nMissing option(s): [ADMIN_PASSWORD, EDITION].", missing);
         assertTrue(refusal("""
             CREATE ACCOUNT acc_two ADMIN_NAME = a ADMIN_PASSWORD = 'p' EMAIL = 'e' EDITION = PLATINUM""")
             .contains("EDITION"));
@@ -112,10 +128,25 @@ public class AccountRecordTest extends BaseDatabaseTest {
         assertTrue(refusal("DROP ACCOUNT acc_two").contains("syntax error"), "the grace period is required");
     }
 
+    /**
+     * A reader account is created, listed and dropped. Its admin password meets the account's built-in password
+     * policy, fourteen characters with a digit, which the account checks it against. On a live account the reader
+     * account is real, so it is dropped whatever happens.
+     */
     @Test
     public void aManagedAccountIsCreatedListedAndDropped() {
+        try {
+            createListAndDropAReaderAccount();
+        } finally {
+            if (isLiveSnowflake()) {
+                engine.execute("DROP MANAGED ACCOUNT IF EXISTS reader_one");
+            }
+        }
+    }
+
+    private void createListAndDropAReaderAccount() {
         final String created = status("""
-            CREATE MANAGED ACCOUNT reader_one ADMIN_NAME = admin, ADMIN_PASSWORD = 'Sdfed43da!44', TYPE = READER,
+            CREATE MANAGED ACCOUNT reader_one ADMIN_NAME = admin, ADMIN_PASSWORD = 'Sdfed43da!44Xy', TYPE = READER,
               COMMENT = 'for sharing'""");
         assertTrue(created.startsWith("{\"accountName\":\"READER_ONE\",\"accountLocator\":\""), created);
         assertTrue(created.contains("\"accountLocatorUrl\":\"https://"), created);

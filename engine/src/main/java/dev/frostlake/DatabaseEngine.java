@@ -29,6 +29,7 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.StatementBoundaries;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.StatementNesting;
+import dev.frostlake.executor.udf.RunningEngine;
 import dev.frostlake.executor.udf.UdfLanguageRuntime;
 import dev.frostlake.executor.udf.UdfRuntimes;
 import dev.frostlake.executor.udf.UserAggregates;
@@ -42,11 +43,17 @@ import dev.frostlake.metastore.StatementDraws;
 import dev.frostlake.metastore.TemporaryObjects;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Sequence;
+import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.User;
 import dev.frostlake.parser.SqlSyntaxException;
 import dev.frostlake.persistence.CatalogSnapshot;
 import dev.frostlake.persistence.CheckpointDebt;
+import dev.frostlake.persistence.CounterMark;
 import dev.frostlake.persistence.MemoryTableDataStore;
 import dev.frostlake.persistence.PersistenceManager;
+import dev.frostlake.persistence.QueryPointLog;
+import dev.frostlake.persistence.QueryPointSnapshot;
 import dev.frostlake.persistence.WalRecord;
 import dev.frostlake.persistence.WalRecordType;
 import dev.frostlake.persistence.WalReplayFailure;
@@ -65,6 +72,7 @@ import dev.frostlake.stream.StreamManager;
 import dev.frostlake.system.SystemViews;
 import dev.frostlake.task.TaskExecutor;
 import dev.frostlake.task.TaskScheduler;
+import dev.frostlake.transaction.TableLockGate;
 import dev.frostlake.transaction.TransactionManager;
 import dev.frostlake.transaction.WalSink;
 import dev.frostlake.transaction.WalStatementContext;
@@ -111,6 +119,8 @@ public class DatabaseEngine {
     private final SecurityManager securityManager;
     private final PersistenceManager persistenceManager;
     private WriteAheadLog wal;            // durability.walEnabled: append committed transactions, replay on startup
+    /** Beside the log: the time-travel points of the statements it holds no record of (see QueryPointLog). */
+    private QueryPointLog pointLog;
     private boolean replaying = false;    // true while replaying the WAL on startup (suppresses re-logging)
     /** The logged transactions recovery could not re-apply at startup; see {@link #getWalReplayFailures()}. */
     private final List<WalReplayFailure> walReplayFailures = new ArrayList<>();
@@ -130,9 +140,10 @@ public class DatabaseEngine {
 
         this.started = StatementClock.instant();
         this.config = config;
-        // Hand every discovered language runtime this engine's configuration (e.g. python.venv).
-        // Runtime state is JVM-wide by nature (polyglot contexts are per-thread, not per-engine), so
-        // implementations are idempotent; without the optional udf modules the loop is empty.
+        // Hand every discovered language runtime this engine's configuration (e.g. python.runtime, python.venv). A
+        // runtime keeps what the configuration chooses for this engine, found by the engine each statement runs for
+        // (see RunningEngine), and engines configured alike share it; without the optional udf modules the loop is
+        // empty.
         for (final UdfLanguageRuntime udfRuntime : UdfRuntimes.all()) {
             udfRuntime.configure(config);
         }
@@ -168,34 +179,60 @@ public class DatabaseEngine {
         final TaskExecutor taskExecutor = new TaskExecutor() {
             @Override
             public int execute(final String sql) {
-                // Serialize with direct-connection statements (same monitor): the scheduler thread
-                // must not interleave with an interactive statement inside the engine's procedural
-                // state.
-                synchronized (DatabaseEngine.this) {
-                    persistenceManager.noteStatementExecuted();
-                    final List<ResultSet> results = queryExecutor.execute(sql);
-                    transactionManager.autocommitStatementEnd();
-                    // DML statements report their affected-row count as a Snowflake-style result set.
-                    return (int) new ExecutionResult(true, results, null).getRowsAffected();
-                }
+                // DML statements report their affected-row count as a Snowflake-style result set.
+                return (int) new ExecutionResult(true, executeQuery(sql), null).getRowsAffected();
             }
 
             @Override
             public List<ResultSet> executeQuery(final String sql) {
+                // Serialize with direct-connection statements (same monitor): the scheduler thread
+                // must not interleave with an interactive statement inside the engine's procedural
+                // state. A request that may wait for a table lock runs alone under its own engine's lock
+                // already, and gives that lock up while it waits: holding the monitor too, it would keep
+                // every request that takes the engine's lock meanwhile waiting for the monitor, the
+                // holder's COMMIT among them (see TableLockGate).
+                if (TableLockGate.mayWait()) {
+                    return runTaskStatement(sql);
+                }
                 synchronized (DatabaseEngine.this) {
-                    persistenceManager.noteStatementExecuted();
+                    return runTaskStatement(sql);
+                }
+            }
+
+            /** One statement of a task's run, ended as a top-level statement ends. */
+            private List<ResultSet> runTaskStatement(final String sql) {
+                persistenceManager.noteStatementExecuted();
+                final EngineConfig displaced = RunningEngine.enter(config);
+                try {
                     final List<ResultSet> results = queryExecutor.execute(sql);
                     transactionManager.autocommitStatementEnd();
                     return results;
+                } finally {
+                    RunningEngine.leave(displaced);
                 }
+            }
+
+            @Override
+            public QueryHistory lastRecordedQuery() {
+                return queryExecutor.getQueryHistoryTracker().getLastQuery();
+            }
+
+            @Override
+            public String currentUser() {
+                return sessionContext.getDisplayUser();
             }
 
             @Override
             public List<ResultSet> evaluateCondition(final String sql) {
                 synchronized (DatabaseEngine.this) {
-                    final List<ResultSet> results = queryExecutor.executeUnrecorded(sql);
-                    transactionManager.autocommitStatementEnd();
-                    return results;
+                    final EngineConfig displaced = RunningEngine.enter(config);
+                    try {
+                        final List<ResultSet> results = queryExecutor.executeUnrecorded(sql);
+                        transactionManager.autocommitStatementEnd();
+                        return results;
+                    } finally {
+                        RunningEngine.leave(displaced);
+                    }
                 }
             }
 
@@ -261,10 +298,12 @@ public class DatabaseEngine {
                     + EngineConfig.PROP_DURABILITY_WAL_REPLAY_STRICT + " is true; the first: "
                     + walReplayFailures.get(0));
             }
+            openPointLog();
         }
         // A temporary object ends with the session that created it, and none of the sessions whose state a snapshot
         // restored or the log replayed exists any more: whatever they created TEMPORARY is gone.
         TemporaryObjects.drop(catalog, storageEngine, null);
+        queryExecutor.discardTemporaryStageFiles(null);
 
         // After every restore path, so an existing database survives untouched and the
         // exists-check sees the restored world.
@@ -278,6 +317,10 @@ public class DatabaseEngine {
         logger.info("Frostlake SQL Engine initialized successfully");
     }
 
+    /**
+     * The write-ahead log durability asks for: an engine that cannot open it refuses to start, as one whose strict
+     * replay fails does, rather than run on without the durability it was configured for.
+     */
     private WriteAheadLog initWal() {
         if (!config.isWalEnabled()) {
             return null;
@@ -285,8 +328,8 @@ public class DatabaseEngine {
         try {
             return new WriteAheadLog(Path.of(config.getWalFile()), started);
         } catch (final Exception e) {
-            logger.error("Failed to open write-ahead log at {}", config.getWalFile(), e);
-            return null;
+            throw new IllegalStateException("Cannot open the write-ahead log at " + config.getWalFile() + ": "
+                + e.getMessage(), e);
         }
     }
 
@@ -395,13 +438,19 @@ public class DatabaseEngine {
                         try {
                             final List<WalRecord> transactions = new ArrayList<WalRecord>();
                             final List<Integer> logIndexes = new ArrayList<Integer>();
+                            // The counter marks logged before each transaction record, and after the last.
+                            final List<List<CounterMark>> marks = new ArrayList<List<CounterMark>>();
+                            marks.add(new ArrayList<CounterMark>());
                             for (int i = from; i < records.size(); i++) {
                                 if (records.get(i).getType() == WalRecordType.TRANSACTION) {
                                     transactions.add(records.get(i));
                                     logIndexes.add(Integer.valueOf(i));
+                                    marks.add(new ArrayList<CounterMark>());
+                                } else if (records.get(i).getType() == WalRecordType.COUNTERS) {
+                                    marks.get(transactions.size()).addAll(records.get(i).getCounterMarks());
                                 }
                             }
-                            replayed[0] = replayInPlace(transactions, logIndexes, own, sessions);
+                            replayed[0] = replayInPlace(transactions, logIndexes, marks, own, sessions);
                         } finally {
                             for (final SessionSettings session : sessions.values()) {
                                 replaySessions.add(Long.valueOf(session.getSessionNumber()));
@@ -447,17 +496,20 @@ public class DatabaseEngine {
      * Replays the logged transactions, each statement in the place it first ran (see {@link WalReplaySchedule}): a
      * transaction whose statements ran while other sessions committed has them run between those sessions' records,
      * inside its transaction, which commits when the replay reaches its own record. A transaction the replay cannot
-     * re-apply is rolled back and listed among the replay's failures.
+     * re-apply is rolled back and listed among the replay's failures. The counter marks logged between two records
+     * move their counters on where they were logged, before the statements placed there run.
      *
      * @return how many transaction records were replayed
      */
     private int replayInPlace(final List<WalRecord> transactions, final List<Integer> logIndexes,
+                              final List<List<CounterMark>> marks,
                               final SessionSettings own, final Map<String, SessionSettings> sessions) {
         final WalReplaySchedule schedule = WalReplaySchedule.of(transactions);
         final Map<String, Long> open = new HashMap<String, Long>();
         final Set<Integer> failed = new HashSet<Integer>();
         int replayed = 0;
         for (int k = 0; k < transactions.size(); k++) {
+            applyCounterMarks(marks.get(k));
             for (final int[] early : schedule.runBefore(k)) {
                 if (!failed.contains(Integer.valueOf(early[0]))) {
                     replayInTransaction(transactions.get(early[0]), early[0], early[1],
@@ -479,6 +531,7 @@ public class DatabaseEngine {
                 commitReplayed(rec, k, logIndexes.get(k).intValue(), own, sessions, open, failed);
             }
         }
+        applyCounterMarks(marks.get(transactions.size()));
         // A transaction the log holds no commit for cannot be open here; whatever is, the replay does not keep.
         for (final Long left : open.values()) {
             transactionManager.setCurrentTransaction(left);
@@ -591,7 +644,8 @@ public class DatabaseEngine {
         catalog.beginSessionScope(context.getDatabase(), context.getSchema());
         if (context.carriesSessionState()) {
             sessionContext.restoreSessionState(context.getParameters(), context.getVariables(),
-                context.getUnkeptParameters(), context.getUnkeptVariables());
+                context.getUnkeptParameters(), context.getUnkeptVariables(), context.getDecfloatVariables(),
+                context.getVariablePrecisions());
         }
     }
 
@@ -748,6 +802,111 @@ public class DatabaseEngine {
     }
 
     /**
+     * A sequence never hands a value out twice, and a value it handed out stays drawn whatever becomes of the
+     * statement that drew it: a ROLLBACK and a statement's failure undo none (documented); an IDENTITY column, which
+     * the account draws from a sequence of its own, keeps its values the same way. A draw no record of the log carries
+     * for certain - one of a statement that failed, one of a statement the log leaves out though it drew (a read of a
+     * view or a function that draws), and one of a statement kept inside a transaction, which may yet roll back or be
+     * ended by a shutdown or a crash - is marked in the log at once, before the statement's client sees it: where each
+     * counter it drew from stands now (see {@link CounterMark}). A checkpoint owed until the transaction ended, as
+     * before, was never paid by a transaction a shutdown or a crash ended, and a restart handed its values out again.
+     *
+     * @param drawn  what the statement drew
+     * @param logged whether the log keeps the statement
+     */
+    private void markUnloggedDraws(final List<CounterDraw> drawn, final boolean logged) {
+        if (wal == null || replaying || logged && !transactionManager.isLastingTransaction()) {
+            return;
+        }
+        final Set<String> sequences = new HashSet<String>();
+        final Set<String> identities = new HashSet<String>();
+        for (final CounterDraw draw : drawn) {
+            final String counter = draw.getCounter();
+            if (counter.startsWith(Sequence.COUNTER_PREFIX)) {
+                sequences.add(counter.substring(Sequence.COUNTER_PREFIX.length()));
+            } else if (counter.startsWith(Table.IDENTITY_COUNTER_PREFIX)) {
+                identities.add(counter.substring(Table.IDENTITY_COUNTER_PREFIX.length()));
+            }
+        }
+        if (sequences.isEmpty() && identities.isEmpty()) {
+            return;
+        }
+        try {
+            wal.appendCounters(counterMarks(sequences, identities));
+        } catch (final IOException e) {
+            throw new RuntimeException("WAL append failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Where the sequences and the permanent tables' IDENTITY columns of these names stand, in every schema: a draw
+     * names its counter by the object's name alone, and marking a same-named one elsewhere at its own place is
+     * harmless.
+     */
+    private List<CounterMark> counterMarks(final Set<String> sequences, final Set<String> identities) {
+        final List<CounterMark> marks = new ArrayList<CounterMark>();
+        for (final Database database : catalog.getAllDatabases()) {
+            for (final Schema schema : database.getAllSchemas()) {
+                for (final String name : sequences) {
+                    if (schema.hasSequenceExact(name)) {
+                        marks.add(new CounterMark(CounterMark.SEQUENCE, database.getName(), schema.getName(), name,
+                            schema.getSequenceExact(name).peekNextValue()));
+                    }
+                }
+                if (identities.isEmpty()) {
+                    continue;
+                }
+                for (final Table table : schema.getTables()) {
+                    final Long next = table.getNextIdentityValue();
+                    if (identities.contains(table.getName()) && !table.isTemporary() && next != null) {
+                        marks.add(new CounterMark(CounterMark.IDENTITY, database.getName(), schema.getName(),
+                            table.getName(), next.longValue()));
+                    }
+                }
+            }
+        }
+        return marks;
+    }
+
+    /**
+     * Moves the counters a {@link WalRecordType#COUNTERS} record marks at least as far as it marks them, during the
+     * replay: a counter whose object is gone, or held only by a temporary table, is passed over.
+     */
+    private void applyCounterMarks(final List<CounterMark> marks) {
+        for (final CounterMark mark : marks) {
+            final Schema schema = replayedSchema(mark.getDatabase(), mark.getSchema());
+            if (schema == null) {
+                continue;
+            }
+            if (CounterMark.SEQUENCE.equals(mark.getKind())) {
+                if (schema.hasSequenceExact(mark.getName())) {
+                    schema.getSequenceExact(mark.getName()).advanceTo(mark.getNext());
+                }
+                continue;
+            }
+            for (final Table table : schema.getTables()) {
+                if (table.getName().equals(mark.getName()) && !table.isTemporary()) {
+                    table.advanceIdentityTo(mark.getNext());
+                }
+            }
+        }
+    }
+
+    /** The schema of exactly these canonical names, or null. */
+    private Schema replayedSchema(final String databaseName, final String schemaName) {
+        for (final Database database : catalog.getAllDatabases()) {
+            if (database.getName().equals(databaseName)) {
+                for (final Schema schema : database.getAllSchemas()) {
+                    if (schema.getName().equals(schemaName)) {
+                        return schema;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
      * The checkpoint a statement owes for a run it started. While its session holds a transaction open the debt waits
      * for the statement that ends the transaction: the transaction's own writes are not the checkpoint's yet, and a
      * checkpoint skipped would leave the run's statement in the log for a restart to run again.
@@ -777,10 +936,11 @@ public class DatabaseEngine {
         walStatementStart.set(new WalStatementContext(lifetime + ":" + sessionContext.getSessionNumber(),
             sessionContext.getCurrentUser(), sessionContext.getCurrentRole(),
             new ArrayList<String>(sessionContext.getActiveRoles()), catalog.getCurrentDatabase(),
-            catalog.getCurrentSchema(), null, Collections.<CounterDraw>emptyList(),
+            catalog.heldSchemaName(), null, Collections.<CounterDraw>emptyList(),
             sessionContext.getAllSessionVariables(), sessionContext.getAllSessionParameters(),
             Collections.<String>emptySet(), Collections.<String>emptySet(), Collections.<RecordedResult>emptyList(),
-            -1L, 0));
+            -1L, 0).withDecfloatVariables(sessionContext.getDecfloatVariableNames())
+            .withVariablePrecisions(sessionContext.getVariablePrecisions()));
         StatementDraws.beginRecording();
         StatementResults.beginRecording();
         StatementAnswers.beginRecording();
@@ -790,7 +950,7 @@ public class DatabaseEngine {
     /** Lets go of what {@link #beginWalStatement} noted, once the outermost statement is over. */
     private void endWalStatement() {
         walStatementStart.remove();
-        StatementDraws.endRecording();
+        markUnloggedDraws(StatementDraws.endRecording(), false);
         StatementResults.endRecording(false);
         StatementAnswers.endRecording();
         runsLoggedApart.remove();
@@ -813,10 +973,12 @@ public class DatabaseEngine {
         final WalStatementContext context = new WalStatementContext(
             lifetime + ":" + sessionContext.getSessionNumber(), sessionContext.getCurrentUser(),
             sessionContext.getCurrentRole(), new ArrayList<String>(sessionContext.getActiveRoles()),
-            catalog.getCurrentDatabase(), catalog.getCurrentSchema(), null, recorded.getDraws(),
+            catalog.getCurrentDatabase(), catalog.heldSchemaName(), null, recorded.getDraws(),
             sessionContext.getAllSessionVariables(), sessionContext.getAllSessionParameters(),
             Collections.<String>emptySet(), Collections.<String>emptySet(), recorded.getResults(),
-            recorded.getAnswers(), false, walAppends.get(), 0);
+            recorded.getAnswers(), false, walAppends.get(), 0)
+            .withDecfloatVariables(sessionContext.getDecfloatVariableNames())
+            .withVariablePrecisions(sessionContext.getVariablePrecisions());
         appendTransactionToWal(Collections.singletonList(statementText),
             Collections.singletonList(recorded.getStarted()), Collections.singletonList(context));
         runsLoggedApart.set(Boolean.TRUE);
@@ -847,10 +1009,14 @@ public class DatabaseEngine {
             ? StatementAnswers.endRecording() : Collections.<String, List<String>>emptyMap();
         final boolean apart = Boolean.TRUE.equals(runsLoggedApart.get());
         runsLoggedApart.remove();
+        markUnloggedDraws(drawn, logged);
         if (started != null) {
             walStatementStart.remove();
         }
         if (!logged) {
+            if (started != null) {
+                keepUnloggedPoint();
+            }
             return;
         }
         final List<String> statements = new ArrayList<String>();
@@ -899,7 +1065,9 @@ public class DatabaseEngine {
         if (wal == null) {
             return;
         }
-        if (transactionManager.isLastingTransaction()) {
+        if (transactionManager.isLastingTransaction() || transactionManager.holdsLoggedStatements()) {
+            // Another session's open transaction counts too: its statements replay after the checkpoint, over what
+            // the snapshot holds of the commits made since they ran.
             logger.warn("Skipping WAL checkpoint while a transaction is open");
             return;
         }
@@ -907,9 +1075,14 @@ public class DatabaseEngine {
             checkpointSeq++;
             final String ref = "cp-" + checkpointSeq;
             final Path dir = checkpointDir().resolve(ref);
+            // The points kept beside the log so far go into the snapshot, which keeps every point the history has.
+            final long pointsKept = pointLog == null ? 0L : pointLog.mark();
             persistenceManager.checkpointTo(dir, catalog, storageEngine);   // 1. durable snapshot
             wal.appendCheckpoint(ref);                                       // 2. marker + fsync = pivot
             wal.truncateToCheckpoint(ref);                                   // 3. bound the log
+            if (pointLog != null) {
+                pointLog.dropBefore(pointsKept);
+            }
             deleteSupersededCheckpoints(ref);
             txnsSinceCheckpoint = 0;
             logger.info("WAL checkpoint {} written; log truncated", ref);
@@ -925,9 +1098,78 @@ public class DatabaseEngine {
             return;
         }
         final int interval = config.getWalCheckpointInterval();
-        if (interval > 0 && txnsSinceCheckpoint >= interval && !transactionManager.isLastingTransaction()) {
+        // Held while any session's transaction has logged statements, and tried again after the next statement.
+        if (interval > 0 && txnsSinceCheckpoint >= interval && !transactionManager.isLastingTransaction()
+                && !transactionManager.holdsLoggedStatements()) {
             checkpoint();
         }
+    }
+
+    /**
+     * Opens the points log beside the write-ahead log and anchors what it keeps, once the replay has run the logged
+     * statements its places are mapped through: each point at the place the replay gave the last logged statement
+     * visible by it, or at its own place when none was, which the checkpoint the replay began from keeps. The file is
+     * rewritten with exactly those points, so a torn last entry a crash left goes.
+     */
+    private void openPointLog() {
+        try {
+            pointLog = new QueryPointLog(Path.of(config.getWalFile() + ".points"));
+            final List<QueryPointSnapshot> points = pointLog.readAll();
+            for (final QueryPointSnapshot point : points) {
+                queryExecutor.getQueryHistoryTracker().anchor(point.queryId, point.toHistory(
+                    placeThrough(point.startThrough, point.startSequence),
+                    placeThrough(point.visibleThrough, point.visibleSequence)));
+            }
+            pointLog.rewrite(points);
+        } catch (final IOException e) {
+            logger.warn("Could not open the time-travel points beside the write-ahead log", e);
+            pointLog = null;
+        }
+    }
+
+    /**
+     * The place a point keeps from a former engine reads at now: the place the replay gave the logged statement it is
+     * mapped through, or the point's own place when it names none or that statement was not replayed.
+     */
+    private long placeThrough(final String through, final long place) {
+        if (through == null) {
+            return place;
+        }
+        final QueryHistory logged = queryExecutor.getQueryHistoryTracker().getQueryById(through);
+        return logged != null && logged.getVisibleSequence() >= 0 ? logged.getVisibleSequence() : place;
+    }
+
+    /**
+     * Keeps, in the points log, the time-travel point of a statement the write-ahead log holds no record of — a query,
+     * a SHOW — so a point naming its query ID reads where it did after a restart: each of its places mapped through the
+     * last logged statement visible by it, which a restart's replay places anew. A statement inside an open
+     * transaction has no visible place yet and is not kept.
+     */
+    private void keepUnloggedPoint() {
+        if (pointLog == null) {
+            return;
+        }
+        final String queryId = queryExecutor.getResultCache().getLastQueryId();
+        final QueryHistory statement = queryId == null ? null
+            : queryExecutor.getQueryHistoryTracker().getQueryById(queryId);
+        if (statement == null || !queryId.equals(statement.getQueryId()) || statement.getVisibleSequence() < 0) {
+            return;
+        }
+        final QueryPointSnapshot point = QueryPointSnapshot.of(queryId, statement);
+        point.startThrough = loggedAs(queryExecutor.getQueryHistoryTracker()
+            .lastLoggedVisibleBy(statement.getStartSequence()));
+        point.visibleThrough = loggedAs(queryExecutor.getQueryHistoryTracker()
+            .lastLoggedVisibleBy(statement.getVisibleSequence()));
+        try {
+            pointLog.append(point);
+        } catch (final IOException e) {
+            logger.warn("Could not keep a statement's time-travel point beside the write-ahead log", e);
+        }
+    }
+
+    /** The query ID the log holds a statement under, or null for none. */
+    private static String loggedAs(final QueryHistory statement) {
+        return statement == null ? null : statement.getLoggedAs();
     }
 
     /** Directory holding checkpoint snapshots, beside the WAL file. */
@@ -1099,11 +1341,14 @@ public class DatabaseEngine {
         // neither logged again nor rolled back again below.
         final boolean[] statementByStatement = {false};
         final WriteSetSavepoint[] statementSavepoint = {null};
+        // Set when a stage of a ->> chain failed and undid itself: the statement's own undo then leaves be.
+        final boolean[] stageUndone = {false};
         statementDepth.set(Integer.valueOf(statementDepth.get().intValue() + 1));
         if (statementDepth.get().intValue() == 1) {
             // A debt an earlier statement on this thread left unsettled is not this one's.
             CheckpointDebt.settle();
         }
+        final EngineConfig displacedEngine = RunningEngine.enter(config);
         final StatementBoundaries displacedBoundaries = queryExecutor.bindStatementBoundaries(new StatementBoundaries() {
             @Override
             public void begin() {
@@ -1127,8 +1372,39 @@ public class DatabaseEngine {
 
             @Override
             public void fail(final RuntimeException cause) {
-                rollbackFailedStatement(statementSavepoint[0], cause);
+                markUnloggedDraws(StatementDraws.endRecording(), false);
+                if (stageUndone[0]) {
+                    releaseRequestSavepoint(statementSavepoint[0]);
+                } else {
+                    rollbackFailedStatement(statementSavepoint[0], cause);
+                }
+                stageUndone[0] = false;
                 statementSavepoint[0] = null;
+            }
+
+            @Override
+            public WriteSetSavepoint beginStage() {
+                return config.isDeferredApply() && transactionManager.isLastingTransaction()
+                    ? transactionManager.getCurrentTransaction().beginStatementSavepoint() : null;
+            }
+
+            @Override
+            public void completeStage(final WriteSetSavepoint savepoint, final boolean commit) {
+                if (savepoint != null && transactionManager.isLastingTransaction()) {
+                    transactionManager.getCurrentTransaction().getWriteSet().endStatementSavepoint(savepoint);
+                }
+                if (commit) {
+                    transactionManager.autocommitStatementEnd();
+                }
+            }
+
+            @Override
+            public void failStage(final WriteSetSavepoint savepoint, final RuntimeException cause) {
+                // Without a savepoint the stage's transaction holds its work alone: the ones before it committed, or
+                // it opened the transaction AUTOCOMMIT off holds.
+                rollbackFailedStatement(savepoint, cause);
+                stageUndone[0] = true;
+                statementByStatement[0] = true;
             }
         });
 
@@ -1178,6 +1454,9 @@ public class DatabaseEngine {
                 releaseRequestSavepoint(stmtSavepoint);
             }
             // Re-throw exception so tests and callers can handle it
+            if (statementDepth.get().intValue() == 1) {
+                throw StatementFailureSize.kept(e);
+            }
             throw e;
         } catch (final Exception e) {
             logger.error("Error executing SQL:\n{}\nError: {}", sql, e.getMessage(), e);
@@ -1187,7 +1466,11 @@ public class DatabaseEngine {
                 releaseRequestSavepoint(stmtSavepoint);
             }
             oweCheckpointForFailedStatements(sql);
-            // Re-throw exception so tests can catch it
+            // Re-throw exception so tests can catch it; the client's statement reports at most what the account
+            // sends back.
+            if (statementDepth.get().intValue() == 1 && e instanceof RuntimeException) {
+                throw StatementFailureSize.kept((RuntimeException) e);
+            }
             throw e;
         } catch (final StackOverflowError overflow) {
             // Nesting the stack could not hold is the statement's failure like any other, undone and reported as
@@ -1202,6 +1485,7 @@ public class DatabaseEngine {
             oweCheckpointForFailedStatements(sql);
             throw failure;
         } finally {
+            RunningEngine.leave(displacedEngine);
             queryExecutor.restoreStatementBoundaries(displacedBoundaries);
             statementDepth.set(Integer.valueOf(statementDepth.get().intValue() - 1));
             if (statementDepth.get().intValue() == 0) {
@@ -1416,8 +1700,11 @@ public class DatabaseEngine {
      * restored functions and procedures recompile lazily from their stored source on first use.
      */
     public synchronized void restoreStateFrom(final Path dir) throws IOException, ClassNotFoundException {
+        final Set<Object> ownTemporaries = TemporaryObjects.held(catalog);
         persistenceManager.restoreFrom(dir, catalog, storageEngine);
         queryExecutor.copyInternalStagesFrom(dir.resolve("stages"));
+        // What the snapshot holds TEMPORARY belonged to sessions of the engine that took it (see TemporaryObjects).
+        TemporaryObjects.dropAllBut(catalog, storageEngine, ownTemporaries);
     }
 
     /**
@@ -1439,6 +1726,8 @@ public class DatabaseEngine {
             clone.queryExecutor.copyInternalStagesOf(queryExecutor);
         }
         clone.persistenceManager.applyState(state, tableData, clone.catalog, clone.storageEngine);
+        // The clone has none of this engine's sessions, so nothing created TEMPORARY comes with it.
+        TemporaryObjects.drop(clone.catalog, clone.storageEngine, null);
         return clone;
     }
 
@@ -1547,18 +1836,46 @@ public class DatabaseEngine {
         return sessionContext;
     }
 
+    /**
+     * Makes a user the one the engine's sessions run as: CURRENT_USER() names it - the engine's own SYSTEM session
+     * names the configured user - and no role the user may not use stays in use, the former session's primary role
+     * included, which gives way to PUBLIC until the embedder names the user's with setCurrentRole. A session of the
+     * user starts with the secondary roles its DEFAULT_SECONDARY_ROLES names: ('ALL'), the default a user keeps until
+     * a statement writes another, puts every role granted to the user in use, () none (documented). Switching to
+     * SYSTEM, or to a name no user has, leaves the roles as they are.
+     *
+     * @param username the user's name
+     */
     public void setCurrentUser(final String username) {
         sessionContext.setCurrentUser(username);
+        final User user = username == null || !catalog.hasUser(username) ? null : catalog.getUser(username);
+        sessionContext.setDisplayUser(username == null || "SYSTEM".equalsIgnoreCase(username) ? config.getDefaultUser()
+            : user != null ? user.getName() : username);
+        if (user == null) {
+            return;
+        }
+        final String former = sessionContext.getCurrentRole();
+        for (final String role : new ArrayList<>(sessionContext.getActiveRoles())) {
+            if (!catalog.mayActivate(role)) {
+                sessionContext.removeActiveRole(role);
+            }
+        }
+        if (former != null && !catalog.mayActivate(former)) {
+            sessionContext.setCurrentRole("PUBLIC");
+        }
+        catalog.useSecondaryRoles(user.getDefaultSecondaryRoles().contains("\"ALL\"")
+            ? null : Collections.singletonList("NONE"));
     }
 
     /**
      * Makes a role the session's primary one, named in any case: the role's own name when one answers to it as
-     * given, the name in upper case otherwise.
+     * given, the name in upper case otherwise. The primary role it replaces stops acting for the session, as after
+     * USE ROLE, unless the secondary roles in use name it.
      *
      * @param roleName the role's name
      */
     public void setCurrentRole(final String roleName) {
-        sessionContext.setCurrentRole(catalog.resolveRoleName(roleName));
+        sessionContext.useRole(catalog.resolveRoleName(roleName));
     }
 
     public String getCurrentUser() {
@@ -1575,6 +1892,7 @@ public class DatabaseEngine {
      */
     private void dropTemporaryObjects() {
         TemporaryObjects.drop(catalog, storageEngine, null);
+        queryExecutor.discardTemporaryStageFiles(null);
     }
 
     /**
@@ -1586,7 +1904,9 @@ public class DatabaseEngine {
      * @return how many objects were dropped
      */
     public int dropTemporaryObjectsOf(final long sessionNumber) {
-        return TemporaryObjects.drop(catalog, storageEngine, Long.valueOf(sessionNumber));
+        final int dropped = TemporaryObjects.drop(catalog, storageEngine, Long.valueOf(sessionNumber));
+        queryExecutor.discardTemporaryStageFiles(Long.valueOf(sessionNumber));
+        return dropped;
     }
 
     /**
@@ -1624,6 +1944,9 @@ public class DatabaseEngine {
 
         if (wal != null) {
             wal.close();
+        }
+        if (pointLog != null) {
+            pointLog.close();
         }
 
         dropTemporaryObjects();

@@ -17,15 +17,18 @@
 package dev.frostlake;
 
 import dev.frostlake.executor.StatementCount;
+import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.jdbc.DirectConnection;
 import dev.frostlake.jdbc.DirectResultSet;
 import dev.frostlake.jdbc.DirectStatement;
+import dev.frostlake.jdbc.ZonedTimestamp;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VariantJsonFormat;
 import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
@@ -58,17 +61,19 @@ import java.util.Locale;
  * registry) see exactly the state the SQL produced — unlike {@code SF_LIVE}, tests that poke
  * engine internals stay meaningful in this mode.
  *
- * <p>Values are coerced back to the engine's runtime shapes where the JDBC surface flattens
- * them: BINARY {@code byte[]} becomes {@link BinaryValue} again and a semi-structured column's
- * JSON text becomes {@link VariantValue}; temporals need no coercion because the driver already
- * surfaces the engine's {@code java.time} values. A DML statement's count grid keeps the
- * affected-row count the engine marked it with, so {@code executeUpdate} reports what moved. Statement errors are rethrown as the engine's
- * own RuntimeException — the driver carries it as the SQLException's cause — preserving the
- * embedded throw-on-error contract and its exception classes.
+ * <p>Values are coerced back to the engine's runtime shapes where the JDBC surface flattens them: BINARY
+ * {@code byte[]} becomes {@link BinaryValue} again, a semi-structured column's JSON text the engine cell it
+ * spells, and a {@code java.sql} temporal the engine's {@code java.time} cell it agrees with. A DML statement's
+ * count grid keeps the affected-row count the engine marked it with, so {@code executeUpdate} reports what
+ * moved. Statement errors are rethrown as the engine's own RuntimeException — the driver carries it as the
+ * SQLException's cause — preserving the embedded throw-on-error contract and its exception classes.
  */
 public class FrostlakeJdbcEngine extends DatabaseEngine {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+
+    /** The days either side of 1970 whose milliseconds a long still counts: the reach of a java.sql.Date. */
+    private static final long SQL_DATE_REACH_DAYS = Long.MAX_VALUE / 86_400_000L;
 
     private final DirectConnection connection;
 
@@ -226,6 +231,7 @@ public class FrostlakeJdbcEngine extends DatabaseEngine {
             interval[i - 1] = typeName.startsWith("INTERVAL");
         }
         final ResultSet engineResult = rs instanceof DirectResultSet ? ((DirectResultSet) rs).getEngineResultSet() : null;
+        final boolean scriptingAnswer = engineResult != null && engineResult.isScriptingAnswer();
         final List<Row> rows = new ArrayList<Row>();
         while (rs.next()) {
             final List<Object> values = new ArrayList<Object>(columnCount);
@@ -240,7 +246,7 @@ public class FrostlakeJdbcEngine extends DatabaseEngine {
                     values.add(engineRow == null ? text : engineRow.getValue(i - 1));
                     continue;
                 }
-                values.add(coerce(rs.getObject(i), semiStructured[i - 1],
+                values.add(coerce(rs.getObject(i), semiStructured[i - 1], scriptingAnswer,
                     engineRow == null ? null : engineRow.getValue(i - 1)));
             }
             rows.add(new Row(values));
@@ -262,14 +268,20 @@ public class FrostlakeJdbcEngine extends DatabaseEngine {
      * semi-structured COLUMN can still hold a plain string cell, which the driver spells as its JSON
      * text, quotes included, exactly as it spells a {@link VariantValue} string: when the engine's
      * own cell is that plain string and the driver's text is its spelling, the string is what comes
-     * back. Otherwise only text that parses as JSON is re-wrapped, and a bare word stays a string.
+     * back. Text that reads back as a variant spelled exactly as the driver owes it comes back as the
+     * engine's own cell when that cell has the same client text, so a number or a boolean the engine
+     * holds unwrapped keeps its class, and as the variant read otherwise. Any other text that parses
+     * as JSON is re-wrapped, and a bare word stays a string.
      *
      * @param value the value the driver's getter returned
      * @param semiStructured whether the column is VARIANT, OBJECT or ARRAY
+     * @param scriptingAnswer whether the result is a Snowflake Scripting answer, whose arrays and objects the driver
+     *     lays out across lines
      * @param engineValue the engine's cell behind it, or null when the result did not come from it
      * @return the engine-shaped value
      */
-    private Object coerce(final Object value, final boolean semiStructured, final Object engineValue) {
+    private Object coerce(final Object value, final boolean semiStructured, final boolean scriptingAnswer,
+            final Object engineValue) {
         if (value instanceof byte[]) {
             return BinaryValue.of((byte[]) value);
         }
@@ -283,13 +295,14 @@ public class FrostlakeJdbcEngine extends DatabaseEngine {
             }
             // The driver hands a VARIANT back as its client text, a DOUBLE in the fifteen-decimal form.
             // Read the way PARSE_JSON reads it, the exponent restores the DOUBLE family and with it the
-            // canonical text. The reading is kept only when it spells the text back exactly, which is
-            // what tells a variant's text from a plain string cell that merely looks like JSON.
+            // canonical text. The reading is kept only when it spells the text back exactly, in the layout
+            // the driver owes the result, which is what tells a variant's text from a plain string cell
+            // that merely looks like JSON.
             final JsonNode read = JsonTypeHelper.parseLenient(text);
             if (read != null) {
                 final VariantValue reread = VariantValue.ofNode(read);
-                if (VariantJsonText.clientTextOf(reread).equals(text)) {
-                    return reread;
+                if (clientSpelling(reread, scriptingAnswer).equals(text)) {
+                    return engineValue != null && sameClientText(reread, engineValue) ? engineValue : reread;
                 }
             }
             try {
@@ -303,18 +316,57 @@ public class FrostlakeJdbcEngine extends DatabaseEngine {
     }
 
     /**
+     * The text the driver owes a variant: an array or object of a scripting answer laid out across lines, any other
+     * laid out at the session's JSON_INDENT (compact at width zero), and a scalar its client text.
+     *
+     * @param variant the variant read back
+     * @param scriptingAnswer whether the result is a Snowflake Scripting answer
+     * @return its client text
+     */
+    private static String clientSpelling(final VariantValue variant, final boolean scriptingAnswer) {
+        final String laidOut = scriptingAnswer ? VariantJsonFormat.scriptingAnswerText(variant) : null;
+        return laidOut != null ? laidOut
+            : VariantJsonFormat.render(variant.node(), VariantJsonText.clientTextOf(variant));
+    }
+
+    /**
+     * Whether the engine's cell is the variant read back: the same client text, so a DOUBLE and a number of the
+     * same value still differ.
+     *
+     * @param reread the variant read back from the driver's text
+     * @param engineValue the engine's cell, a variant or a value the engine holds unwrapped
+     * @return whether the two spell alike
+     */
+    private static boolean sameClientText(final VariantValue reread, final Object engineValue) {
+        final VariantValue engineVariant = engineValue instanceof VariantValue ? (VariantValue) engineValue
+            : VariantValue.ofNode(ArrayFunctionHelper.toNode(JSON, engineValue));
+        return VariantJsonText.clientTextOf(engineVariant).equals(VariantJsonText.clientTextOf(reread));
+    }
+
+    /**
      * The inverse of the driver's temporal mapping. The driver answers a DATE, TIME or timestamp as the
      * {@code java.sql} class its metadata names — as the account's driver does — carrying the value's
      * LOCAL part, while the engine-level assertions compare the {@code java.time} value the engine holds
      * (a zoned timestamp keeps its offset there, and a TIME its fractional seconds). When the driver's
      * value is exactly the engine cell's local part, the engine cell is what comes back; otherwise the
-     * driver's own value, as {@code java.time}, so a real disagreement still reaches the assertion.
+     * driver's own value, as {@code java.time}, so a real disagreement still reaches the assertion. A
+     * TIMESTAMP_LTZ or TIMESTAMP_TZ cell is the exception: the driver hands it back as its moment and the
+     * offset it prints its wall clock at, which together are the engine's zoned cell, compared whole. A
+     * DATE farther from 1970 than a {@code java.sql.Date} reaches comes back as the engine's cell, there
+     * being nothing the driver's value can carry to compare.
      *
      * @param value the driver's {@code java.sql.Date}, {@code Time} or {@code Timestamp}
      * @param engineValue the engine's cell behind it, or null when the result did not come from it
      * @return the engine-shaped value
      */
     private static Object engineTemporal(final Object value, final Object engineValue) {
+        if (value instanceof ZonedTimestamp) {
+            final ZonedTimestamp zoned = (ZonedTimestamp) value;
+            final OffsetDateTime driverMoment = OffsetDateTime.ofInstant(zoned.toInstant(), zoned.getZone());
+            final OffsetDateTime engineMoment = engineValue instanceof OffsetDateTime ? (OffsetDateTime) engineValue
+                : engineValue instanceof ZonedDateTime ? ((ZonedDateTime) engineValue).toOffsetDateTime() : null;
+            return driverMoment.equals(engineMoment) ? engineValue : driverMoment;
+        }
         final Object driverLocal;
         final Object engineLocal;
         if (value instanceof Timestamp) {
@@ -324,6 +376,11 @@ public class FrostlakeJdbcEngine extends DatabaseEngine {
                 : engineValue instanceof LocalDate ? ((LocalDate) engineValue).atStartOfDay()
                 : engineValue;
         } else if (value instanceof Date) {
+            if (engineValue instanceof LocalDate
+                    && Math.abs(((LocalDate) engineValue).toEpochDay()) > SQL_DATE_REACH_DAYS) {
+                // A java.sql.Date counts the milliseconds from 1970 in a long, which a date this far away overflows.
+                return engineValue;
+            }
             driverLocal = ((Date) value).toLocalDate();
             engineLocal = engineValue instanceof LocalDateTime ? ((LocalDateTime) engineValue).toLocalDate()
                 : engineValue instanceof ZonedDateTime ? ((ZonedDateTime) engineValue).toLocalDate()

@@ -52,16 +52,25 @@ final class TableStageOptions {
                 continue;
             }
             final FrostlakeParser.TableTailOptionContext tail = (FrostlakeParser.TableTailOptionContext) option;
-            if (tail.optionKey() == null || tail.parenOptionList() == null) {
+            if (tail.optionKey() == null) {
                 continue;
             }
             final String key = tail.optionKey().getText().toUpperCase(Locale.ROOT);
-            if ("STAGE_FILE_FORMAT".equals(key)) {
+            if ("STAGE_FILE_FORMAT".equals(key) && tail.parenOptionList() != null) {
                 keepFormat(tail.parenOptionList(), table.getStageFileFormat());
-            } else if ("STAGE_COPY_OPTIONS".equals(key)) {
-                table.getStageCopyOptions().putAll(StageCopyOptions.read(tail.parenOptionList()));
+            } else if ("STAGE_COPY_OPTIONS".equals(key) && tail.stageCopyOptionList() != null) {
+                table.getStageCopyOptions().putAll(StageCopyOptions.read(tail.stageCopyOptionList()));
             }
         }
+    }
+
+    /**
+     * Judge a format group an ALTER TABLE … SET writes, as a CREATE's is judged.
+     *
+     * @param group the group
+     */
+    static void judgeFormat(final FrostlakeParser.ParenOptionListContext group) {
+        FileFormatClause.read(group, new FileFormat("WRITTEN", "CSV"), true);
     }
 
     /**

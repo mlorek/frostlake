@@ -16,6 +16,10 @@
 
 package dev.frostlake.metastore;
 
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+
 /**
  * The SNOWFLAKE database, which every account has and nobody changes: it cannot be cloned, renamed, altered,
  * commented on, dropped or replaced, and its schemas are its own — the ones an account's holds
@@ -31,6 +35,34 @@ public final class SystemDatabase {
 
     /** The database's name. */
     public static final String NAME = "SNOWFLAKE";
+
+    /** Where SHOW DATABASES says the database comes from: the share of its ACCOUNT_USAGE (live-verified). */
+    public static final String ORIGIN = "SNOWFLAKE.ACCOUNT_USAGE";
+
+    /**
+     * The database roles the database holds, as SHOW DATABASE ROLES IN DATABASE SNOWFLAKE lists them: the share's
+     * own, inherited, owned by no role and commented on by none (live-verified).
+     */
+    private static final List<String> ROLES = Collections.unmodifiableList(Arrays.asList("AI_FUNCTIONS_USER",
+        "ALERT_VIEWER", "ANACONDA_REPOSITORY_USER", "BUDGET_CREATOR", "CLASSIFICATION_ADMIN", "CLASSIFICATION_VIEWER",
+        "COPILOT_USER", "CORE_VIEWER", "CORTEX_AGENT_USER", "CORTEX_ANALYST_USER", "CORTEX_EMBED_USER",
+        "CORTEX_REST_API_USER", "CORTEX_SENSE_BUILDER", "CORTEX_SENSE_USER", "CORTEX_USER", "DATA_METRIC_USER",
+        "DATA_PRIVACY_VIEWER", "DOCUMENT_INTELLIGENCE_CREATOR", "GOVERNANCE_ADMIN", "GOVERNANCE_VIEWER", "ML_USER",
+        "MONITORING_VIEWER", "NOTIFICATION_VIEWER", "OBJECT_VIEWER", "ORGANIZATION_ACCOUNTS_VIEWER",
+        "ORGANIZATION_BILLING_VIEWER", "ORGANIZATION_GOVERNANCE_VIEWER", "ORGANIZATION_USAGE_VIEWER",
+        "ORG_BUDGET_CREATOR", "PYPI_REPOSITORY_USER", "QUOTA_CREATOR", "READER_USAGE_VIEWER", "SECURITY_VIEWER",
+        "SHARING_USAGE_VIEWER", "SNOWFLAKE_MARKETPLACE_INVOICE_VIEWER", "SNOWPARK_CONNECT_VIEWER", "SPARK_USER",
+        "SPCS_REGISTRY_VIEWER", "SPCS_VIEWER", "USAGE_ADMIN", "USAGE_VIEWER", "WORKLOAD_INSIGHTS_USER",
+        "WORKLOAD_OPTIMIZATION_USER"));
+
+    /**
+     * The database roles the account grants to PUBLIC, so that every role holds them: SHOW GRANTS TO ROLE PUBLIC lists
+     * USAGE on each, granted by no role (live-verified).
+     */
+    private static final List<String> PUBLIC_ROLES = Collections.unmodifiableList(Arrays.asList("ALERT_VIEWER",
+        "ANACONDA_REPOSITORY_USER", "CLASSIFICATION_VIEWER", "COPILOT_USER", "CORE_VIEWER", "CORTEX_USER",
+        "DATA_METRIC_USER", "DATA_PRIVACY_VIEWER", "ML_USER", "NOTIFICATION_VIEWER", "PYPI_REPOSITORY_USER",
+        "SPCS_REGISTRY_VIEWER", "SPCS_VIEWER"));
 
     private SystemDatabase() {
     }
@@ -54,6 +86,16 @@ public final class SystemDatabase {
         if (is(databaseName)) {
             throw new RuntimeException(readOnly());
         }
+    }
+
+    /** @return the names of the database's own database roles */
+    public static List<String> roles() {
+        return ROLES;
+    }
+
+    /** @return the names of the database roles PUBLIC holds */
+    public static List<String> publicRoles() {
+        return PUBLIC_ROLES;
     }
 
     /**

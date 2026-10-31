@@ -29,6 +29,17 @@ import org.junit.jupiter.api.Test;
  */
 public class JavaScriptStatementArgumentTest extends MeasuredCellsTestSupport {
 
+    /** {@code snowflake.execute} binds a {@code binds} array's values to the statement's markers (documented). */
+    @Test
+    public void executeBindsAnArray() {
+        assertCells(new String[][] {
+            {"CREATE OR REPLACE PROCEDURE pb() RETURNS FLOAT LANGUAGE JAVASCRIPT AS $$ var rs = snowflake.execute("
+                + "{sqlText: 'SELECT ? + ?', binds: [40, 2]}); rs.next(); return rs.getColumnValue(1); $$",
+                "Function PB successfully created."},
+            {"CALL pb()", "42.0"},
+        });
+    }
+
     @Test
     public void theStatementApisArgumentsAndRowMembers() {
         assertCells(new String[][] {

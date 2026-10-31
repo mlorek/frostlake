@@ -16,10 +16,12 @@
 
 package dev.frostlake.transaction;
 
+import dev.frostlake.executor.StatementCancellation;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.storage.Row;
+import dev.frostlake.storage.SnapshotSequence;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.stream.StreamManager;
@@ -56,30 +58,45 @@ public class Transaction {
 
     /** What the transaction's statements left for its end, in the order they registered it. */
     private final List<TransactionOutcome> outcomes = new ArrayList<>();
-    // CDC streams read by this txn's DML, each with the scope of what the read SAW (committed cut +
-    // this txn's then-buffered changes) so commit advances past exactly that. Latest read governs.
+    // CDC streams read by this txn's DML, each with the point its reads end at - the transaction's start - so commit
+    // advances the stream to exactly that.
     private final Map<Stream, StreamReadScope> streamsToConsume = new LinkedHashMap<>();
     private final long startTime;
+    /**
+     * Where the transaction began among the snapshot numbers: its stream reads list the changes captured before it,
+     * and its commit leaves each stream it consumed at this point (live-verified).
+     */
+    private final long startSequence;
     private final Map<String, Integer> savepoints;
     private final Catalog catalog;
     private final StorageEngine storageEngine;
     private final StreamManager streamManager;
     private boolean explicit;   // started by an explicit BEGIN → suspends statement-end autocommit
+    /** Whether a statement of an autocommit session began the transaction, to end with that statement. */
+    private boolean statementScoped;
+    /** The user whose SYSTEM$ABORT_TRANSACTION ended the transaction, or null while nobody has. */
+    private volatile String abortedBy;
     private boolean begunInBlock;
     private int scope;
     private Transaction outer;
     /** SHOW TRANSACTIONS' name cell — live names an unnamed transaction with a fresh UUID, and a
      *  {@code BEGIN NAME <name>} replaces it with that name. */
     private String name = UUID.randomUUID().toString();
-    /** Tables this txn's IMMEDIATE-apply partition-rewriting DML touched; the deferred path
-     *  tracks its own set in {@link TransactionWriteSet}. One {@code PARTITIONS} lock per table
-     *  (live-verified — appends do NOT lock), released with the transaction. */
+    /** Tables this txn's DML touched, and those its IMMEDIATE-apply writes wrote; the deferred path
+     *  tracks the tables it writes in {@link TransactionWriteSet}. One {@code PARTITIONS} lock per
+     *  table, released with the transaction (see {@link TableLock}). */
     private final Map<String, TableLock> tableLocks = new LinkedHashMap<>();
-    /** The statement a lock refusal names for a table this transaction only inserted into, by table. */
-    private final Map<String, String> insertLockIds = new HashMap<>();
+    /** Whether this transaction's IMMEDIATE-apply INSERTs into a table take its lock, by table upper-cased: decided
+     *  at its first INSERT there, by whether the table held rows then. */
+    private final Map<String, Boolean> insertLocks = new HashMap<>();
+
+    /** The streams this transaction's reads hold against other sessions' reads, each with its lock (see StreamLock). */
+    private final Map<Stream, StreamLock> streamLocks = new LinkedHashMap<>();
 
     /** The table a statement of this transaction waits for, by its storage name upper-cased, or null. */
     private volatile String waitingFor;
+    /** Whether the lock that statement waits for is a stream's. */
+    private volatile boolean waitingForStream;
 
     /** The query ID of the statement that waits, which SHOW LOCKS and its refusal name. */
     private volatile String waitingQueryId;
@@ -93,6 +110,7 @@ public class Transaction {
         this.state = TransactionState.ACTIVE;
         this.logs = new ArrayList<>();
         this.startTime = System.currentTimeMillis();
+        this.startSequence = SnapshotSequence.mark();
         this.savepoints = new HashMap<>();
         this.catalog = catalog;
         this.storageEngine = storageEngine;
@@ -220,9 +238,9 @@ public class Transaction {
     }
 
     /**
-     * Register a stream read by a consuming DML in this txn; consumed on commit (scoped to what the
-     * read saw — see {@link StreamReadScope}), discarded on rollback. A re-read replaces the scope:
-     * the latest read saw the most, and both parts of the scope only ever grow within a transaction.
+     * Register a stream read by a consuming DML in this txn; consumed on commit up to the point the read ended at
+     * (see {@link StreamReadScope}), discarded on rollback. Every read of the stream in the transaction ends at the
+     * same point, so a re-read replaces the scope with its equal.
      */
     public void registerStreamConsumption(final Stream stream, final StreamReadScope scope) {
         streamsToConsume.put(stream, scope);
@@ -288,6 +306,27 @@ public class Transaction {
     }
 
     /**
+     * Whether the transaction ends with the statement that began it: one a statement of an autocommit session
+     * began, which no BEGIN has made explicit since.
+     */
+    public boolean isStatementScoped() {
+        return statementScoped && !explicit;
+    }
+
+    public void setStatementScoped(final boolean statementScoped) {
+        this.statementScoped = statementScoped;
+    }
+
+    /** The user whose SYSTEM$ABORT_TRANSACTION ended the transaction, or null while nobody has. */
+    public String getAbortedBy() {
+        return abortedBy;
+    }
+
+    public void setAbortedBy(final String abortedBy) {
+        this.abortedBy = abortedBy;
+    }
+
+    /**
      * Whether a Snowflake Scripting block or a procedure began the transaction: it is then that block's to end, and
      * one ended from inside the block leaves nothing for the session to acknowledge.
      */
@@ -326,17 +365,26 @@ public class Transaction {
 
     public void logInsert(final String tableName, final int rowIndex, final Row row) {
         logs.add(new InsertLog(tableName, rowIndex, row));
-        // No lock registration: an append-only INSERT holds no PARTITIONS lock (live-verified).
+        // An INSERT takes the table's lock where the table holds rows, and none on an empty one (live-verified).
+        final String key = tableName.toUpperCase(Locale.ROOT);
+        Boolean locks = insertLocks.get(key);
+        if (locks == null) {
+            locks = Boolean.valueOf(rowIndex > 0);
+            insertLocks.put(key, locks);
+        }
+        if (locks.booleanValue()) {
+            recordTableWrite(tableName);
+        }
     }
 
     public void logUpdate(final String tableName, final int rowIndex, final Row oldRow, final Row newRow) {
         logs.add(new UpdateLog(tableName, rowIndex, oldRow, newRow));
-        recordTableTouch(tableName);
+        recordTableWrite(tableName);
     }
 
     public void logDelete(final String tableName, final int rowIndex, final Row row) {
         logs.add(new DeleteLog(tableName, rowIndex, row));
-        recordTableTouch(tableName);
+        recordTableWrite(tableName);
     }
 
     /** The transaction's name, as SHOW TRANSACTIONS reports it: the one BEGIN NAME gave it, or the
@@ -373,24 +421,15 @@ public class Transaction {
     }
 
     /**
-     * The statement a lock refusal names as holding a table: the one whose write registered its lock, or one
-     * named once for a table this transaction only inserted into.
+     * The statement a lock refusal names as holding a table: the latest of this transaction's statements that
+     * changed a row of it (live-verified).
      *
      * @param fullyQualifiedName the table's storage name
      * @return the statement's query ID
      */
     public synchronized String lockQueryId(final String fullyQualifiedName) {
-        final String key = fullyQualifiedName.toUpperCase(Locale.ROOT);
-        final TableLock lock = getAllTableLocks().get(key);
-        if (lock != null) {
-            return lock.getQueryId();
-        }
-        String named = insertLockIds.get(key);
-        if (named == null) {
-            named = UUID.randomUUID().toString();
-            insertLockIds.put(key, named);
-        }
-        return named;
+        final TableLock lock = getAllTableLocks().get(fullyQualifiedName.toUpperCase(Locale.ROOT));
+        return lock != null ? lock.getQueryId() : UUID.randomUUID().toString();
     }
 
     /**
@@ -401,14 +440,70 @@ public class Transaction {
      * @param queryId            the waiting statement's query ID
      */
     public void beginWaiting(final String fullyQualifiedName, final String queryId) {
+        beginWaiting(fullyQualifiedName, queryId, false);
+    }
+
+    /**
+     * A statement of this transaction waits for another transaction's lock on a table or a stream.
+     *
+     * @param resource the table's storage name or the stream's full name
+     * @param queryId  the waiting statement's query ID
+     * @param stream   whether the lock is a stream's
+     */
+    public void beginWaiting(final String resource, final String queryId, final boolean stream) {
         waitingQueryId = queryId;
-        waitingFor = fullyQualifiedName.toUpperCase(Locale.ROOT);
+        waitingForStream = stream;
+        waitingFor = resource.toUpperCase(Locale.ROOT);
     }
 
     /** The waiting statement took its lock or gave up. */
     public void endWaiting() {
         waitingFor = null;
         waitingQueryId = null;
+        waitingForStream = false;
+    }
+
+    /** Whether the lock a statement of this transaction waits for is a stream's. */
+    public boolean isWaitingForStream() {
+        return waitingForStream;
+    }
+
+    /**
+     * Takes the lock on a stream this transaction reads, unless it holds it already: the first read names it.
+     *
+     * @param stream   the stream
+     * @param resource its full name, as SHOW LOCKS lists it
+     */
+    public synchronized void lockStream(final Stream stream, final String resource) {
+        if (!streamLocks.containsKey(stream)) {
+            streamLocks.put(stream, new StreamLock(resource, System.currentTimeMillis(), runningStatementId()));
+        }
+    }
+
+    /**
+     * Whether this transaction holds a stream's lock.
+     *
+     * @param stream the stream
+     * @return whether a read of this transaction took it
+     */
+    public synchronized boolean holdsStreamLock(final Stream stream) {
+        return streamLocks.containsKey(stream);
+    }
+
+    /**
+     * The statement a lock refusal names as holding a stream: the one that first read it.
+     *
+     * @param stream the stream
+     * @return the statement's query ID
+     */
+    public synchronized String streamLockQueryId(final Stream stream) {
+        final StreamLock lock = streamLocks.get(stream);
+        return lock != null ? lock.getQueryId() : UUID.randomUUID().toString();
+    }
+
+    /** Every stream lock this transaction holds, in the order its reads took them. */
+    public synchronized List<StreamLock> getStreamLocks() {
+        return new ArrayList<>(streamLocks.values());
     }
 
     /** The table a statement of this transaction waits for, upper-cased, or null when none waits. */
@@ -421,21 +516,56 @@ public class Transaction {
         return waitingQueryId;
     }
 
-    /** Register the PARTITIONS lock a DML touch takes on a table; the first touch wins the cell. */
+    /**
+     * Register the PARTITIONS lock a DML statement takes on a table whether or not it changes a row: the first
+     * touch wins the cell, named by the statement that touched it.
+     *
+     * @param tableName the table's storage name
+     */
     public void recordTableTouch(final String tableName) {
         final String key = tableName.toUpperCase(Locale.ROOT);
         if (!tableLocks.containsKey(key)) {
-            tableLocks.put(key, new TableLock(System.currentTimeMillis(), UUID.randomUUID().toString()));
+            tableLocks.put(key, new TableLock(System.currentTimeMillis(), runningStatementId()));
         }
     }
 
-    /** Every table lock this transaction holds, whichever apply path recorded it. */
+    /**
+     * Register the lock an immediate-apply write of a row takes on a table: acquired at the table's first touch, and
+     * named by the latest statement that changed a row of it.
+     */
+    private void recordTableWrite(final String tableName) {
+        final String key = tableName.toUpperCase(Locale.ROOT);
+        final TableLock held = tableLocks.get(key);
+        final String writer = StatementCancellation.runningQueryId();
+        if (held == null) {
+            tableLocks.put(key, new TableLock(System.currentTimeMillis(), writer != null ? writer
+                : UUID.randomUUID().toString()));
+        } else if (writer != null && !writer.equals(held.getQueryId())) {
+            tableLocks.put(key, new TableLock(held.getAcquiredOn(), writer));
+        }
+    }
+
+    /** The query ID of the statement running now, or a fresh one for a statement that runs under none. */
+    private static String runningStatementId() {
+        final String running = StatementCancellation.runningQueryId();
+        return running != null ? running : UUID.randomUUID().toString();
+    }
+
+    /**
+     * Every table lock this transaction holds, whichever apply path recorded it: a lock both recorded is acquired
+     * at the earlier touch and named by the statement the write set names, the latest that changed a row.
+     */
     public Map<String, TableLock> getAllTableLocks() {
         if (writeSet.getTableLocks().isEmpty()) {
             return tableLocks;
         }
         final Map<String, TableLock> merged = new LinkedHashMap<>(tableLocks);
-        merged.putAll(writeSet.getTableLocks());
+        for (final Map.Entry<String, TableLock> written : writeSet.getTableLocks().entrySet()) {
+            final TableLock touched = merged.get(written.getKey());
+            merged.put(written.getKey(), touched == null ? written.getValue() : new TableLock(
+                Math.min(touched.getAcquiredOn(), written.getValue().getAcquiredOn()),
+                written.getValue().getQueryId()));
+        }
         return merged;
     }
 
@@ -443,15 +573,22 @@ public class Transaction {
         // Deferred-apply path: flush buffered writes to storage now (atomically), emit stream CDC at
         // apply time, then snapshot for time travel — so committed state (not per-DML state) is what
         // streams and time-travel observe. The immediate path leaves the write set empty (nothing here).
-        if (!writeSet.isEmpty()) {
-            writeSet.applyTo(storageEngine, streamManager);
-            storageEngine.snapshotDirtyTables();
+        // A DML statement that changed no row still writes the version a stream's backlog lists.
+        if (!writeSet.isEmpty() || writeSet.notesStatements()) {
+            try {
+                writeSet.applyTo(storageEngine, streamManager);
+                storageEngine.snapshotDirtyTables();
+            } catch (final RuntimeException notApplied) {
+                // The writes did not apply, so what the statements left for the transaction's end is taken back as a
+                // rollback takes it: a load's files are not recorded as loaded, and a TRUNCATE keeps the history.
+                undoOutcomesFrom(0);
+                throw notApplied;
+            }
         }
-        // Snowflake: a stream used as a source in a committed DML advances its offset on commit —
-        // but only past what the consuming read actually saw (the write set just re-emitted the
-        // txn's buffered changes as real records; changes buffered AFTER the read stay unconsumed).
+        // A stream used as a source in a committed DML advances its offset on commit to the transaction's start:
+        // the changes committed since, the transaction's own among them, stay unconsumed (live-verified).
         for (final Map.Entry<Stream, StreamReadScope> entry : streamsToConsume.entrySet()) {
-            entry.getKey().consumeSeen(entry.getValue().getCommittedCut(), entry.getValue().getSeenTransient());
+            entry.getKey().consumeTo(entry.getValue().getCut(), entry.getValue().getSequence());
         }
         streamsToConsume.clear();
         final List<TransactionOutcome> ended = new ArrayList<>(outcomes);
@@ -463,6 +600,7 @@ public class Transaction {
         writeSet.clear();
         savepoints.clear();
         tableLocks.clear();
+        insertLocks.clear();
     }
 
     public void rollback() {
@@ -480,10 +618,16 @@ public class Transaction {
         writeSet.clear();
         savepoints.clear();
         tableLocks.clear();
+        insertLocks.clear();
     }
 
     public long getStartTime() {
         return startTime;
+    }
+
+    /** @return the snapshot number the transaction drew when it began (see {@link #startSequence}) */
+    public long getStartSequence() {
+        return startSequence;
     }
 
     public int getLogCount() {

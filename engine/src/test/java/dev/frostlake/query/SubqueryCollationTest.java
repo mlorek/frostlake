@@ -23,7 +23,8 @@ import org.junit.jupiter.api.Test;
  * EXISTS, NOT EXISTS or scalar subquery reads an outer column's collation, through an alias, a bare name and a
  * join, as the comparison beside the subquery does; a row-value IN, NOT IN, = ANY and <> ALL against a subquery or
  * a list of rows compare each place under the collation of its two sides; and two collations that differ are
- * refused as incompatible.
+ * refused as incompatible. A LATERAL derived table reads the collation of a column to its left as a correlated
+ * subquery does.
  */
 public class SubqueryCollationTest extends MeasuredCellsTestSupport {
 
@@ -102,5 +103,40 @@ public class SubqueryCollationTest extends MeasuredCellsTestSupport {
             "SELECT o3.id, (SELECT COUNT(*) FROM i3 WHERE i3.s = UPPER(o3.s)) c FROM o3 ORDER BY 1");
         assertAnswer("1|0 ;; 2|0",
             "SELECT o3.id, (SELECT COUNT(*) FROM i3 WHERE i3.s = o3.s COLLATE 'en-cs') c FROM o3 ORDER BY 1");
+    }
+
+    @Test
+    public void aLateralSubqueryReadsTheOuterColumnsCollation() {
+        engine.execute("CREATE OR REPLACE TABLE o4 (id INT, s VARCHAR COLLATE 'en-ci')");
+        engine.execute("INSERT INTO o4 VALUES (1, 'abc'), (2, 'xyz')");
+        engine.execute("CREATE OR REPLACE TABLE i4 (id INT, s VARCHAR)");
+        engine.execute("INSERT INTO i4 VALUES (1, 'ABC'), (2, 'Xyz')");
+        engine.execute("CREATE OR REPLACE TABLE k4 (id INT, s VARCHAR COLLATE 'en-cs')");
+        engine.execute("INSERT INTO k4 VALUES (1, 'ABC')");
+        assertAnswer("1 ;; 2", "SELECT o4.id FROM o4 JOIN i4 ON i4.s = o4.s ORDER BY 1");
+        assertAnswer("1|ABC ;; 2|Xyz",
+            "SELECT o4.id, l.s FROM o4, LATERAL (SELECT s FROM i4 WHERE i4.s = o4.s) l ORDER BY 1");
+        assertAnswer("1|1 ;; 2|1",
+            "SELECT o4.id, l.n FROM o4, LATERAL (SELECT COUNT(*) n FROM i4 WHERE i4.s = o4.s AND i4.id = o4.id) l "
+                + "ORDER BY 1");
+        assertAnswer("1|ABC ;; 2|Xyz",
+            "SELECT o4.id, l.s FROM o4 JOIN LATERAL (SELECT s FROM i4 WHERE o4.s = i4.s) l ORDER BY 1");
+        assertAnswer("1|ABC ;; 2|Xyz",
+            "SELECT o4.id, l.s FROM o4, LATERAL (SELECT s FROM i4 WHERE i4.s = o4.s OR i4.id = 99) l ORDER BY 1");
+        assertAnswer("1|ABC ;; 2|Xyz",
+            "SELECT x.id, l.s FROM o4 x, LATERAL (SELECT s FROM i4 WHERE i4.s = x.s) l ORDER BY 1");
+        assertAnswer("1|ABC ;; 2|Xyz",
+            "SELECT d.id, l.s FROM (SELECT id, s FROM o4) d, LATERAL (SELECT s FROM i4 WHERE i4.s = d.s) l ORDER BY 1");
+        assertAnswer("1|ABC ;; 2|Xyz",
+            "SELECT o4.id, l.s FROM i4 JOIN o4 ON i4.id = o4.id, LATERAL (SELECT s FROM i4 ii WHERE ii.s = o4.s) l "
+                + "ORDER BY 1");
+        assertAnswer("1|ABC ;; 2|Xyz",
+            "SELECT o4.id, l.s FROM o4 LEFT JOIN LATERAL (SELECT s FROM i4 WHERE i4.s = o4.s) l ON TRUE ORDER BY 1");
+        assertAnswer("1|abc ;; 2|xyz",
+            "SELECT i4.id, l.s FROM i4, LATERAL (SELECT s FROM o4 WHERE o4.s = i4.s) l ORDER BY 1");
+        assertAnswer("",
+            "SELECT o4.id, l.s FROM o4, LATERAL (SELECT s FROM i4 WHERE i4.s = o4.s COLLATE 'en-cs') l ORDER BY 1");
+        assertAnswer("REFUSED SQL compilation error: Incompatible collations: 'en-ci' and 'en-cs'",
+            "SELECT o4.id, l.s FROM o4, LATERAL (SELECT s FROM k4 WHERE k4.s = o4.s) l ORDER BY 1");
     }
 }

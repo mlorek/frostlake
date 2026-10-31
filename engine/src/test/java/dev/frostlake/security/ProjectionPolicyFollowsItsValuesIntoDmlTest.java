@@ -31,11 +31,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * UPDATE's SET list (from a subquery, a FROM source or the table itself), a MERGE's UPDATE SET and INSERT VALUES, an
  * INSERT's VALUES and a multi-table INSERT's values, and the same statements run by a procedure or EXECUTE
  * IMMEDIATE. They are the INSERT ... SELECT leak by another statement. The column stays usable in the statement's
- * WHERE and ON, and under a counting aggregate. Not measured live.
+ * WHERE and ON, and under a counting aggregate. Not measured live, but for a VALUES item that is a whole query of
+ * the table: it is refused as VALUES refuses a query the plan does not fold, the table's one row folded into the
+ * echo (live-verified), and a MAX of the one row, which the plan folds, is refused as a projection here, where the
+ * account writes the value into the table.
  */
 public class ProjectionPolicyFollowsItsValuesIntoDmlTest {
 
     private static final String RESTRICTED = "The following columns are restricted by a Projection Policy.";
+
+    private static final String FOLDED_ROW = "Invalid expression [(SELECT 'hidden' AS \"P\" FROM TABLE (GENERATOR("
+        + "ROWCOUNT => 1, rowCount => 1)))] in VALUES clause";
 
     private DatabaseEngine engine;
 
@@ -101,7 +107,8 @@ public class ProjectionPolicyFollowsItsValuesIntoDmlTest {
 
     @Test
     public void insertedValuesThatHandTheValueOutAreRefused() {
-        assertRestricted("INSERT INTO t VALUES (3, (SELECT p FROM pt LIMIT 1))");
+        assertEquals("SQL compilation error:\n" + FOLDED_ROW,
+            refusal("INSERT INTO t VALUES (3, (SELECT p FROM pt LIMIT 1))"));
         assertRestricted("INSERT INTO t (x) VALUES ((SELECT MAX(p) FROM pt))");
         assertRestricted("INSERT ALL INTO t (id, x) VALUES (id, p) SELECT id, p FROM pt");
         assertRestricted("INSERT ALL INTO t (id, x) VALUES (id, (SELECT MAX(p) FROM pt)) SELECT id FROM pt");
@@ -113,6 +120,9 @@ public class ProjectionPolicyFollowsItsValuesIntoDmlTest {
         assertRestricted("EXECUTE IMMEDIATE $$ BEGIN UPDATE t SET x = (SELECT MAX(p) FROM pt); RETURN 'done'; END; $$");
         engine.execute("CREATE PROCEDURE leak() RETURNS VARCHAR LANGUAGE SQL AS"
             + " $$ BEGIN INSERT INTO t VALUES (5, (SELECT p FROM pt LIMIT 1)); RETURN 'done'; END $$");
+        assertTrue(refusal("CALL leak()").contains(FOLDED_ROW));
+        engine.execute("CREATE OR REPLACE PROCEDURE leak() RETURNS VARCHAR LANGUAGE SQL AS"
+            + " $$ BEGIN INSERT INTO t (x) VALUES ((SELECT MAX(p) FROM pt)); RETURN 'done'; END $$");
         assertRestricted("CALL leak()");
         assertEquals("[1, a]; [2, b]", rows("SELECT * FROM t ORDER BY id"));
     }

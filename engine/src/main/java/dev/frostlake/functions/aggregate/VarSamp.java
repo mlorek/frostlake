@@ -16,55 +16,19 @@
 
 package dev.frostlake.functions.aggregate;
 
-import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
-import java.util.List;
-
-public class VarSamp extends AggregateFunction {
-    public VarSamp() { super("VAR_SAMP", NumericType.DOUBLE); }
-
-    @Override
-    public Accumulator createAccumulator() { return new VarianceAccumulator(); }
-
-    @Override
-    public Object evaluate(final List<Object> args) { return null; }
-
-    @Override
-    public int getMinArgCount() { return 1; }
-    @Override
-    public int getMaxArgCount() { return 1; }
-
-    /** Live: "Invalid argument types for function '*': (OBJECT, OBJECT)" — see {@link StdDev}. */
-    @Override
-    public SemiStructuredRejection semiStructuredRejection(final int position) {
-        return SemiStructuredRejection.MULTIPLY_OPERANDS;
-    }
-
-    /**
-     * A BOOLEAN, a temporal or a BINARY argument is refused at compile time in the multiplication's
-     * name with the type twice — "Invalid argument types for function '*': (DATE, DATE)" — exactly as
-     * a semi-structured one is: live reaches its internal sum of squares first (live-verified).
-     */
-    @Override
-    public SemiStructuredRejection temporalRejection(final int position) {
-        return SemiStructuredRejection.MULTIPLY_OPERANDS;
+/**
+ * VAR_SAMP(x); an argument it cannot read as a number is refused as {@link StdDev} refuses one.
+ */
+public class VarSamp extends StatisticalAggregate {
+    public VarSamp() {
+        super("VAR_SAMP", NumericType.DOUBLE, 1, SemiStructuredRejection.MULTIPLY_OPERANDS);
     }
 
     @Override
-    public SemiStructuredRejection booleanRejection(final int position) {
-        return SemiStructuredRejection.MULTIPLY_OPERANDS;
-    }
-
-    @Override
-    public SemiStructuredRejection binaryRejection(final int position) {
-        return SemiStructuredRejection.MULTIPLY_OPERANDS;
-    }
-
-    /** A VECTOR is refused as a semi-structured value is (live-verified). */
-    @Override
-    public SemiStructuredRejection vectorRejection(final int position) {
-        return semiStructuredRejection(position);
+    public Accumulator createAccumulator() {
+        return new SpreadAccumulator(true, false);
     }
 }

@@ -17,6 +17,9 @@
 package dev.frostlake.functions.scalar.conditional;
 
 import dev.frostlake.functions.WholeNumbers;
+import dev.frostlake.functions.scalar.WholeNumberArgument;
+
+import java.math.RoundingMode;
 
 /** Shared truthiness helper for the BOOLAND / BOOLOR / BOOLNOT / BOOLXOR functions. */
 public final class BoolFunctionHelper {
@@ -25,11 +28,13 @@ public final class BoolFunctionHelper {
     }
 
     /**
-     * Interprets a value as a three-valued boolean, as the functions read their arguments: as NUMBERs, TRUE when
-     * not zero (live-verified). NULL stays NULL (UNKNOWN), a BOOLEAN is itself, a FLOAT is true when not zero, NaN
-     * included, and a text or a VARIANT converts as an argument read as a NUMBER converts (see
-     * {@link WholeNumbers#decimalOf}): {@code BOOLAND('1.5', 1)} is TRUE, {@code BOOLAND('yes', 1)} is "Numeric
-     * value 'yes' is not recognized" and a VARIANT holding "yes" "Failed to cast variant value "yes" to FIXED".
+     * Interprets a value as a three-valued boolean, as the functions read their arguments: as whole numbers, TRUE when
+     * not zero (live-verified). NULL stays NULL (UNKNOWN) and a BOOLEAN is itself; a number is rounded half away from
+     * zero first, so 0.4 is FALSE and 0.5 TRUE, and a FLOAT goes through a FIXED[SB8](18,0) slot, its NaN, an
+     * infinity and a value from 10^18 on refused there (see WholeNumberArgument#requireFittingFloat). A text or a
+     * VARIANT converts as an argument read as a NUMBER converts (see {@link WholeNumbers#decimalOf}):
+     * {@code BOOLAND('1.5', 1)} is TRUE, {@code BOOLAND('yes', 1)} is "Numeric value 'yes' is not recognized" and a
+     * VARIANT holding "yes" "Failed to cast variant value "yes" to FIXED".
      */
     public static Boolean truthiness(final Object value) {
         if (value == null) {
@@ -39,8 +44,9 @@ public final class BoolFunctionHelper {
             return (Boolean) value;
         }
         if (value instanceof Double || value instanceof Float) {
-            return ((Number) value).doubleValue() != 0.0;
+            WholeNumberArgument.requireFittingFloat(value, WholeNumberArgument.WIDE, false);
+            return Math.floor(Math.abs(((Number) value).doubleValue()) + 0.5) != 0;
         }
-        return WholeNumbers.decimalOf(value).signum() != 0;
+        return WholeNumbers.decimalOf(value).setScale(0, RoundingMode.HALF_UP).signum() != 0;
     }
 }

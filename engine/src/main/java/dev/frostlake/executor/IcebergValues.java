@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.IcebergNumericType;
 import dev.frostlake.types.MapType;
 import dev.frostlake.types.StructuredArrayType;
@@ -24,6 +25,9 @@ import dev.frostlake.types.StructuredField;
 import dev.frostlake.types.StructuredObjectType;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ArrayNode;
+import tools.jackson.databind.node.JsonNodeFactory;
+import tools.jackson.databind.node.ObjectNode;
 
 import java.math.BigDecimal;
 import java.util.Map;
@@ -33,7 +37,8 @@ import java.util.Map;
  * to it, once the value is its column's NUMBER or FLOAT (live-verified): an int or a long past its bits is refused —
  * a member of a structured value too — in words of its own and outside the statement's DML envelope, {@code Number
  * out of representable range: type int, value 2147483648}; a float keeps what its 32 bits do, {@code 0.1} as
- * {@code 0.1000000015} and anything past them as an infinity.
+ * {@code 0.1000000015} and anything past them as an infinity — a FLOAT member of a structured value too, {@code
+ * OBJECT(f FLOAT)}'s 1.1 as 1.100000024.
  */
 final class IcebergValues {
 
@@ -71,8 +76,73 @@ final class IcebergValues {
             : value instanceof JsonNode ? (JsonNode) value : null;
         if (node != null) {
             requireMembersHeld(node, type);
+            final JsonNode single = singleMembers(node, type);
+            if (single != node) {
+                return value instanceof VariantValue ? VariantValue.ofNode(single) : single;
+            }
         }
         return value;
+    }
+
+    /**
+     * A structured value with every FLOAT member at what its 32 bits keep, or the node itself when no member
+     * changes.
+     */
+    private static JsonNode singleMembers(final JsonNode node, final DataType type) {
+        if (node == null || node.isNull()) {
+            return node;
+        }
+        if (type instanceof IcebergNumericType) {
+            if (!((IcebergNumericType) type).isSingle() || !node.isNumber()) {
+                return node;
+            }
+            final double written = node.doubleValue();
+            final float single = (float) written;
+            return Double.isNaN(written) || single == written ? node
+                : JsonNodeFactory.instance.numberNode((double) single);
+        }
+        if (type instanceof StructuredObjectType && node.isObject()) {
+            ObjectNode changed = null;
+            for (final StructuredField field : ((StructuredObjectType) type).getFields()) {
+                final JsonNode member = node.get(field.getName());
+                final JsonNode held = singleMembers(member, field.getDataType());
+                if (held != member) {
+                    if (changed == null) {
+                        changed = ((ObjectNode) node).deepCopy();
+                    }
+                    changed.set(field.getName(), held);
+                }
+            }
+            return changed != null ? changed : node;
+        }
+        if (type instanceof StructuredArrayType && node.isArray()) {
+            ArrayNode changed = null;
+            final DataType elementType = ((StructuredArrayType) type).getElementType();
+            for (int i = 0; i < node.size(); i++) {
+                final JsonNode held = singleMembers(node.get(i), elementType);
+                if (held != node.get(i)) {
+                    if (changed == null) {
+                        changed = ((ArrayNode) node).deepCopy();
+                    }
+                    changed.set(i, held);
+                }
+            }
+            return changed != null ? changed : node;
+        }
+        if (type instanceof MapType && node.isObject()) {
+            ObjectNode changed = null;
+            for (final Map.Entry<String, JsonNode> entry : node.properties()) {
+                final JsonNode held = singleMembers(entry.getValue(), ((MapType) type).getValueType());
+                if (held != entry.getValue()) {
+                    if (changed == null) {
+                        changed = ((ObjectNode) node).deepCopy();
+                    }
+                    changed.set(entry.getKey(), held);
+                }
+            }
+            return changed != null ? changed : node;
+        }
+        return node;
     }
 
     /** Refuses a structured value whose whole-number member the member's type does not hold. */
@@ -110,14 +180,14 @@ final class IcebergValues {
     /** A MAP's key as the number it spells, or null for one that spells none. */
     private static BigDecimal keyNumber(final String key) {
         try {
-            return new BigDecimal(key);
+            return DecimalText.parse(key);
         } catch (final NumberFormatException notNumber) {
             return null;
         }
     }
 
     private static BigDecimal decimal(final Number value) {
-        return value instanceof BigDecimal ? (BigDecimal) value : new BigDecimal(value.toString());
+        return value instanceof BigDecimal ? (BigDecimal) value : DecimalText.parse(value.toString());
     }
 
     private static void requireHeld(final IcebergNumericType type, final BigDecimal value) {

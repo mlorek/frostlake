@@ -16,11 +16,17 @@
 
 package dev.frostlake.values;
 
+import dev.frostlake.functions.scalar.JsonKeywords;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.cfg.JsonNodeFeature;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Runtime value of the SQL semi-structured family (VARIANT / OBJECT / ARRAY): canonical JSON text
@@ -39,9 +45,24 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
     private static final JsonMapper MAPPER =
         JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
 
-    private final String text;
+    /** The canonical text, rendered at once but for a value made {@link #ofNodeLazily lazily}. */
+    private String text;
     private transient JsonNode node;
     private transient String comparisonKey;
+
+    /**
+     * Where the DECFLOATs the tree holds sit, as {@link DecfloatTextNode#placesIn} gives them: written by
+     * serialization alone, since the text spells a DECFLOAT as the string of its digits and the tree that knows it
+     * for one is not written. Null where none sits in it, and in a value written before the places were kept.
+     */
+    private Object[] decfloatPlaces;
+
+    /**
+     * The types of the members the text does not keep, as {@link VariantMemberTypes} gives them: written by
+     * serialization alone, like the DECFLOATs' places. Null where every member's type is its text's, and in a value
+     * written before they were kept.
+     */
+    private VariantMemberTypes memberTypes;
 
     private VariantValue(final String text) {
         this.text = text;
@@ -59,8 +80,74 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
         return v;
     }
 
+    /**
+     * Wraps a parsed tree whose text is rendered only when it is asked for: an array too long to render at once, the
+     * thousand million holes ARRAY_INSERT pads, still answers its size and its elements.
+     *
+     * @param node the tree
+     * @return the variant
+     */
+    public static VariantValue ofNodeLazily(final JsonNode node) {
+        final VariantValue v = new VariantValue(null);
+        v.node = node;
+        return v;
+    }
+
+    /**
+     * Writes the text and, where the tree holds a DECFLOAT, the places they sit, and the types of the members its
+     * text does not keep (a double, a FLOAT, a DATE, a TIME, a timestamp, a BINARY, a VECTOR, a UUID), so a
+     * checkpoint, a snapshot and a clone keep the members' type that a WAL replay, re-running the statements,
+     * keeps by itself.
+     */
+    private void writeObject(final ObjectOutputStream out) throws IOException {
+        final List<Object[]> places = node == null ? null : DecfloatTextNode.placesIn(node);
+        final ObjectOutputStream.PutField fields = out.putFields();
+        fields.put("text", text());
+        fields.put("decfloatPlaces", places == null || places.isEmpty() ? null : places.toArray());
+        fields.put("memberTypes", node == null ? null : VariantMemberTypes.of(node));
+        out.writeFields();
+    }
+
+    /** Reads the text, the tree re-read at once with its DECFLOATs and its members' types put back where written. */
+    private void readObject(final ObjectInputStream in) throws IOException, ClassNotFoundException {
+        in.defaultReadObject();
+        if (decfloatPlaces == null && memberTypes == null) {
+            return;
+        }
+        JsonNode tree = read(text);
+        if (decfloatPlaces != null) {
+            final List<Object[]> places = new ArrayList<>();
+            for (final Object place : decfloatPlaces) {
+                places.add((Object[]) place);
+            }
+            tree = DecfloatTextNode.restoredIn(tree, places);
+            decfloatPlaces = null;
+        }
+        if (memberTypes != null) {
+            tree = memberTypes.restoredIn(tree);
+            memberTypes = null;
+        }
+        node = tree;
+    }
+
+    /**
+     * The tree a canonical text spells, its bare words read as what they stand for: an array's {@code undefined},
+     * and a double's {@code NaN}, {@code Infinity} and {@code -Infinity} (see {@link VariantText}).
+     */
+    private static JsonNode read(final String text) {
+        if (text.indexOf("NaN") < 0 && text.indexOf("Infinity") < 0) {
+            return VariantUndefined.readTree(MAPPER, text);
+        }
+        final String normalized = JsonKeywords.normalize(text);
+        final JsonNode tree = VariantUndefined.readTree(MAPPER, normalized);
+        return JsonKeywords.mayHoldPlaceholder(normalized) ? JsonKeywords.restore(tree) : tree;
+    }
+
     /** The canonical JSON text. */
     public String text() {
+        if (text == null) {
+            text = VariantText.canonical(node);
+        }
         return text;
     }
 
@@ -69,7 +156,7 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
         if (node == null) {
             // The canonical text of an array holding a SQL NULL element carries Snowflake's bare
             // `undefined` token ([1,undefined,2]), which no JSON parser accepts on its own.
-            node = VariantUndefined.readTree(MAPPER, text);
+            node = read(text);
         }
         return node;
     }
@@ -84,7 +171,7 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
 
     /** A VARIANT JSON null (the text {@code null}) — distinct from SQL NULL. */
     public boolean isJsonNull() {
-        return "null".equals(text);
+        return text == null ? node.isNull() : "null".equals(text);
     }
 
     @Override
@@ -92,7 +179,7 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
         // Snowflake renders an XML-shaped variant as XML text wherever the value is stringified
         // (display, ::VARCHAR, TO_VARCHAR); that form stays compact, as TO_XML does. The shape test
         // is structural, so gate on the cheap canonical-text prefix before parsing.
-        if (XmlVariants.mightBeXmlText(text) && XmlVariants.isXmlElement(node())) {
+        if (XmlVariants.mightBeXmlText(text()) && XmlVariants.isXmlElement(node())) {
             return XmlVariants.compactXml(node());
         }
         // A variant holding a STRING displays its CONTENT when read as a whole value — live prints
@@ -110,7 +197,7 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
         // the canonical compact text, which is what text() returns.
         final JsonNode tree = node();
         final String displayed = tree.isArray() || tree.isObject() ? VariantJsonText.displayTextOf(this) : null;
-        return VariantJsonFormat.render(tree, displayed != null ? displayed : text);
+        return VariantJsonFormat.render(tree, displayed != null ? displayed : text());
     }
 
     /**
@@ -135,7 +222,7 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
         final VariantValue that = (VariantValue) other;
         // The same text is the same value unless a UUID sits in either: it prints as the string of its
         // text and still differs from it, which only the comparison key tells.
-        if (text.equals(that.text) && !holdsUuid() && !that.holdsUuid()) {
+        if (text().equals(that.text()) && !holdsUuid() && !that.holdsUuid()) {
             return true;
         }
         return comparisonKey().equals(that.comparisonKey());

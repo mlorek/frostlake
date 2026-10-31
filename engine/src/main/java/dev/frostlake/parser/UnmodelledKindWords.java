@@ -22,8 +22,7 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 /**
  * The plain words among those of the object kinds the account drops and describes that Frostlake models no object
  * of. {@code SNAPSHOT}, {@code CONNECTION}, {@code DATASET} and {@code MODEL} name a kind alone, and
- * {@code PROFILE}, {@code LIFECYCLE} and
- * {@code PROJECT} follow the keywords {@code ORGANIZATION}, {@code STORAGE} and {@code DBT} in the grammar's
+ * {@code LIFECYCLE} and {@code PROJECT} follow the keywords {@code STORAGE} and {@code DBT} in the grammar's
  * {@code unmodelledKind}. A word is matched whatever its case and never in quotes (live-verified).
  */
 public final class UnmodelledKindWords {

@@ -30,12 +30,24 @@ import java.util.List;
  * the value's, so {@code CEIL(<NUMBER(10,2)>, 1)} is a NUMBER(11,1). See
  * {@link RoundedValue} for what the argument accepts and where it refuses.
  */
-public class Ceil extends NumericArgumentFunction {
+public class Ceil extends NumericArgumentFunction implements DecfloatRounding, FloatScaleRounding {
     public Ceil() { super("CEIL", NumericType.INTEGER); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         return RoundedValue.of(args, RoundingMode.CEILING);
+    }
+
+    /** A DECFLOAT is rounded to any scale its exponent reaches (see RoundedValue#ofDecfloat). */
+    @Override
+    public Object evaluateDecfloat(final List<Object> args) {
+        return RoundedValue.ofDecfloat(args, RoundingMode.CEILING);
+    }
+
+    /** A FLOAT scale rounds in FLOAT arithmetic (see RoundedValue#ofFloatScale). */
+    @Override
+    public Object evaluateFloatScale(final List<Object> args) {
+        return RoundedValue.ofFloatScale(args, RoundingMode.CEILING);
     }
 
     @Override

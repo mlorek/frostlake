@@ -21,6 +21,7 @@ import dev.frostlake.functions.CollationMatching;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.functions.scalar.WholeNumberArgument;
 import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.CodePointText;
@@ -35,7 +36,10 @@ import java.util.List;
  * searching the hex renderings found the digit pair at character 3.
  */
 public class Position extends TextArgumentFunction {
-    public Position() { super("POSITION", IntegerResultWidths.POSITION); }
+    public Position() { this("POSITION"); }
+
+    /** POSITION under another name, CHARINDEX's. */
+    protected Position(final String name) { super(name, IntegerResultWidths.POSITION); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -43,15 +47,7 @@ public class Position extends TextArgumentFunction {
         if (anyNull(args)) {
             return null;
         }
-        // Snowflake: NULL in, NULL out — a NULL haystack or needle yields NULL, not 0/false
-        for (int i = 0; i < Math.min(args.size(), 2); i++) {
-            if (i < args.size() && args.get(i) == null) {
-                return null;
-            }
-        }
-        if (args.get(0) == null || args.get(1) == null) return 0L;
-        int startPos = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) - 1 : 0;
-        startPos = Math.max(0, startPos);
+        final int startPos = startOf(args);
         if (args.get(0) instanceof BinaryValue && args.get(1) instanceof BinaryValue) {
             return SharedFunctionHelpers.indexOfBytes(((BinaryValue) args.get(1)).bytes(),
                 ((BinaryValue) args.get(0)).bytes(), startPos);
@@ -65,20 +61,25 @@ public class Position extends TextArgumentFunction {
     /** Under a collation the needle is found where the collation matches it, not byte for byte. */
     @Override
     public Object evaluate(final List<Object> args, final CollationSpec collation) {
-        // A NULL in any argument answers NULL (live-verified).
+        // A NULL in any argument answers NULL, a collated search's too (live-verified).
         if (anyNull(args)) {
             return null;
         }
-        if (collation == null || args.get(0) == null || args.get(1) == null
-                || args.get(0) instanceof BinaryValue || args.get(1) instanceof BinaryValue) {
+        if (collation == null || args.get(0) instanceof BinaryValue || args.get(1) instanceof BinaryValue) {
             return evaluate(args);
         }
-        int startPos = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) - 1 : 0;
-        startPos = Math.max(0, startPos);
+        final int startPos = startOf(args);
         final String haystack = SharedFunctionHelpers.textOf(args.get(1));
         final int[] found = CollationMatching.findUnder(collation, haystack,
             SharedFunctionHelpers.textOf(args.get(0)), CodePointText.offset(haystack, startPos));
         return found == null ? 0L : (long) (CodePointText.characterIndex(haystack, found[0]) + 1);
+    }
+
+    /**
+     * The 0-based character the search starts at: the start is a 32-bit whole number (see WholeNumberArgument#part).
+     */
+    private static int startOf(final List<Object> args) {
+        return args.size() > 2 ? (int) Math.max(0L, WholeNumberArgument.part(args.get(2)) - 1L) : 0;
     }
 
     @Override

@@ -19,9 +19,9 @@ package dev.frostlake.executor.commands;
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.RoutineOverloads;
-import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.expressions.CaretOperator;
+import dev.frostlake.executor.expressions.DoubledSigns;
 import dev.frostlake.executor.expressions.ParsedEchoPrinter;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.SnowflakeBuiltinNames;
@@ -107,24 +107,8 @@ final class ScriptingUdfBodyValidator {
         // What no expression may write is refused before any statement or call is judged: a caret between two
         // values, and a sign written straight after a sign (live-verified).
         CaretOperator.rejectIn(block);
-        rejectDoubledSigns(block);
+        DoubledSigns.rejectIn(block);
         walk(block, null);
-    }
-
-    /**
-     * Two signs in a row are no expression: {@code - -a} is refused as an invalid function named by the outer
-     * sign, in a RETURN's value and in a call's argument alike, as a query's is (live-verified).
-     */
-    private static void rejectDoubledSigns(final ParseTree node) {
-        if (node instanceof FrostlakeParser.UnaryExprContext) {
-            final FrostlakeParser.UnaryExprContext signed = (FrostlakeParser.UnaryExprContext) node;
-            if (signed.expression() instanceof FrostlakeParser.UnaryExprContext) {
-                throw new RuntimeException(SqlCompilationError.of("invalid function '" + signed.op.getText() + "'"));
-            }
-        }
-        for (int i = 0; i < node.getChildCount(); i++) {
-            rejectDoubledSigns(node.getChild(i));
-        }
     }
 
     /**
@@ -161,18 +145,15 @@ final class ScriptingUdfBodyValidator {
      * Whether a block holds an expression the account's reading of a function's block stops at, so that the body is
      * read as an expression instead and refused in that frame: a word before a string inside a call's parentheses
      * — {@code nosuch(TIMESTAMP_LTZ '…')}, {@code nosuch(foo 'x')}, where DATE, TIME and TIMESTAMP alone open a
-     * literal — and a name of three parts, {@code a.b.c} (all live-verified).
+     * literal — a word naming no type before a string anywhere, {@code RETURN foo 'x';}, and a name of three parts,
+     * {@code a.b.c} (all live-verified).
      *
      * @param node the block, or a node of it
      * @return whether the block is no block a function's body may be
      */
     static boolean holdsWhatNoBlockReads(final ParseTree node) {
-        return holdsWhatNoBlockReads(node, false);
-    }
-
-    private static boolean holdsWhatNoBlockReads(final ParseTree node, final boolean insideCall) {
         if (node instanceof FrostlakeParser.TypedLiteralArgExprContext
-                || insideCall && node instanceof FrostlakeParser.UnknownTypedLiteralExprContext) {
+                || node instanceof FrostlakeParser.UnknownTypedLiteralExprContext) {
             return true;
         }
         if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
@@ -182,9 +163,8 @@ final class ScriptingUdfBodyValidator {
             // A query's names are the query's: a.b.c there names a column of a table in a schema.
             return false;
         }
-        final boolean arguments = insideCall || node instanceof FrostlakeParser.FunctionArgListContext;
         for (int i = 0; i < node.getChildCount(); i++) {
-            if (holdsWhatNoBlockReads(node.getChild(i), arguments)) {
+            if (holdsWhatNoBlockReads(node.getChild(i))) {
                 return true;
             }
         }
@@ -228,7 +208,11 @@ final class ScriptingUdfBodyValidator {
             final FrostlakeParser.StatementContext stmt = (FrostlakeParser.StatementContext) node;
             if (stmt.proceduralStatement() == null) {
                 // Any non-procedural statement — DML, DDL, a bare query, SHOW … — is where a side effect
-                // would come from, and Snowflake refuses each by the name of its kind.
+                // would come from, and Snowflake refuses each by the name of its kind; a template query that
+                // reads no table function is refused for that first.
+                if (stmt.ddlStatement() != null && stmt.ddlStatement().createStatement() != null) {
+                    CreateTableHandler.requireTemplateTableFunction(stmt.ddlStatement().createStatement());
+                }
                 throw unsupportedStatement(SnowscriptStatementKind.of(stmt));
             }
         }

@@ -13,28 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.TextArgumentFunction;
-import dev.frostlake.types.StringType;
-
-import java.util.List;
-
-public class Char extends TextArgumentFunction {
-    public Char() { super("CHAR", StringType.VARCHAR); }
-
-    @Override
-    public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
-        // A code point is read as the whole number it gives, a text's included: CHAR('66.6') is C (live-verified).
-        final int codePoint = wholeNumber(args.get(0));
-        if (codePoint < 0 || codePoint > Character.MAX_CODE_POINT) return null;
-        return new String(Character.toChars(codePoint));
-    }
-
-    @Override
-    public int getMinArgCount() { return 1; }
-    @Override
-    public int getMaxArgCount() { return 1; }
+/**
+ * CHAR, CHR's other name: the same code point read the same way, refused in the same words - "Invalid character code
+ * 3000000000 in the CHR input" - and a FLOAT the 64-bit slot cannot hold refused rather than answered NULL
+ * (live-verified).
+ */
+public class Char extends Chr {
+    public Char() { super("CHAR"); }
 }

@@ -76,7 +76,7 @@ final class SendEmailProcedure {
         }
         if (ctx.callArguments() != null) {
             for (final FrostlakeParser.CallArgumentContext argument : ctx.callArguments().callArgument()) {
-                if (argument.namedArgument() != null) {
+                if (CallArgumentTypes.isNamed(argument)) {
                     return false;
                 }
             }

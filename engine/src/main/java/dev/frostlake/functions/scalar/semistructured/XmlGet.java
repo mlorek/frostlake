@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.functions.scalar.WholeNumberArgument;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.XmlVariants;
@@ -49,9 +50,9 @@ public class XmlGet extends BuiltInFunction {
         }
         final int instance;
         if (args.size() > 2) {
-            // An instance is read as the whole number it gives, a text's included and a fraction rounded:
-            // '1' and 0.6 are the second instance (live-verified).
-            instance = wholeNumber(args.get(2));
+            // An instance is read as the 32-bit whole number it gives, a text's included and a fraction rounded:
+            // '1' and 0.6 are the second instance (live-verified; see WholeNumberArgument#part).
+            instance = WholeNumberArgument.part(args.get(2));
         } else {
             instance = 0;
         }

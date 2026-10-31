@@ -16,49 +16,22 @@
 
 package dev.frostlake.functions.aggregate;
 
-import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
-import java.util.List;
-
-/** REGR_INTERCEPT(y, x) — y-intercept of the least-squares regression line over non-null (y, x) pairs (y dependent, x independent). See {@link RegrAccumulator}. */
-public class RegrIntercept extends AggregateFunction {
-    public RegrIntercept() { super("REGR_INTERCEPT", NumericType.DOUBLE); }
-
-    @Override
-    public Accumulator createAccumulator() { return new RegrAccumulator(RegrKind.INTERCEPT); }
-
-    @Override
-    public Object evaluate(final List<Object> args) { return null; }
-
-    @Override
-    public int getMinArgCount() { return 2; }
-    @Override
-    public int getMaxArgCount() { return 2; }
-
-    /**
-     * Either argument outside the numbers, the strings and VARIANT is refused at compile time as the
-     * DOUBLE conversion live plans under a null guard on the other argument — see
-     * {@link SemiStructuredRejection#DOUBLE_CONVERSION_PARAMETER}.
-     */
-    @Override
-    public SemiStructuredRejection semiStructuredRejection(final int position) {
-        return SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER;
+/**
+ * REGR_INTERCEPT(y, x) — y-intercept of the least-squares regression line over non-null (y, x) pairs (y dependent, x
+ * independent). See {@link RegrAccumulator}. Either argument outside the numbers, the strings and VARIANT is refused at
+ * compile time as the DOUBLE conversion live plans under a null guard on the other argument, and a VECTOR as a BOOLEAN
+ * is (live-verified) — see {@link SemiStructuredRejection#DOUBLE_CONVERSION_PARAMETER}.
+ */
+public class RegrIntercept extends StatisticalAggregate {
+    public RegrIntercept() {
+        super("REGR_INTERCEPT", NumericType.DOUBLE, 2, SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER);
     }
 
     @Override
-    public SemiStructuredRejection binaryRejection(final int position) {
-        return SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER;
-    }
-
-    @Override
-    public SemiStructuredRejection booleanRejection(final int position) {
-        return SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER;
-    }
-
-    @Override
-    public SemiStructuredRejection temporalRejection(final int position) {
-        return SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER;
+    public Accumulator createAccumulator() {
+        return new RegrAccumulator(RegrKind.INTERCEPT);
     }
 }

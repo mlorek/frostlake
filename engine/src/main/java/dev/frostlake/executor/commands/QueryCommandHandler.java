@@ -17,6 +17,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.CommonTableExpressions;
+import dev.frostlake.executor.ProcedureTokenCalls;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.parser.FrostlakeParser;
@@ -63,7 +64,9 @@ public class QueryCommandHandler implements CommandHandler {
             }
             // A dynamic table the query reads that never refreshed is refused before anything runs.
             queryExecutor.requireInitializedDynamicTables(ctx.selectStatement());
-            return handleSelectStatement(ctx.selectStatement());
+            // A query that is one call of a procedure's token answers as the CALL of it (see ProcedureTokenCalls).
+            final ResultSet called = ProcedureTokenCalls.asCall(queryExecutor, ctx.selectStatement());
+            return called != null ? called : handleSelectStatement(ctx.selectStatement());
         }
         throw new RuntimeException("Unsupported query statement");
     }

@@ -26,7 +26,7 @@ import java.util.Set;
 public final class TaskOnlyFunctions {
 
     private static final Set<String> NAMES = Set.of("SYSTEM$GET_TASK_GRAPH_CONFIG",
-        "SYSTEM$GET_PREDECESSOR_RETURN_VALUE", "SYSTEM$TASK_RUNTIME_INFO");
+        "SYSTEM$GET_PREDECESSOR_RETURN_VALUE", "SYSTEM$TASK_RUNTIME_INFO", "SYSTEM$SET_RETURN_VALUE");
 
     private TaskOnlyFunctions() {
     }

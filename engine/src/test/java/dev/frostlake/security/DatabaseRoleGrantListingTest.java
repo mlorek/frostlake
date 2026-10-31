@@ -196,7 +196,7 @@ public class DatabaseRoleGrantListingTest extends BaseDatabaseTest {
             columns.add(column.getName());
         }
         assertEquals(List.of("created_on", "privilege", "granted_on", "name", "role", "granted_to", "grantee_name",
-            "grant_option", "granted_by"), columns);
+            "grant_option", "granted_by", "expires_on"), columns);
         assertEquals(List.of("USAGE|DATABASE_ROLE|TEST_DB.DRL_USER|null|USER",
                 "USAGE|ROLE|" + ROLE_A + "|" + ROLE_A + "|USER",
                 "SELECT|TABLE|TEST_DB.TEST_SCHEMA.DRL_UT|null|USER"),

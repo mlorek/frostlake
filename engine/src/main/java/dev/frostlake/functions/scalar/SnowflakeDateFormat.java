@@ -197,7 +197,7 @@ public final class SnowflakeDateFormat {
     private static String spelledGmtOffset(final ZoneOffset offset) {
         final int total = offset.getTotalSeconds();
         final int magnitude = Math.abs(total);
-        return String.format("GMT%s%02d:%02d", total < 0 ? "-" : "+",
+        return String.format(Locale.ROOT, "GMT%s%02d:%02d", total < 0 ? "-" : "+",
             magnitude / 3600, (magnitude % 3600) / 60);
     }
 

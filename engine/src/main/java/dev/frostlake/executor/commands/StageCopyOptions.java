@@ -142,6 +142,21 @@ final class StageCopyOptions {
         return options;
     }
 
+    /**
+     * Whether a list sets SIZE_LIMIT to NULL, which clears the size a table's ALTER finds (live-verified).
+     *
+     * @param list the list
+     * @return true when one of its options is SIZE_LIMIT = NULL
+     */
+    static boolean clearsSizeLimit(final FrostlakeParser.StageCopyOptionListContext list) {
+        for (final FrostlakeParser.StageCopyOptionContext option : list.stageCopyOption()) {
+            if (option.NULL() != null && "SIZE_LIMIT".equalsIgnoreCase(option.optionKey().getText())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static boolean isOption(final String name) {
         return BOOLEANS.contains(name) || UNJUDGED.contains(name) || "ON_ERROR".equals(name)
             || "SIZE_LIMIT".equals(name) || "MATCH_BY_COLUMN_NAME".equals(name) || "LOAD_MODE".equals(name);

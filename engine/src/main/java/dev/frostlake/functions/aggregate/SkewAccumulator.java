@@ -21,41 +21,47 @@ import java.util.ArrayList;
 import java.util.List;
 
 /** Accumulator for {@link Skew}. */
-public class SkewAccumulator implements AggregateFunction.Accumulator {
+public class SkewAccumulator implements AggregateFunction.Accumulator, DecfloatAwareAccumulator {
+    /** The values of a DECFLOAT argument, whose skewness is a DECFLOAT of 38 digits (see DecfloatMoments). */
+    private final DecfloatMoments decfloatMoments = new DecfloatMoments();
+    private boolean decfloat;
     private final List<Double> values = new ArrayList<>();
 
     @Override
+    public void setDecfloatArgument(final boolean decfloat) {
+        this.decfloat = decfloat;
+    }
+
+    @Override
     public void accumulate(final Object v) {
+        if (decfloat) {
+            decfloatMoments.add(v);
+            return;
+        }
         // A text reads as a cast to FLOAT reads it, a hexadecimal number included (see NumericAggregateInput).
         if (v != null) values.add(NumericAggregateInput.asApproximate(v));
     }
 
     @Override
     public Object getResult() {
+        if (decfloat) {
+            return decfloatMoments.heldSkewness();
+        }
         final int n = values.size();
         if (n < 3) return null;
-        double total = 0;
-        for (final Double value : values) {
-            total += value.doubleValue();
-        }
-        final double mean = total / n;
-        double squares = 0;
-        for (final Double value : values) {
-            squares += Math.pow(value.doubleValue() - mean, 2);
-        }
-        final double variance = squares / (n - 1);
-        if (variance == 0) return 0.0;
-        final double stddev = Math.sqrt(variance);
-        double sum3 = 0;
-        for (final Double value : values) {
-            sum3 += Math.pow((value.doubleValue() - mean) / stddev, 3);
-        }
+        final double sum3 = AggregateNumerics.standardizedMomentSum(values, 3);
         return sum3 * n / ((n - 1.0) * (n - 2.0));
     }
 
     @Override
-    public void reset() { values.clear(); }
+    public void reset() {
+        decfloatMoments.reset();
+        values.clear();
+    }
 
     @Override
-    public void merge(final AggregateFunction.Accumulator other) { values.addAll(((SkewAccumulator) other).values); }
+    public void merge(final AggregateFunction.Accumulator other) {
+        decfloatMoments.merge(((SkewAccumulator) other).decfloatMoments);
+        values.addAll(((SkewAccumulator) other).values);
+    }
 }

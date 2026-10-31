@@ -18,7 +18,9 @@ package dev.frostlake.executor.udf;
 
 import com.snowflake.snowpark_java.types.Variant;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.DecimalOriginNode;
 import dev.frostlake.values.TypedScalarNode;
 import dev.frostlake.values.VariantText;
 import dev.frostlake.values.VariantValue;
@@ -45,9 +47,9 @@ import java.time.temporal.TemporalAccessor;
  * {@code java.sql} values, and a text, an OBJECT, an ARRAY and a JSON null from their text - so a text that
  * spells JSON arrives as that JSON, and an array holding a SQL NULL, whose text spells none, as the text.
  *
- * <p>A result answers by what it was made as: a number, a boolean, bytes, a DATE, a TIME or a TIMESTAMP_NTZ;
- * one made from a text is an OBJECT, an ARRAY or a JSON null where it holds one and a text otherwise, a number
- * it holds included.
+ * <p>A result answers by what it was made as: a number (a decimal typed by its scale), a boolean, bytes, a DATE,
+ * a TIME or a TIMESTAMP_NTZ; one made from a text is an OBJECT, an ARRAY or a JSON null where it holds one and a
+ * text otherwise, a number it holds included.
  */
 public final class SnowparkVariants {
 
@@ -75,7 +77,7 @@ public final class SnowparkVariants {
         }
         if (value instanceof Number) {
             return new Variant(exact(value instanceof BigDecimal ? (BigDecimal) value
-                : new BigDecimal(value.toString())));
+                : DecimalText.parse(value.toString())));
         }
         if (value instanceof String) {
             return new Variant((String) value);
@@ -128,6 +130,21 @@ public final class SnowparkVariants {
     }
 
     /**
+     * A decimal a handler answers, typed by its scale: at scale 0 an INTEGER, at any other a DECIMAL, a whole one
+     * included and printed without its scale - so 1000 is an INTEGER while 1000.0 and 1E+3 are DECIMALs.
+     */
+    private static Object decimal(final BigDecimal number) {
+        if (number.scale() == 0) {
+            return ArrayFunctionHelper.toCanonicalVariant(JsonNodeFactory.instance.numberNode(number.toBigInteger()));
+        }
+        final BigDecimal stripped = number.stripTrailingZeros();
+        if (stripped.scale() > 0) {
+            return ArrayFunctionHelper.toCanonicalVariant(JsonNodeFactory.instance.numberNode(stripped));
+        }
+        return VariantValue.ofNode(new DecimalOriginNode(stripped.setScale(0)));
+    }
+
+    /**
      * @param variant what the handler handed back, not null
      * @param where   the end of a refusal's sentence
      * @return the VARIANT's value
@@ -151,9 +168,11 @@ public final class SnowparkVariants {
                 return ArrayFunctionHelper.toCanonicalVariant(JsonNodeFactory.instance.numberNode(
                     variant.asDouble()));
             case FIXED_NUMBER:
-                return ArrayFunctionHelper.toCanonicalVariant(value.isBigDecimal()
-                    ? JsonNodeFactory.instance.numberNode(exact(value.decimalValue()))
-                    : value.isNumber() ? JsonNodeFactory.instance.numberNode(variant.asBigInteger()) : value);
+                if (value.isBigDecimal()) {
+                    return decimal(value.decimalValue());
+                }
+                return ArrayFunctionHelper.toCanonicalVariant(value.isNumber()
+                    ? JsonNodeFactory.instance.numberNode(variant.asBigInteger()) : value);
             case BOOLEAN:
                 return ArrayFunctionHelper.toCanonicalVariant(value);
             case BINARY:

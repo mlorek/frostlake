@@ -24,6 +24,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -34,8 +35,11 @@ import java.util.Set;
  * relation to the call's left, or calls a function that answers anew for every row - RANDOM and the SEQ
  * family - is refused while the statement compiles, {@code argument 1 to function GENERATOR needs to be
  * constant, found 'GN.N'}, ROWCOUNT being argument 1 and TIMELIMIT argument 2 however the call names them.
- * Arithmetic over constants, a session variable and a scalar subquery are constants. UUID_STRING is held to
- * be a per-row function with the others.
+ * Arithmetic over constants, a session variable and a scalar subquery the planner folds are constants; any other
+ * subquery is refused as the plan holds it,
+ * {@code found '(SELECT SUM(CAST(GN.N AS NUMBER(38,0))) AS "SUM(N)" FROM GN AS GN)'}. A bound reading the row
+ * around its query is a correlation, {@code found 'CORRELATION(GN.N)'}, numbered by its place among the arguments
+ * written. UUID_STRING is held to be a per-row function with the others.
  *
  * <p>An expression that reads a row is a constant all the same when no row can change it (live-verified):
  * <pre>
@@ -59,11 +63,12 @@ final class GeneratorBounds {
     /**
      * The functions the account does not fold while it judges a bound: a bound calling one is no constant, whatever
      * its arguments (live-verified) - {@code LENGTH('abc')}, {@code SQRT(9)}, {@code CEIL(1.1)}, where ABS, FLOOR,
-     * MOD, the conversions and the date parts fold.
+     * MOD, the conversions and the date parts fold. A function's other names are not folded either: TIMEDIFF and
+     * TIMESTAMPDIFF as DATEDIFF, POSITION, in either spelling, as CHARINDEX.
      */
-    private static final Set<String> UNFOLDED = Set.of("LENGTH", "LEN", "DATEDIFF", "SQRT", "TRUNC", "TRUNCATE",
-        "CEIL", "ROUND", "POWER", "POW", "BITAND", "ARRAY_SIZE", "REGEXP_COUNT", "HASH", "SIGN", "LN", "EXP", "LOG",
-        "CHARINDEX");
+    private static final Set<String> UNFOLDED = Set.of("LENGTH", "LEN", "DATEDIFF", "TIMEDIFF", "TIMESTAMPDIFF",
+        "SQRT", "TRUNC", "TRUNCATE", "CEIL", "ROUND", "POWER", "POW", "BITAND", "ARRAY_SIZE", "REGEXP_COUNT", "HASH",
+        "SIGN", "LN", "EXP", "LOG", "CHARINDEX", "POSITION");
 
     /** The functions that answer the first of their arguments that is no NULL. */
     private static final Set<String> FIRST_NON_NULL = Set.of("NVL", "IFNULL", "COALESCE");
@@ -91,24 +96,109 @@ final class GeneratorBounds {
      * @param named        the call's named arguments
      * @param scope        the relations to the call's left by the names they answer to, or null
      * @param scopeTables  those relations in combined-row order, or null
+     * @param correlated   the qualifiers of the relations in scope that are the row around the call's query
      * @param values       evaluates the parts of a bound that read no row
      */
     static void requireConstants(final String functionName, final List<FrostlakeParser.NamedArgumentContext> named,
                                  final Map<String, Table> scope, final List<Table> scopeTables,
-                                 final RowFreeValues values) {
+                                 final Set<String> correlated, final RowFreeValues values) {
+        final RuntimeException refused = refusal(functionName, named, scope, scopeTables, correlated, values);
+        if (refused != null) {
+            throw refused;
+        }
+    }
+
+    /**
+     * The refusal of a GENERATOR in a subquery's FROM whose bound reads the row around the subquery, or null: the
+     * account judges a table function's arguments as it binds the call, before it plans the query around it, so the
+     * bound is refused as one reading a correlation ({@code found 'CORRELATION(GN.N) + 1'}) where the subquery
+     * would otherwise be no plan it can make (live-verified for value and EXISTS subqueries).
+     *
+     * @param executor  the executor, which evaluates and prints the parts of a bound that read no row
+     * @param subquery  the subquery
+     * @param relations the relations around the subquery, by the names they answer to
+     * @return the refusal, or null
+     */
+    static RuntimeException outerBoundRefusal(final QueryExecutor executor,
+                                              final FrostlakeParser.SelectStatementContext subquery,
+                                              final Map<String, Table> relations) {
+        for (final FrostlakeParser.SelectOperandContext operand : subquery.selectOperand()) {
+            final FrostlakeParser.SelectClauseContext select = operand.selectClause();
+            if (select == null || select.tableExpression() == null) {
+                continue;
+            }
+            final List<FrostlakeParser.TableReferenceContext> references =
+                new ArrayList<>(select.tableExpression().tableReference());
+            for (final FrostlakeParser.JoinClauseContext join : select.tableExpression().joinClause()) {
+                references.add(join.tableReference());
+            }
+            for (final FrostlakeParser.TableReferenceContext reference : references) {
+                final RuntimeException refused = outerBoundRefusal(executor, reference, relations);
+                if (refused != null) {
+                    return refused;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** The refusal of a GENERATOR call the FROM item is whose bounds read the outer row alone, or null. */
+    private static RuntimeException outerBoundRefusal(final QueryExecutor executor,
+                                                      final FrostlakeParser.TableReferenceContext reference,
+                                                      final Map<String, Table> relations) {
+        final FrostlakeParser.TableSourceContext source = reference == null ? null : reference.tableSource();
+        if (source == null || source.TABLE() == null
+                || !(source.expression() instanceof FrostlakeParser.FunctionCallNamedArgsExprContext)) {
+            return null;
+        }
+        final FrostlakeParser.FunctionCallNamedArgsExprContext call =
+            (FrostlakeParser.FunctionCallNamedArgsExprContext) source.expression();
+        if (call.namedArgumentList() == null || !GENERATOR.equalsIgnoreCase(call.functionName().getText())) {
+            return null;
+        }
+        final List<FrostlakeParser.NamedArgumentContext> named = call.namedArgumentList().namedArgument();
+        final Set<String> correlated = correlatedQualifiers(relations, named.isEmpty() ? null : named.get(0));
+        boolean readsOuterRow = false;
+        for (final FrostlakeParser.NamedArgumentContext argument : named) {
+            if (argument.expression() == null || !readsQualifier(argument.expression(), correlated)) {
+                continue;
+            }
+            if (!readsOnly(argument.expression(), correlated)) {
+                // A bound that reads a row of the subquery's own as well is judged as the subquery runs.
+                return null;
+            }
+            readsOuterRow = true;
+        }
+        return readsOuterRow ? refusal(GENERATOR, named, relations, new ArrayList<>(relations.values()), correlated,
+            executor.rowFreeValues(relations, correlated)) : null;
+    }
+
+    /** The refusal of a GENERATOR bound that is no constant, or null; see {@link #requireConstants}. */
+    private static RuntimeException refusal(final String functionName,
+                                            final List<FrostlakeParser.NamedArgumentContext> named,
+                                            final Map<String, Table> scope, final List<Table> scopeTables,
+                                            final Set<String> correlated, final RowFreeValues values) {
         if (!GENERATOR.equals(functionName)) {
-            return;
+            return null;
         }
         final GeneratorBounds bounds = new GeneratorBounds(scope, scopeTables, values);
-        for (final FrostlakeParser.NamedArgumentContext argument : named) {
+        for (int index = 0; index < named.size(); index++) {
+            final FrostlakeParser.NamedArgumentContext argument = named.get(index);
             final String name = argument.variableName().getText().toUpperCase(Locale.ROOT);
-            final int position = "ROWCOUNT".equals(name) ? 1 : "TIMELIMIT".equals(name) ? 2 : 0;
-            if (position == 0 || argument.expression() == null) {
+            final int place = "ROWCOUNT".equals(name) ? 1 : "TIMELIMIT".equals(name) ? 2 : 0;
+            if (place == 0 || argument.expression() == null) {
                 continue;
+            }
+            final int position = readsQualifier(argument.expression(), correlated) ? index + 1 : place;
+            final ParserRuleContext bound = unwrapped(argument.expression());
+            if (bound instanceof FrostlakeParser.ScalarSubqueryExprContext
+                    && !values.folds((FrostlakeParser.ScalarSubqueryExprContext) bound)) {
+                return new RuntimeException(SqlCompilationError.of("argument " + position
+                    + " to function GENERATOR needs to be constant, found '" + values.planText(bound) + "'"));
             }
             if (callsUnfolded(argument.expression()) || bounds.foldsLate(argument.expression())
                     || bounds.subtractsDates(argument.expression())) {
-                throw new RuntimeException(SqlCompilationError.of("argument " + position
+                return new RuntimeException(SqlCompilationError.of("argument " + position
                     + " to function GENERATOR needs to be constant, found '"
                     + bounds.lateResidual(argument.expression()) + "'"));
             }
@@ -117,11 +207,164 @@ final class GeneratorBounds {
             }
             final BoundFold fold = bounds.fold(argument.expression());
             if (!fold.isConstant()) {
-                throw new RuntimeException(SqlCompilationError.of("argument " + position
-                    + " to function GENERATOR needs to be constant, found '"
-                    + ParseTreeText.getOriginalText(fold.residual()).toUpperCase(Locale.ROOT) + "'"));
+                // What is left of it is echoed as the plan holds it: NORMAL(2.0, 0.0, RANDOM()) (live-verified).
+                return new RuntimeException(SqlCompilationError.of("argument " + position
+                    + " to function GENERATOR needs to be constant, found '" + values.planText(fold.residual())
+                    + "'"));
             }
         }
+        return null;
+    }
+
+    /**
+     * The qualifiers of the relations in scope that the query around the call holds, where the call's own FROM holds
+     * none of that name: what a bound reads of them is the row around its query.
+     *
+     * @param scope the relations in scope, by the names they answer to, or null
+     * @param call  a node of the call
+     * @return the qualifiers, upper-cased
+     */
+    static Set<String> correlatedQualifiers(final Map<String, Table> scope, final ParseTree call) {
+        final Set<String> outer = new HashSet<>();
+        if (scope == null) {
+            return outer;
+        }
+        final Set<String> own = new HashSet<>();
+        ParseTree at = call;
+        FrostlakeParser.TableReferenceContext holder = null;
+        while (at != null && !(at instanceof FrostlakeParser.TableExpressionContext)) {
+            if (at instanceof FrostlakeParser.TableReferenceContext && holder == null) {
+                holder = (FrostlakeParser.TableReferenceContext) at;
+            }
+            at = at.getParent();
+        }
+        if (at != null) {
+            final FrostlakeParser.TableExpressionContext from = (FrostlakeParser.TableExpressionContext) at;
+            for (final FrostlakeParser.TableReferenceContext reference : from.tableReference()) {
+                addQualifier(own, reference, holder);
+            }
+            for (final FrostlakeParser.JoinClauseContext join : from.joinClause()) {
+                addQualifier(own, join.tableReference(), holder);
+            }
+        }
+        for (final String key : scope.keySet()) {
+            final String upper = key.toUpperCase(Locale.ROOT);
+            if (!own.contains(upper)) {
+                outer.add(upper);
+            }
+        }
+        return outer;
+    }
+
+    /**
+     * The qualifiers of the relations in scope, upper-cased.
+     *
+     * @param scope the relations in scope, by the names they answer to, or null
+     * @return the qualifiers
+     */
+    static Set<String> qualifiersOf(final Map<String, Table> scope) {
+        final Set<String> qualifiers = new HashSet<>();
+        if (scope != null) {
+            for (final String key : scope.keySet()) {
+                qualifiers.add(key.toUpperCase(Locale.ROOT));
+            }
+        }
+        return qualifiers;
+    }
+
+    /** The name a FROM item answers to, its alias or its table's name, unless it is the call's own item. */
+    private static void addQualifier(final Set<String> into, final FrostlakeParser.TableReferenceContext reference,
+                                     final FrostlakeParser.TableReferenceContext holder) {
+        if (reference == null || reference == holder) {
+            return;
+        }
+        final String qualifier = qualifierOf(reference);
+        if (qualifier != null) {
+            into.add(qualifier);
+        }
+    }
+
+    /**
+     * The name a FROM item answers to: its alias, or its table's name.
+     *
+     * @param reference the item
+     * @return the name, upper-cased, or null for an item that answers to none
+     */
+    static String qualifierOf(final FrostlakeParser.TableReferenceContext reference) {
+        if (reference.aliasName() != null) {
+            return ParseTreeText.getIdentifier(reference.aliasName()).toUpperCase(Locale.ROOT);
+        }
+        if (reference.nonJoinKeywordIdentifier() != null && reference.nonJoinKeywordIdentifier().identifier() != null) {
+            return ParseTreeText.getIdentifier(reference.nonJoinKeywordIdentifier().identifier())
+                .toUpperCase(Locale.ROOT);
+        }
+        if (reference.tableSource() != null && reference.tableSource().tableQualifiedName() != null) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(reference.tableSource().tableQualifiedName());
+            return parts[parts.length - 1].toUpperCase(Locale.ROOT);
+        }
+        return null;
+    }
+
+    /** Whether an expression names a column by one of the given qualifiers, outside any query nested in it. */
+    private static boolean readsQualifier(final ParseTree node, final Set<String> qualifiers) {
+        if (qualifiers == null || qualifiers.isEmpty() || node instanceof FrostlakeParser.SelectStatementContext) {
+            return false;
+        }
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(
+                ((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName());
+            return parts.length > 1 && qualifiers.contains(parts[parts.length - 2].toUpperCase(Locale.ROOT));
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (readsQualifier(node.getChild(i), qualifiers)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether every column an expression names is named by one of the given qualifiers, and it holds no query. */
+    private static boolean readsOnly(final ParseTree node, final Set<String> qualifiers) {
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            return false;
+        }
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(
+                ((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName());
+            return parts.length > 1 && qualifiers.contains(parts[parts.length - 2].toUpperCase(Locale.ROOT));
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (!readsOnly(node.getChild(i), qualifiers)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Whether an expression calls a function the account folds while it judges a bound: none it leaves unfolded
+     * ({@code LENGTH('ab')}) and none whose answer is the row's own ({@code RANDOM()}).
+     *
+     * @param node the expression
+     * @return whether its calls fold
+     */
+    static boolean foldsItsCalls(final ParseTree node) {
+        return !callsUnfolded(node) && !callsPerRow(node);
+    }
+
+    private static boolean callsPerRow(final ParseTree node) {
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            return false;
+        }
+        if (node instanceof FrostlakeParser.FunctionCallExprContext && PER_ROW.contains(nameOf(node))) {
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (callsPerRow(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether an expression calls a function the account does not fold while it judges a bound. */
@@ -130,6 +373,10 @@ final class GeneratorBounds {
             return false;
         }
         if (node instanceof FrostlakeParser.FunctionCallExprContext && UNFOLDED.contains(nameOf(node))) {
+            return true;
+        }
+        if (node instanceof FrostlakeParser.PositionInExprContext && UNFOLDED.contains(
+                ((FrostlakeParser.PositionInExprContext) node).functionName().getText().toUpperCase(Locale.ROOT))) {
             return true;
         }
         for (int i = 0; i < node.getChildCount(); i++) {
@@ -232,7 +479,10 @@ final class GeneratorBounds {
             : number.toString();
     }
 
-    /** Whether an expression reads no column of the relations in scope and calls no per-row function. */
+    /**
+     * Whether an expression reads no column of the relations in scope and calls no per-row function. A column the
+     * statistics pin to one value reads none: the bound is read as that value (see BoundColumnPins).
+     */
     private boolean readsNoRow(final ParseTree node) {
         if (node instanceof FrostlakeParser.SelectStatementContext) {
             return true;
@@ -240,7 +490,7 @@ final class GeneratorBounds {
         if (node instanceof FrostlakeParser.QualifiedNameExprContext && scope != null && scopeTables != null
                 && TablePartitioning.slotOf((FrostlakeParser.QualifiedNameExprContext) node, scope, scopeTables)
                     >= 0) {
-            return false;
+            return values.pinsOneValue((FrostlakeParser.QualifiedNameExprContext) node);
         }
         if (node instanceof FrostlakeParser.FunctionCallExprContext && PER_ROW.contains(nameOf(node))) {
             return false;

@@ -28,7 +28,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code session}: snowpark imports resolve locally, {@code session.sql} runs DML/DDL as well as
  * queries, and the DataFrame surface the vendor loaders use (select over col/parse_json/cast/alias,
  * a UDTF applied via select, joins including leftanti, unionAll, drop_duplicates and
- * {@code df.write.save_as_table}) operates on materialized rows.
+ * {@code df.write.save_as_table}) operates on materialized rows. Its rows hold what the Python connector maps each
+ * type to, on both backends: a NUMBER with a scale a {@code Decimal} at that scale, a whole NUMBER an exact
+ * {@code int} however wide, a TIME a {@code datetime.time}, a TIMESTAMP_TZ an aware {@code datetime} with its own
+ * offset and a TIMESTAMP_LTZ one with the session zone's, a VECTOR a list and a NULL {@code None}.
  */
 public class PythonSnowparkShimTest extends BaseDatabaseTest {
 
@@ -56,7 +59,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             def main(session):
                 return sp.__version__
             $$""");
-        assertEquals("1.30.0", callString("shim_imports()"));
+        assertEquals("1.55.3", callString("shim_imports()"));
     }
 
     @Test
@@ -67,6 +70,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             def main(session):
@@ -88,6 +92,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             from snowflake.snowpark.functions import col
@@ -116,6 +121,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             import json
@@ -165,6 +171,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             def main(session):
@@ -188,6 +195,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             from snowflake.snowpark.functions import col, coalesce, lit, array_construct, current_timestamp
@@ -219,6 +227,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             def main(session):
@@ -241,6 +250,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             from snowflake.snowpark.functions import col
@@ -264,6 +274,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             def main(session):
@@ -284,6 +295,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             from snowflake.snowpark.functions import col, lit, max
@@ -309,6 +321,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             from snowflake.snowpark import Window
@@ -335,6 +348,7 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION='3.11'
+            PACKAGES=('snowflake-snowpark-python')
             HANDLER='main'
             AS $$
             from snowflake.snowpark.exceptions import SnowparkSQLException
@@ -373,5 +387,30 @@ public class PythonSnowparkShimTest extends BaseDatabaseTest {
                 return str(kept) + ':' + str(empty.where('flag').count())
             $$""");
         assertEquals("1:0", callString("shim_flag_filter()"));
+    }
+
+    @Test
+    public void sessionSqlRowsHoldWhatTheConnectorMapsEachTypeTo() {
+        engine.execute("ALTER SESSION SET TIMEZONE = 'America/New_York'");
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE shim_row_types()
+            RETURNS STRING
+            LANGUAGE PYTHON
+            RUNTIME_VERSION='3.12'
+            PACKAGES=('snowflake-snowpark-python')
+            HANDLER='main'
+            AS $$
+            def main(session):
+                r = session.sql("SELECT 1.50::NUMBER(10,2) d, 12345678901234567890123::NUMBER(38,0) big, 7 i, "
+                                "'01:02:03.5'::TIME t, '2024-01-02 03:04:05 +05:00'::TIMESTAMP_TZ tz, "
+                                "'2024-01-02 03:04:05'::TIMESTAMP_LTZ ltz, NULL n, [1.0,2.5]::VECTOR(FLOAT,2) vec, "
+                                "1.5::FLOAT f").collect()[0]
+                return ' | '.join(k + '=' + type(v).__name__ + ':' + (v.isoformat() if hasattr(v, 'isoformat')
+                                                                      else repr(v)) for k, v in r.as_dict().items())
+            $$
+            """);
+        assertEquals("D=Decimal:Decimal('1.50') | BIG=int:12345678901234567890123 | I=int:7 | T=time:01:02:03.500000"
+            + " | TZ=datetime:2024-01-02T03:04:05+05:00 | LTZ=datetime:2024-01-02T03:04:05-05:00 | N=NoneType:None"
+            + " | VEC=list:[1.0, 2.5] | F=float:1.5", callString("shim_row_types()"));
     }
 }

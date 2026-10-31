@@ -81,6 +81,21 @@ public final class ScriptedErrorPlace {
     }
 
     /**
+     * The message with columns added to the place it names; unchanged when it names none.
+     *
+     * @param message the error's message
+     * @param columns the columns added
+     * @return the message placed further along its line
+     */
+    public static String furtherAlong(final String message, final int columns) {
+        final Matcher place = message == null ? null : PLACE.matcher(message);
+        if (columns == 0 || place == null || !place.find()) {
+            return message;
+        }
+        return placed(message, place, Integer.parseInt(place.group(1)), Integer.parseInt(place.group(2)) + columns);
+    }
+
+    /**
      * The place a message names, as {line, column}, or null when it names none.
      *
      * @param message the error's message

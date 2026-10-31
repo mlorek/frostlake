@@ -22,6 +22,7 @@ import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Contact;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.View;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -37,7 +38,8 @@ import java.util.TreeMap;
 /**
  * The SNOWFLAKE.CORE.GET_CONTACTS(object_name, object_domain) table function: the contacts attached to one
  * object, a row per purpose in the purposes' order, each with the contact's e-mail and URL and the domain the
- * contact is attached at. A table and a task hold contacts here; an object of another domain answers no rows.
+ * contact is attached at. A table, a view and a task hold contacts here, a view's at the TABLE level under either
+ * domain (live-verified); an object of another domain answers no rows.
  */
 public class GetContactsFunction extends TableFunction {
 
@@ -68,13 +70,14 @@ public class GetContactsFunction extends TableFunction {
             columns.add(new ResultSetColumn(name, StringType.VARCHAR));
         }
         final String domain = positionalArgs.get(1).toString().trim().toUpperCase(Locale.ROOT);
+        final String level = "VIEW".equals(domain) ? "TABLE" : domain;
         final List<Row> rows = new ArrayList<Row>();
         for (final Map.Entry<String, String> attached : contactsOf(positionalArgs.get(0).toString(), domain)
                 .entrySet()) {
             final Contact contact = contact(attached.getValue());
             if (contact != null) {
                 rows.add(new Row(Arrays.asList((Object) attached.getKey(), contact.getEmailDistributionList(),
-                    contact.getUrl(), null, domain)));
+                    contact.getUrl(), null, level)));
             }
         }
         return new ResultSet(columns, rows);
@@ -85,8 +88,9 @@ public class GetContactsFunction extends TableFunction {
         final String[] parts = SqlIdentifiers.canonicalTextParts(objectName);
         final Schema owner = catalog.requireOwningSchema(QualifiedName.of(parts));
         final String name = parts[parts.length - 1];
-        if ("TABLE".equals(domain)) {
-            return new TreeMap<String, String>(owner.getTable(name).getContacts());
+        if ("TABLE".equals(domain) || "VIEW".equals(domain)) {
+            final View view = owner.hasTable(name) ? null : owner.getView(name);
+            return new TreeMap<String, String>(view != null ? view.getContacts() : owner.getTable(name).getContacts());
         }
         if ("TASK".equals(domain)) {
             return owner.getTask(name).getContacts();

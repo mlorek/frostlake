@@ -18,21 +18,30 @@ package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
+import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.Parameter;
+import dev.frostlake.metastore.model.Procedure;
+import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.View;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.types.DataType;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -65,22 +74,53 @@ import java.util.Set;
  *       query reads; any other statement an EXPLAIN takes is a bare Result.</li>
  * </ul>
  *
- * <p>A star over the one table a query reads stands for its columns, named by the relation — {@code PQ1.N, PQ1.M},
- * less what an EXCLUDE names — and the scan lists the columns it reads, {@code N, M} (live-verified).
+ * <p>Each operator lists the expressions it computes as the account resolves them, spelled by
+ * {@link PlanExpressionText}: the Result the columns the query answers, a star as the columns it stands for and a
+ * bare NULL left out; a scan the columns the statement reads of its table, in the table's order, and none, with no
+ * partition assigned, when it reads none; a Filter its conditions, those of a derived table's and of the query over it
+ * as one; a join its keys and its other conditions over both sides, and an outer join's Filter the keys it checks; an
+ * Aggregate the aggregate calls it computes and the keys it groups by, a GroupingSets its aggregate calls alone; a
+ * WindowFunction its windows; a Sort its keys, a Limit its row count and its offset; a union's Result each column over
+ * its operands, {@code UNION_ALL(ET.A, EU.A)}. A LIMIT 0 reads a Generator of no rows, and the Result then lists
+ * nothing (live-verified).
  *
  * <p>What the account's optimizer does beyond that is not reproduced: conditions stay above the join they are written
  * over, three and more tables join in the order written, a query the account answers from metadata still reads its
- * table, IN and EXISTS are no joins, a filter or a join over empty tables is no Generator, and expressions other than
- * such a star are spelled as written.
+ * table, IN and EXISTS are no joins, a filter or a join over empty tables is no Generator, a condition the table's
+ * statistics prove is kept, a Sort or a ranking window straight over a scan lists its table once, and an ORDER BY over
+ * a union names the union's columns.
  */
 final class PlanBuilder {
 
     private static final List<String> NONE = Collections.<String>emptyList();
 
+    /** The ranking functions whose window reads its scan twice (see readTwiceForWindows). */
+    private static final Set<String> SCAN_TWICE_RANKINGS = Set.of("ROW_NUMBER", "RANK", "DENSE_RANK");
+
+    /** The offset functions whose window reads its scan twice when it partitions nothing (see readTwiceForWindows). */
+    private static final Set<String> SCAN_TWICE_OFFSETS = Set.of("LAG", "LEAD");
+
     /** How deep views may stand in views before a plan stops reading them. */
     private static final int DEEPEST_VIEW = 32;
 
     private final QueryExecutor executor;
+
+    /** The FROM list item each table reference stands for, from when its SELECT is entered until it is planned. */
+    private final Map<FrostlakeParser.TableReferenceContext, PlanFromItem> pending = new IdentityHashMap<>();
+
+    /** What each SELECT gathers while it is planned. */
+    private final Map<FrostlakeParser.SelectClauseContext, PlanSelect> selects = new IdentityHashMap<>();
+
+    /** The scans whose columns the plan resolves names to. */
+    private final Set<PlanNode> resolvedScans = Collections.newSetFromMap(new IdentityHashMap<PlanNode, Boolean>());
+
+    /** Every expression printed for the statement. */
+    private final List<PlanExpressionText> printers = new ArrayList<>();
+    /** The RecursiveWithClause of each recursive common table expression whose term is being planned, by its name. */
+    private final Map<String, PlanNode> recursions = new HashMap<>();
+
+    /** Whether a select item kept its written text, so the columns the statement reads are not all known. */
+    private boolean itemsWritten;
 
     /** The database and schema the names of a view's body are read in, while that body is planned. */
     private String[] scope;
@@ -92,41 +132,87 @@ final class PlanBuilder {
     }
 
     /**
-     * A query's plan: a Result, computing the select list as written, over what the query reads.
+     * A query's plan: a Result, computing the columns the query answers, over what the query reads; its scans list
+     * the columns read.
      *
      * @param query the query
      * @return the Result
      */
     PlanNode query(final FrostlakeParser.SelectStatementContext query) {
-        final FrostlakeParser.SelectClauseContext select = query.selectOperand(0).selectClause();
         final PlanNode read = queryPlan(query, new HashMap<String, FrostlakeParser.SelectStatementContext>());
-        final PlanNode scanned = query.selectOperand().size() == 1 ? onlyTableScan(select, read) : null;
-        final Table table = scanned == null ? null : scannedTable(scanned);
         final List<String> items = new ArrayList<>();
-        final Set<String> readColumns = new LinkedHashSet<>();
-        if (select != null) {
-            for (final FrostlakeParser.SelectItemContext item : select.selectList().selectItem()) {
-                final List<String> expanded = table == null ? null : starColumns(item, table, scanned);
-                if (expanded == null) {
+        final List<PlanColumn> answered = read.getAnswered();
+        if (answered == null) {
+            final FrostlakeParser.SelectClauseContext select = query.selectOperand(0).selectClause();
+            if (select != null) {
+                for (final FrostlakeParser.SelectItemContext item : select.selectList().selectItem()) {
                     items.add(ParseTreeText.getOriginalText(item));
-                    continue;
                 }
-                // A star reads as the columns it stands for, named by the relation, as the account's plan names them;
-                // the scan then lists the columns it reads (live-verified).
-                for (final String column : expanded) {
-                    items.add(relationName(scanned) + "." + SqlIdentifiers.spellCanonical(column));
-                    readColumns.add(column);
+            }
+        } else if (!readsNothing(read)) {
+            for (final PlanColumn column : answered) {
+                column.markReads();
+                if (!column.isConstantNull()) {
+                    items.add(column.getText());
                 }
             }
         }
-        if (table != null && !readColumns.isEmpty()) {
-            for (final TableColumn column : table.getColumns()) {
-                if (readColumns.contains(column.getName())) {
-                    scanned.with(SqlIdentifiers.spellCanonical(column.getName()));
-                }
-            }
-        }
+        listReads(read);
         return new PlanNode("Result", NONE, null, items).over(read);
+    }
+
+    /** Whether a query reads nothing: it is limited to no row, which the account plans as a Generator of none. */
+    private static boolean readsNothing(final PlanNode read) {
+        if (!"Limit".equals(read.getOperation()) && !"SortWithLimit".equals(read.getOperation())
+                || read.getChildren().size() != 1) {
+            return false;
+        }
+        final PlanNode under = read.getChildren().get(0);
+        return "Generator".equals(under.getOperation()) && Long.valueOf(0).equals(under.getRows());
+    }
+
+    /**
+     * Lists, on each scan of a plan that lists none yet, the columns of its table the statement reads, in the
+     * table's order, and assigns no partition to a scan that reads none (live-verified). Where a name the plan does not
+     * resolve leaves the columns read unknown, no scan lists them.
+     */
+    private void listReads(final PlanNode plan) {
+        if (itemsWritten) {
+            return;
+        }
+        for (final PlanExpressionText printer : printers) {
+            if (printer.isUnresolved()) {
+                return;
+            }
+        }
+        final List<PlanNode> scans = new ArrayList<>();
+        collectScans(plan, scans);
+        for (final PlanNode scan : scans) {
+            final Table table = scan.getExpressions().isEmpty() && resolvedScans.contains(scan) ? scannedTable(scan)
+                : null;
+            if (table == null) {
+                continue;
+            }
+            for (final TableColumn column : table.getColumns()) {
+                if (scan.getReadColumns().contains(column.getName())) {
+                    scan.with(SqlIdentifiers.spellCanonical(column.getName()));
+                }
+            }
+            // The columns a Sort's keys read lead a scan the Sort reads with no row limit, in the table's order too
+            // (see PlanNode#readForSort).
+            final List<String> sorted = new ArrayList<>();
+            for (final TableColumn column : table.getColumns()) {
+                if (scan.getSortColumns().contains(column.getName())) {
+                    sorted.add(SqlIdentifiers.spellCanonical(column.getName()));
+                }
+            }
+            for (int i = sorted.size() - 1; i >= 0 && !scan.getExpressions().isEmpty(); i--) {
+                scan.first(sorted.get(i));
+            }
+            if (scan.getExpressions().isEmpty()) {
+                scan.unread();
+            }
+        }
     }
 
     /**
@@ -142,14 +228,11 @@ final class PlanBuilder {
     PlanNode created(final String created, final FrostlakeParser.SelectStatementContext query,
                      final boolean materialized) {
         final PlanNode write = new PlanNode("CreateTableAsSelect", NONE, null, Arrays.asList(created));
-        final Set<String> named = new HashSet<>();
-        namedColumns(query, named);
         for (final PlanNode read : query(query).getChildren()) {
-            final List<PlanNode> scans = new ArrayList<>();
-            collectScans(read, scans);
-            for (final PlanNode scan : scans) {
-                readColumns(scan, named);
-                if (materialized) {
+            if (materialized) {
+                final List<PlanNode> scans = new ArrayList<>();
+                collectScans(read, scans);
+                for (final PlanNode scan : scans) {
                     scan.first("METADATA$PARTITION_NAME");
                 }
             }
@@ -159,59 +242,12 @@ final class PlanBuilder {
     }
 
     /**
-     * Lists the columns a scan reads, where no star has listed them: those of its table the statement names, in the
-     * table's order.
-     */
-    private void readColumns(final PlanNode scan, final Set<String> named) {
-        final Table table = scan.getExpressions().isEmpty() ? scannedTable(scan) : null;
-        if (table == null) {
-            return;
-        }
-        for (final TableColumn column : table.getColumns()) {
-            if (named.contains(column.getName())) {
-                scan.with(SqlIdentifiers.spellCanonical(column.getName()));
-            }
-        }
-    }
-
-    /** The last part of every name a tree reads a value by, its nested queries' included. */
-    private static void namedColumns(final ParseTree node, final Set<String> into) {
-        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
-            final String[] parts = ParseTreeText.qualifiedNameParts(
-                ((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName());
-            into.add(parts[parts.length - 1]);
-            return;
-        }
-        for (int i = 0; i < node.getChildCount(); i++) {
-            namedColumns(node.getChild(i), into);
-        }
-    }
-
-    /**
      * The plan of a statement that reads nothing: a Result with no expressions.
      *
      * @return the Result
      */
     static PlanNode bareResult() {
         return new PlanNode("Result", NONE, null, NONE);
-    }
-
-    /**
-     * The one scan a query of one table reads, when its FROM names that table and nothing else; null otherwise.
-     */
-    private PlanNode onlyTableScan(final FrostlakeParser.SelectClauseContext select, final PlanNode read) {
-        if (select == null || select.tableExpression() == null || !select.tableExpression().joinClause().isEmpty()
-                || select.tableExpression().tableReference().size() != 1) {
-            return null;
-        }
-        final FrostlakeParser.TableReferenceContext reference = select.tableExpression().tableReference(0);
-        if (reference.tableSource().tableQualifiedName() == null || reference.pivotClause() != null
-                || reference.unpivotClause() != null || reference.matchRecognizeClause() != null) {
-            return null;
-        }
-        final List<PlanNode> scans = new ArrayList<>();
-        collectScans(read, scans);
-        return scans.size() == 1 ? scans.get(0) : null;
     }
 
     private static void collectScans(final PlanNode node, final List<PlanNode> into) {
@@ -225,7 +261,8 @@ final class PlanBuilder {
 
     /** The base table a scan reads, or null when it reads none the catalog holds. */
     private Table scannedTable(final PlanNode scan) {
-        if (scan.getObjects().size() != 1) {
+        // A scan a Sort reads with no row limit lists its table twice (see PlanNode#readForSort).
+        if (scan.getObjects().size() != (scan.isCountedTwice() ? 2 : 1)) {
             return null;
         }
         try {
@@ -238,35 +275,160 @@ final class PlanBuilder {
     /** The name a scan's relation goes by in its plan: its alias, else its table's own name. */
     private static String relationName(final PlanNode scan) {
         if (scan.getAlias() != null) {
-            return scan.getAlias();
+            return SqlIdentifiers.spellCanonical(scan.getAlias());
         }
         final String[] parts = QualifiedName.parse(scan.getObjects().get(0)).parts();
         return SqlIdentifiers.spellCanonical(parts[parts.length - 1]);
     }
 
     /**
-     * The columns a star item stands for over the one table a query reads, less those its EXCLUDE names; a RENAME
-     * changes no column the plan reads. Null for an item that is no star of that table, and for one an ILIKE or a
-     * REPLACE shapes, which keep their written text.
+     * The columns a planned FROM item answers: a table's, named by the relation, {@code ET.A}; a derived table's, a
+     * view's or a common table expression's, as its query answers them and under the names a column list gives them.
+     * Null for any other source, whose columns the plan does not read.
      */
-    private static List<String> starColumns(final FrostlakeParser.SelectItemContext item, final Table table,
-                                            final PlanNode scan) {
+    private List<PlanColumn> columnsOf(final PlanNode plan, final FrostlakeParser.TableReferenceContext reference) {
+        List<PlanColumn> columns = null;
+        if (plan.getAnswered() != null) {
+            columns = new ArrayList<>(plan.getAnswered());
+        } else if ("TableScan".equals(plan.getOperation())) {
+            final Table table = scannedTable(plan);
+            if (table != null) {
+                resolvedScans.add(plan);
+                columns = new ArrayList<>();
+                for (final TableColumn column : table.getColumns()) {
+                    columns.add(PlanColumn.scanned(column.getName(), relationName(plan) + "."
+                        + SqlIdentifiers.spellCanonical(column.getName()), column.getDataType(),
+                        new PlanRead(plan, column.getName())));
+                }
+            }
+        }
+        final FrostlakeParser.IdentifierListContext renamed = reference.identifierList();
+        if (columns != null && renamed != null && renamed.identifier().size() == columns.size()) {
+            for (int i = 0; i < columns.size(); i++) {
+                columns.set(i, columns.get(i).named(ParseTreeText.getIdentifier(renamed.identifier(i))));
+            }
+        }
+        return columns;
+    }
+
+    /**
+     * Enters the relations of a FROM list into a SELECT's names, each awaiting its plan; a parenthesized group's own
+     * relations stand in it.
+     */
+    private void awaitItems(final ParserRuleContext list, final PlanScope scope) {
+        for (int i = 0; i < list.getChildCount(); i++) {
+            final ParseTree child = list.getChild(i);
+            if (child instanceof FrostlakeParser.TableReferenceContext) {
+                awaitItem((FrostlakeParser.TableReferenceContext) child, scope);
+            } else if (child instanceof FrostlakeParser.JoinClauseContext) {
+                awaitItem(((FrostlakeParser.JoinClauseContext) child).tableReference(), scope);
+            }
+        }
+    }
+
+    private void awaitItem(final FrostlakeParser.TableReferenceContext reference, final PlanScope scope) {
+        final FrostlakeParser.TableSourceContext source = reference.tableSource();
+        if (source.tableReference() != null) {
+            awaitItems(source, scope);
+            return;
+        }
+        final String alias = aliasOf(reference);
+        final String key;
+        if (alias != null) {
+            key = alias.toUpperCase(Locale.ROOT);
+        } else if (source.tableQualifiedName() != null) {
+            final String[] parts = QualifiedName.parse(ParseTreeText.getQualifiedName(source.tableQualifiedName()))
+                .parts();
+            key = parts[parts.length - 1].toUpperCase(Locale.ROOT);
+        } else {
+            key = "";
+        }
+        final PlanFromItem item = new PlanFromItem(key);
+        scope.add(item);
+        pending.put(reference, item);
+    }
+
+    /**
+     * The columns a SELECT answers, its select list printed in its names: an expression as the plan spells it, a star
+     * as the columns it stands for, less what an EXCLUDE names and under what a RENAME names them. An item the plan
+     * cannot resolve keeps its written text.
+     */
+    private List<PlanColumn> selected(final FrostlakeParser.SelectClauseContext select, final PlanSelect state) {
+        final List<PlanColumn> columns = new ArrayList<>();
+        for (final FrostlakeParser.SelectItemContext item : select.selectList().selectItem()) {
+            if (item instanceof FrostlakeParser.ExprItemContext) {
+                columns.add(itemColumn((FrostlakeParser.ExprItemContext) item, state));
+                continue;
+            }
+            final List<PlanColumn> starred = starred(item, state.getScope());
+            if (starred != null) {
+                columns.addAll(starred);
+            } else {
+                columns.add(writtenColumn(item, null));
+            }
+        }
+        state.getScope().select(columns);
+        return columns;
+    }
+
+    private PlanColumn itemColumn(final FrostlakeParser.ExprItemContext item, final PlanSelect state) {
+        String alias = null;
+        if (item.aliasName() != null) {
+            alias = ParseTreeText.getIdentifier(item.aliasName());
+        } else if (item.identifier() != null) {
+            alias = ParseTreeText.getIdentifier(item.identifier());
+        } else if (item.bareAliasWord() != null) {
+            alias = item.bareAliasWord().getText().toUpperCase(Locale.ROOT);
+        }
+        final Expression expression = parsed(item.booleanExpr());
+        if (expression == null) {
+            return writtenColumn(item, alias);
+        }
+        final PlanExpressionText printer = printer(state.getScope());
+        final String text = printer.spell(expression);
+        state.collect(printer);
+        String name = alias;
+        DataType type = null;
+        if (expression instanceof ColumnReferenceExpression) {
+            final PlanColumn column = state.getScope().resolve((ColumnReferenceExpression) expression);
+            name = name != null ? name : ((ColumnReferenceExpression) expression).getColumnName();
+            type = column == null ? null : column.getType();
+        }
+        return new PlanColumn(name, text, type, printer.getReads(), printer.getWindows(),
+            expression instanceof LiteralExpression && ((LiteralExpression) expression).getType() == LiteralType.NULL);
+    }
+
+    private PlanColumn writtenColumn(final FrostlakeParser.SelectItemContext item, final String name) {
+        itemsWritten = true;
+        return new PlanColumn(name, ParseTreeText.getOriginalText(item), null, Collections.<PlanRead>emptyList(),
+            Collections.<String>emptyList(), false);
+    }
+
+    /**
+     * The columns a star item stands for: every relation's, or the one its qualifier names, less those its EXCLUDE
+     * names and under the names its RENAME gives. Null for an item that is no star, for a star over a relation whose
+     * columns the plan does not read, and for one an ILIKE or a REPLACE shapes, which keep their written text.
+     */
+    private static List<PlanColumn> starred(final FrostlakeParser.SelectItemContext item, final PlanScope scope) {
         final List<FrostlakeParser.StarModifierContext> modifiers;
+        final List<PlanFromItem> relations = new ArrayList<>();
         if (item instanceof FrostlakeParser.StarItemContext) {
             modifiers = ((FrostlakeParser.StarItemContext) item).starModifier();
+            relations.addAll(scope.getItems());
         } else if (item instanceof FrostlakeParser.QualifiedStarItemContext) {
             final FrostlakeParser.QualifiedStarItemContext qualified = (FrostlakeParser.QualifiedStarItemContext) item;
             final String[] parts = ParseTreeText.qualifiedNameParts(qualified.starQualifiedName());
-            final String written = parts[parts.length - 1];
-            final String[] scanned = QualifiedName.parse(scan.getObjects().get(0)).parts();
-            if (!written.equals(scan.getAlias() != null ? scan.getAlias() : scanned[scanned.length - 1])) {
+            final PlanFromItem relation = scope.item(parts[parts.length - 1]);
+            if (relation == null) {
                 return null;
             }
             modifiers = qualified.starModifier();
+            relations.add(relation);
         } else {
             return null;
         }
         final Set<String> excluded = new LinkedHashSet<>();
+        final Map<String, String> renamed = new HashMap<>();
         for (final FrostlakeParser.StarModifierContext modifier : modifiers) {
             if (modifier.ILIKE() != null || modifier.REPLACE() != null) {
                 return null;
@@ -276,14 +438,165 @@ final class PlanBuilder {
                     excluded.add(ParseTreeText.getIdentifier(column.identifier()));
                 }
             }
+            for (final FrostlakeParser.StarRenameItemContext rename : modifier.starRenameItem()) {
+                renamed.put(ParseTreeText.getIdentifier(rename.identifier(0)),
+                    ParseTreeText.getIdentifier(rename.identifier(1)));
+            }
         }
-        final List<String> columns = new ArrayList<>();
-        for (final TableColumn column : table.getColumns()) {
-            if (!excluded.contains(column.getName())) {
-                columns.add(column.getName());
+        final List<PlanColumn> columns = new ArrayList<>();
+        for (final PlanFromItem relation : relations) {
+            if (relation.getColumns() == null) {
+                return null;
+            }
+            for (final PlanColumn column : relation.getColumns()) {
+                if (!excluded.contains(column.getName())) {
+                    final String name = renamed.get(column.getName());
+                    columns.add(name == null ? column : column.named(name));
+                }
             }
         }
         return columns;
+    }
+
+    /** An expression's tree read as an expression; null where it cannot be. */
+    private static Expression parsed(final ParserRuleContext tree) {
+        try {
+            return ExpressionEvaluator.parse(ParseTreeText.getOriginalText(tree));
+        } catch (final RuntimeException unreadable) {
+            return null;
+        }
+    }
+
+    private PlanExpressionText printer(final PlanScope scope) {
+        final PlanExpressionText printer = new PlanExpressionText(scope, executor.getFunctionRegistry(),
+            identifierCalls());
+        printers.add(printer);
+        return printer;
+    }
+
+    /** A call of a procedure's SYSTEM$REFERENCE token as the plan writes it (see ProcedureTokenCalls). */
+    private IdentifierCallText identifierCalls() {
+        return new IdentifierCallText() {
+            @Override
+            public String spell(final FunctionCallExpression call) {
+                final Object name;
+                try {
+                    name = new ExpressionEvaluator(null, executor.getFunctionRegistry(), executor.getCatalog(),
+                        executor).evaluate(call.getNameExpression(), null);
+                } catch (final RuntimeException unresolved) {
+                    return null;
+                }
+                return name == null ? null
+                    : ProcedureTokenCalls.planText(executor, name.toString(), call.getArguments().size());
+            }
+        };
+    }
+
+    /**
+     * An expression of a SELECT as the plan spells it, the columns it reads recorded on their scans — those a nested
+     * query reads of the SELECT's relations included — and its aggregates and windows gathered.
+     */
+    private String text(final ParserRuleContext tree, final PlanSelect state) {
+        final Expression expression = parsed(tree);
+        if (expression == null) {
+            return ParseTreeText.getOriginalText(tree);
+        }
+        final PlanExpressionText printer = printer(state.getScope());
+        final String text = printer.spell(expression);
+        state.collect(printer);
+        markReads(printer.getReads());
+        markCorrelated(tree, state.getScope());
+        return text;
+    }
+
+    /**
+     * Conditions as the plan spells them, one text each; a BETWEEN is the two comparisons it stands for, each a
+     * condition of its own.
+     */
+    private List<String> texts(final List<FrostlakeParser.BooleanExprContext> conditions, final PlanSelect state) {
+        final List<String> texts = new ArrayList<>();
+        for (final FrostlakeParser.BooleanExprContext condition : conditions) {
+            final Expression expression = parsed(condition);
+            if (expression == null) {
+                texts.add(ParseTreeText.getOriginalText(condition));
+                continue;
+            }
+            final PlanExpressionText printer = printer(state.getScope());
+            texts.addAll(printer.conjuncts(expression));
+            state.collect(printer);
+            markReads(printer.getReads());
+            markCorrelated(condition, state.getScope());
+        }
+        return texts;
+    }
+
+    private static void markReads(final List<PlanRead> reads) {
+        for (final PlanRead read : reads) {
+            read.mark();
+        }
+    }
+
+    /**
+     * Records the columns a nested query of a tree reads of a SELECT's relations by naming them with their
+     * qualifier, as a correlated condition does.
+     */
+    private static void markCorrelated(final ParseTree tree, final PlanScope scope) {
+        if (tree instanceof FrostlakeParser.SelectStatementContext) {
+            final Set<String> own = new HashSet<>();
+            ownRelations(tree, own);
+            correlatedReads(tree, scope, own);
+            return;
+        }
+        for (int i = 0; i < tree.getChildCount(); i++) {
+            markCorrelated(tree.getChild(i), scope);
+        }
+    }
+
+    private static void ownRelations(final ParseTree tree, final Set<String> into) {
+        if (tree instanceof FrostlakeParser.TableReferenceContext) {
+            final FrostlakeParser.TableReferenceContext reference = (FrostlakeParser.TableReferenceContext) tree;
+            final String alias = aliasOf(reference);
+            if (alias != null) {
+                into.add(alias.toUpperCase(Locale.ROOT));
+            } else if (reference.tableSource().tableQualifiedName() != null) {
+                final String[] parts = QualifiedName.parse(ParseTreeText.getQualifiedName(
+                    reference.tableSource().tableQualifiedName())).parts();
+                into.add(parts[parts.length - 1].toUpperCase(Locale.ROOT));
+            }
+        }
+        for (int i = 0; i < tree.getChildCount(); i++) {
+            ownRelations(tree.getChild(i), into);
+        }
+    }
+
+    private static void correlatedReads(final ParseTree tree, final PlanScope scope, final Set<String> own) {
+        if (tree instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(
+                ((FrostlakeParser.QualifiedNameExprContext) tree).qualifiedName());
+            if (parts.length >= 2 && !own.contains(parts[parts.length - 2].toUpperCase(Locale.ROOT))) {
+                final PlanFromItem item = scope.item(parts[parts.length - 2]);
+                final PlanColumn column = item == null ? null : item.column(parts[parts.length - 1]);
+                if (column != null) {
+                    column.markReads();
+                }
+            }
+            return;
+        }
+        for (int i = 0; i < tree.getChildCount(); i++) {
+            correlatedReads(tree.getChild(i), scope, own);
+        }
+    }
+
+    /** The position a key written as a whole number names, counted from one; null for any other key. */
+    private static Integer positionOf(final ParserRuleContext key) {
+        final Expression expression = parsed(key);
+        if (!(expression instanceof LiteralExpression)
+                || ((LiteralExpression) expression).getType() != LiteralType.INTEGER
+                || !(((LiteralExpression) expression).getValue() instanceof Number)) {
+            return null;
+        }
+        final long position = ((Number) ((LiteralExpression) expression).getValue()).longValue();
+        return position < 1 || position > Integer.MAX_VALUE ? null : Integer.valueOf((int) position);
     }
 
     /**
@@ -346,14 +659,167 @@ final class PlanBuilder {
         }
         final boolean limited = query.limitClause() != null || query.fetchClause() != null
             || only != null && only.topClause() != null;
-        final Long kept = limited ? keptRows(limitOf(query, only), plan) : null;
+        final Long count = limited ? limitOf(query, only) : null;
+        final Long kept = limited ? keptRows(count, plan) : null;
+        final List<String> limits = limited ? limitTexts(count, offsetOf(query)) : NONE;
+        // A query limited to no row reads nothing, a Generator of none (live-verified).
+        final boolean empty = count != null && count.longValue() == 0;
         if (query.orderByClause() != null) {
             final PlanNode sorted = "Sort".equals(plan.getOperation()) ? plan.getChildren().get(0) : plan;
-            return new PlanNode(limited ? "SortWithLimit" : "Sort", NONE, null,
-                Arrays.asList(ParseTreeText.getOriginalText(query.orderByClause()))).over(sorted)
-                .named(plan.getNames()).holding(kept);
+            final List<String> keys = sortKeys(query.orderByClause(), only, plan.getAnswered());
+            final List<String> texts = new ArrayList<>();
+            if (limited) {
+                texts.add("sortKey: [" + String.join(", ", keys) + "]");
+                texts.addAll(limits);
+            } else {
+                texts.addAll(keys);
+            }
+            if (sorted.isScan()) {
+                if (limited) {
+                    sorted.readOnce();
+                } else {
+                    sorted.readForSort(sortKeyColumns(query.orderByClause(), only, sorted));
+                }
+            }
+            return new PlanNode(limited ? "SortWithLimit" : "Sort", NONE, null, texts)
+                .over(empty ? nothingRead() : sorted).named(plan.getNames()).holding(kept)
+                .answering(plan.getAnswered());
         }
-        return limited ? operator("Limit").over(plan).named(plan.getNames()).holding(kept) : plan;
+        return limited ? new PlanNode("Limit", NONE, null, limits).over(empty ? nothingRead() : plan)
+            .named(plan.getNames()).holding(kept).answering(plan.getAnswered()) : plan;
+    }
+
+    /**
+     * The columns of a scan that an ORDER BY's keys read, in the order the scan reads them: a key's own columns, the
+     * select item a position names and the item an alias names.
+     */
+    private static List<String> sortKeyColumns(final FrostlakeParser.OrderByClauseContext orderBy,
+                                               final FrostlakeParser.SelectClauseContext only, final PlanNode scan) {
+        final Set<String> named = new HashSet<>();
+        for (final FrostlakeParser.OrderItemContext item : orderBy.orderItem()) {
+            final ParseTree key = keyItem(item.booleanExpr(), only);
+            collectColumns(key, named);
+        }
+        final List<String> columns = new ArrayList<>();
+        for (final String read : scan.getReadColumns()) {
+            if (named.contains(read)) {
+                columns.add(read);
+            }
+        }
+        return columns;
+    }
+
+    /** What an ORDER BY key reads: the select item a position or an alias names, else the key itself. */
+    private static ParseTree keyItem(final FrostlakeParser.BooleanExprContext key,
+                                     final FrostlakeParser.SelectClauseContext only) {
+        if (only == null || only.selectList() == null) {
+            return key;
+        }
+        final List<FrostlakeParser.SelectItemContext> items = only.selectList().selectItem();
+        final FrostlakeParser.ExpressionContext value = key instanceof FrostlakeParser.ValueExprContext
+            ? ((FrostlakeParser.ValueExprContext) key).expression() : null;
+        if (value instanceof FrostlakeParser.LiteralExprContext
+                && ((FrostlakeParser.LiteralExprContext) value).literal().INTEGER_LITERAL() != null) {
+            final int position = Integer.parseInt(
+                ((FrostlakeParser.LiteralExprContext) value).literal().INTEGER_LITERAL().getText());
+            return position >= 1 && position <= items.size() ? items.get(position - 1) : key;
+        }
+        if (value instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(
+                ((FrostlakeParser.QualifiedNameExprContext) value).qualifiedName());
+            for (final FrostlakeParser.SelectItemContext item : items) {
+                final String alias = SelectItemAccessors.getItemAlias(item);
+                if (parts.length == 1 && parts[0].equals(alias)) {
+                    return item;
+                }
+            }
+        }
+        return key;
+    }
+
+    /** The columns a parse tree names, each by the canonical last part of its name. */
+    private static void collectColumns(final ParseTree node, final Set<String> into) {
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(
+                ((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName());
+            into.add(parts[parts.length - 1]);
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectColumns(node.getChild(i), into);
+        }
+    }
+
+    /**
+     * The keys of an ORDER BY as a Sort lists them, each with its direction and its NULLS placement: a position as
+     * the select item it names, any other key as the plan spells it, an alias read as its item. The ORDER BY of a set
+     * operation names the columns the operation answers.
+     */
+    private List<String> sortKeys(final FrostlakeParser.OrderByClauseContext orderBy,
+                                  final FrostlakeParser.SelectClauseContext only, final List<PlanColumn> answered) {
+        PlanSelect state = only == null ? null : selects.get(only);
+        if (state == null) {
+            final PlanScope scope = new PlanScope(null);
+            scope.select(answered == null ? Collections.<PlanColumn>emptyList() : answered);
+            state = new PlanSelect(scope);
+        }
+        final List<String> keys = new ArrayList<>();
+        if (orderBy.allWord != null) {
+            final Boolean nullsFirst = orderBy.NULLS() == null ? null : Boolean.valueOf(orderBy.FIRST() != null);
+            for (final PlanColumn column : state.getScope().getSelected()) {
+                column.markReads();
+                keys.add(PlanExpressionText.sortKey(column.getText(), orderBy.DESC() == null, nullsFirst));
+            }
+        } else {
+            for (final FrostlakeParser.OrderItemContext item : orderBy.orderItem()) {
+                final Integer position = positionOf(item.booleanExpr());
+                final PlanColumn column = position == null ? null : state.getScope().selectedAt(position.intValue());
+                final String text;
+                if (column != null) {
+                    column.markReads();
+                    text = column.getText();
+                } else {
+                    text = text(item.booleanExpr(), state);
+                }
+                keys.add(PlanExpressionText.sortKey(text, item.DESC() == null,
+                    item.NULLS() == null ? null : Boolean.valueOf(item.FIRST() != null)));
+            }
+        }
+        state.render();
+        return keys;
+    }
+
+    /** What a Limit lists: its row count and its offset, each where it is written as a number. */
+    private static List<String> limitTexts(final Long count, final Long offset) {
+        final List<String> texts = new ArrayList<>();
+        if (count != null) {
+            texts.add("rowCount: " + count);
+        }
+        if (offset != null) {
+            texts.add("offset: " + offset);
+        }
+        return texts;
+    }
+
+    /** The rows an OFFSET skips when it is written as a number; null otherwise. */
+    private static Long offsetOf(final FrostlakeParser.SelectStatementContext query) {
+        final ParserRuleContext clause = query.limitClause() != null ? query.limitClause() : query.fetchClause();
+        if (clause == null) {
+            return null;
+        }
+        for (int i = 0; i + 1 < clause.getChildCount(); i++) {
+            final ParseTree child = clause.getChild(i);
+            if (child instanceof TerminalNode
+                    && ((TerminalNode) child).getSymbol().getType() == FrostlakeParser.OFFSET) {
+                return numberOf(clause.getChild(i + 1));
+            }
+        }
+        return null;
+    }
+
+    /** What a query limited to no row reads: a Generator of none. */
+    private static PlanNode nothingRead() {
+        return new PlanNode("Generator", NONE, null, Arrays.asList("0")).holding(Long.valueOf(0));
     }
 
     /** The rows a LIMIT, a FETCH or a TOP asks for when it is written as a number; null otherwise. */
@@ -450,17 +916,73 @@ final class PlanBuilder {
         return united(run, all, distinct);
     }
 
-    /** A run of operands under one union: as they are for UNION ALL, under an Aggregate for UNION. */
+    /**
+     * A run of operands under one union: as they are for UNION ALL, under an Aggregate for UNION. The union answers
+     * each column over its operands, {@code UNION_ALL(ET.A, EU.A)}, which a UNION's Aggregate groups by
+     * (live-verified).
+     */
     private static PlanNode united(final List<PlanNode> run, final boolean all, final boolean distinct) {
         if (run.size() == 1 || !all && !distinct) {
             return run.get(0);
         }
+        final List<PlanColumn> answered = unionColumns(run);
         final PlanNode union = operator("UnionAll");
         for (final PlanNode operand : run) {
             final boolean aggregated = distinct && run.size() > 2 && !"Aggregate".equals(operand.getOperation());
-            union.over(aggregated ? operator("Aggregate").over(operand) : operand);
+            union.over(aggregated ? grouped(operand.getAnswered(), operand) : operand);
         }
-        return distinct ? operator("Aggregate").over(union) : union;
+        return (distinct ? grouped(answered, union) : union).answering(answered);
+    }
+
+    /** The columns a union answers, each over its operands'; null where an operand's are not known. */
+    private static List<PlanColumn> unionColumns(final List<PlanNode> run) {
+        final List<PlanColumn> first = run.get(0).getAnswered();
+        for (final PlanNode operand : run) {
+            if (operand.getAnswered() == null || first == null || operand.getAnswered().size() != first.size()) {
+                return null;
+            }
+        }
+        final List<PlanColumn> columns = new ArrayList<>();
+        for (int i = 0; i < first.size(); i++) {
+            final List<String> texts = new ArrayList<>();
+            final List<PlanRead> reads = new ArrayList<>();
+            for (final PlanNode operand : run) {
+                texts.add(operand.getAnswered().get(i).getText());
+                reads.addAll(operand.getAnswered().get(i).getReads());
+            }
+            columns.add(new PlanColumn(first.get(i).getName(), "UNION_ALL(" + String.join(", ", texts) + ")",
+                first.get(i).getType(), reads, Collections.<String>emptyList(), false));
+        }
+        return columns;
+    }
+
+    /** An Aggregate over a plan that groups by the given columns, as a set operation's aggregates do. */
+    private static PlanNode grouped(final List<PlanColumn> keys, final PlanNode plan) {
+        final PlanNode aggregate = operator("Aggregate").over(plan);
+        if (keys != null && !keys.isEmpty()) {
+            final List<String> texts = new ArrayList<>();
+            for (final PlanColumn key : keys) {
+                key.markReads();
+                texts.add(key.getText());
+            }
+            aggregate.with("groupKeys: [" + String.join(", ", texts) + "]");
+        }
+        return aggregate;
+    }
+
+    /** What the join of two set operands lists: each column of the first equal to the second's. */
+    private static List<String> operandKeys(final PlanNode first, final PlanNode second) {
+        final List<PlanColumn> one = first.getAnswered();
+        final List<PlanColumn> other = second.getAnswered();
+        if (one == null || other == null || one.size() != other.size() || one.isEmpty()) {
+            return NONE;
+        }
+        final StringBuilder keys = new StringBuilder();
+        for (int i = 0; i < one.size(); i++) {
+            keys.append(i > 0 ? " AND " : "").append('(').append(one.get(i).getText()).append(" = ")
+                .append(other.get(i).getText()).append(')');
+        }
+        return Collections.singletonList("joinKey: " + keys);
     }
 
     /** INTERSECT: a SemiJoin of the two operands, each aggregated, the one that holds fewer rows first. */
@@ -468,25 +990,31 @@ final class PlanBuilder {
         final boolean leftFirst = holdsFewer(left, right);
         final PlanNode first = leftFirst ? left : right;
         final PlanNode second = leftFirst ? right : left;
-        return operator("Aggregate").over(operator("Aggregate").over(operator("SemiJoin")
-            .over(operator("Aggregate").over(first)).over(operator("Aggregate").over(joinFiltered(second)))));
+        final List<String> keys = operandKeys(first, second);
+        return grouped(left.getAnswered(), grouped(left.getAnswered(), operator("SemiJoin").expressed(keys)
+            .over(grouped(first.getAnswered(), first))
+            .over(grouped(second.getAnswered(), joinFiltered(second, keys))))).answering(left.getAnswered());
     }
 
     /** EXCEPT: an AntiJoin of the two operands, each aggregated, the one that holds fewer rows first. */
     private static PlanNode excepted(final PlanNode kept, final PlanNode taken) {
         final PlanNode join = operator("AntiJoin");
         if (holdsFewer(kept, taken)) {
-            join.over(operator("Aggregate").over(kept)).over(operator("Aggregate").over(joinFiltered(taken)));
+            final List<String> keys = operandKeys(kept, taken);
+            join.expressed(keys).over(grouped(kept.getAnswered(), kept))
+                .over(grouped(taken.getAnswered(), joinFiltered(taken, keys)));
         } else {
-            join.over(operator("Aggregate").over(taken)).over(operator("Aggregate").over(kept));
+            join.expressed(operandKeys(taken, kept)).over(grouped(taken.getAnswered(), taken))
+                .over(grouped(kept.getAnswered(), kept));
         }
-        return operator("Aggregate").over(operator("Aggregate").over(join));
+        return grouped(kept.getAnswered(), grouped(kept.getAnswered(), join)).answering(kept.getAnswered());
     }
 
     /**
      * What one SELECT reads: its FROM list, a Filter for what its WHERE holds beyond the conditions that join the
      * list, an Aggregate, a Filter for a HAVING, a WindowFunction and a Filter for a QUALIFY. A SELECT with no FROM
-     * reads a Generator of one row.
+     * reads a Generator of one row, or an empty ValuesClause where it calls a procedure's token. The operators list
+     * what they compute, and the plan answers the select list.
      */
     private PlanNode operandPlan(final FrostlakeParser.SelectOperandContext operand,
                                  final Map<String, FrostlakeParser.SelectStatementContext> named,
@@ -495,19 +1023,35 @@ final class PlanBuilder {
             return queryPlan(operand.selectStatement(), named);
         }
         final FrostlakeParser.SelectClauseContext select = operand.selectClause();
+        final PlanSelect state = new PlanSelect(new PlanScope(null));
+        selects.put(select, state);
+        // A sequence read is a Getnextval of its own under the Result, over the rows the FROM and the WHERE leave, or
+        // over an empty ValuesClause in place of the Generator a select with no FROM reads (live-verified).
+        final List<String> sequences = new ArrayList<>();
+        sequenceReads(select.selectList(), sequences);
+        state.getScope().readSequences(sequences);
         if (select.FROM() == null) {
-            return new PlanNode("Generator", NONE, null, Arrays.asList("1")).holding(Long.valueOf(1));
+            if (!sequences.isEmpty()) {
+                return nextvals(sequences, new PlanNode("ValuesClause", NONE, null, Arrays.asList("()")))
+                    .answering(selected(select, state));
+            }
+            if (ProcedureTokenCalls.holdsCall(executor, select.selectList())) {
+                return new PlanNode("ValuesClause", NONE, null, Arrays.asList("()")).answering(selected(select, state));
+            }
+            return new PlanNode("Generator", NONE, null, Arrays.asList("1")).holding(Long.valueOf(1))
+                .answering(selected(select, state));
         }
+        awaitItems(select.tableExpression(), state.getScope());
         final List<FrostlakeParser.BooleanExprContext> conditions = new ArrayList<>();
         if (select.whereClause() != null) {
             conjuncts(select.whereClause().booleanExpr(), conditions);
         }
-        final int written = conditions.size();
-        PlanNode plan = listPlan(null, select.tableExpression(), conditions, named);
+        PlanNode plan = listPlan(null, select.tableExpression(), conditions, named, state.getScope());
+        final List<PlanColumn> answered = selected(select, state);
         if (!conditions.isEmpty()) {
-            plan = filtered(plan, conditions.size() == written
-                ? ParseTreeText.getOriginalText(select.whereClause().booleanExpr()) : textOf(conditions));
+            plan = filtered(plan, texts(conditions, state));
         }
+        plan = nextvals(sequences, plan);
         final List<FrostlakeParser.BooleanExprContext> grouped = new ArrayList<>();
         final List<FrostlakeParser.BooleanExprContext> plain = new ArrayList<>();
         if (select.havingClause() != null) {
@@ -521,26 +1065,126 @@ final class PlanBuilder {
             }
         }
         if (!plain.isEmpty()) {
-            plan = filtered(plan, textOf(plain));
+            plan = filtered(plan, texts(plain, state));
         }
         if (select.groupByClause() != null || select.DISTINCT() != null || !grouped.isEmpty()
                 || aggregates(select.selectList()) || aggregates(select.qualifyClause())) {
-            plan = new PlanNode(groupsBySets(select.groupByClause()) ? "GroupingSets" : "Aggregate", NONE, null,
-                select.groupByClause() == null ? NONE
-                    : Arrays.asList(ParseTreeText.getOriginalText(select.groupByClause()))).over(plan);
+            plan = operator(groupsBySets(select.groupByClause()) ? "GroupingSets" : "Aggregate").over(plan);
+            state.aggregatedBy(plan);
+            groupKeys(select, state, answered);
         }
         if (!grouped.isEmpty()) {
-            plan = new PlanNode("Filter", NONE, null, Arrays.asList(textOf(grouped))).over(plan);
+            plan = operator("Filter").filtering(texts(grouped, state)).over(plan);
         }
+        PlanNode windowedScan = null;
         if (computesAWindow(select.selectList()) || computesAWindow(select.qualifyClause())) {
+            windowedScan = plan.isScan() ? plan : null;
             plan = operator("WindowFunction").over(plan);
+            state.windowedBy(plan);
         }
         if (select.qualifyClause() != null) {
-            plan = new PlanNode("Filter", NONE, null,
-                Arrays.asList(ParseTreeText.getOriginalText(select.qualifyClause().booleanExpr()))).over(plan);
+            final List<FrostlakeParser.BooleanExprContext> qualifying = new ArrayList<>();
+            conjuncts(select.qualifyClause().booleanExpr(), qualifying);
+            plan = operator("Filter").filtering(texts(qualifying, state)).over(plan);
         }
-        return several && select.topClause() != null ? operator("Limit").over(plan)
-            .holding(keptRows(numberOf(select.topClause().INTEGER_LITERAL()), plan)) : plan;
+        state.render();
+        if (windowedScan != null) {
+            readTwiceForWindows(select, windowedScan);
+        }
+        if (several && select.topClause() != null) {
+            final Long count = numberOf(select.topClause().INTEGER_LITERAL());
+            plan = new PlanNode("Limit", NONE, null, limitTexts(count, null)).over(plan).holding(keptRows(count, plan));
+        }
+        return plan.answering(answered);
+    }
+
+    /** Collects the sequences a select list reads NEXTVAL of, one for each read in the order written. */
+    private static void sequenceReads(final ParseTree node, final List<String> found) {
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            return;
+        }
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(
+                ((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName());
+            if (parts.length > 1 && "NEXTVAL".equalsIgnoreCase(parts[parts.length - 1])) {
+                found.add(parts[parts.length - 2].toUpperCase(Locale.ROOT));
+            }
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            sequenceReads(node.getChild(i), found);
+        }
+    }
+
+    /** A Getnextval for each sequence read over the plan, the first read lowest. */
+    private static PlanNode nextvals(final List<String> sequences, final PlanNode under) {
+        PlanNode plan = under;
+        for (final String sequence : sequences) {
+            plan = new PlanNode("Getnextval", NONE, null, Arrays.asList(SqlIdentifiers.spellCanonical(sequence)))
+                .over(plan);
+        }
+        return plan;
+    }
+
+    /**
+     * Gathers the keys a SELECT's Aggregate groups by: those of its GROUP BY, a position or an alias read as the
+     * select item it names, every item that aggregates nothing for GROUP BY ALL, and for a DISTINCT its select items.
+     * A ROLLUP, a CUBE and GROUPING SETS list no key; the columns they read are read all the same.
+     */
+    private void groupKeys(final FrostlakeParser.SelectClauseContext select, final PlanSelect state,
+                           final List<PlanColumn> answered) {
+        final FrostlakeParser.GroupByClauseContext groupBy = select.groupByClause();
+        if (groupBy == null) {
+            if (select.DISTINCT() != null) {
+                for (final PlanColumn column : answered) {
+                    column.markReads();
+                    state.groupBy(column.getText());
+                }
+            }
+            return;
+        }
+        if (groupBy.ALL() != null) {
+            for (final FrostlakeParser.SelectItemContext item : select.selectList().selectItem()) {
+                if (item instanceof FrostlakeParser.ExprItemContext) {
+                    if (!aggregates(item)) {
+                        state.groupBy(text(((FrostlakeParser.ExprItemContext) item).booleanExpr(), state));
+                    }
+                    continue;
+                }
+                final List<PlanColumn> starred = starred(item, state.getScope());
+                for (final PlanColumn column : starred == null ? Collections.<PlanColumn>emptyList() : starred) {
+                    column.markReads();
+                    state.groupBy(column.getText());
+                }
+            }
+            return;
+        }
+        for (final FrostlakeParser.GroupByElementContext element : groupBy.groupByElement()) {
+            if (element.booleanExpr() == null) {
+                readKeys(element, state);
+                continue;
+            }
+            final Integer position = positionOf(element.booleanExpr());
+            final PlanColumn column = position == null ? null : state.getScope().selectedAt(position.intValue());
+            if (column != null) {
+                column.markReads();
+                state.groupBy(column.getText());
+            } else {
+                state.groupBy(text(element.booleanExpr(), state));
+            }
+        }
+    }
+
+    /** Records the columns the keys of a ROLLUP, a CUBE or GROUPING SETS read. */
+    private void readKeys(final ParseTree tree, final PlanSelect state) {
+        for (int i = 0; i < tree.getChildCount(); i++) {
+            final ParseTree child = tree.getChild(i);
+            if (child instanceof FrostlakeParser.BooleanExprContext) {
+                text((FrostlakeParser.BooleanExprContext) child, state);
+            } else {
+                readKeys(child, state);
+            }
+        }
     }
 
     /**
@@ -550,7 +1194,8 @@ final class PlanBuilder {
      */
     private PlanNode listPlan(final PlanNode start, final ParserRuleContext list,
                               final List<FrostlakeParser.BooleanExprContext> conditions,
-                              final Map<String, FrostlakeParser.SelectStatementContext> named) {
+                              final Map<String, FrostlakeParser.SelectStatementContext> named,
+                              final PlanScope scope) {
         PlanNode plan = start;
         for (int i = 0; i < list.getChildCount(); i++) {
             final ParseTree child = list.getChild(i);
@@ -560,14 +1205,14 @@ final class PlanBuilder {
                     plan = flattened(plan);
                     continue;
                 }
-                final PlanNode read = referencePlan(reference, named);
+                final PlanNode read = referencePlan(reference, named, scope);
                 if (plan == null || read == null) {
                     plan = plan == null ? read : plan;
                 } else {
-                    plan = unconditioned(plan, read, conditions);
+                    plan = unconditioned(plan, read, conditions, scope);
                 }
             } else if (child instanceof FrostlakeParser.JoinClauseContext) {
-                plan = joined(plan, (FrostlakeParser.JoinClauseContext) child, conditions, named);
+                plan = joined(plan, (FrostlakeParser.JoinClauseContext) child, conditions, named, scope);
             }
         }
         return plan;
@@ -576,53 +1221,140 @@ final class PlanBuilder {
     /** What a JOIN makes of what stands before it and the reference it reads. */
     private PlanNode joined(final PlanNode plan, final FrostlakeParser.JoinClauseContext join,
                             final List<FrostlakeParser.BooleanExprContext> conditions,
-                            final Map<String, FrostlakeParser.SelectStatementContext> named) {
+                            final Map<String, FrostlakeParser.SelectStatementContext> named, final PlanScope scope) {
         if (flattens(join.tableReference().tableSource())) {
             return flattened(plan);
         }
-        final PlanNode read = referencePlan(join.tableReference(), named);
+        final PlanNode read = referencePlan(join.tableReference(), named, scope);
         if (plan == null || read == null) {
             return plan == null ? read : plan;
         }
         final FrostlakeParser.JoinTypeContext type = join.joinType();
         if (join.CROSS() != null || join.ON() == null && join.USING() == null && join.NATURAL() == null) {
-            return unconditioned(plan, read, conditions);
+            return unconditioned(plan, read, conditions, scope);
         }
-        boolean keyed = join.ON() == null;
-        if (!keyed) {
+        final PlanJoinKeys keys = new PlanJoinKeys(plan, read);
+        final boolean keyed;
+        if (join.ON() != null) {
             final List<FrostlakeParser.BooleanExprContext> on = new ArrayList<>();
             conjuncts(join.booleanExpr(), on);
-            keyed = takesKeys(on, plan.getNames(), read.getNames());
+            keyed = keyedBy(takeKeys(on, plan.getNames(), read.getNames()), on, plan, read, keys, scope);
+        } else {
+            keyed = true;
+            sharedKeys(join, plan, read, keys, scope);
         }
         if (type != null && type.LEFT() != null) {
-            return outer(plan, read, keyed);
+            return outer(plan, read, keyed, keys);
         }
         if (type != null && type.RIGHT() != null) {
-            return outer(read, plan, keyed);
+            return outer(read, plan, keyed, keys);
         }
         if (type != null && type.FULL() != null) {
             final boolean leftFirst = !holdsFewer(read, plan);
-            return operator("FullOuterJoin").over(leftFirst ? plan : read).over(leftFirst ? read : plan)
-                .named(both(plan, read));
+            return operator("FullOuterJoin").expressed(keys.texts(leftFirst ? plan : read))
+                .over(leftFirst ? plan : read).over(leftFirst ? read : plan).named(both(plan, read));
         }
-        return keyed ? inner(plan, read) : cartesian(plan, read);
+        return keyed ? inner(plan, read, keys) : cartesian(plan, read, keys);
     }
 
     /**
      * Two sides joined with no condition of their own: an InnerJoin when a condition of the WHERE equates them, a
      * CartesianJoin otherwise. Either join takes the conditions that name columns of both sides for its own.
      */
-    private static PlanNode unconditioned(final PlanNode left, final PlanNode right,
-                                          final List<FrostlakeParser.BooleanExprContext> conditions) {
-        final boolean keyed = takesKeys(conditions, left.getNames(), right.getNames());
+    private PlanNode unconditioned(final PlanNode left, final PlanNode right,
+                                   final List<FrostlakeParser.BooleanExprContext> conditions, final PlanScope scope) {
+        final List<FrostlakeParser.BooleanExprContext> keyConditions =
+            takeKeys(conditions, left.getNames(), right.getNames());
+        final List<FrostlakeParser.BooleanExprContext> across = new ArrayList<>();
         for (int i = conditions.size() - 1; i >= 0; i--) {
             final Set<String> named = new LinkedHashSet<>();
             namesAColumn(conditions.get(i), named);
             if (meets(named, left.getNames()) && meets(named, right.getNames())) {
-                conditions.remove(i);
+                across.add(0, conditions.remove(i));
             }
         }
-        return keyed ? inner(left, right) : cartesian(left, right);
+        final PlanJoinKeys keys = new PlanJoinKeys(left, right);
+        return keyedBy(keyConditions, across, left, right, keys, scope) ? inner(left, right, keys)
+            : cartesian(left, right, keys);
+    }
+
+    /**
+     * Records, as the plan spells them, the keys a join's equalities make and its other conditions over both sides —
+     * a condition over one side only is not the join's — and the columns all of them read; says whether there was a
+     * key.
+     */
+    private boolean keyedBy(final List<FrostlakeParser.BooleanExprContext> keyConditions,
+                            final List<FrostlakeParser.BooleanExprContext> others, final PlanNode left,
+                            final PlanNode right, final PlanJoinKeys keys, final PlanScope scope) {
+        if (scope == null) {
+            return !keyConditions.isEmpty();
+        }
+        for (final FrostlakeParser.BooleanExprContext condition : keyConditions) {
+            final FrostlakeParser.ComparisonExprContext comparison = (FrostlakeParser.ComparisonExprContext)
+                ((FrostlakeParser.ValueExprContext) bracketed(condition)).expression();
+            final Expression one = parsed(comparison.expression(0));
+            final Expression other = parsed(comparison.expression(1));
+            if (one == null || other == null) {
+                continue;
+            }
+            final PlanExpressionText onePrinter = printer(scope);
+            final PlanExpressionText otherPrinter = printer(scope);
+            final String oneText = onePrinter.spell(one);
+            final String otherText = otherPrinter.spell(other);
+            markReads(onePrinter.getReads());
+            markReads(otherPrinter.getReads());
+            final boolean turned = !onePrinter.getOwners().isEmpty()
+                && right.getNames().containsAll(onePrinter.getOwners())
+                || !otherPrinter.getOwners().isEmpty() && left.getNames().containsAll(otherPrinter.getOwners());
+            keys.key(turned ? otherText : oneText, turned ? oneText : otherText);
+        }
+        for (final FrostlakeParser.BooleanExprContext condition : others) {
+            final Expression expression = parsed(condition);
+            if (expression == null) {
+                continue;
+            }
+            final PlanExpressionText printer = printer(scope);
+            final String text = printer.spell(expression);
+            markReads(printer.getReads());
+            if (meets(printer.getOwners(), left.getNames()) && meets(printer.getOwners(), right.getNames())) {
+                keys.filter(text);
+            }
+        }
+        return !keyConditions.isEmpty();
+    }
+
+    /** Records the keys of a USING or a NATURAL join: each column the two sides share, read on either side. */
+    private static void sharedKeys(final FrostlakeParser.JoinClauseContext join, final PlanNode left,
+                                   final PlanNode right, final PlanJoinKeys keys, final PlanScope scope) {
+        if (scope == null) {
+            return;
+        }
+        final List<String> shared = new ArrayList<>();
+        if (join.usingColumnList() != null) {
+            for (final FrostlakeParser.QualifiedNameContext column : join.usingColumnList().qualifiedName()) {
+                final String[] parts = ParseTreeText.qualifiedNameParts(column);
+                shared.add(parts[parts.length - 1]);
+            }
+        } else {
+            for (final PlanFromItem item : scope.getItems()) {
+                if (right.getNames().contains(item.getKey()) && item.getColumns() != null) {
+                    for (final PlanColumn column : item.getColumns()) {
+                        if (scope.resolveIn(left.getNames(), column.getName()) != null) {
+                            shared.add(column.getName());
+                        }
+                    }
+                }
+            }
+        }
+        for (final String name : shared) {
+            final PlanColumn one = scope.resolveIn(left.getNames(), name);
+            final PlanColumn other = scope.resolveIn(right.getNames(), name);
+            if (one != null && other != null) {
+                one.markReads();
+                other.markReads();
+                keys.key(one.getText(), other.getText());
+            }
+        }
     }
 
     private static boolean meets(final Set<String> some, final Set<String> others) {
@@ -635,16 +1367,17 @@ final class PlanBuilder {
     }
 
     /** An InnerJoin: the side that holds fewer rows, then the other under a JoinFilter. */
-    private static PlanNode inner(final PlanNode left, final PlanNode right) {
+    private static PlanNode inner(final PlanNode left, final PlanNode right, final PlanJoinKeys keys) {
         final boolean leftFirst = holdsFewer(left, right);
-        return operator("InnerJoin").over(leftFirst ? left : right).over(joinFiltered(leftFirst ? right : left))
-            .named(both(left, right));
+        final List<String> texts = keys.texts(leftFirst ? left : right);
+        return operator("InnerJoin").expressed(texts).over(leftFirst ? left : right)
+            .over(joinFiltered(leftFirst ? right : left, texts)).named(both(left, right));
     }
 
-    private static PlanNode cartesian(final PlanNode left, final PlanNode right) {
-        final boolean leftFirst = holdsFewer(left, right);
-        return operator("CartesianJoin").over(leftFirst ? left : right).over(leftFirst ? right : left)
-            .named(both(left, right));
+    private static PlanNode cartesian(final PlanNode left, final PlanNode right, final PlanJoinKeys keys) {
+        final boolean leftFirst = holdsFewer(left, right) || generatorTies(right, left);
+        return operator("CartesianJoin").expressed(keys.texts(leftFirst ? left : right))
+            .over(leftFirst ? left : right).over(leftFirst ? right : left).named(both(left, right));
     }
 
     /**
@@ -655,42 +1388,46 @@ final class PlanBuilder {
      * @param kept  the side whose rows are all kept
      * @param other the side whose rows are kept where they match
      * @param keyed whether the join's condition equates the two sides
+     * @param keys  the join's conditions
      */
-    private static PlanNode outer(final PlanNode kept, final PlanNode other, final boolean keyed) {
+    private static PlanNode outer(final PlanNode kept, final PlanNode other, final boolean keyed,
+                                  final PlanJoinKeys keys) {
         final boolean otherFirst = !holdsFewer(kept, other);
-        final PlanNode join = operator("LeftOuterJoin");
+        final List<String> texts = keys.texts(otherFirst ? other : kept);
+        final PlanNode join = operator("LeftOuterJoin").expressed(texts);
         if (!keyed) {
             join.over(otherFirst ? other : kept).over(otherFirst ? kept : other);
         } else if (otherFirst) {
-            join.over(underFilter(other)).over(kept);
+            join.over(underFilter(other, keys.nullChecks(other))).over(kept);
         } else {
-            join.over(kept).over(underFilter(joinFiltered(other)));
+            join.over(kept).over(underFilter(joinFiltered(other, texts), keys.nullChecks(other)));
         }
         final Set<String> names = new LinkedHashSet<>(kept.getNames());
         names.addAll(other.getNames());
         return join.named(names);
     }
 
-    /** A plan under a Filter of its own; a plan that is a Filter already stays as it is. */
-    private static PlanNode underFilter(final PlanNode plan) {
-        return "Filter".equals(plan.getOperation()) ? plan : operator("Filter").over(plan).named(plan.getNames());
+    /** A plan under a Filter of its own checking the given conditions; a plan that is a Filter already takes them. */
+    private static PlanNode underFilter(final PlanNode plan, final List<String> checks) {
+        return "Filter".equals(plan.getOperation()) ? plan.filtering(checks)
+            : operator("Filter").filtering(checks).over(plan).named(plan.getNames());
     }
 
     /**
-     * A plan under a JoinFilter, which stands under the plan's own Filters and Aggregates and over each operand of a
-     * UnionAll.
+     * A plan under a JoinFilter listing the join's conditions, which stands under the plan's own Filters and
+     * Aggregates and over each operand of a UnionAll.
      */
-    private static PlanNode joinFiltered(final PlanNode plan) {
+    private static PlanNode joinFiltered(final PlanNode plan, final List<String> keys) {
         final String operation = plan.getOperation();
         if ("UnionAll".equals(operation)
                 || ("Filter".equals(operation) || "Aggregate".equals(operation)) && plan.getChildren().size() == 1) {
-            final PlanNode above = new PlanNode(operation, NONE, null, plan.getExpressions());
+            final PlanNode above = plan.alike();
             for (final PlanNode child : plan.getChildren()) {
-                above.over(joinFiltered(child));
+                above.over(joinFiltered(child, keys));
             }
-            return above.named(plan.getNames());
+            return above.named(plan.getNames()).answering(plan.getAnswered());
         }
-        return operator("JoinFilter").over(plan).named(plan.getNames());
+        return operator("JoinFilter").expressed(keys).over(plan).named(plan.getNames());
     }
 
     /** A Flatten over what stands before it, or over a ValuesClause where nothing does. */
@@ -710,6 +1447,15 @@ final class PlanBuilder {
         final Long firstRows = rowsOf(first);
         final Long secondRows = rowsOf(second);
         return firstRows != null && secondRows != null && firstRows.longValue() < secondRows.longValue();
+    }
+
+    /**
+     * Whether a Generator holds as many rows as the side beside it, which then stands first: {@code FROM g1,
+     * TABLE(GENERATOR(ROWCOUNT => g1.n))} over g1's one row scans g1 before the Generator of 1 (live-verified).
+     */
+    private static boolean generatorTies(final PlanNode generator, final PlanNode other) {
+        final Long rows = rowsOf(generator);
+        return "Generator".equals(generator.getOperation()) && rows != null && rows.equals(rowsOf(other));
     }
 
     /** The rows a plan is taken to answer: those its source holds, all of a union's, the larger side's of a join. */
@@ -738,10 +1484,18 @@ final class PlanBuilder {
      * operators a SAMPLE adds, which a plan numbers and does not list: one, and two for a fixed number of rows.
      */
     private PlanNode referencePlan(final FrostlakeParser.TableReferenceContext reference,
-                                   final Map<String, FrostlakeParser.SelectStatementContext> named) {
-        PlanNode plan = sourcePlan(reference, named);
+                                   final Map<String, FrostlakeParser.SelectStatementContext> named,
+                                   final PlanScope scope) {
+        PlanNode plan = sourcePlan(reference, named, scope);
         if (plan == null) {
             return null;
+        }
+        final PlanFromItem item = pending.remove(reference);
+        if (item != null && reference.pivotClause() == null && reference.unpivotClause() == null) {
+            final List<PlanColumn> columns = columnsOf(plan, reference);
+            if (columns != null) {
+                item.bind(columns);
+            }
         }
         final Set<String> names = plan.getNames();
         if (reference.pivotClause() != null) {
@@ -839,17 +1593,28 @@ final class PlanBuilder {
      * operator for any other source.
      */
     private PlanNode sourcePlan(final FrostlakeParser.TableReferenceContext reference,
-                                final Map<String, FrostlakeParser.SelectStatementContext> named) {
+                                final Map<String, FrostlakeParser.SelectStatementContext> named,
+                                final PlanScope scope) {
         final FrostlakeParser.TableSourceContext source = reference.tableSource();
         if (source.tableQualifiedName() != null) {
             final String written = ParseTreeText.getQualifiedName(source.tableQualifiedName());
             final String[] parts = QualifiedName.parse(written).parts();
             final Set<String> name = Collections.singleton(parts[parts.length - 1].toUpperCase(Locale.ROOT));
+            final PlanNode recursion = recursions.get(written.toUpperCase(Locale.ROOT));
+            if (recursion != null) {
+                // The recursive term reads its own CTE: the clause it feeds back, no operator of its own.
+                return new PlanNode("WithReference", NONE, null, NONE).answering(recursion.getAnswered())
+                    .readingRecursion(recursion).named(name);
+            }
             final FrostlakeParser.SelectStatementContext expression = named.get(written.toUpperCase(Locale.ROOT));
             if (expression != null) {
                 final Map<String, FrostlakeParser.SelectStatementContext> others = new HashMap<>(named);
                 others.remove(written.toUpperCase(Locale.ROOT));
-                return queryPlan(expression, others).named(name);
+                final PlanNode recursive = recursivePlan(expression, written, others);
+                if (recursive != null) {
+                    return recursive.named(name);
+                }
+                return underListedNames(queryPlan(expression, others), expression).named(name);
             }
             final PlanNode viewed = viewPlan(written);
             return viewed != null ? viewed.named(name) : scan(qualified(written), aliasOf(reference)).named(name);
@@ -861,22 +1626,78 @@ final class PlanBuilder {
             return values(source.valueTupleList());
         }
         if (source.tableReference() != null) {
-            return listPlan(null, source, new ArrayList<FrostlakeParser.BooleanExprContext>(), named);
+            return listPlan(null, source, new ArrayList<FrostlakeParser.BooleanExprContext>(), named, scope);
         }
         final String queried = queriedText(source);
         if (queried != null) {
             // A TO_QUERY handed its text as a literal reads as that query, planned where it stands (live-verified).
             final FrostlakeParser.SelectStatementContext inner = executor.subqueryStatement(queried);
-            return inner == null ? null
+            return inner == null ? calledPlan(queried)
                 : queryPlan(inner, new HashMap<String, FrostlakeParser.SelectStatementContext>())
                     .named(Collections.<String>emptySet());
         }
         if ("GENERATOR".equals(calledName(source))) {
-            final Long rows = rowCountOf(source);
+            final Long rows = rowCountOf(source) != null ? rowCountOf(source) : pinnedRowCount(source);
             return new PlanNode("Generator", NONE, null,
                 rows == null ? NONE : Arrays.asList(rows.toString())).holding(rows);
         }
         return null;
+    }
+
+    /**
+     * A recursive common table expression as the account plans it (live-verified): a RecursiveWithClause named by the
+     * CTE over its anchor and its recursive term, the term reading the clause back where it reads the CTE, and the
+     * CTE's columns answered under its name, {@code R.N}; an anchor with no FROM is a ValuesClause, {@code ()}. Null
+     * for a CTE that does not read itself, or whose body is other than one anchor and one term after it.
+     */
+    private PlanNode recursivePlan(final FrostlakeParser.SelectStatementContext body, final String written,
+                                   final Map<String, FrostlakeParser.SelectStatementContext> others) {
+        final String key = written.toUpperCase(Locale.ROOT);
+        final List<FrostlakeParser.SelectOperandContext> operands = body.selectOperand();
+        if (operands.size() != 2 || RecursiveViewChain.reads(operands.get(0), key)
+                || !RecursiveViewChain.reads(operands.get(1), key)) {
+            return null;
+        }
+        final PlanNode anchor = underListedNames(operandPlan(operands.get(0), others, false), body);
+        if (anchor.getAnswered() == null) {
+            return null;
+        }
+        final String[] parts = QualifiedName.parse(written).parts();
+        final String spelled = SqlIdentifiers.spellCanonical(parts[parts.length - 1]);
+        final List<PlanColumn> columns = new ArrayList<>();
+        for (final PlanColumn column : anchor.getAnswered()) {
+            columns.add(new PlanColumn(column.getName(), column.getName() == null ? column.getText()
+                : spelled + "." + SqlIdentifiers.spellCanonical(column.getName()), column.getType(),
+                Collections.<PlanRead>emptyList(), Collections.<String>emptyList(), false));
+        }
+        final PlanNode recursion = operator("RecursiveWithClause").with(spelled).answering(columns);
+        final FrostlakeParser.SelectClauseContext first = operands.get(0).selectClause();
+        recursion.over(first != null && first.FROM() == null
+            ? new PlanNode("ValuesClause", NONE, null, Arrays.asList("()")) : anchor);
+        recursions.put(key, recursion);
+        try {
+            recursion.over(operandPlan(operands.get(1), others, false));
+        } finally {
+            recursions.remove(key);
+        }
+        return recursion;
+    }
+
+    /** A common table expression's plan, answering its columns under the names its column list gives them. */
+    private static PlanNode underListedNames(final PlanNode plan, final FrostlakeParser.SelectStatementContext body) {
+        if (!(body.getParent() instanceof FrostlakeParser.CteDefinitionContext) || plan.getAnswered() == null) {
+            return plan;
+        }
+        final FrostlakeParser.ColumnListOptionalContext listed =
+            ((FrostlakeParser.CteDefinitionContext) body.getParent()).columnListOptional();
+        if (listed == null || listed.namePart().size() != plan.getAnswered().size()) {
+            return plan;
+        }
+        final List<PlanColumn> renamed = new ArrayList<>();
+        for (int i = 0; i < listed.namePart().size(); i++) {
+            renamed.add(plan.getAnswered().get(i).named(ParseTreeText.namePartText(listed.namePart(i))));
+        }
+        return plan.answering(renamed);
     }
 
     /** The plan of the query a view stands for, its names read in the view's own schema; null for no view. */
@@ -951,12 +1772,12 @@ final class PlanBuilder {
         return new PlanNode("Result", NONE, null, counts);
     }
 
-    /** A Filter over a plan; a plan that is a Filter already takes the condition as one more of its own. */
-    private static PlanNode filtered(final PlanNode plan, final String condition) {
+    /** A Filter over a plan; a plan that is a Filter already takes the conditions as more of its own. */
+    private static PlanNode filtered(final PlanNode plan, final List<String> conditions) {
         if (plan != null && "Filter".equals(plan.getOperation())) {
-            return plan.with(condition);
+            return plan.filtering(conditions);
         }
-        final PlanNode filter = new PlanNode("Filter", NONE, null, Arrays.asList(condition)).over(plan);
+        final PlanNode filter = operator("Filter").filtering(conditions).over(plan);
         return plan == null ? filter : filter.named(plan.getNames());
     }
 
@@ -979,6 +1800,67 @@ final class PlanBuilder {
         for (int i = 0; i < call.getChildCount(); i++) {
             if (call.getChild(i) instanceof FrostlakeParser.FunctionNameContext) {
                 return call.getChild(i).getText().toUpperCase(Locale.ROOT);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The source a TO_QUERY handed a CALL reads: an empty ValuesClause answering the call as its one column, the
+     * procedure spelled with its parameters' names, {@code P_W2(X)} (live-verified); null for any other text.
+     */
+    private PlanNode calledPlan(final String text) {
+        final FrostlakeParser.SqlScriptContext script;
+        try {
+            script = QueryExecutor.parsedScriptQuietly(text);
+        } catch (final RuntimeException unreadable) {
+            return null;
+        }
+        if (script.flowChain().size() != 1 || script.flowChain(0).statement().size() != 1) {
+            return null;
+        }
+        final FrostlakeParser.StatementContext statement = script.flowChain(0).statement(0);
+        if (statement.proceduralStatement() == null || statement.proceduralStatement().callStatement() == null
+                || statement.proceduralStatement().callStatement().qualifiedName() == null) {
+            return null;
+        }
+        final FrostlakeParser.CallStatementContext call = statement.proceduralStatement().callStatement();
+        final String[] parts = ParseTreeText.qualifiedNameParts(call.qualifiedName());
+        final Procedure procedure = calledProcedure(parts,
+            call.callArguments() == null ? 0 : call.callArguments().callArgument().size());
+        final String name = SqlIdentifiers.spellCanonical(procedure != null ? procedure.getName()
+            : parts[parts.length - 1].toUpperCase(Locale.ROOT));
+        final StringBuilder spelled = new StringBuilder(name).append('(');
+        if (procedure != null) {
+            for (int i = 0; i < procedure.getParameters().size(); i++) {
+                final Parameter parameter = procedure.getParameters().get(i);
+                spelled.append(i > 0 ? ", " : "").append(SqlIdentifiers.spellCanonical(parameter.getName()));
+            }
+        }
+        spelled.append(')');
+        return new PlanNode("ValuesClause", NONE, null, Arrays.asList("()")).answering(Collections.singletonList(
+            new PlanColumn(name, spelled.toString(), null, Collections.<PlanRead>emptyList(),
+                Collections.<String>emptyList(), false)));
+    }
+
+    /** The procedure a CALL's name reaches with as many parameters as it writes arguments; null for none. */
+    private Procedure calledProcedure(final String[] parts, final int arguments) {
+        final List<Schema> schemas = new ArrayList<>();
+        if (parts.length == 1) {
+            schemas.addAll(executor.searchPathSchemas());
+        } else if (parts.length <= 3) {
+            final String databaseName = parts.length == 3 ? parts[0] : executor.getCatalog().getCurrentDatabase();
+            final Database database = databaseName == null ? null : executor.getCatalog().getDatabase(databaseName);
+            final Schema schema = database == null ? null : database.getSchema(parts[parts.length - 2]);
+            if (schema != null) {
+                schemas.add(schema);
+            }
+        }
+        for (final Schema schema : schemas) {
+            for (final Procedure procedure : schema.getProcedureOverloads(parts[parts.length - 1])) {
+                if (procedure.getParameters().size() == arguments) {
+                    return procedure;
+                }
             }
         }
         return null;
@@ -1044,6 +1926,108 @@ final class PlanBuilder {
         return null;
     }
 
+    /**
+     * The rows a GENERATOR's ROWCOUNT stands for where it reads columns of the tables beside it that the statistics pin
+     * to one value: {@code FROM g1, TABLE(GENERATOR(ROWCOUNT => g1.n + 1))}, g1 holding the one row 1, is a Generator
+     * of 2 (live-verified); null where it reads anything else.
+     */
+    private Long pinnedRowCount(final FrostlakeParser.TableSourceContext source) {
+        final FrostlakeParser.ExpressionContext bound = rowCountArgument(source);
+        if (bound == null || bound.getStart() == null || bound.getStop() == null || holdsQuery(bound)
+                || !GeneratorBounds.foldsItsCalls(bound)) {
+            return null;
+        }
+        final List<FrostlakeParser.QualifiedNameExprContext> columns = new ArrayList<>();
+        collectColumns(bound, columns);
+        if (columns.isEmpty()) {
+            return null;
+        }
+        final StoredColumnValues stored = new StoredColumnValues(executor);
+        final StringBuilder text = new StringBuilder(ParseTreeText.getOriginalText(bound));
+        final int base = bound.getStart().getStartIndex();
+        for (int i = columns.size() - 1; i >= 0; i--) {
+            final FrostlakeParser.QualifiedNameExprContext column = columns.get(i);
+            final Object value = pinnedValue(stored, column);
+            if (!(value instanceof Number)) {
+                return null;
+            }
+            text.replace(column.getStart().getStartIndex() - base, column.getStop().getStopIndex() - base + 1,
+                value.toString());
+        }
+        try {
+            final Object rows = new ExpressionEvaluator(null, executor.getFunctionRegistry(), executor.getCatalog(),
+                executor).evaluate(ExpressionEvaluator.parse(text.toString()), null);
+            final BigDecimal count = rows instanceof Number ? new BigDecimal(rows.toString()) : null;
+            return count == null || count.signum() < 0 || count.stripTrailingZeros().scale() > 0 ? null
+                : Long.valueOf(count.longValueExact());
+        } catch (final RuntimeException unfolded) {
+            return null;
+        }
+    }
+
+    /** The one value the statistics pin a catalog table's column to, read as {@code t.c}; null for any other. */
+    private Object pinnedValue(final StoredColumnValues stored, final FrostlakeParser.QualifiedNameExprContext column) {
+        final String[] parts = ParseTreeText.qualifiedNameParts(column.qualifiedName());
+        final FrostlakeParser.TableReferenceContext item = parts.length == 2
+            ? DerivedRelationPins.fromItem(column, parts[0].toUpperCase(Locale.ROOT)) : null;
+        final FrostlakeParser.TableSourceContext source = item == null ? null : item.tableSource();
+        if (source == null || source.tableQualifiedName() == null || source.timeTravelClause() != null
+                || ParseTreeText.qualifiedNameParts(source.tableQualifiedName()).length == 1
+                && DerivedRelationPins.cteNamed(item, ParseTreeText.qualifiedNameParts(
+                    source.tableQualifiedName())[0]) != null) {
+            return null;
+        }
+        try {
+            final Table table = executor.getCatalog().resolveTable(
+                ParseTreeText.getQualifiedName(source.tableQualifiedName()));
+            if (table == null || !table.isCatalogResident() || !table.hasColumn(parts[1])) {
+                return null;
+            }
+            final String declared = table.getColumn(parts[1]).getName();
+            return stored.holdsOneValue(table, declared) ? stored.oneValueOf(table, declared) : null;
+        } catch (final RuntimeException noTable) {
+            return null;
+        }
+    }
+
+    /** The ROWCOUNT a table function's call names, or null. */
+    private static FrostlakeParser.ExpressionContext rowCountArgument(final ParseTree node) {
+        if (node instanceof FrostlakeParser.NamedArgumentContext) {
+            final FrostlakeParser.NamedArgumentContext argument = (FrostlakeParser.NamedArgumentContext) node;
+            return "ROWCOUNT".equalsIgnoreCase(argument.variableName().getText()) ? argument.expression() : null;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final FrostlakeParser.ExpressionContext found = rowCountArgument(node.getChild(i));
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    private static boolean holdsQuery(final ParseTree node) {
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (holdsQuery(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void collectColumns(final ParseTree node,
+                                       final List<FrostlakeParser.QualifiedNameExprContext> into) {
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            into.add((FrostlakeParser.QualifiedNameExprContext) node);
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectColumns(node.getChild(i), into);
+        }
+    }
+
     private static Long numberOfText(final String written) {
         try {
             return Long.valueOf(written);
@@ -1090,20 +2074,20 @@ final class PlanBuilder {
     }
 
     /**
-     * Takes from the conditions those that equate the two sides, and says whether there was one. A condition equates
-     * the sides when it is an equality with a column on each side of it, the columns of one side named by one side's
-     * names and the other's by the other's — or not named by any, which is taken to be so.
+     * Takes from the conditions those that equate the two sides, in the order written. A condition equates the sides
+     * when it is an equality with a column on each side of it, the columns of one side named by one side's names and
+     * the other's by the other's — or not named by any, which is taken to be so.
      */
-    private static boolean takesKeys(final List<FrostlakeParser.BooleanExprContext> conditions,
-                                     final Set<String> left, final Set<String> right) {
-        boolean keyed = false;
+    private static List<FrostlakeParser.BooleanExprContext> takeKeys(
+            final List<FrostlakeParser.BooleanExprContext> conditions, final Set<String> left,
+            final Set<String> right) {
+        final List<FrostlakeParser.BooleanExprContext> keys = new ArrayList<>();
         for (int i = conditions.size() - 1; i >= 0; i--) {
             if (equates(bracketed(conditions.get(i)), left, right)) {
-                conditions.remove(i);
-                keyed = true;
+                keys.add(0, conditions.remove(i));
             }
         }
-        return keyed;
+        return keys;
     }
 
     private static boolean equates(final FrostlakeParser.BooleanExprContext condition, final Set<String> left,
@@ -1203,6 +2187,59 @@ final class PlanBuilder {
     }
 
     /** Whether an OVER clause stands under a node, outside any nested query. */
+    /**
+     * A WindowFunction straight over a TableScan reads it twice, as a Sort with no row limit does (see
+     * {@link PlanNode#readForSort}), when the first window the query writes is a ROW_NUMBER, a RANK or a DENSE_RANK, or
+     * a LAG or a LEAD with no PARTITION BY: the scan lists its table twice, the columns that window partitions and
+     * orders by first, and GlobalStats counts it twice. A first window of any other function reads the scan once, the
+     * windows after it whatever they are, and so does a window over a Filter (all live-verified).
+     */
+    private static void readTwiceForWindows(final FrostlakeParser.SelectClauseContext select, final PlanNode scan) {
+        FrostlakeParser.OverClauseContext first = firstWindow(select.selectList());
+        if (first == null) {
+            first = firstWindow(select.qualifyClause());
+        }
+        if (first == null || !readsItsScanTwice(first)) {
+            return;
+        }
+        final Set<String> named = new LinkedHashSet<>();
+        if (first.partitionByClause() != null) {
+            collectColumns(first.partitionByClause(), named);
+        }
+        if (first.orderByClause() != null) {
+            collectColumns(first.orderByClause(), named);
+        }
+        scan.readForSort(new ArrayList<>(named));
+    }
+
+    /** The first window written under the node, outside nested queries, or null. */
+    private static FrostlakeParser.OverClauseContext firstWindow(final ParseTree node) {
+        if (node == null || node instanceof FrostlakeParser.SelectStatementContext) {
+            return null;
+        }
+        if (node instanceof FrostlakeParser.OverClauseContext) {
+            return (FrostlakeParser.OverClauseContext) node;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final FrostlakeParser.OverClauseContext found = firstWindow(node.getChild(i));
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    /** Whether a window's function reads its scan twice (see {@link #readTwiceForWindows}). */
+    private static boolean readsItsScanTwice(final FrostlakeParser.OverClauseContext window) {
+        if (!(window.getParent() instanceof FrostlakeParser.FunctionCallExprContext)) {
+            return false;
+        }
+        final String name = SqlIdentifiers.canonicalText(
+            ((FrostlakeParser.FunctionCallExprContext) window.getParent()).functionName().getText());
+        return SCAN_TWICE_RANKINGS.contains(name)
+            || SCAN_TWICE_OFFSETS.contains(name) && window.partitionByClause() == null;
+    }
+
     private static boolean computesAWindow(final ParseTree node) {
         if (node == null || node instanceof FrostlakeParser.SelectStatementContext) {
             return false;
@@ -1236,14 +2273,14 @@ final class PlanBuilder {
             conjuncts(where.booleanExpr(), conditions);
         }
         final int written = conditions.size();
-        final PlanNode others = listPlan(null, statement, conditions, named);
+        final PlanNode others = listPlan(null, statement, conditions, named, null);
         if (others == null && where == null && deletes) {
             return scan.unread();
         }
-        PlanNode plan = others == null ? scan : unconditioned(others, scan, conditions);
+        PlanNode plan = others == null ? scan : unconditioned(others, scan, conditions, null);
         if (!conditions.isEmpty()) {
-            plan = filtered(plan, conditions.size() == written
-                ? ParseTreeText.getOriginalText(where.booleanExpr()) : textOf(conditions));
+            plan = filtered(plan, Collections.singletonList(conditions.size() == written
+                ? ParseTreeText.getOriginalText(where.booleanExpr()) : textOf(conditions)));
         }
         return plan;
     }
@@ -1321,11 +2358,11 @@ final class PlanBuilder {
         }
         final PlanNode join;
         if (!inserts) {
-            join = inner(source, target);
+            join = inner(source, target, PlanJoinKeys.none());
         } else if (updates || deletes) {
-            join = outer(source, target, true);
+            join = outer(source, target, true, PlanJoinKeys.none());
         } else if (holdsFewer(source, target)) {
-            join = operator("AntiJoin").over(source).over(operator("Aggregate").over(joinFiltered(target)));
+            join = operator("AntiJoin").over(source).over(operator("Aggregate").over(joinFiltered(target, NONE)));
         } else {
             join = operator("AntiJoin").over(operator("Aggregate").over(target)).over(source);
         }

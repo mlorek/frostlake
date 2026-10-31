@@ -16,14 +16,16 @@
 
 package dev.frostlake.transaction;
 
+import dev.frostlake.metastore.model.Stream;
+
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 /**
- * A statement that met a table another session's open transaction holds (see {@link TableLockGate}), raised before
- * the statement writes anything. The statement's dispatch waits for the holder and runs the statement again; when
- * waiting is not allowed or lasts past the session's LOCK_TIMEOUT the statement is refused in the account's words
- * (live-verified), and a transaction it runs in stays open.
+ * A statement that met a table or a stream another session's open transaction holds (see {@link TableLockGate}),
+ * raised before the statement writes anything. The statement's dispatch waits for the holder and runs the statement
+ * again; when waiting is not allowed or lasts past the session's LOCK_TIMEOUT the statement is refused in the
+ * account's words (live-verified), and a transaction it runs in stays open.
  */
 public final class TableLockWait extends RuntimeException {
 
@@ -35,12 +37,35 @@ public final class TableLockWait extends RuntimeException {
     private final transient Transaction holder;
     private final String fullyQualifiedName;
     private final String tableName;
+    /** The stream whose lock the statement met, or null for a table's. */
+    private final transient Stream stream;
 
     TableLockWait(final Transaction holder, final String fullyQualifiedName, final String tableName) {
-        super("table " + tableName + " is locked by transaction " + holder.getPublicId(), null, false, false);
+        this(holder, fullyQualifiedName, tableName, null);
+    }
+
+    private TableLockWait(final Transaction holder, final String resource, final String name, final Stream stream) {
+        super((stream != null ? "stream " : "table ") + name + " is locked by transaction " + holder.getPublicId(),
+            null, false, false);
         this.holder = holder;
-        this.fullyQualifiedName = fullyQualifiedName;
-        this.tableName = tableName;
+        this.fullyQualifiedName = resource;
+        this.tableName = name;
+        this.stream = stream;
+    }
+
+    /**
+     * A statement that met a stream another session's open transaction holds (see
+     * {@link TableLockGate#requireStreamFree}).
+     *
+     * @param holder   the transaction that holds the stream
+     * @param stream   the stream
+     * @param resource its full name
+     * @param name     its name as the refusal names it
+     * @return the wait
+     */
+    static TableLockWait onStream(final Transaction holder, final Stream stream, final String resource,
+                                  final String name) {
+        return new TableLockWait(holder, resource, name, stream);
     }
 
     /**
@@ -55,31 +80,39 @@ public final class TableLockWait extends RuntimeException {
      */
     public void await(final TransactionManager transactions, final long timeoutSeconds, final long waitingSince,
                       final LockWaitStop stop) {
+        // The refusal names the waiting statement by the ID it runs under.
+        final String running = stop.waitingQueryId();
+        final String waitingQueryId = running != null ? running : UUID.randomUUID().toString();
         if (timeoutSeconds <= 0) {
-            throw refusal("is currently not allowed.", UUID.randomUUID().toString());
+            throw refusal("is currently not allowed.", waitingQueryId);
         }
         final long deadline = waitingSince + TimeUnit.SECONDS.toNanos(timeoutSeconds);
         // The waiting statement's lock shows as WAITING in SHOW LOCKS for as long as it waits.
         final Transaction waiter = transactions.getCurrentTransaction();
-        final String waitingQueryId = UUID.randomUUID().toString();
         if (waiter != null) {
-            waiter.beginWaiting(fullyQualifiedName, waitingQueryId);
+            waiter.beginWaiting(fullyQualifiedName, waitingQueryId, stream != null);
         }
         final EngineLockRelease release = TableLockGate.release();
         release.release();
+        boolean interrupted = false;
         try {
             while (stillHeld(transactions) && System.nanoTime() < deadline) {
                 stop.check();
-                Thread.sleep(Math.max(1L, Math.min(POLL_MILLIS,
+                release.pause(Math.max(1L, Math.min(POLL_MILLIS,
                     TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()))));
             }
-        } catch (final InterruptedException interrupted) {
+        } catch (final InterruptedException interruption) {
             Thread.currentThread().interrupt();
+            interrupted = true;
         } finally {
             if (waiter != null) {
                 waiter.endWaiting();
             }
             release.reacquire();
+        }
+        // An interrupted wait ends the statement as a cancel does, not as the timeout running out.
+        if (interrupted) {
+            throw stop.interrupted();
         }
         if (stillHeld(transactions)) {
             throw refusal("is limited to " + timeoutSeconds + " seconds.", waitingQueryId);
@@ -92,8 +125,11 @@ public final class TableLockWait extends RuntimeException {
     }
 
     private RuntimeException refusal(final String waiting, final String waitingQueryId) {
-        return new RuntimeException("Statement '" + holder.lockQueryId(fullyQualifiedName) + "' has locked table '"
-            + tableName + "' in transaction " + holder.getPublicId() + " and this lock has not yet been released.\n"
+        final String holding = stream != null ? holder.streamLockQueryId(stream)
+            : holder.lockQueryId(fullyQualifiedName);
+        return new RuntimeException("Statement '" + holding + "' has locked " + (stream != null ? "stream" : "table")
+            + " '" + tableName + "' in transaction " + holder.getPublicId()
+            + " and this lock has not yet been released.\n"
             + "Your statement '" + waitingQueryId + "' was aborted because waiting for this lock " + waiting);
     }
 }

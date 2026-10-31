@@ -30,6 +30,10 @@ final class PlannedTableFunction {
     final String callText;
     final MemoizedResultSet result;
     final List<ResultSetColumn> columns;
+    /** The rows a GENERATOR holding one of them counts (see GeneratorRowReads), or -1. */
+    long countedRows = -1L;
+    /** The rows a GENERATOR holding none of them streams (see GeneratorRowReads), or -1. */
+    long streamedRows = -1L;
 
     /**
      * @param name     the function's name

@@ -64,12 +64,61 @@ final class ParameterLevels {
      */
     static void judgeAlter(final List<String> names, final List<Boolean> taken, final String kind,
                            final String privilegeKind, final String objectName) {
+        judgeAlter(names, taken, null, kind, privilegeKind, objectName);
+    }
+
+    /**
+     * Judges an ALTER's names and the values it sets them to: after an unknown name, a value of another kind than its
+     * parameter's type is refused as written - "invalid value ['abc'] for parameter
+     * 'INITIAL_REPLICATION_SIZE_LIMIT_IN_TB'" - before the object's level or the role's access is judged, a parameter
+     * the object takes included (live-verified).
+     *
+     * @param names          the names as written
+     * @param taken          per name, whether the object takes it: its own property or a parameter of its level
+     * @param values         per name, the value written or null; null when no value is judged
+     * @param kind           the object's kind as an invalid property names it: SCHEMA, DATABASE, TABLE, ALERT
+     * @param privilegeKind  the kind as the access refusal names it: schema, database, table, alert
+     * @param objectName     the object's name as the access refusal spells it
+     */
+    static void judgeAlter(final List<String> names, final List<Boolean> taken,
+                           final List<WrittenParameterValue> values, final String kind, final String privilegeKind,
+                           final String objectName) {
         final List<Integer> order = rejectUnknown(names, taken, kind);
+        if (values != null) {
+            for (final Integer i : order) {
+                final WrittenParameterValue value = values.get(i);
+                final String canonical = ParameterRegistry.canonical(names.get(i));
+                if (value != null && (ParameterRegistry.takesNoValue(kind, canonical)
+                        || !value.fits(LeveledParameterSettings.valueTypeOf(canonical)))) {
+                    throw new RuntimeException(SqlCompilationError.invalidValueForParameter(value.written(),
+                        canonical));
+                }
+            }
+        }
         for (final Integer i : order) {
-            if (!taken.get(i).booleanValue()) {
+            final String canonical = ParameterRegistry.canonical(names.get(i));
+            if (ParameterRegistry.isUnsettable(kind, canonical)) {
+                // A table or an alert refuses a few parameters at its own level, in CREATE's words (live-verified).
+                throw new RuntimeException(SqlCompilationError.of("cannot set parameter '" + canonical
+                    + "' at '" + kind + "'"));
+            }
+            // A parameter the level takes no value of is unset all the same (live-verified).
+            if (!taken.get(i).booleanValue() && !(values == null && ParameterRegistry.takesNoValue(kind, canonical))) {
                 throw new RuntimeException(SqlAccessControlError.insufficientPrivileges(privilegeKind, objectName));
             }
         }
+    }
+
+    /**
+     * Refuses the first name, in the hashed order, that is neither taken nor any parameter, before the object is
+     * looked for: ALTER TABLE nosuch SET foo = 1 names the property, not the table (live-verified).
+     *
+     * @param names the names as written
+     * @param taken per name, whether the object's kind takes it
+     * @param kind  the object's kind as an invalid property names it
+     */
+    static void rejectUnknownNames(final List<String> names, final List<Boolean> taken, final String kind) {
+        rejectUnknown(names, taken, kind);
     }
 
     /**

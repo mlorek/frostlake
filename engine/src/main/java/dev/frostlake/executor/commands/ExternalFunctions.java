@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.IntegrationUsage;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.Catalog;
@@ -24,6 +25,7 @@ import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Integration;
 import dev.frostlake.metastore.model.IntegrationKind;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.security.SecurityManager;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Locale;
@@ -70,10 +72,11 @@ public final class ExternalFunctions {
      * cloud's API gateway.
      *
      * @param catalog the catalog
+     * @param security the session's rights, which have to hold USAGE on the integration, or null
      * @param written the option's value, or null when the statement names none
      * @return the integration's name
      */
-    static String requireFunctionIntegration(final Catalog catalog,
+    static String requireFunctionIntegration(final Catalog catalog, final SecurityManager security,
                                              final FrostlakeParser.QualifiedNameContext written) {
         if (written == null) {
             throw new RuntimeException("Property 'API_INTEGRATION' must be specified");
@@ -83,6 +86,7 @@ public final class ExternalFunctions {
         if (integration == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Integration", name));
         }
+        IntegrationUsage.require(security, integration, name);
         if (integration.getKind() != IntegrationKind.API) {
             throw new RuntimeException(SqlCompilationError.of("Integration '" + integration.getName()
                 + "' is not an API integration."));

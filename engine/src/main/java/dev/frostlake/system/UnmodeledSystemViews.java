@@ -16,8 +16,10 @@
 
 package dev.frostlake.system;
 
+import dev.frostlake.executor.udf.JavaPackages;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
+import dev.frostlake.storage.Row;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DateTimeType;
@@ -48,9 +50,9 @@ import java.util.Arrays;
 public class UnmodeledSystemViews {
 
     /**
-     * The named INFORMATION_SCHEMA view with its live column shape and no rows, or null when this
-     * class does not define it (the caller then reports the object as non-existent, as live does
-     * for a name that is not an INFORMATION_SCHEMA view at all).
+     * The named INFORMATION_SCHEMA view with its live column shape and no rows - PACKAGES alone lists the packages a
+     * routine may name - or null when this class does not define it (the caller then reports the object as
+     * non-existent, as live does for a name that is not an INFORMATION_SCHEMA view at all).
      */
     public ResultSet query(final String viewName) {
         switch (viewName) {
@@ -219,8 +221,7 @@ public class UnmodeledSystemViews {
                     col("NOTEBOOK_MAIN_FILE"), col("NOTEBOOK_QUERY_WAREHOUSE"), col("NOTEBOOK_URL_ID"),
                     colTs("CREATED"), colTs("LAST_ALTERED"), col("COMMENT"));
             case "PACKAGES":
-                return empty(
-                    col("PACKAGE_NAME"), col("VERSION"), col("LANGUAGE"), col("RUNTIME_VERSION"));
+                return packages();
             case "REPLICATION_DATABASES":
                 return empty(
                     col("REGION_GROUP"), col("SNOWFLAKE_REGION"), col("ACCOUNT_NAME"), col("DATABASE_NAME"),
@@ -321,6 +322,22 @@ public class UnmodeledSystemViews {
             default:
                 return null;
         }
+    }
+
+    /**
+     * INFORMATION_SCHEMA.PACKAGES: each package a Java and a Scala routine's PACKAGES may name, at each of its
+     * versions, with no runtime version (live-verified; see {@link JavaPackages}). The account lists its Python
+     * packages here as well, its artifact repository's; a Python routine's packages are the ones the runtime's own
+     * environment holds, so none are listed for it.
+     */
+    private ResultSet packages() {
+        final ResultSet listed = empty(col("PACKAGE_NAME"), col("VERSION"), col("LANGUAGE"), col("RUNTIME_VERSION"));
+        for (final String language : new String[] {"java", "scala"}) {
+            for (final String[] row : JavaPackages.listed("scala".equals(language))) {
+                listed.addRow(new Row(row[0], row[1], language, null));
+            }
+        }
+        return listed;
     }
 
     private ResultSet empty(final ResultSetColumn... columns) {

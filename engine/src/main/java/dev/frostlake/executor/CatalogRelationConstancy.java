@@ -68,6 +68,17 @@ final class CatalogRelationConstancy implements OuterNameConstancy {
         return holds;
     }
 
+    @Override
+    public Boolean settledBoolean(final String qualifier, final String column) {
+        try {
+            final Table owner = owner(qualifier, column);
+            return owner == null || !owner.hasColumn(column) ? null
+                : executor.columnSettledBoolean(owner, owner.getColumn(column).getName());
+        } catch (final RuntimeException unreadable) {
+            return null;
+        }
+    }
+
     /** The relation a name reads: the one its qualifier names, else the one relation carrying it. */
     private Table owner(final String qualifier, final String column) {
         if (qualifier != null) {

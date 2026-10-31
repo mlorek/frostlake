@@ -43,6 +43,8 @@ import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
 import org.antlr.v4.runtime.misc.Interval;
+import org.antlr.v4.runtime.tree.ParseTree;
+import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -59,7 +61,8 @@ import java.util.List;
  *   any other length                                             For Iceberg tables, only max length (67,108,864) is
  *                                                                supported for 'BINARY(L)'. Alternatively, use BINARY directly.
  *   INT / INTEGER                                                NUMBER(10,0), the format's int
- *   BIGINT                                                       NUMBER(19,0), the format's long
+ *   BIGINT / LONG                                                NUMBER(19,0), the format's long; another table's
+ *                                                                column refuses LONG (see refuseFormatWords)
  *   NUMBER(p,s) / DECIMAL(p,s) / NUMERIC(p,s)                    as written
  *   NUMBER / NUMBER(p) / DECIMAL / BYTEINT                       data type 'NUMBER/DECIMAL' without precision and scale is
  *                                                                not supported for Iceberg tables.
@@ -125,6 +128,34 @@ final class IcebergColumnTypes {
         final DataType held = widened(result);
         refuseUnheld(held, column, false);
         return held;
+    }
+
+    /**
+     * Refuses LONG, a type of an Iceberg table's columns alone, in another table's column type, as it is written and at
+     * its own column's turn: {@code CREATE TABLE t (b long, c VARCHAR(0))} is "Unsupported data type 'long'."
+     * (live-verified).
+     *
+     * @param type the column's type as written
+     */
+    static void refuseFormatWords(final FrostlakeParser.DataTypeNameContext type) {
+        final TerminalNode word = formatWord(type);
+        if (word != null) {
+            throw new RuntimeException(SqlCompilationError.of("Unsupported data type '" + word.getText() + "'."));
+        }
+    }
+
+    /** The first LONG a type holds, a structured member's included, or null. */
+    private static TerminalNode formatWord(final ParseTree node) {
+        if (node instanceof TerminalNode) {
+            return ((TerminalNode) node).getSymbol().getType() == FrostlakeParser.LONG ? (TerminalNode) node : null;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final TerminalNode found = formatWord(node.getChild(i));
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
     }
 
     /** Refuses a column list whose types an Iceberg table does not take (see {@link #validate(List, ColumnDefinitionParser, boolean)}). */
@@ -248,12 +279,12 @@ final class IcebergColumnTypes {
         if (name.MAP() != null && parsed instanceof MapType) {
             final MapType map = (MapType) parsed;
             return new MapType(written(name.mapKey, name.mapKeyParameters, map.getKeyType()),
-                written(name.mapValue, name.mapValueParameters, map.getValueType()));
+                written(name.mapValue, name.mapValueParameters, map.getValueType()), map.isValueNotNull());
         }
         if (name.ARRAY() != null && parsed instanceof StructuredArrayType) {
             return new StructuredArrayType(written(name.dataTypeName(0),
                 name.typeParameters().isEmpty() ? null : name.typeParameters(0),
-                ((StructuredArrayType) parsed).getElementType()));
+                ((StructuredArrayType) parsed).getElementType()), ((StructuredArrayType) parsed).isElementNotNull());
         }
         if (name.OBJECT() != null && parsed instanceof StructuredObjectType) {
             final List<StructuredField> declaredFields = ((StructuredObjectType) parsed).getFields();
@@ -279,7 +310,7 @@ final class IcebergColumnTypes {
         if (name.INTEGER() != null || name.INT() != null) {
             return IcebergNumericType.integer();
         }
-        if (name.BIGINT() != null) {
+        if (name.BIGINT() != null || name.LONG() != null) {
             return IcebergNumericType.longInteger();
         }
         if (name.FLOAT() != null || name.FLOAT4() != null || name.FLOAT8() != null) {
@@ -321,10 +352,11 @@ final class IcebergColumnTypes {
     private static DataType widened(final DataType type) {
         if (type instanceof MapType) {
             final MapType map = (MapType) type;
-            return new MapType(widened(map.getKeyType()), widened(map.getValueType()));
+            return new MapType(widened(map.getKeyType()), widened(map.getValueType()), map.isValueNotNull());
         }
         if (type instanceof StructuredArrayType) {
-            return new StructuredArrayType(widened(((StructuredArrayType) type).getElementType()));
+            return new StructuredArrayType(widened(((StructuredArrayType) type).getElementType()),
+                ((StructuredArrayType) type).isElementNotNull());
         }
         if (type instanceof StructuredObjectType) {
             final List<StructuredField> fields = new ArrayList<>();

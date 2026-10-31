@@ -130,12 +130,15 @@ public class ResultSetData {
                 // it would arrive as its element type alone. A semi-structured cell crosses as its JSON
                 // text with every DOUBLE in the account's fifteen-decimal form, and so does a DOUBLE read
                 // out of a VARIANT, which the engine holds unwrapped and would send as a bare JSON number.
-                // A STRING read out of one crosses JSON-quoted, as live's driver hands it back.
+                // A STRING read out of one crosses JSON-quoted, as live's driver hands it back. A FLOAT cell crosses
+                // as its double with every digit, as the account's default Arrow results carry it: its JSON results
+                // round the value, so a driver reading them gets 0.3 for 0.1 + 0.2, and Infinity for the largest
+                // double.
                 final String unwrappedDouble = VariantJsonText.unwrappedDoubleText(cell, declared);
                 rowData.add(cell instanceof Number && NumericType.isDecfloat(declared)
                         ? Decfloats.text(Decfloats.of((Number) cell, "TO_DECFLOAT"))
                     : cell instanceof BinaryValue ? ((BinaryValue) cell).toHex()
-                    : cell instanceof VariantValue ? variantText((VariantValue) cell)
+                    : cell instanceof VariantValue ? variantText((VariantValue) cell, rs.isScriptingAnswer())
                     : cell instanceof VectorValue ? cell.toString()
                     : cell instanceof String && VariantJsonText.isSemiStructured(declared)
                         ? VariantJsonText.unwrappedStringText((String) cell)
@@ -206,12 +209,13 @@ public class ResultSetData {
      * model instead, and the JSON render below produces that unchanged: the rule reads the CELL, never
      * the values inside a container.</p>
      */
-    private static String variantText(final VariantValue value) {
+    private static String variantText(final VariantValue value, final boolean scriptingAnswer) {
         final JsonNode node = value.node();
         if (XmlVariants.isXmlElement(node)) {
             return XmlVariants.compactXml(node);
         }
-        return VariantJsonFormat.render(node, VariantJsonText.clientTextOf(value));
+        final String laidOut = scriptingAnswer ? VariantJsonFormat.scriptingAnswerText(value) : null;
+        return laidOut != null ? laidOut : VariantJsonFormat.render(node, VariantJsonText.clientTextOf(value));
     }
 
     public Long getJdbcUpdateCount() {

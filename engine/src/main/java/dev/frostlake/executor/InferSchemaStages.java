@@ -23,6 +23,7 @@ import dev.frostlake.executor.copy.SchemaScanOptions;
 import dev.frostlake.functions.scalar.file.FileDescriptor;
 import dev.frostlake.functions.table.StagedFileSchemas;
 import dev.frostlake.metastore.model.FileFormat;
+import dev.frostlake.types.DecimalText;
 
 import java.math.BigDecimal;
 import java.nio.file.Files;
@@ -144,7 +145,7 @@ public final class InferSchemaStages implements StagedFileSchemas {
     /** A count argument's value, 0 when it was not given. */
     private static long count(final Object value) {
         if (value instanceof Number) {
-            return new BigDecimal(value.toString()).longValue();
+            return DecimalText.parse(value.toString()).longValue();
         }
         return 0L;
     }

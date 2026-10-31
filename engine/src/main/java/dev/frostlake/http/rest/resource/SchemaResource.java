@@ -28,6 +28,7 @@ import dev.frostlake.http.rest.RestRow;
 import dev.frostlake.http.rest.RestShow;
 import dev.frostlake.http.rest.RestStatement;
 import dev.frostlake.http.rest.RestTags;
+import dev.frostlake.metastore.SystemSchema;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
@@ -115,11 +116,23 @@ public final class SchemaResource implements RestResource {
         return RestResponse.json(200, out);
     }
 
-    /** The schema as the {@code Schema} schema describes it, or {@code 404}. */
+    /**
+     * The schema as the {@code Schema} schema describes it, or {@code 404}. A schema of the SNOWFLAKE database is
+     * described as DESCRIBE SCHEMA describes it, which refuses all but its INFORMATION_SCHEMA: an access refusal is
+     * a {@code 401} there (live-verified).
+     */
     private static ObjectNode fetch(final RestCall call, final RestIdentifier name) {
         final List<RestRow> rows = existing(call, name);
         if (rows.isEmpty()) {
             throw RestException.missing("Schema", call.identifier("database") + "." + name);
+        }
+        if (SystemSchema.of(call.identifier("database").name(), rows.get(0).string("name")) != null) {
+            try {
+                call.sql().show("DESCRIBE SCHEMA " + qualified(call, name));
+            } catch (final RestException refused) {
+                throw refused.getStatus() == 403
+                    ? new RestException(401, refused.getMessage(), refused.getCode()) : refused;
+            }
         }
         return toJson(rows.get(0), call.sql().show("SHOW PARAMETERS IN SCHEMA " + qualified(call, name)));
     }

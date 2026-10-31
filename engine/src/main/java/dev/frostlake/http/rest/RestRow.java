@@ -19,8 +19,8 @@ package dev.frostlake.http.rest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.DecimalText;
 
-import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -98,7 +98,7 @@ public final class RestRow {
                 return null;
             }
             try {
-                return Long.valueOf(new BigDecimal(text).longValue());
+                return Long.valueOf(DecimalText.parse(text).longValue());
             } catch (final NumberFormatException notNumeric) {
                 return null;
             }

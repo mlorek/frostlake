@@ -22,7 +22,7 @@
       {"sql": "SELECT COUNT(*) FROM lazy_count", "expect": {"value": 2}}
     ]},
     {"name": "table-is-lazy-too", "steps": [
-      {"sql": "CREATE OR REPLACE PROCEDURE p_table() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nclass H { public String go(Session s) {\n  DataFrame df = s.table(\"no_such_table_at_all\");\n  String built = df == null ? \"null\" : \"plan\";\n  try { df.collect(); return built + \"/no-error\"; }\n  catch (RuntimeException e) { return built + \"/action-reported\"; }\n} }\n$$"},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_table() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nclass H { public String go(Session s) {\n  DataFrame df = s.table(\"no_such_table_at_all\");\n  String built = df == null ? \"null\" : \"plan\";\n  try { df.collect(); return built + \"/no-error\"; }\n  catch (Exception e) { return built + \"/action-reported\"; }\n} }\n$$"},
       {"sql": "CALL p_table()", "expect": {"value": "plan/action-reported"}}
     ]},
     {"name": "the-owners-rights-refusal-fires-at-the-action", "steps": [

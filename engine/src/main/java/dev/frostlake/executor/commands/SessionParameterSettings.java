@@ -127,6 +127,9 @@ final class SessionParameterSettings {
         if (value.kind() == SessionValueKind.NULL) {
             return null;
         }
+        if (ParameterRegistry.takesNoValue("SESSION", setting.key())) {
+            throw new RuntimeException(SqlCompilationError.invalidValueForParameter(value.written(), setting.key()));
+        }
         if ("NUMBER".equals(setting.type())) {
             if (value.kind() == SessionValueKind.INTEGER && value.integer().compareTo(SMALLEST) >= 0
                     && value.integer().compareTo(LARGEST) <= 0) {

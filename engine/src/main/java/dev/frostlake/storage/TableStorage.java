@@ -34,6 +34,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class TableStorage {
     private final StorageEngine engine; // reference to parent for config flags
@@ -66,6 +67,10 @@ public class TableStorage {
      */
     private final CopyOnWriteArrayList<TableSnapshot> snapshots =
         new CopyOnWriteArrayList<>();
+    // How many writes the rows have taken, and the mark drawn when they had taken markedWrites (see writeMark).
+    private final AtomicLong writes = new AtomicLong();
+    private long markedWrites = -1;
+    private long writeMark;
     private static final int MAX_SNAPSHOTS = 200;
     /** Set once the window dropped a snapshot: the history before the oldest one kept is gone. */
     private volatile boolean historyEvicted;
@@ -466,6 +471,38 @@ public class TableStorage {
     private void written() {
         metadata.markDataChanged(StatementClock.commitInstant());
         engine.markDirty(this);
+        writes.incrementAndGet();
+    }
+
+    /**
+     * A number that stays while the table's rows do and moves with every write to them: a dynamic table that reads
+     * the table keeps it to tell whether the rows changed since its last refresh, as the account tells by the
+     * table's micro-partitions. It is drawn the first time it is asked for after a write, so a table written many
+     * times between two asks moves once.
+     *
+     * @return the mark
+     */
+    public synchronized long writeMark() {
+        final long now = writes.get();
+        if (now != markedWrites) {
+            writeMark = SnapshotSequence.mark();
+            markedWrites = now;
+        }
+        return writeMark;
+    }
+
+    /**
+     * Puts back the mark a snapshot of the engine's state saved with the rows just restored (see {@link #writeMark}):
+     * a dynamic table that read them before the restart finds them unchanged, until the next write moves it.
+     *
+     * @param mark the saved mark, or 0 where the snapshot saved none
+     */
+    public synchronized void restoreWriteMark(final long mark) {
+        if (mark > 0) {
+            SnapshotSequence.advancePast(mark);
+            writeMark = mark;
+            markedWrites = writes.get();
+        }
     }
 
     public List<Row> scan() {
@@ -675,6 +712,7 @@ public class TableStorage {
         rowIds.clear();
         primaryKeyIndex.clear();
         metadata.markDataChanged(StatementClock.commitInstant());
+        writes.incrementAndGet();
 
         // Reset to identity start value
         metadata.setNextIdentityValue(null);

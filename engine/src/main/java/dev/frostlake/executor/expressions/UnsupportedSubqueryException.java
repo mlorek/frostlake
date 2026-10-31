@@ -24,7 +24,7 @@ import dev.frostlake.metastore.model.Function;
  * type cannot be evaluated at line L, position P"). A type of its own, so a fallback that retries a failed
  * evaluation another way — an ORDER BY key read as a column name — passes it through instead of reporting
  * a failure of its own. Inside the arguments of a SQL function the refusal names that function and gives no
- * place (see {@link SqlFunctionArgument}).
+ * place (see {@link SqlFunctionArgument}), and inside a view's body it names the view (see {@link #insideView}).
  */
 public class UnsupportedSubqueryException extends RuntimeException {
     private static final long serialVersionUID = 1L;
@@ -50,6 +50,19 @@ public class UnsupportedSubqueryException extends RuntimeException {
     public static UnsupportedSubqueryException inside(final Function called) {
         return new UnsupportedSubqueryException(SqlCompilationError.of(
             "Unsupported subquery type cannot be evaluated inside Function object: " + called.getName()), true);
+    }
+
+    /**
+     * The refusal of a subquery a view's body holds, as a statement reading the view is refused: it names the view
+     * and gives no place. A view read through another view is named by the outer one, so the statement is told of
+     * the view it reads itself (live-verified: a view over a view over the subquery names the outer view).
+     *
+     * @param viewName the view, as it is stored
+     * @return the refusal, naming the view
+     */
+    public static UnsupportedSubqueryException insideView(final String viewName) {
+        return new UnsupportedSubqueryException(SqlCompilationError.of(
+            "Unsupported subquery type cannot be evaluated inside VIEW object: " + viewName));
     }
 
     /**

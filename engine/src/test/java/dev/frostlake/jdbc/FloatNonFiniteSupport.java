@@ -22,14 +22,14 @@ import java.sql.Statement;
 
 /**
  * Reads a FLOAT column holding 1.5, NaN, an infinity each way and NULL through a driver: getObject's class and value,
- * getDouble and getString, as the account's driver answers them (live-verified) — shared by the in-process and the
- * HTTP driver's tests.
+ * getDouble and getString, as the account's driver answers them on its default results (live-verified) — shared by
+ * the in-process and the HTTP driver's tests.
  */
 final class FloatNonFiniteSupport {
 
     /** What every driver reads, the account's included. */
-    static final String EXPECTED = "1:Double=1.5,1.5,1.5 2:Double=NaN,NaN,NaN 3:Double=Infinity,Infinity,inf"
-        + " 4:Double=-Infinity,-Infinity,-inf 5:null,0.0,null";
+    static final String EXPECTED = "1:Double=1.5,1.5,1.5 2:Double=NaN,NaN,NaN 3:Double=Infinity,Infinity,Infinity"
+        + " 4:Double=-Infinity,-Infinity,-Infinity 5:null,0.0,null";
 
     private FloatNonFiniteSupport() {
     }

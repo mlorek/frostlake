@@ -36,6 +36,7 @@ import org.antlr.v4.runtime.tree.TerminalNode;
  *   BEGIN IF (TRUE) THEN SELECT t..c FROM t; END IF;      'FROM'  'END'           IF, CASE or REPEAT
  *   BEGIN IF (TRUE) THEN SELECT t..c; END IF; END         ';'  'END'              the token after END IF;
  *   BEGIN FOR i IN 1 TO 2 DO SELECT t..c; END FOR; END    ';'  'FOR'              FOR is no name
+ *   BEGIN LET x INT := (SELECT t..c FROM t); END          'SELECT'  'FROM'        a LET's bracketed query
  * </pre>
  *
  * <p>The first four hold for a statement of the outermost block or of its exception handlers; in a loop, an
@@ -62,10 +63,19 @@ final class EmptyPartBlockLines {
             return null;
         }
         final FrostlakeParser.ProceduralStatementContext procedural = statement.proceduralStatement();
+        final ParserRuleContext construct = statement.getParent().getParent();
+        final FrostlakeParser.ScalarSubqueryExprContext assigned = procedural == null ? null
+            : assignedQuery(fault.name(), procedural.letStatement());
+        if (assigned != null && fault.shape() == EmptyPartShape.COLUMN && isOutermostBlock(construct)) {
+            // A LET whose value is a bracketed query: the query's SELECT, then the line of the reference.
+            final List<Token> lines = new ArrayList<>();
+            lines.add(assigned.selectStatement().getStart());
+            lines.addAll(fault.refused());
+            return lines;
+        }
         if (procedural != null && procedural.letStatement() == null || inSubqueryExpression(fault.name(), statement)) {
             return null;
         }
-        final ParserRuleContext construct = statement.getParent().getParent();
         final Token first = fault.first();
         final boolean terminator = first != null && first.getType() == FrostlakeLexer.SEMI;
         final List<Token> lines = new ArrayList<>(fault.refused());
@@ -148,6 +158,29 @@ final class EmptyPartBlockLines {
             }
         }
         return false;
+    }
+
+    /**
+     * The bracketed query a LET's value is, written right after its {@code :=} or DEFAULT, when it holds the name
+     * with no other subquery between; or null.
+     */
+    private static FrostlakeParser.ScalarSubqueryExprContext assignedQuery(
+            final ParserRuleContext name, final FrostlakeParser.LetStatementContext let) {
+        if (let == null) {
+            return null;
+        }
+        final TerminalNode sign = let.COLON_EQ() != null ? let.COLON_EQ() : let.DEFAULT();
+        for (ParserRuleContext above = name.getParent(); above != null && above != let; above = above.getParent()) {
+            if (above instanceof FrostlakeParser.InSubqueryExprContext
+                    || above instanceof FrostlakeParser.ExistsExprContext) {
+                return null;
+            }
+            if (above instanceof FrostlakeParser.ScalarSubqueryExprContext) {
+                return sign != null && above.getStart().getTokenIndex() == sign.getSymbol().getTokenIndex() + 1
+                    ? (FrostlakeParser.ScalarSubqueryExprContext) above : null;
+            }
+        }
+        return null;
     }
 
     /** The innermost statement holding {@code node}, or null. */

@@ -22,6 +22,7 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.expressions.PolicyObjectTagCalls;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.NameTakenException;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.AggregationPolicy;
@@ -48,7 +49,6 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.regex.Pattern;
 
 /**
  * Handles CREATE for security / governance objects — TAG, MASKING POLICY, ROW ACCESS POLICY, USER, ROLE —
@@ -60,7 +60,6 @@ public class CreateSecurityHandler implements CommandHandler {
     private static final Logger logger = LoggerFactory.getLogger(CreateSecurityHandler.class);
 
     /** What live accepts as a contact's address: one address, a dotted domain, no spaces. */
-    private static final Pattern EMAIL = Pattern.compile("[^\\s@]+@[^\\s@,]+\\.[A-Za-z]{2,}");
 
     private final DDLCommandHandler ddl;
     private final Catalog catalog;
@@ -181,6 +180,16 @@ public class CreateSecurityHandler implements CommandHandler {
     }
 
     /**
+     * A policy or a contact created under a name no object of its kind holds starts with none of the privileges a
+     * dropped one of that name left recorded (see {@link GrantNames#created}); one that replaces another keeps them.
+     */
+    private void takeName(final boolean freshName, final String kind, final Schema schema, final String name) {
+        if (freshName) {
+            GrantNames.created(catalog, kind, schema.qualifiedName(name));
+        }
+    }
+
+    /**
      * The refusal of a policy created over a name its schema holds, which names the policy as the statement
      * wrote it: {@code Object '"p"' already exists.} (live-verified).
      *
@@ -193,11 +202,8 @@ public class CreateSecurityHandler implements CommandHandler {
     }
 
     /**
-     * A policy's name, judged with the privilege to create it. The policies of a schema share one namespace: a
-     * plain CREATE over a name any of them holds is refused for the name before the privilege is asked; with OR
-     * REPLACE or IF NOT EXISTS the privilege comes first, and then a holder of another kind is no policy to
-     * replace — {@code Object found is of type 'MASKING_POLICY', not specified type 'ROW_ACCESS_POLICY'.} —
-     * while IF NOT EXISTS finds the name taken (live-verified).
+     * A policy's name and kind, judged with the privilege to create it: {@link #requirePolicyName}, then
+     * {@link #requirePolicyKind}.
      *
      * @param schema      the policy's schema
      * @param policyName  its name
@@ -210,11 +216,32 @@ public class CreateSecurityHandler implements CommandHandler {
     private void requirePolicyCreatable(final Schema schema, final String policyName, final String kind,
                                         final String[] parts, final boolean orReplace, final boolean ifNotExists,
                                         final Privilege privilege) {
-        final String holder = schema.policyKindHolding(policyName);
-        if (holder != null && !orReplace && !ifNotExists) {
+        requirePolicyName(schema, policyName, parts, orReplace, ifNotExists, privilege);
+        requirePolicyKind(schema, policyName, kind, parts, orReplace);
+    }
+
+    /**
+     * A policy's name, judged with the privilege to create it. The policies of a schema share one namespace: a
+     * plain CREATE over a name any of them holds is refused for the name before the privilege is asked; with OR
+     * REPLACE or IF NOT EXISTS the privilege comes first (live-verified).
+     */
+    private void requirePolicyName(final Schema schema, final String policyName, final String[] parts,
+                                   final boolean orReplace, final boolean ifNotExists, final Privilege privilege) {
+        if (schema.policyKindHolding(policyName) != null && !orReplace && !ifNotExists) {
             throw policyNameTaken(parts);
         }
         ddl.checkCreatePrivilege(privilege, schema);
+    }
+
+    /**
+     * A holder of the name of another policy kind, which OR REPLACE finds no policy to replace — {@code Object found
+     * is of type 'MASKING_POLICY', not specified type 'ROW_ACCESS_POLICY'.} — and IF NOT EXISTS finds the name taken
+     * by (live-verified). A masking or a row access policy is judged so once its statement has compiled
+     * (live-verified).
+     */
+    private void requirePolicyKind(final Schema schema, final String policyName, final String kind,
+                                   final String[] parts, final boolean orReplace) {
+        final String holder = schema.policyKindHolding(policyName);
         if (holder != null && !holder.equals(kind)) {
             if (orReplace) {
                 throw new RuntimeException(SqlCompilationError.PREFIX + " Object found is of type '" + holder
@@ -239,18 +266,14 @@ public class CreateSecurityHandler implements CommandHandler {
                 alterMaskingPolicyInPlace(ctx, schema, schema.getMaskingPolicyExact(policyName), parts, properties);
                 return null;
             }
-            requirePolicyCreatable(schema, policyName, "MASKING_POLICY", parts, orReplace, ifNotExists,
-                Privilege.CREATE_MASKING_POLICY);
+            requirePolicyName(schema, policyName, parts, orReplace, ifNotExists, Privilege.CREATE_MASKING_POLICY);
             if (orReplace) {
                 queryExecutor.requireOwnership("MASKING_POLICY", parts, null);
-                if (catalog.isPolicyInUse(policyName, true)) {
-                    throw new RuntimeException("Policy " + policyName.toUpperCase(Locale.ROOT)
+                if (catalog.isPolicyInUse(schema, policyName, true)) {
+                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
                         + " cannot be dropped/replaced as it is associated with one or more entities.");
                 }
-                if (schema.getMaskingPolicyExact(policyName) != null) {
-                    schema.dropMaskingPolicy(policyName);
-                }
-            } else if (schema.getMaskingPolicyExact(policyName) != null) {
+            } else if (!ifNotExists && schema.getMaskingPolicyExact(policyName) != null) {
                 // The name is judged before the signature and the body are (live-verified).
                 throw policyNameTaken(parts);
             }
@@ -268,22 +291,30 @@ public class CreateSecurityHandler implements CommandHandler {
                 ? ddl.getOriginalText(ctx.bodyDefinition())
                 : ddl.getOriginalText(ctx.booleanExpr());
             PolicyBodyCheck.requireNumericLimits(body);
-            // The policy hands back what it was given: live refuses a signature whose argument and
-            // return types disagree, before anything is attached.
-            if (!params.isEmpty() && ctx.dataTypeName() != null) {
-                final DataType declaredReturn = columnParser.parseRoutineDataType(ctx.dataTypeName(),
-                    ctx.typeParameters());
-                if (!SqlTypeNames.sameFamily(params.get(0).getDataType(), declaredReturn)) {
-                    throw new RuntimeException(SqlCompilationError.PREFIX
-                        + " Masking policy function argument and return type mismatch.");
-                }
-            }
             final DataType declaredReturnType = ctx.dataTypeName() != null
                 ? columnParser.parseRoutineDataType(ctx.dataTypeName(), ctx.typeParameters()) : null;
             PolicyObjectTagCalls.requireTagsIn(ctx.bodyDefinition() != null ? ctx.bodyDefinition()
                 : ctx.booleanExpr(), catalog);
+            // The body is judged against RETURNS first; then the policy must hand back what it was given: live
+            // refuses a signature whose argument and return types disagree, before anything is attached.
             PolicyBodyCheck.compile(queryExecutor, catalog, policyName, declaredReturnType,
                 params, body, schema);
+            if (!params.isEmpty() && declaredReturnType != null
+                    && !SqlTypeNames.sameFamily(params.get(0).getDataType(), declaredReturnType)) {
+                throw new RuntimeException(SqlCompilationError.PREFIX
+                    + " Masking policy function argument and return type mismatch.");
+            }
+            // IF NOT EXISTS finds the policy there only once the statement has compiled, and OR REPLACE drops the
+            // policy it replaces only then: a statement refused leaves it as it was (live-verified).
+            requirePolicyKind(schema, policyName, "MASKING_POLICY", parts, orReplace);
+            final boolean freshName = schema.getMaskingPolicyExact(policyName) == null;
+            if (orReplace) {
+                if (schema.getMaskingPolicyExact(policyName) != null) {
+                    schema.dropMaskingPolicy(policyName);
+                }
+            } else if (schema.getMaskingPolicyExact(policyName) != null) {
+                throw policyNameTaken(parts);
+            }
             final MaskingPolicy policy = new MaskingPolicy(policyName, params, returnType, body);
             policy.setReturnDataType(declaredReturnType);
             policy.setReturnSpelling(declaredReturnType == null ? null
@@ -294,6 +325,7 @@ public class CreateSecurityHandler implements CommandHandler {
             policy.setExemptOtherPolicies(properties.exempt());
             policy.setOwner(catalog.currentRoleForOwner());
             schema.addMaskingPolicy(policy);
+            takeName(freshName, "MASKING_POLICY", schema, policyName);
             logger.trace("Created masking policy: {}", qn);
         } catch (final RuntimeException e) { ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0)); }
         return null;
@@ -326,13 +358,13 @@ public class CreateSecurityHandler implements CommandHandler {
         final String body = ctx.bodyDefinition() != null
             ? ddl.getOriginalText(ctx.bodyDefinition()) : ddl.getOriginalText(ctx.booleanExpr());
         PolicyBodyCheck.requireNumericLimits(body);
+        PolicyObjectTagCalls.requireTagsIn(ctx.bodyDefinition() != null ? ctx.bodyDefinition() : ctx.booleanExpr(),
+            catalog);
+        PolicyBodyCheck.compile(queryExecutor, catalog, policy.getName(), declaredReturn, params, body, schema);
         if (!params.isEmpty() && !SqlTypeNames.sameFamily(params.get(0).getDataType(), declaredReturn)) {
             throw new RuntimeException(SqlCompilationError.PREFIX
                 + " Masking policy function argument and return type mismatch.");
         }
-        PolicyObjectTagCalls.requireTagsIn(ctx.bodyDefinition() != null ? ctx.bodyDefinition() : ctx.booleanExpr(),
-            catalog);
-        PolicyBodyCheck.compile(queryExecutor, catalog, policy.getName(), declaredReturn, params, body, schema);
         policy.setBody(body);
         policy.setComment(properties.comment());
         policy.setExemptOtherPolicies(properties.exempt());
@@ -357,12 +389,27 @@ public class CreateSecurityHandler implements CommandHandler {
             ? ddl.getOriginalText(ctx.bodyDefinition()) : ddl.getOriginalText(ctx.booleanExpr());
         PolicyObjectTagCalls.refuseIn(ctx.bodyDefinition() != null ? ctx.bodyDefinition() : ctx.booleanExpr(),
             PolicyObjectTagCalls.ON_CURRENT_COLUMN);
-        PolicyBodyCheck.compile(queryExecutor, catalog, policy.getName(), BooleanType.BOOLEAN, params, body, schema);
+        compileRowAccessBody(ctx, policy.getName(), params, body, schema);
         policy.setBody(body);
         policy.setComment(properties.comment());
         policy.setExemptOtherPolicies(properties.exempt());
         ConditionalDdlOutcome.alteredInPlace();
         logger.trace("Altered row access policy in place: {}", policy.getName());
+    }
+
+    /**
+     * A row access policy's body, judged against the RETURNS the statement spells, which must then be BOOLEAN: a
+     * body of another type than the declared one is refused first, in a SQL function's words, and a declared type
+     * other than BOOLEAN after it, by name (live-verified).
+     */
+    private void compileRowAccessBody(final FrostlakeParser.CreateStatementContext ctx, final String policyName,
+                                      final List<Parameter> params, final String body, final Schema schema) {
+        final DataType declared = columnParser.parseRoutineDataType(ctx.dataTypeName(), ctx.typeParameters());
+        PolicyBodyCheck.compile(queryExecutor, catalog, policyName, declared, params, body, schema);
+        if (!(declared instanceof BooleanType)) {
+            throw new RuntimeException(SqlCompilationError.inline("Row access policy return type '"
+                + RoutineReturnTypeChecker.spell(declared) + "' is not BOOLEAN."));
+        }
     }
 
     /**
@@ -398,15 +445,10 @@ public class CreateSecurityHandler implements CommandHandler {
                     properties);
                 return null;
             }
-            requirePolicyCreatable(schema, policyName, "ROW_ACCESS_POLICY", parts, orReplace, ifNotExists,
+            requirePolicyName(schema, policyName, parts, orReplace, ifNotExists,
                 Privilege.CREATE_ROW_ACCESS_POLICY);
             if (orReplace) {
                 queryExecutor.requireOwnership("ROW_ACCESS_POLICY", parts, null);
-                if (schema.getRowAccessPolicyExact(policyName) != null) {
-                    schema.dropRowAccessPolicy(policyName);
-                }
-            } else if (schema.getRowAccessPolicyExact(policyName) != null) {
-                throw policyNameTaken(parts);
             }
             final List<Parameter> params = new ArrayList<>();
             if (ctx.parameterList() != null) {
@@ -420,9 +462,23 @@ public class CreateSecurityHandler implements CommandHandler {
             // A row access policy protects a table and no column: the column's tag is not its to read.
             PolicyObjectTagCalls.refuseIn(ctx.bodyDefinition() != null ? ctx.bodyDefinition() : ctx.booleanExpr(),
                 PolicyObjectTagCalls.ON_CURRENT_COLUMN);
-            // A row access policy's RETURNS is always BOOLEAN, spelled or not.
-            PolicyBodyCheck.compile(queryExecutor, catalog, policyName, BooleanType.BOOLEAN,
-                params, body, schema);
+            // The statement compiles before IF NOT EXISTS finds the policy there, and before OR REPLACE drops the
+            // one it replaces: a statement refused leaves it as it was (live-verified).
+            compileRowAccessBody(ctx, policyName, params, body, schema);
+            requirePolicyKind(schema, policyName, "ROW_ACCESS_POLICY", parts, orReplace);
+            final boolean freshName = schema.getRowAccessPolicyExact(policyName) == null;
+            if (orReplace) {
+                // A policy attached to a table or a view is replaced no more than it is dropped (live-verified).
+                if (catalog.isPolicyInUse(schema, policyName, false)) {
+                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
+                        + " cannot be dropped/replaced as it is associated with one or more entities.");
+                }
+                if (schema.getRowAccessPolicyExact(policyName) != null) {
+                    schema.dropRowAccessPolicy(policyName);
+                }
+            } else if (schema.getRowAccessPolicyExact(policyName) != null) {
+                throw policyNameTaken(parts);
+            }
             final RowAccessPolicy policy = new RowAccessPolicy(policyName, params, body);
             if (properties.comment() != null) {
                 policy.setComment(properties.comment());
@@ -430,6 +486,7 @@ public class CreateSecurityHandler implements CommandHandler {
             policy.setExemptOtherPolicies(properties.exempt());
             policy.setOwner(catalog.currentRoleForOwner());
             schema.addRowAccessPolicy(policy);
+            takeName(freshName, "ROW_ACCESS_POLICY", schema, policyName);
             logger.trace("Created row access policy: {}", qn);
         } catch (final RuntimeException e) { ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0)); }
         return null;
@@ -457,11 +514,13 @@ public class CreateSecurityHandler implements CommandHandler {
         }
         try {
             final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
-            final String policyName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
+            // The name as written, as an aggregation policy's is.
+            final String policyName = parts[parts.length - 1];
             requirePolicyCreatable(schema, policyName, "JOIN_POLICY", parts, orReplace, ifNotExists,
                 Privilege.CREATE_JOIN_POLICY);
+            final boolean freshName = !schema.hasJoinPolicy(policyName);
             if (orReplace) {
-                if (catalog.isJoinPolicyInUse(policyName)) {
+                if (catalog.isJoinPolicyInUse(schema, policyName)) {
                     throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
                         + " cannot be dropped/replaced as it is associated with one or more entities.");
                 }
@@ -480,6 +539,7 @@ public class CreateSecurityHandler implements CommandHandler {
             }
             policy.setOwner(catalog.currentRoleForOwner());
             schema.addJoinPolicy(policy);
+            takeName(freshName, "JOIN_POLICY", schema, policyName);
             logger.trace("Created join policy: {}", qn);
         } catch (final RuntimeException e) { ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0)); }
         return null;
@@ -513,10 +573,10 @@ public class CreateSecurityHandler implements CommandHandler {
             final String policyName = parts[parts.length - 1];
             requirePolicyCreatable(schema, policyName, "AGGREGATION_POLICY", parts, orReplace, ifNotExists,
                 Privilege.CREATE_AGGREGATION_POLICY);
+            final boolean freshName = schema.getAggregationPolicyExact(policyName) == null;
             if (orReplace) {
-                if (catalog.isAggregationPolicyInUse(policyName)) {
-                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy "
-                        + policyName.toUpperCase(Locale.ROOT)
+                if (catalog.isAggregationPolicyInUse(schema, policyName)) {
+                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
                         + " cannot be dropped/replaced as it is associated with one or more entities.");
                 }
                 if (schema.getAggregationPolicyExact(policyName) != null) {
@@ -539,6 +599,7 @@ public class CreateSecurityHandler implements CommandHandler {
             }
             policy.setOwner(catalog.currentRoleForOwner());
             schema.addAggregationPolicy(policy);
+            takeName(freshName, "AGGREGATION_POLICY", schema, policyName);
             logger.trace("Created aggregation policy: {}", qn);
         } catch (final RuntimeException e) { ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0)); }
         return null;
@@ -573,10 +634,10 @@ public class CreateSecurityHandler implements CommandHandler {
             final String policyName = parts[parts.length - 1];
             requirePolicyCreatable(schema, policyName, "PROJECTION_POLICY", parts, orReplace, ifNotExists,
                 Privilege.CREATE_PROJECTION_POLICY);
+            final boolean freshName = schema.getProjectionPolicyExact(policyName) == null;
             if (orReplace) {
-                if (catalog.isProjectionPolicyInUse(policyName)) {
-                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy "
-                        + policyName.toUpperCase(Locale.ROOT)
+                if (catalog.isProjectionPolicyInUse(schema, policyName)) {
+                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
                         + " cannot be dropped/replaced as it is associated with one or more entities.");
                 }
                 if (schema.getProjectionPolicyExact(policyName) != null) {
@@ -598,15 +659,15 @@ public class CreateSecurityHandler implements CommandHandler {
             }
             policy.setOwner(catalog.currentRoleForOwner());
             schema.addProjectionPolicy(policy);
+            takeName(freshName, "PROJECTION_POLICY", schema, policyName);
             logger.trace("Created projection policy: {}", qn);
         } catch (final RuntimeException e) { ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0)); }
         return null;
     }
 
     /**
-     * CREATE CONTACT — a schema-level object with three string properties and no behaviour. COMMENT,
-     * URL and EMAIL_DISTRIBUTION_LIST are the ones live takes; anything else is refused the way live
-     * refuses a property an object type does not have ({@code invalid property 'EMAIL' for 'CONTACT'}).
+     * CREATE CONTACT — a schema-level object with three string properties and no behaviour, judged as {@link
+     * ContactProperties} judges them.
      */
     public Object handleCreateContact(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String qn = getText(ctx.qualifiedName(0));
@@ -614,50 +675,28 @@ public class CreateSecurityHandler implements CommandHandler {
         final boolean orReplace = ctx.or_replace() != null;
         try {
             final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
-            final String contactName = parts[parts.length - 1].toUpperCase(Locale.ROOT);
+            // The name as written: a quoted name keeps its case and is another contact than its upper-case namesake
+            // (live-verified).
+            final String contactName = parts[parts.length - 1];
             ddl.checkCreatePrivilege(Privilege.CREATE_CONTACT, schema);
+            final boolean freshName = !schema.hasContact(contactName);
             if (!orReplace && schema.hasContact(contactName)) {
-                throw new RuntimeException(SqlCompilationError.of(
-                    "Object '" + contactName + "' already exists."));
+                throw policyNameTaken(parts);
             }
             final Contact contact = new Contact(contactName);
             for (final FrostlakeParser.ContactPropertyContext property : ctx.contactProperty()) {
-                applyContactProperty(contact, property);
+                ContactProperties.set(contact, property, catalog);
             }
-            // A contact is reached one way or the other, never both (live-verified). Each property is
-            // validated as it is read, so an unusable address is refused before this pairing is.
-            if (contact.getUrl() != null && !contact.getUrl().isEmpty()
-                    && contact.getEmailDistributionList() != null
-                    && !contact.getEmailDistributionList().isEmpty()) {
-                throw new RuntimeException("Email, url or users/email_list, only one could be set.");
+            ContactProperties.requireOneWay(contact);
+            if (!freshName) {
+                catalog.contactReplaced(schema.qualifiedName(schema.getContact(contactName).getName()));
             }
             contact.setOwner(catalog.currentRoleForOwner());
             schema.addContact(contact);
+            takeName(freshName, "CONTACT", schema, contactName);
             logger.trace("Created contact: {}", qn);
         } catch (final RuntimeException e) { ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0)); }
         return null;
-    }
-
-    private void applyContactProperty(final Contact contact,
-                                      final FrostlakeParser.ContactPropertyContext property) {
-        final String key = property.optionKey().getText().toUpperCase(Locale.ROOT);
-        final String value = ddl.extractStringLiteral(property.STRING_LITERAL());
-        if ("COMMENT".equals(key)) {
-            contact.setComment(value);
-        } else if ("URL".equals(key)) {
-            contact.setUrl(value);
-        } else if ("EMAIL_DISTRIBUTION_LIST".equals(key)) {
-            // ONE address, whatever the property name suggests — live refuses a comma-separated list,
-            // an address with no dotted domain, a one-letter top level and any address with a space.
-            // The empty string is allowed and clears it.
-            if (!value.isEmpty() && !EMAIL.matcher(value).matches()) {
-                throw new RuntimeException("Invalid email address(es): [" + value + "].");
-            }
-            contact.setEmailDistributionList(value);
-        } else {
-            throw new RuntimeException(SqlCompilationError.of(
-                "invalid property '" + key + "' for 'CONTACT'"));
-        }
     }
 
     /**
@@ -707,7 +746,14 @@ public class CreateSecurityHandler implements CommandHandler {
 
     public Object handleCreateRole(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String roleName = getText(ctx.identifier(0));
+        // CREATE ROLE on the account, which USERADMIN and the roles above it hold (documented).
+        AccountPrivileges.requireOnAccount(queryExecutor, catalog, Privilege.CREATE_ROLE);
         if (ctx.or_replace() != null) {
+            if (catalog.roleExistsExact(roleName)) {
+                final Role replaced = catalog.getRoleExact(roleName);
+                AccountPrivileges.requirePrincipalOwnership(queryExecutor, "ROLE", replaced.getName(),
+                    replaced.getOwner());
+            }
             try { catalog.dropRole(roleName); } catch (final RuntimeException ignored) {}
         }
         try {

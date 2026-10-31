@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.functions.NumericArgumentFunction;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -42,7 +43,10 @@ import java.util.List;
  *   WIDTH_BUCKET(&lt;NUMBER(10,2)&gt;, 0.5, 10.5, 0)  … 50 (min_value) != 1050 (max_value)
  * </pre>
  *
- * <p>Any NULL argument makes the answer NULL, the bucket count included.
+ * <p>Any NULL argument makes the answer NULL, the bucket count included. A FLOAT that is NaN or infinite takes
+ * FLOAT arithmetic as the comparisons and the bucket's floor read it: a NaN value is in bucket 1, an infinite one at
+ * the end it lies past, a NaN bound turns the range around, and a NaN or infinite count is out of the whole number's
+ * range (live-verified).
  */
 public class WidthBucket extends NumericArgumentFunction {
     public WidthBucket() { super("WIDTH_BUCKET", NumericType.INTEGER); }
@@ -54,10 +58,15 @@ public class WidthBucket extends NumericArgumentFunction {
                 return null;
             }
         }
-        final BigDecimal value = new BigDecimal(args.get(0).toString());
-        final BigDecimal low = new BigDecimal(args.get(1).toString());
-        final BigDecimal high = new BigDecimal(args.get(2).toString());
-        final long count = new BigDecimal(args.get(3).toString()).longValue();
+        final long count = finite(args.get(3)) ? DecimalText.parse(args.get(3).toString()).longValue()
+            : Random.floatSeed(((Double) args.get(3)).doubleValue(), "FIXED[SB8](18,0){not null}");
+        if (!finite(args.get(0)) || !finite(args.get(1)) || !finite(args.get(2))) {
+            return Long.valueOf(floatBucket(((Number) args.get(0)).doubleValue(), ((Number) args.get(1)).doubleValue(),
+                ((Number) args.get(2)).doubleValue(), count));
+        }
+        final BigDecimal value = DecimalText.parse(args.get(0).toString());
+        final BigDecimal low = DecimalText.parse(args.get(1).toString());
+        final BigDecimal high = DecimalText.parse(args.get(2).toString());
         if (count <= 0 || low.compareTo(high) == 0) {
             throw new RuntimeException(refusal(count, low, high, value));
         }
@@ -78,6 +87,31 @@ public class WidthBucket extends NumericArgumentFunction {
             return Long.valueOf(count + 1);
         }
         return Long.valueOf(bucketOf(value.subtract(low), high.subtract(low), count));
+    }
+
+    /** Whether an argument is a number that is not a NaN or infinite FLOAT. */
+    private static boolean finite(final Object arg) {
+        return !(arg instanceof Double) || Double.isFinite(((Double) arg).doubleValue());
+    }
+
+    /** The bucket in FLOAT arithmetic, for an argument that is NaN or infinite. */
+    private static long floatBucket(final double value, final double low, final double high, final long count) {
+        if (low < high) {
+            if (value < low) {
+                return 0;
+            }
+            if (value >= high) {
+                return count + 1;
+            }
+            return (long) Math.floor(count * (value - low) / (high - low)) + 1;
+        }
+        if (value > low) {
+            return 0;
+        }
+        if (value <= high) {
+            return count + 1;
+        }
+        return (long) Math.floor(count * (low - value) / (low - high)) + 1;
     }
 
     /** How far into the range {@code offset} sits, in buckets, counting from one. */

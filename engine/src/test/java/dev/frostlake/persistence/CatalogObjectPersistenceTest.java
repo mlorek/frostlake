@@ -66,6 +66,10 @@ public class CatalogObjectPersistenceTest {
     private static final String STAGED_APP = "COPY INTO @stg/app/streamlit_app.py FROM (SELECT 'import streamlit')"
         + " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE";
 
+    /** The main file a notebook created FROM a location has to find there. */
+    private static final String STAGED_NOTEBOOK = "COPY INTO @stg/nb/nb.ipynb FROM (SELECT '{}')"
+        + " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE";
+
     private Path dir;
 
     @BeforeEach
@@ -84,7 +88,7 @@ public class CatalogObjectPersistenceTest {
         assertSurvivesRestart(Arrays.asList(
             "CREATE API INTEGRATION it_api API_PROVIDER = aws_api_gateway"
                 + " API_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r' API_KEY = 'k1'"
-                + " API_ALLOWED_PREFIXES = ('https://a.example.com/', 'https://b.example.com/') ENABLED = TRUE"
+                + " API_ALLOWED_PREFIXES = ('https://a1.execute-api.us-east-1.amazonaws.com/', 'https://b1.execute-api.us-east-1.amazonaws.com/') ENABLED = TRUE"
                 + " COMMENT = 'c1'",
             "CREATE NOTIFICATION INTEGRATION it_ns TYPE = EMAIL ENABLED = FALSE",
             "CREATE CATALOG INTEGRATION ice_cat CATALOG_SOURCE = OBJECT_STORE TABLE_FORMAT = ICEBERG ENABLED = TRUE",
@@ -112,10 +116,10 @@ public class CatalogObjectPersistenceTest {
         assertKeepsEveryCell(Arrays.asList(
             "CREATE API INTEGRATION it_ident API_PROVIDER = aws_api_gateway"
                 + " API_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r'"
-                + " API_ALLOWED_PREFIXES = ('https://a.example.com/') ENABLED = TRUE",
+                + " API_ALLOWED_PREFIXES = ('https://a1.execute-api.us-east-1.amazonaws.com/') ENABLED = TRUE",
             "CREATE OR REPLACE API INTEGRATION it_ident API_PROVIDER = aws_api_gateway"
                 + " API_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r'"
-                + " API_ALLOWED_PREFIXES = ('https://a.example.com/') ENABLED = TRUE",
+                + " API_ALLOWED_PREFIXES = ('https://a1.execute-api.us-east-1.amazonaws.com/') ENABLED = TRUE",
             "CREATE EXTERNAL VOLUME ev_ident " + LOCATIONS),
             Arrays.asList("DESCRIBE INTEGRATION it_ident", "DESCRIBE EXTERNAL VOLUME ev_ident"));
     }
@@ -286,9 +290,10 @@ public class CatalogObjectPersistenceTest {
             "CREATE SCHEMA d1.s1",
             "USE SCHEMA d1.s1",
             "CREATE WAREHOUSE IF NOT EXISTS fl_app_wh1 INITIALLY_SUSPENDED = TRUE",
+            "CREATE STAGE stg",
+            STAGED_NOTEBOOK,
             "CREATE NOTEBOOK nb1 FROM '@stg/nb' MAIN_FILE = 'nb.ipynb' QUERY_WAREHOUSE = fl_app_wh1"
                 + " COMMENT = 'first' IDLE_AUTO_SHUTDOWN_TIME_SECONDS = 600",
-            "CREATE STAGE stg",
             STAGED_APP,
             "CREATE STREAMLIT app FROM '@stg/app' MAIN_FILE = 'streamlit_app.py' TITLE = 'My app'"
                 + " QUERY_WAREHOUSE = fl_app_wh1 IMPORTS = ('@stg/lib.py') EXTERNAL_ACCESS_INTEGRATIONS = (ext1)",
@@ -405,7 +410,7 @@ public class CatalogObjectPersistenceTest {
     public void creationTimesGrantTimesAndUrlIdsSurviveARestart() {
         assertKeepsEveryCell(Arrays.asList(
             "CREATE API INTEGRATION it_api API_PROVIDER = aws_api_gateway"
-                + " API_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r' API_ALLOWED_PREFIXES = ('https://a.example.com/')"
+                + " API_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r' API_ALLOWED_PREFIXES = ('https://a1.execute-api.us-east-1.amazonaws.com/')"
                 + " ENABLED = TRUE",
             "CREATE EXTERNAL VOLUME ev_a " + LOCATIONS,
             "CREATE COMPUTE POOL p1 MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = CPU_X64_XS"
@@ -417,8 +422,9 @@ public class CatalogObjectPersistenceTest {
             "CREATE DATABASE d1",
             "CREATE SCHEMA d1.s1",
             "USE SCHEMA d1.s1",
-            "CREATE NOTEBOOK nb1 FROM '@stg/nb' MAIN_FILE = 'nb.ipynb'",
             "CREATE STAGE stg",
+            STAGED_NOTEBOOK,
+            "CREATE NOTEBOOK nb1 FROM '@stg/nb' MAIN_FILE = 'nb.ipynb'",
             STAGED_APP,
             "CREATE STREAMLIT app FROM '@stg/app' MAIN_FILE = 'streamlit_app.py'",
             "CREATE IMAGE REPOSITORY repo",
@@ -462,8 +468,10 @@ public class CatalogObjectPersistenceTest {
                 "CREATE EXTERNAL VOLUME ev_d " + LOCATIONS + " COMMENT = 'dropped'",
                 "CREATE DATABASE d1",
                 "CREATE SCHEMA d1.s1",
-                "CREATE NOTEBOOK d1.s1.nb_d FROM '@stg/nb' MAIN_FILE = 'nb.ipynb' COMMENT = 'dropped'",
                 "CREATE STAGE d1.s1.stg",
+                "COPY INTO @d1.s1.stg/nb/nb.ipynb FROM (SELECT '{}')"
+                    + " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE",
+                "CREATE NOTEBOOK d1.s1.nb_d FROM '@d1.s1.stg/nb' MAIN_FILE = 'nb.ipynb' COMMENT = 'dropped'",
                 "COPY INTO @d1.s1.stg/app/streamlit_app.py FROM (SELECT 'import streamlit')"
                     + " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE",
                 "CREATE STREAMLIT d1.s1.st_d FROM '@d1.s1.stg/app' MAIN_FILE = 'streamlit_app.py'"),
@@ -608,6 +616,40 @@ public class CatalogObjectPersistenceTest {
         first.shutdown();
 
         final DatabaseEngine second = walEngine(wal);
+        assertSameReadings(before, readings(second, listings, true), "after a WAL restart");
+        second.shutdown();
+    }
+
+    /**
+     * A pipe's refresh loads in a session of its own, as a task's run does, and the stage files it read owe the
+     * checkpoint that follows it: a WAL restart reads the table as the refresh left it, and does not load the stage
+     * again as it stands then.
+     */
+    @Test
+    public void aPipeRefreshIsNotLoadedAgainByAWalRestart() throws IOException {
+        final Path files = Files.createDirectories(dir.resolve("pipe-refresh-files"));
+        Files.writeString(files.resolve("a.csv"), "1\n2\n");
+        final Path wal = dir.resolve("pipe-refresh").resolve("wal.log");
+        final EngineConfig config = walConfig(wal);
+        config.setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
+        final DatabaseEngine first = new DatabaseEngine(config);
+        first.execute("CREATE DATABASE d1");
+        first.execute("CREATE SCHEMA d1.s1");
+        first.execute("USE SCHEMA d1.s1");
+        first.execute("CREATE TABLE loaded (a INT)");
+        first.execute("CREATE STAGE st URL='file://" + files + "'");
+        first.execute("CREATE PIPE pp AS COPY INTO loaded FROM @st FILE_FORMAT = (TYPE = 'CSV')");
+        first.execute("ALTER PIPE pp REFRESH");
+        final List<String> listings = Arrays.asList("SELECT a FROM d1.s1.loaded ORDER BY a");
+        final List<String> before = readings(first, listings, true);
+        assertTrue(before.get(0).endsWith("| 1 | 2"), before.get(0));
+        // A file staged after the refresh is no part of what it loaded.
+        Files.writeString(files.resolve("b.csv"), "3\n");
+        first.shutdown();
+
+        final EngineConfig again = walConfig(wal);
+        again.setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
+        final DatabaseEngine second = new DatabaseEngine(again);
         assertSameReadings(before, readings(second, listings, true), "after a WAL restart");
         second.shutdown();
     }
@@ -783,11 +825,16 @@ public class CatalogObjectPersistenceTest {
     }
 
     private DatabaseEngine walEngine(final Path walFile) {
+        return new DatabaseEngine(walConfig(walFile));
+    }
+
+    /** A configuration that keeps a write-ahead log in the given file and checkpoints only when a run asks. */
+    private static EngineConfig walConfig(final Path walFile) {
         final EngineConfig config = new EngineConfig();
         config.setProperty(EngineConfig.PROP_DURABILITY_WAL_ENABLED, "true");
         config.setProperty(EngineConfig.PROP_DURABILITY_WAL_FILE, walFile.toString());
         config.setProperty(EngineConfig.PROP_DURABILITY_CHECKPOINT_INTERVAL, "0");
-        return new DatabaseEngine(config);
+        return config;
     }
 
     // ------------------------------------------------------------------ readings

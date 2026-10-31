@@ -19,6 +19,7 @@ package dev.frostlake.rt.scala;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.config.EngineConfig;
 import dev.frostlake.config.S3PathResolver;
+import dev.frostlake.executor.udf.JavaHandlerFailure;
 import dev.frostlake.executor.udf.JavaTableFunctions;
 import dev.frostlake.executor.udf.TablePartitionRows;
 import dev.frostlake.executor.udf.UdfLanguageRuntime;
@@ -68,9 +69,10 @@ public final class ScalaRuntime implements UdfLanguageRuntime {
     @Override
     public void compileFunction(final Function function) {
         if (function.isTableFunction()) {
-            // A table function's handler is a class, held to the rules of a Java one's (live-verified).
+            // A table function's handler is a class, held to the rules of a Java one's; one that keeps them is
+            // refused for its language, so no Scala table function is ever created (live-verified).
             JavaTableFunctions.check(function, tableHandler(function));
-            return;
+            throw new RuntimeException("Table functions not supported for language 'SCALA'.");
         }
         compileBody(function.getBody(), function.getHandler(), function.getName(),
             function.getParameters() == null ? 0 : function.getParameters().size());
@@ -81,13 +83,19 @@ public final class ScalaRuntime implements UdfLanguageRuntime {
         return JavaTableFunctions.run(function, tableHandler(function), rows);
     }
 
-    /** The class a table function's HANDLER names, compiled from the body. */
+    /**
+     * The class a table function's HANDLER names, compiled from the body: the class of that name itself, whose
+     * methods an {@code object} of the name gives it as static ones, never the object's own class.
+     */
     private static Class<?> tableHandler(final Function function) {
         final String where = " in function " + function.getName() + " with handler " + function.getHandler();
         try {
-            return ScalaCompiler.compileCached(function.getBody(), function.getHandler(), where);
+            final Class<?> compiled = ScalaCompiler.compileCached(function.getBody(), function.getHandler(), where);
+            return compiled.getName().endsWith("$")
+                ? compiled.getClassLoader().loadClass(function.getHandler()) : compiled;
         } catch (final ClassNotFoundException missing) {
-            throw new RuntimeException(JavaTableFunctions.missingClass(function.getHandler(), where), missing);
+            throw new RuntimeException(JavaHandlerFailure.missingClass(function.getHandler(), ScalaCompiler.JAVA_LEVEL,
+                where), missing);
         } catch (final RuntimeException e) {
             throw e;
         } catch (final Exception e) {
@@ -104,14 +112,18 @@ public final class ScalaRuntime implements UdfLanguageRuntime {
     }
 
     /**
-     * Compiles a body and confirms its handler is in it: a method of that name taking {@code arity} arguments,
-     * refused when the routine is created otherwise (live-verified).
+     * Compiles a body and confirms its handler is in it: a class of that name, reported as the class loader
+     * reports one it cannot find, and a method of that name taking {@code arity} arguments, refused when the
+     * routine is created otherwise (live-verified).
      */
     private void compileBody(final String body, final String handler, final String routineName, final int arity) {
         final String where = " in function " + routineName + " with handler " + handler;
         final Class<?> compiled;
         try {
             compiled = ScalaCompiler.compileCached(body, handlerClass(handler), where);
+        } catch (final ClassNotFoundException missing) {
+            throw new RuntimeException(JavaHandlerFailure.missingClass(handlerClass(handler),
+                ScalaCompiler.JAVA_LEVEL, where), missing);
         } catch (final RuntimeException e) {
             throw e;
         } catch (final Exception e) {

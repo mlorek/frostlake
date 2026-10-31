@@ -72,6 +72,11 @@ final class SetOperationTree {
         return operand != null;
     }
 
+    /** The operator of a node over two, or null for a leaf. */
+    FrostlakeParser.SetOperatorContext operator() {
+        return operator;
+    }
+
     /** Whether this node is a UNION, with or without ALL or BY NAME. */
     boolean isUnion() {
         return operator != null && operator.UNION() != null;

@@ -23,6 +23,7 @@ import dev.frostlake.executor.expressions.IntervalCells;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.NonFiniteDoubles;
@@ -30,6 +31,9 @@ import dev.frostlake.values.VariantValue;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.Reader;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.sql.Date;
 import java.sql.SQLException;
@@ -37,12 +41,12 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.sql.Types;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
-import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -51,6 +55,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Calendar;
 import java.util.Collections;
+import java.util.GregorianCalendar;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -73,7 +78,13 @@ public final class JdbcMarshaling {
     private static final DateTimeFormatter BOUND_TIMESTAMP =
         DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss.SSSSSSSSS");
     private static final DateTimeFormatter BOUND_DATE = DateTimeFormatter.ofPattern("uuuu-MM-dd");
-    private static final DateTimeFormatter BOUND_TIME = DateTimeFormatter.ofPattern("HH:mm:ss");
+    private static final DateTimeFormatter BOUND_TIME = DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
+
+    /** The most digits a NUMBER holds. */
+    private static final int MAX_NUMBER_PRECISION = 38;
+
+    /** What the wire adds to a TIMESTAMP_TZ's offset in minutes, so that every offset spells a positive number. */
+    private static final int OFFSET_BIAS_MINUTES = 1440;
 
     /**
      * Map an engine {@code DataType} to a {@link java.sql.Types} constant, using its PARAMETERS where
@@ -411,7 +422,8 @@ public final class JdbcMarshaling {
     /**
      * The account's driver's refusal of a getter its column's type does not convert to, worded as it words it:
      * {@code Cannot convert value in the driver from type:91 to type:time, value=19724.}, SQLSTATE {@code 0A000},
-     * vendor code 200038 (live-verified).
+     * vendor code 200038, the type's number grouped by thousands — {@code type:2,014} for a TIMESTAMP_TZ
+     * (live-verified).
      *
      * @param columnType the column's JDBC type
      * @param target     what the getter reads: {@code date}, {@code time} or {@code timestamp}
@@ -419,14 +431,20 @@ public final class JdbcMarshaling {
      * @return the refusal to throw
      */
     public static SQLException unconvertible(final int columnType, final String target, final String value) {
-        return new SQLException("Cannot convert value in the driver from type:" + columnType + " to type:" + target
-            + ", value=" + value + ".", "0A000", 200038);
+        return new SQLException("Cannot convert value in the driver from type:"
+            + String.format(Locale.ROOT, "%,d", columnType) + " to type:" + target + ", value=" + value + ".",
+            "0A000", 200038);
     }
 
     /**
      * A cell as the driver's refusal quotes it: the account's wire form of it — a DATE as its day number since
      * 1970-01-01, a TIME as its seconds since midnight to the column's scale ({@code 36672.345000000} for a
-     * TIME(9), {@code 36672} for a TIME(0)), a BOOLEAN as 1 or 0 — and any other cell as its text (live-verified).
+     * TIME(9), {@code 36672} for a TIME(0)), a TIMESTAMP_NTZ as the seconds its wall clock is past 1970-01-01 at
+     * UTC and a TIMESTAMP_LTZ as the seconds its moment is past the epoch, to the column's scale
+     * ({@code 1704164645.123456789}, {@code -315619199.5} for a TIMESTAMP_LTZ(1) half a second into 1960), a
+     * TIMESTAMP_TZ as its moment's seconds and its offset in minutes plus 1440 ({@code 1704157445.500000000 1560}
+     * for {@code +02:00}), a BOOLEAN as 1 or 0 — and any other cell as its text (live-verified). A whole-number
+     * getter reads that form too: a TIMESTAMP_NTZ(0) reads by getInt as its seconds.
      *
      * @param cell       the cell, not null
      * @param columnType the column's JDBC type
@@ -448,10 +466,54 @@ public final class JdbcMarshaling {
             }
             return seconds.toString();
         }
+        if (columnType == Types.TIMESTAMP || columnType == Types.TIMESTAMP_WITH_TIMEZONE) {
+            final OffsetDateTime moment = wireMoment(cell);
+            if (moment != null) {
+                final String seconds = BigDecimal.valueOf(moment.toEpochSecond())
+                    .add(BigDecimal.valueOf(moment.getNano(), 9))
+                    .setScale(Math.max(0, Math.min(scale, 9)), RoundingMode.FLOOR).toPlainString();
+                return columnType == Types.TIMESTAMP ? seconds
+                    : seconds + " " + (moment.getOffset().getTotalSeconds() / 60 + OFFSET_BIAS_MINUTES);
+            }
+        }
         if (cell instanceof Boolean) {
             return ((Boolean) cell) ? "1" : "0";
         }
         return text;
+    }
+
+    /**
+     * A timestamp cell as the moment the wire spells: a wall clock that carries no zone, a TIMESTAMP_NTZ's, at UTC,
+     * and a zoned one at its own offset. The in-process cell is a java.time value; the HTTP one is the wire's text,
+     * {@code 2024-01-02 03:04:05.5} or {@code 2024-01-02 03:04:05.500 +0200}.
+     *
+     * @param cell the cell
+     * @return the moment, or null for a cell that spells none
+     */
+    private static OffsetDateTime wireMoment(final Object cell) {
+        if (cell instanceof OffsetDateTime) {
+            return (OffsetDateTime) cell;
+        }
+        if (cell instanceof ZonedDateTime) {
+            return ((ZonedDateTime) cell).toOffsetDateTime();
+        }
+        if (cell instanceof Instant) {
+            return ((Instant) cell).atOffset(ZoneOffset.UTC);
+        }
+        if (cell instanceof LocalDateTime) {
+            return ((LocalDateTime) cell).atOffset(ZoneOffset.UTC);
+        }
+        if (!(cell instanceof CharSequence)) {
+            return null;
+        }
+        final String text = cell.toString().trim();
+        final int space = text.lastIndexOf(' ');
+        final boolean zoned = space > 0 && isNumericOffset(text.substring(space + 1));
+        try {
+            return parseDateTime(text).atOffset(zoned ? ZoneOffset.of(text.substring(space + 1)) : ZoneOffset.UTC);
+        } catch (final DateTimeException unspelled) {
+            return null;
+        }
     }
 
     /**
@@ -465,6 +527,8 @@ public final class JdbcMarshaling {
         if (x == null || cal == null) {
             return x;
         }
+        // The account's driver reads the wall clock through java.time, so a value before 1582 moves by the gap between
+        // the Julian count java.sql keeps and the Gregorian one (live-verified).
         return new CalendarBoundInstant(
             x.toInstant().atZone(cal.getTimeZone().toZoneId()).toLocalDateTime().toInstant(ZoneOffset.UTC));
     }
@@ -499,6 +563,83 @@ public final class JdbcMarshaling {
     }
 
     /**
+     * A value bound by setObject with a target SQL type, as the account's driver binds it (live-verified): a text type
+     * binds the value's text — {@code setObject(1, 5, Types.VARCHAR)} is the text {@code '5'} — and a whole-number or
+     * DECIMAL type its number, from a String too — {@code setObject(1, "5", Types.INTEGER)} is 5. A DECIMAL or NUMERIC
+     * scale moves the number to that scale, refusing one it would have to round ({@code 7.25} at scale 1), as the
+     * account's driver fails there. A Time binds at its clock in UTC whatever the type (see {@link #timeAtUtc}); any
+     * other type, and a String that spells no number, bind as given.
+     *
+     * @param x             the value
+     * @param targetSqlType the {@link Types} code the value is bound as
+     * @param scale         the DECIMAL or NUMERIC scale, or null when none is named
+     * @return the value to bind
+     * @throws SQLException when the scale would round the number
+     */
+    public static Object boundAs(final Object x, final int targetSqlType, final Integer scale) throws SQLException {
+        if (x instanceof Time) {
+            return timeAtUtc((Time) x);
+        }
+        if (x == null) {
+            return null;
+        }
+        if (isTextType(targetSqlType)) {
+            return x instanceof BigDecimal ? ((BigDecimal) x).toPlainString() : String.valueOf(x);
+        }
+        if (!isNumberType(targetSqlType)) {
+            return x;
+        }
+        final BigDecimal number = numberOf(x);
+        if (number == null) {
+            return x;
+        }
+        if (scale == null || (targetSqlType != Types.DECIMAL && targetSqlType != Types.NUMERIC)) {
+            return number;
+        }
+        try {
+            return number.setScale(scale.intValue());
+        } catch (final ArithmeticException rounding) {
+            throw new SQLException("Rounding necessary", "22003", rounding);
+        }
+    }
+
+    /** Whether a {@link Types} code names a text. */
+    private static boolean isTextType(final int type) {
+        return type == Types.CHAR || type == Types.VARCHAR || type == Types.LONGVARCHAR || type == Types.NCHAR
+            || type == Types.NVARCHAR || type == Types.LONGNVARCHAR;
+    }
+
+    /** Whether a {@link Types} code names a whole number or a DECIMAL. */
+    private static boolean isNumberType(final int type) {
+        return type == Types.TINYINT || type == Types.SMALLINT || type == Types.INTEGER || type == Types.BIGINT
+            || type == Types.DECIMAL || type == Types.NUMERIC;
+    }
+
+    /** A value's number, a String's when it spells one; null for anything else. */
+    private static BigDecimal numberOf(final Object x) {
+        if (x instanceof BigDecimal) {
+            return (BigDecimal) x;
+        }
+        if (x instanceof BigInteger) {
+            return new BigDecimal((BigInteger) x);
+        }
+        if (x instanceof Double || x instanceof Float) {
+            return BigDecimal.valueOf(((Number) x).doubleValue());
+        }
+        if (x instanceof Number) {
+            return BigDecimal.valueOf(((Number) x).longValue());
+        }
+        if (x instanceof String) {
+            try {
+                return DecimalText.parse(((String) x).trim());
+            } catch (final NumberFormatException notANumber) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /**
      * A Date bound with a Calendar: the day its moment falls on in the Calendar's zone (live-verified).
      *
      * @param x   the value
@@ -509,12 +650,12 @@ public final class JdbcMarshaling {
         if (x == null || cal == null) {
             return x;
         }
-        return Date.valueOf(Instant.ofEpochMilli(x.getTime()).atZone(cal.getTimeZone().toZoneId()).toLocalDate());
+        return Date.valueOf(wallClockAt(cal, x.getTime(), 0).toLocalDate());
     }
 
     /**
      * A Time bound with a Calendar, as the account's driver binds one: the Calendar is not read, and the time is the
-     * one its moment shows in UTC, in any session (live-verified).
+     * one its moment shows in UTC, in any session, its milliseconds kept (live-verified).
      *
      * @param x the value
      * @return the value to bind
@@ -523,7 +664,10 @@ public final class JdbcMarshaling {
         if (x == null) {
             return null;
         }
-        return Time.valueOf(LocalTime.ofInstant(Instant.ofEpochMilli(x.getTime()), ZoneOffset.UTC));
+        final LocalTime utc = LocalTime.ofInstant(Instant.ofEpochMilli(x.getTime()), ZoneOffset.UTC);
+        final Time bound = Time.valueOf(utc);
+        bound.setTime(bound.getTime() + utc.getNano() / 1_000_000L);
+        return bound;
     }
 
     /**
@@ -539,7 +683,6 @@ public final class JdbcMarshaling {
         if (v == null || cal == null) {
             return toTimestamp(v);
         }
-        final ZoneId zone = cal.getTimeZone().toZoneId();
         if (v instanceof OffsetDateTime) {
             return Timestamp.from(((OffsetDateTime) v).toInstant());
         }
@@ -547,16 +690,55 @@ public final class JdbcMarshaling {
             return Timestamp.from(((ZonedDateTime) v).toInstant());
         }
         if (v instanceof LocalDateTime) {
-            return Timestamp.from(((LocalDateTime) v).atZone(zone).toInstant());
+            return wallClockTimestamp(cal, (LocalDateTime) v);
         }
         if (v instanceof LocalDate) {
-            return Timestamp.from(((LocalDate) v).atStartOfDay(zone).toInstant());
+            return wallClockTimestamp(cal, ((LocalDate) v).atStartOfDay());
         }
         if (v instanceof CharSequence) {
             final Instant zoned = zonedMoment(v.toString());
-            return Timestamp.from(zoned != null ? zoned : parseDateTime(v.toString()).atZone(zone).toInstant());
+            return zoned != null ? Timestamp.from(zoned) : wallClockTimestamp(cal, parseDateTime(v.toString()));
         }
         return toTimestamp(v);
+    }
+
+    /**
+     * The Timestamp of a wall clock as the Calendar's zone shows it. The moment is counted in the Calendar's own
+     * calendar, the Julian one before 1582 as java.sql counts, so a Calendar of the JVM's zone reads a value as no
+     * Calendar does.
+     */
+    private static Timestamp wallClockTimestamp(final Calendar cal, final LocalDateTime wall) {
+        final Timestamp read = new Timestamp(wallClockMillis(cal, wall));
+        read.setNanos(wall.getNano());
+        return read;
+    }
+
+    /** The moment, in milliseconds, a wall clock names in the Calendar's zone, counted in the Calendar's calendar. */
+    static long wallClockMillis(final Calendar cal, final LocalDateTime wall) {
+        final Calendar fields = (Calendar) cal.clone();
+        fields.clear();
+        if (wall.getYear() <= 0) {
+            fields.set(Calendar.ERA, GregorianCalendar.BC);
+            fields.set(Calendar.YEAR, 1 - wall.getYear());
+        } else {
+            fields.set(Calendar.YEAR, wall.getYear());
+        }
+        fields.set(Calendar.MONTH, wall.getMonthValue() - 1);
+        fields.set(Calendar.DAY_OF_MONTH, wall.getDayOfMonth());
+        fields.set(Calendar.HOUR_OF_DAY, wall.getHour());
+        fields.set(Calendar.MINUTE, wall.getMinute());
+        fields.set(Calendar.SECOND, wall.getSecond());
+        return fields.getTimeInMillis();
+    }
+
+    /** The wall clock a moment shows in the Calendar's zone, read in the Calendar's own calendar, nanoseconds given. */
+    private static LocalDateTime wallClockAt(final Calendar cal, final long millis, final int nanos) {
+        final Calendar fields = (Calendar) cal.clone();
+        fields.setTimeInMillis(millis);
+        final int year = fields.get(Calendar.ERA) == GregorianCalendar.BC
+            ? 1 - fields.get(Calendar.YEAR) : fields.get(Calendar.YEAR);
+        return LocalDateTime.of(year, fields.get(Calendar.MONTH) + 1, fields.get(Calendar.DAY_OF_MONTH),
+            fields.get(Calendar.HOUR_OF_DAY), fields.get(Calendar.MINUTE), fields.get(Calendar.SECOND), nanos);
     }
 
     /**
@@ -570,7 +752,7 @@ public final class JdbcMarshaling {
         if (v == null || cal == null) {
             return toDate(v);
         }
-        return new Date(toDate(v).toLocalDate().atStartOfDay(cal.getTimeZone().toZoneId()).toInstant().toEpochMilli());
+        return new Date(wallClockMillis(cal, toDate(v).toLocalDate().atStartOfDay()));
     }
 
     /** The moment a wire text with a trailing offset names, or null for a text with no offset. */
@@ -804,6 +986,23 @@ public final class JdbcMarshaling {
      * consume a placeholder slot. (PreparedStatement params are inlined client-side; there is no server-side
      * binding.)
      */
+    /**
+     * A prepared statement's text with its values written in (see {@link #substitutePlaceholders(String, Map)}), a
+     * value refused for where it stands or what it holds reported as the statement's failure.
+     *
+     * @param sql    the statement
+     * @param params its values, by 1-based placeholder number
+     * @return the text to run
+     * @throws SQLException where a value is refused
+     */
+    public static String bindPrepared(final String sql, final Map<Integer, Object> params) throws SQLException {
+        try {
+            return substitutePlaceholders(sql, params);
+        } catch (final RuntimeException refused) {
+            throw new SQLException(refused.getMessage(), refused);
+        }
+    }
+
     public static String substitutePlaceholders(final String sql, final Map<Integer, Object> params) {
         return substitute(sql, params, Collections.<Integer>emptySet(), false, new ArrayList<int[]>());
     }
@@ -811,6 +1010,8 @@ public final class JdbcMarshaling {
     private static String substitute(final String sql, final Map<Integer, Object> params, final Set<Integer> unbound,
                                      final boolean numbered, final List<int[]> written) {
         final List<Token> tokens = lex(sql).getTokens();
+        // A number bound as a whole sort or grouping key is a constant there (see BoundKeyPlaces).
+        final Set<Integer> keyPlaces = numbered ? Collections.<Integer>emptySet() : keyPlaces(sql, tokens, params);
         final StringBuilder out = new StringBuilder(sql.length() + 16);
         int param = 0;
         int cursor = 0;
@@ -823,21 +1024,29 @@ public final class JdbcMarshaling {
                     + t.getCharPositionInLine() + "\nBind variable ? not set."));
             }
             if (t.getType() == FrostlakeLexer.QUESTION && !unbound.contains(++param)) {
-                if (numbered) {
+                if (numbered && params.get(param) != null) {
+                    // A NULL bound there is no limit, as a NULL written there is (live-verified).
                     requireNoRowCount(tokens, i);
                 }
-                final String literal = !numbered ? formatLiteral(params.get(param))
-                    : aloneInValuesRow(tokens, i) ? formatLiteral(params.get(param)) : usingLiteral(params.get(param));
+                final String text = !numbered ? preparedLiteral(params.get(param), tokens, i)
+                    : aloneInValuesRow(tokens, i) || rowCountPlace(tokens, i) ? formatLiteral(params.get(param))
+                    : usingLiteral(params.get(param));
+                final String literal = writtenAsNumber(params.get(param))
+                    && keyPlaces.contains(Integer.valueOf(t.getStartIndex())) ? constantKey(params.get(param), text)
+                    : text;
                 out.append(sql, cursor, t.getStartIndex());
                 out.append(literal);
                 cursor = t.getStopIndex() + 1;
                 written.add(new int[] {t.getLine(), t.getCharPositionInLine(), 1, literal.length()});
-            } else if (numbered && t.getType() == FrostlakeLexer.COLON && i + 1 < tokens.size()
+            } else if (t.getType() == FrostlakeLexer.COLON && i + 1 < tokens.size()
                     && tokens.get(i + 1).getType() == FrostlakeLexer.INTEGER_LITERAL) {
+                // A numbered bind takes the value of its number, in a prepared statement as in a USING list:
+                // CALL p(:1) binds the first parameter set (live-verified through the account's driver).
                 final Token digits = tokens.get(i + 1);
                 final Integer number = bindNumber(digits.getText());
                 if (number != null && params.containsKey(number) && !unbound.contains(number)) {
-                    final String literal = aloneInValuesRow(tokens, i + 1) ? formatLiteral(params.get(number))
+                    final String literal = !numbered ? preparedLiteral(params.get(number), tokens, i)
+                        : aloneInValuesRow(tokens, i + 1) ? formatLiteral(params.get(number))
                         : usingLiteral(params.get(number));
                     out.append(sql, cursor, t.getStartIndex());
                     out.append(literal);
@@ -850,6 +1059,82 @@ public final class JdbcMarshaling {
         }
         out.append(sql, cursor, sql.length());
         return out.toString();
+    }
+
+    /**
+     * Where a prepared statement's placeholders are whole sort or grouping keys (see {@link BoundKeyPlaces}), read only
+     * where a number is bound and the statement has a BY at all.
+     *
+     * @param sql    the statement
+     * @param tokens its tokens
+     * @param params its values
+     * @return the offsets of those placeholders, or none
+     */
+    private static Set<Integer> keyPlaces(final String sql, final List<Token> tokens,
+                                          final Map<Integer, Object> params) {
+        boolean number = false;
+        for (final Object value : params.values()) {
+            number |= writtenAsNumber(value);
+        }
+        if (number) {
+            for (final Token token : tokens) {
+                if (token.getType() == FrostlakeLexer.BY) {
+                    return BoundKeyPlaces.of(sql);
+                }
+            }
+        }
+        return Collections.<Integer>emptySet();
+    }
+
+    /** Whether a prepared value is written as a bare number, which a sort or grouping key reads as a position. */
+    private static boolean writtenAsNumber(final Object value) {
+        return value instanceof Number && !(value instanceof Double) && !(value instanceof Float);
+    }
+
+    /**
+     * A number bound as a whole sort or grouping key, written as a constant of its type — {@code 2::NUMBER},
+     * {@code 1.5::NUMBER(38, 1)} — which names no select-list position (see {@link BoundKeyPlaces}).
+     *
+     * @param value   the value
+     * @param literal its text
+     * @return the text written in the placeholder's place
+     */
+    private static String constantKey(final Object value, final String literal) {
+        final int scale = value instanceof BigDecimal ? Math.max(((BigDecimal) value).stripTrailingZeros().scale(), 0)
+            : 0;
+        return literal + (scale == 0 ? "::NUMBER" : "::NUMBER(38, " + scale + ")");
+    }
+
+    /**
+     * A prepared statement's value as the text written in its placeholder's place. The account's driver binds a double
+     * or a float as a FLOAT, by its text — {@code SYSTEM$TYPEOF(?)} over setDouble(0.1) is FLOAT[DOUBLE], and
+     * setDouble(1.255) written into a NUMBER(10,2) is 1.25 — so it is written as that text converted to FLOAT, which a
+     * LIMIT or an OFFSET refuses as the account's driver has it refused: {@code Invalid row count '?' in limit clause}.
+     * A BigDecimal binds as the NUMBER its digits spell, trailing zeros dropped, and one whose fraction takes it past
+     * 38 digits is refused as the type it would be: setBigDecimal(1E-50) is
+     * {@code Invalid intermediate datatype: NUMBER(51,50).} (all live-verified). Every other value is written as
+     * {@link #formatLiteral} writes it.
+     *
+     * @param value       the value
+     * @param tokens      the statement's tokens
+     * @param placeholder the index of the placeholder's token
+     * @return its text
+     */
+    static String preparedLiteral(final Object value, final List<Token> tokens, final int placeholder) {
+        if ((value instanceof Double || value instanceof Float) && !NonFiniteDoubles.isNonFinite((Number) value)) {
+            requireNoRowCount(tokens, placeholder);
+            return "CAST('" + value + "' AS FLOAT)";
+        }
+        if (value instanceof BigDecimal) {
+            final BigDecimal digits = ((BigDecimal) value).stripTrailingZeros();
+            final int scale = Math.max(digits.scale(), 0);
+            final int precision = Math.max(digits.precision() - digits.scale(), 1) + scale;
+            if (scale > 0 && precision > MAX_NUMBER_PRECISION) {
+                throw new RuntimeException(SqlCompilationError.withoutPosition(
+                    "Invalid intermediate datatype: NUMBER(" + precision + "," + scale + ")."));
+            }
+        }
+        return formatLiteral(value);
     }
 
     /**
@@ -993,18 +1278,30 @@ public final class JdbcMarshaling {
 
     /**
      * Refuse a USING list's {@code ?} standing where a row count belongs: the list hands a text over, and a LIMIT
-     * and an OFFSET take none — {@code Invalid row count '?' in limit clause} (live-verified).
+     * and an OFFSET take none — {@code Invalid row count '?' in limit clause} (live-verified). A NULL bound there is
+     * no text and limits nothing.
      */
     private static void requireNoRowCount(final List<Token> tokens, final int placeholder) {
+        if (rowCountPlace(tokens, placeholder)) {
+            final int type = tokenBefore(tokens, placeholder);
+            throw new RuntimeException(SqlCompilationError.of("Invalid row count '?' in "
+                + (type == FrostlakeLexer.LIMIT ? "limit clause" : "result offset clause")));
+        }
+    }
+
+    /** Whether a placeholder stands where a LIMIT's or an OFFSET's row count belongs. */
+    private static boolean rowCountPlace(final List<Token> tokens, final int placeholder) {
+        final int type = tokenBefore(tokens, placeholder);
+        return type == FrostlakeLexer.LIMIT || type == FrostlakeLexer.OFFSET;
+    }
+
+    /** The type of the token before a placeholder on the default channel, or EOF where none is. */
+    private static int tokenBefore(final List<Token> tokens, final int placeholder) {
         int before = placeholder - 1;
         while (before >= 0 && tokens.get(before).getChannel() != Token.DEFAULT_CHANNEL) {
             before--;
         }
-        final int type = before < 0 ? Token.EOF : tokens.get(before).getType();
-        if (type == FrostlakeLexer.LIMIT || type == FrostlakeLexer.OFFSET) {
-            throw new RuntimeException(SqlCompilationError.of("Invalid row count '?' in "
-                + (type == FrostlakeLexer.LIMIT ? "limit clause" : "result offset clause")));
-        }
+        return before < 0 ? Token.EOF : tokens.get(before).getType();
     }
 
     /**
@@ -1044,7 +1341,10 @@ public final class JdbcMarshaling {
             return "TO_DATE('" + BOUND_DATE.format(((Date) value).toLocalDate()) + "', 'YYYY-MM-DD')";
         }
         if (value instanceof Time) {
-            return "TO_TIME('" + ((Time) value).toLocalTime().format(BOUND_TIME) + "', 'HH24:MI:SS')";
+            // A Time carries its milliseconds in its moment alone: toLocalTime() reads the clock to the second.
+            final Time time = (Time) value;
+            final LocalTime clock = time.toLocalTime().withNano((int) Math.floorMod(time.getTime(), 1000L) * 1_000_000);
+            return "TO_TIME('" + clock.format(BOUND_TIME) + "', 'HH24:MI:SS.FF3')";
         }
         if (value instanceof BinaryValue) {
             // A binary parameter binds as a hex literal, which the parser reads back as BINARY.
@@ -1129,7 +1429,7 @@ public final class JdbcMarshaling {
         return sb.toString().toUpperCase(Locale.ROOT);
     }
 
-    private static LocalDateTime parseDateTime(final String s) {
+    static LocalDateTime parseDateTime(final String s) {
         // Three spellings reach here: ISO 'T' ("2025-06-17T14:30:00"), a SQL space
         // ("2025-06-17 14:30:00"), and the zoned form the HTTP wire now carries for a TIMESTAMP_LTZ
         // ("2025-06-17 14:30:00.000 -0700"). Drop a trailing numeric offset before normalizing —
@@ -1149,7 +1449,7 @@ public final class JdbcMarshaling {
     }
 
     /** Whether a trailing token is a {@code ±HHMM} / {@code ±HH:MM} zone offset rather than text. */
-    private static boolean isNumericOffset(final String token) {
+    static boolean isNumericOffset(final String token) {
         if (token.length() < 3 || (token.charAt(0) != '+' && token.charAt(0) != '-')) {
             return false;
         }

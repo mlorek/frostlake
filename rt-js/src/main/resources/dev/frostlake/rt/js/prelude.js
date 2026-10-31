@@ -263,6 +263,7 @@
         // value is called for it ------------------------------------------------------------------------------
         var objectToString = Object.prototype.toString;
         var errorToString = Error.prototype.toString;
+        var globalObject = globalThis;
         var functionToString = Function.prototype.toString;
         var symbolToString = Symbol.prototype.toString;
         var bigIntToString = BigInt.prototype.toString;
@@ -298,6 +299,10 @@
             }
             if (typeof value !== 'object' || value === null) {
                 return `${value}`;
+            }
+            if (value === globalObject) {
+                // The account's engine tells its global object by the plain tag.
+                return '[object Object]';
             }
             var toString = dataProperty(value, 'toString');
             if (isError(value) || toString === errorToString) {
@@ -398,6 +403,112 @@
                     var sentence = host.jsonFault(source);
                     if (sentence !== null) {
                         throw new SyntaxErrorType(sentence);
+                    }
+                }
+                throw fault;
+            }
+        };
+
+        // ---- JSON.stringify tells the circle in a value as the account's engine does ----------------------------
+        // Where it starts, its first two links and its last, an ellipsis standing for the rest, and the key that
+        // closes it: an array's member by its index, an object's by its name, an empty name as <anonymous>.
+        var jsonStringify = JSON.stringify;
+        var TypeErrorType = TypeError;
+        var CIRCLE = 'Converting circular structure to JSON';
+        var constructorName = function (value) {
+            var prototype = getPrototypeOf(value);
+            var described = prototype === null ? undefined : getOwnPropertyDescriptor(prototype, 'constructor');
+            var named = described === undefined ? undefined : described.value;
+            return typeof named === 'function' && typeof named.name === 'string' && named.name !== ''
+                ? named.name : 'Object';
+        };
+        var keyText = function (key) {
+            if (typeof key === 'number') {
+                return 'index ' + key;
+            }
+            return key === '' ? '<anonymous>' : "property '" + key + "'";
+        };
+        var linkText = function (link) {
+            return "\n    |     " + keyText(link[0]) + " -> object with constructor '" + constructorName(link[1])
+                + "'";
+        };
+        var circleSentence = function (stack, start, closing) {
+            var text = CIRCLE + "\n    --> starting at object with constructor '" + constructorName(stack[start][1])
+                + "'";
+            var at = start + 1;
+            var prefixEnd = Math.min(stack.length, at + 2);
+            for (; at < prefixEnd; at++) {
+                text += linkText(stack[at]);
+            }
+            if (stack.length > at + 1) {
+                text += '\n    |     ...';
+            }
+            for (at = Math.max(at, stack.length - 1); at < stack.length; at++) {
+                text += linkText(stack[at]);
+            }
+            return text + '\n    --- ' + keyText(closing) + ' closes the circle';
+        };
+        // The value walked as the serializer walks it - toJSON and a replacer function first, an allow-list for an
+        // object's keys - until it reaches an object it is still inside.
+        var circleOf = function (value, replacer) {
+            var call = typeof replacer === 'function' ? replacer : null;
+            var allowed = null;
+            if (isArray(replacer)) {
+                allowed = [];
+                for (var r = 0; r < replacer.length; r++) {
+                    var item = replacer[r];
+                    if (typeof item === 'number' || item instanceof NumberType || item instanceof StringType) {
+                        item = `${item}`;
+                    }
+                    if (typeof item === 'string' && allowed.indexOf(item) < 0) {
+                        allowed.push(item);
+                    }
+                }
+            }
+            var stack = [];
+            var walk = function (holder, key, member) {
+                var current = member;
+                var named = typeof key === 'number' ? `${key}` : key;
+                if (current !== null && typeof current === 'object' && typeof current.toJSON === 'function') {
+                    current = current.toJSON(named);
+                }
+                if (call !== null) {
+                    current = call.call(holder, named, current);
+                }
+                if (current === null || typeof current !== 'object' || current instanceof NumberType
+                        || current instanceof StringType || current instanceof BooleanType) {
+                    return null;
+                }
+                for (var s = 0; s < stack.length; s++) {
+                    if (stack[s][1] === current) {
+                        return circleSentence(stack, s, key);
+                    }
+                }
+                stack.push([key, current]);
+                var found = null;
+                if (isArray(current)) {
+                    for (var i = 0; i < current.length && found === null; i++) {
+                        found = walk(current, i, current[i]);
+                    }
+                } else {
+                    var keys = allowed !== null ? allowed : objectKeys(current);
+                    for (var k = 0; k < keys.length && found === null; k++) {
+                        found = walk(current, keys[k], current[keys[k]]);
+                    }
+                }
+                stack.pop();
+                return found;
+            };
+            return walk({'': value}, '', value);
+        };
+        JSON.stringify = function stringify(value, replacer, space) {
+            try {
+                return jsonStringify(value, replacer, space);
+            } catch (fault) {
+                if (fault instanceof TypeErrorType && fault.message === CIRCLE) {
+                    var circle = circleOf(value, replacer);
+                    if (circle !== null) {
+                        throw new TypeErrorType(circle);
                     }
                 }
                 throw fault;

@@ -30,6 +30,7 @@ import dev.frostlake.types.GeometryType;
 import dev.frostlake.types.MapType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
+import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.StructuredArrayType;
 import dev.frostlake.types.StructuredField;
@@ -109,6 +110,14 @@ public final class DataTypeParser {
         // two carries its own parameters: MAP(VARCHAR(5), NUMBER(10,2)).
         if (ctx.MAP() != null && ctx.mapKey != null && ctx.mapValue != null) {
             final DataType mapKey = nested(ctx.mapKey, ctx.mapKeyParameters, bareStringDefault);
+            if (!isMapKeyType(mapKey)) {
+                // A MAP keys by text or by a whole NUMBER and by nothing else: a FLOAT, a NUMBER with a scale, a
+                // DECFLOAT, a BOOLEAN, a temporal, a BINARY, a VARIANT and a structured type are refused alike,
+                // "Unsupported data type 'MAP with key type FLOAT'." (live-verified).
+                // A GEOGRAPHY is named UNKNOWN there (live-verified).
+                throw new RuntimeException(SqlCompilationError.of("Unsupported data type 'MAP with key type "
+                    + (mapKey instanceof GeographyType ? "UNKNOWN" : SqlTypeNames.canonical(mapKey)) + "'."));
+            }
             final DataType mapValue = nested(ctx.mapValue, ctx.mapValueParameters, bareStringDefault);
             IntervalTypeSpec.refuseNested(mapValue, "MAP with value type");
             return new MapType(mapKey, mapValue, ctx.NOT() != null);
@@ -169,8 +178,9 @@ public final class DataTypeParser {
         // only in the name they carry — see {@link NumericType}.
         // Every integer alias IS NUMBER(38,0) — live keeps no trace of the spelling, on any surface:
         // DESCRIBE, SHOW COLUMNS, INFORMATION_SCHEMA and a result column all answer NUMBER(38,0) for
-        // INT, INTEGER, BIGINT, SMALLINT, TINYINT and BYTEINT alike (measured, all six).
-        if (ctx.INTEGER() != null || ctx.INT() != null || ctx.BIGINT() != null
+        // INT, INTEGER, BIGINT, SMALLINT, TINYINT and BYTEINT alike (measured, all six). LONG reads only as an
+        // Iceberg table's column type, which the format's long then takes (see IcebergColumnTypes).
+        if (ctx.INTEGER() != null || ctx.INT() != null || ctx.BIGINT() != null || ctx.LONG() != null
                 || ctx.SMALLINT() != null || ctx.TINYINT() != null || ctx.BYTEINT() != null) {
             return NumericType.NUMBER;
         }
@@ -338,6 +348,15 @@ public final class DataTypeParser {
         final DataType leaf = parse(ctx, typeParams, bareStringDefault);
         return bareStringDefault == CAST_STRING_DEFAULT && !hasTypeLength(typeParams)
             ? StructuredLeafWidths.unsizedCastLeaf(leaf, CAST_STRING_DEFAULT) : leaf;
+    }
+
+    /** Whether a MAP takes keys of this type: a text, or a NUMBER of no scale that is no DECFLOAT. */
+    private static boolean isMapKeyType(final DataType key) {
+        if (key instanceof StringType) {
+            return !(key instanceof UuidType);
+        }
+        return key instanceof NumericType && !NumericType.isApproximate(key) && !NumericType.isDecfloat(key)
+            && ((NumericType) key).getScale() == 0;
     }
 
     private static boolean hasTypeLength(final FrostlakeParser.TypeParametersContext typeParams) {

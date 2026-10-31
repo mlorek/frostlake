@@ -17,8 +17,8 @@
 package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.TransactionAbort;
+import dev.frostlake.types.DecimalText;
 
-import java.math.BigDecimal;
 import java.util.Locale;
 import java.util.Set;
 
@@ -216,7 +216,7 @@ final class TransactionAbortArgument {
             return false;
         }
         try {
-            new BigDecimal(((String) written).trim());
+            DecimalText.parse(((String) written).trim());
             return true;
         } catch (final NumberFormatException noNumber) {
             return false;

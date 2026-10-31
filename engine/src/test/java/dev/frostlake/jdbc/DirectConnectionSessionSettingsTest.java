@@ -102,8 +102,8 @@ public class DirectConnectionSessionSettingsTest {
         assertEquals("from_a", cell(0, "SHOW PARAMETERS LIKE 'QUERY_TAG' IN SESSION", "value"));
         assertTrue(unsetInSession(1, "QUERY_TAG"));
         run(0, "ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_LTZ'");
-        assertEquals("TIMESTAMP_LTZ(9)[SB16]", cell(0, "SELECT SYSTEM$TYPEOF('2026-08-13 01:02:03'::TIMESTAMP) AS t", "t"));
-        assertEquals("TIMESTAMP_NTZ(9)[SB16]", cell(1, "SELECT SYSTEM$TYPEOF('2026-08-13 01:02:03'::TIMESTAMP) AS t", "t"));
+        assertEquals("TIMESTAMP_LTZ(9)[SB16]", cell(0, "SELECT SYSTEM$TYPEOF('2026-08-13 01:02:03'::TIMESTAMP) AS t", "T"));
+        assertEquals("TIMESTAMP_NTZ(9)[SB16]", cell(1, "SELECT SYSTEM$TYPEOF('2026-08-13 01:02:03'::TIMESTAMP) AS t", "T"));
         assertTrue(unsetInSession(2, "TIMEZONE"));
     }
 
@@ -119,11 +119,11 @@ public class DirectConnectionSessionSettingsTest {
     @Test
     public void aVariableIsTheConnectionsOwn() throws SQLException {
         run(0, "SET v = 1");
-        assertEquals("1", cell(0, "SELECT $v AS v", "v"));
+        assertEquals("1", cell(0, "SELECT $v AS v", "V"));
         assertEquals("SQL compilation error: error line 1 at position 7\nSession variable '$V' does not exist",
             refusal(1, "SELECT $v AS v"));
         run(1, "SET v = 2");
-        assertEquals("1", cell(0, "SELECT $v AS v", "v"));
-        assertEquals("2", cell(1, "SELECT $v AS v", "v"));
+        assertEquals("1", cell(0, "SELECT $v AS v", "V"));
+        assertEquals("2", cell(1, "SELECT $v AS v", "V"));
     }
 }

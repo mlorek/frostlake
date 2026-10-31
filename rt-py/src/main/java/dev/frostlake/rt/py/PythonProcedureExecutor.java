@@ -52,7 +52,7 @@ public final class PythonProcedureExecutor {
      * procedures do — a scalar UDF importing snowpark types is a shape the vendor schemas use.
      */
     static void installSnowparkShim() {
-        PythonRuntime.module("__frostlake_snowpark", SNOWPARK_SHIM);
+        PythonInterpreter.installModule("__frostlake_snowpark", SNOWPARK_SHIM);
     }
 
     private static String loadSnowparkShim() {
@@ -64,6 +64,22 @@ public final class PythonProcedureExecutor {
         } catch (final IOException e) {
             throw new IllegalStateException("Failed to load snowpark_shim.py", e);
         }
+    }
+
+    /**
+     * The Python that calls a procedure's handler with the session and the arguments, in order, and keeps what it
+     * answers in {@code __result}. A handler taking fewer positional parameters than that, and no {@code *args}, is
+     * handed the first ones only: {@code def run(s)} answers for a procedure of one argument (live-verified).
+     */
+    private static String handlerCall(final String handler, final List<Parameter> parameters) {
+        final StringBuilder handed = new StringBuilder("__fl_handed = (session,");
+        for (final Parameter parameter : parameters) {
+            handed.append(' ').append(parameter.getName()).append(',');
+        }
+        return handed.append(")\n__fl_takes = getattr(").append(handler).append(", '__code__', None)\n")
+            .append("if __fl_takes is not None and not __fl_takes.co_flags & 4 and __fl_takes.co_argcount < ")
+            .append("len(__fl_handed): __fl_handed = __fl_handed[:__fl_takes.co_argcount]\n")
+            .append("__result = ").append(handler).append("(*__fl_handed)").toString();
     }
 
     public static Object executePythonProcedure(final Procedure procedure, final List<Object> arguments, final DatabaseEngine engine) {
@@ -78,12 +94,12 @@ public final class PythonProcedureExecutor {
         }
 
         RuntimeException typedFailure = null;
-        PythonModuleFrame frame = null;
+        Object frame = null;
         try {
-            frame = PythonRuntime.enterModule();
+            frame = PythonInterpreter.enterModule();
             for (int i = 0; i < parameters.size(); i++) {
-                PythonRuntime.bindArgument(parameters.get(i).getName(), arguments.get(i),
-                    parameters.get(i).getDataType());
+                PythonInterpreter.bindProcedureArgument(parameters.get(i), parameters.get(i).getName(),
+                    arguments.get(i));
             }
 
             // Measured live: an owner's rights PYTHON procedure is refused a temporary object exactly as
@@ -94,9 +110,9 @@ public final class PythonProcedureExecutor {
             // Handlers receive a PYTHON Session (the snowpark emulation) wrapping the Java facade, so
             // snowpark DataFrame code (session.table(...).select(...), df.write, udtf) works; plain
             // session.sql(...).collect()/count() callers see the same surface snowpark itself has.
-            PythonRuntime.bind("__frostlake_java_session", session);
+            PythonInterpreter.bind("__frostlake_java_session", session);
             installSnowparkShim();
-            PythonRuntime.eval("import snowflake.snowpark as __frostlake_sp\n"
+            PythonInterpreter.eval("import snowflake.snowpark as __frostlake_sp\n"
                 + "session = __frostlake_sp.Session(__frostlake_java_session)\n");
 
             String body = procedure.getBody();
@@ -106,19 +122,9 @@ public final class PythonProcedureExecutor {
             final String handlerName = procedure.getHandler();
 
             if (handlerName != null && !handlerName.isEmpty()) {
-                pythonCode = body + "\n__result = " + handlerName + "(session";
-                for (int i = 0; i < parameters.size(); i++) {
-                    pythonCode += ", ";
-                    pythonCode += parameters.get(i).getName();
-                }
-                pythonCode += ")";
+                pythonCode = body + "\n" + handlerCall(handlerName, parameters);
             } else if (body.contains("def ") && body.contains("return")) {
-                pythonCode = body + "\n__result = " + extractFunctionName(body) + "(session";
-                for (int i = 0; i < parameters.size(); i++) {
-                    pythonCode += ", ";
-                    pythonCode += parameters.get(i).getName();
-                }
-                pythonCode += ")";
+                pythonCode = body + "\n" + handlerCall(extractFunctionName(body), parameters);
             } else {
                 pythonCode = "def __temp_func():\n";
                 for (final String line : body.split("\n")) {
@@ -130,30 +136,35 @@ public final class PythonProcedureExecutor {
             }
 
             PythonHandlerCheck.forget(handlerName);
-            if (handlerName != null && !handlerName.isEmpty() && !PythonHandlerCheck.isDotted(handlerName)) {
+            final boolean reported = handlerName != null && !handlerName.isEmpty()
+                && !PythonHandlerCheck.isDotted(handlerName);
+            if (reported) {
                 // The body runs first, and a handler it does not define is refused before any call, in the
                 // sentence a function's missing handler gets (live-verified).
-                PythonRuntime.eval(body);
-                if (PythonRuntime.global(handlerName) == null) {
+                PythonFailureReport.runSource(body, handlerName);
+                PythonInterpreter.eval("__fl_handler_found = globals().get('" + handlerName + "') is not None\n");
+                if (!Boolean.TRUE.equals(PythonInterpreter.global("__fl_handler_found"))) {
                     typedFailure = new RuntimeException("Could not find handler in function " + procedure.getName()
                         + " with handler " + handlerName);
                     throw typedFailure;
                 }
                 pythonCode = pythonCode.substring(body.length() + 1);
+                PythonFailureReport.run(pythonCode);
+            } else {
+                PythonInterpreter.eval(pythonCode);
             }
-            PythonRuntime.eval(pythonCode);
 
             // A procedure that answers a value answers it as its declared RETURNS type, converted as Python
             // converts and judged as the account judges it (see PythonReturn).
             if (!procedure.returnsTable()) {
-                final Object declared = PythonReturn.declared(PythonRuntime.global("__result"),
+                final Object declared = PythonReturn.declaredGlobal("__result",
                     procedure.getReturnType(), procedure.getName(), procedure.getHandler());
                 if (declared != PythonReturn.AS_IS) {
                     return declared;
                 }
             }
 
-            final Object javaResult = PythonRuntime.toJava(PythonRuntime.global("__result"));
+            final Object javaResult = PythonInterpreter.global("__result");
 
             logger.debug("Python procedure {} executed successfully", procedure.getName());
 
@@ -184,15 +195,21 @@ public final class PythonProcedureExecutor {
             }
             // Worded before the context is settled: a discarded context answers nothing more of its failure, so the
             // refusal then travels as text alone.
-            final String refusal = PythonRuntimeDiagnostics.describeFailure(
-                "procedure", procedure.getName(), procedure.getRuntimeVersion(), procedure.getBody(), e);
+            final String handler = procedure.getHandler();
+            final String reported = handler == null || handler.isEmpty() ? null
+                : PythonFailureReport.wording(procedure.getName(), handler);
+            final String refusal = reported != null
+                ? reported + PythonRuntimeDiagnostics.newerSyntaxNote("procedure", procedure.getRuntimeVersion(),
+                    procedure.getBody(), e)
+                : PythonRuntimeDiagnostics.describeFailure("procedure", procedure.getName(),
+                    procedure.getRuntimeVersion(), procedure.getBody(), e);
             logger.error("Error executing Python procedure: {}", procedure.getName(), e);
-            if (!PythonRuntime.settleAfter(e)) {
+            if (!PythonInterpreter.settleAfter(e)) {
                 throw new RuntimeException(refusal);
             }
             throw new RuntimeException(refusal, e);
         } finally {
-            PythonRuntime.leaveModule(frame);
+            PythonInterpreter.leaveModule(frame);
         }
     }
 

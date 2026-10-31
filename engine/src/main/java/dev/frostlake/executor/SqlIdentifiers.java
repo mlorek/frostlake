@@ -126,14 +126,16 @@ public final class SqlIdentifiers {
     /**
      * One name part spelled the way live ECHOES it in a refusal: a quoted token stays verbatim, quotes
      * and case intact, and an unquoted one folds to upper case. {@code "a"} and {@code a} name
-     * different columns, so the two cannot be printed alike.
+     * different columns, so the two cannot be printed alike. A name between backticks folds as well, and is
+     * then echoed in the quotes it needs: {@code `a`} is {@code "`A`"} (live-verified).
      */
     public static String spellAsWritten(final String rawToken) {
         if (rawToken == null) {
             return null;
         }
         if (!rawToken.startsWith("\"") || !rawToken.endsWith("\"") || rawToken.length() <= 1) {
-            return rawToken.toUpperCase(Locale.ROOT);
+            final String folded = rawToken.toUpperCase(Locale.ROOT);
+            return rawToken.startsWith("`") ? spellCanonical(folded) : folded;
         }
         // A quoted name is echoed WITH its quotes only when it needs them. Live drops them for a name
         // that could have been written bare and kept them otherwise, measured spelling by spelling:
@@ -330,10 +332,25 @@ public final class SqlIdentifiers {
     }
 
     /**
+     * Whether a text is a token SYSTEM$REFERENCE issued that the statement running may read.
+     *
+     * @param text the text
+     * @return whether it reads as the object it stands for
+     */
+    public static boolean isIssuedReference(final String text) {
+        return ObjectReferenceTokens.issued(text) != null;
+    }
+
+    /**
      * The canonical parts of an {@code IDENTIFIER(...)} argument's value: {@link #canonicalTextParts},
      * with an empty middle part ({@code 'db..t'}) read as the PUBLIC schema, as the account reads it.
      */
     public static String[] identifierReferenceParts(final String text) {
+        // A token SYSTEM$REFERENCE issued reads as the object it stands for (live-verified).
+        final ObjectReference referenced = ObjectReferenceTokens.issued(text);
+        if (referenced != null) {
+            return referenced.getParts();
+        }
         final String[] parts = canonicalTextParts(text);
         if (parts.length == 3 && parts[1].isEmpty() && !parts[0].isEmpty()) {
             parts[1] = "PUBLIC";

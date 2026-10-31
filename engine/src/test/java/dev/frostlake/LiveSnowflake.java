@@ -109,6 +109,25 @@ public final class LiveSnowflake {
     }
 
     /**
+     * A new connection (caller closes) as the account and its driver start one, without the session preparation
+     * {@link #open} gives: for a test of a default that preparation changes, such as how a column label is matched.
+     */
+    public static Connection openUnprepared() {
+        claimAccount();
+        final Properties props = new Properties();
+        props.put("user", requiredEnv("SF_USER"));
+        props.put("password", requiredEnv("SF_PASS"));
+        if (System.getenv("SF_WAREHOUSE") != null) {
+            props.put("warehouse", System.getenv("SF_WAREHOUSE"));
+        }
+        try {
+            return DriverManager.getConnection("jdbc:snowflake://" + requiredEnv("SF_URL") + "/", props);
+        } catch (final SQLException e) {
+            throw new IllegalStateException("Cannot connect to live Snowflake: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * Fails unless nothing stops this run from using the account: the check every live statement path makes, so
      * a run whose claim was refused, or lost to another run, stops at once instead of disturbing the holder.
      *
@@ -486,8 +505,8 @@ public final class LiveSnowflake {
         // The result format is not set here: the connection asks for JSON results (see connect), and a
         // reset leaves that standing (see HARNESS_PARAMETERS).
         // Snowflake's findColumn is case-SENSITIVE by default (getString("db_name") misses the
-        // DB_NAME label); virtually every other JDBC driver — including Frostlake's — matches
-        // case-insensitively, so align the client setting rather than fail on ergonomics.
+        // DB_NAME label), as Frostlake's is; the suite reads labels in any case, so both harnesses
+        // turn the client setting on (see BaseJdbcTest).
         statement.execute("ALTER SESSION SET CLIENT_RESULT_COLUMN_CASE_INSENSITIVE = TRUE");
         // Snowflake pretty-prints semi-structured output with two-space indent by default; the
         // engine's canonical text is compact. JSON_INDENT = 0 makes the SERVER emit the compact

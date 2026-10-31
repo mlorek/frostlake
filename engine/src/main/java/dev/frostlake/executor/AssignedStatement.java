@@ -21,6 +21,7 @@ import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.parser.SqlSyntaxException;
+import dev.frostlake.parser.SyntaxErrorListener;
 
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
@@ -99,25 +100,38 @@ public final class AssignedStatement {
 
     /**
      * The refusal of a statement assigned to a scalar when the assignment runs: the syntax error of the query the
-     * account evaluates it as, its places counted in that query's text.
+     * account evaluates it as, its places counted in that query's text. The account names that parse's own first
+     * fault, which no reading of a statement written as a query moves: {@code SELECT * FROM (INSERT INTO t VALUES
+     * (1))} is refused at its INTO here, as a statement of its own at its INSERT (live-verified).
      *
      * @param statementText the statement as written
      * @return the refusal to throw
      */
     public static RuntimeException scalarRefusal(final String statementText) {
         final String query = QUERY_LEAD + statementText + ")";
+        RuntimeException refused = null;
         final SourcePosition displaced = LeadingCommentOffset.begin(null);
         try {
             QueryExecutor.requireParses(query);
         } catch (final RuntimeException syntax) {
-            return syntax;
+            refused = syntax;
         } finally {
             LeadingCommentOffset.end(displaced);
         }
-        // A statement this parser reads as a relation — UNSET v, a table name and an alias — is refused at the word
-        // after its first, which the account does not read in a parenthesized relation (live-verified).
         final CommonTokenStream tokens = new CommonTokenStream(new FrostlakeLexer(SqlCharStream.of(query)));
         tokens.fill();
+        if (refused != null) {
+            final int start = SyntaxErrorListener.firstFaultStartOf(query);
+            for (final Token token : tokens.getTokens()) {
+                if (token.getChannel() == Token.DEFAULT_CHANNEL && token.getType() != Token.EOF
+                        && token.getStartIndex() == start) {
+                    return refusedAt(token, query);
+                }
+            }
+            return refused;
+        }
+        // A statement this parser reads as a relation — UNSET v, a table name and an alias — is refused at the word
+        // after its first, which the account does not read in a parenthesized relation (live-verified).
         Token second = null;
         int words = 0;
         for (final Token token : tokens.getTokens()) {
@@ -127,7 +141,11 @@ public final class AssignedStatement {
                 break;
             }
         }
-        final Token at = second != null ? second : tokens.get(tokens.size() - 1);
+        return refusedAt(second != null ? second : tokens.get(tokens.size() - 1), query);
+    }
+
+    /** The one syntax line naming {@code at} in {@code query}. */
+    private static RuntimeException refusedAt(final Token at, final String query) {
         final String line = "syntax error line " + at.getLine() + " at position " + at.getCharPositionInLine()
             + " unexpected '" + at.getText() + "'.";
         return new SqlSyntaxException(SqlCompilationError.of(line), Collections.singletonList(line), query);

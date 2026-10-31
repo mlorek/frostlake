@@ -79,6 +79,20 @@ public final class DeferredFault {
         return cell;
     }
 
+    /**
+     * Marks a failure a write raises bare, though no cell held it: a conversion the query made while it compared
+     * values. GREATEST and LEAST convert a text argument as they order their arguments, so live refuses
+     * {@code CREATE TABLE g AS SELECT GREATEST(id, '…') g FROM t} without the DML sentence that a value converted
+     * only as it is written carries (live-verified).
+     *
+     * @param failure the failure
+     * @return the same failure
+     */
+    public static RuntimeException bare(final RuntimeException failure) {
+        BARE.put(failure, Boolean.TRUE);
+        return failure;
+    }
+
     /** Whether the cell holds an answer a CALL handed out (see {@link #heldAnswer}). */
     public boolean holdsAnswer() {
         return holdsAnswer;

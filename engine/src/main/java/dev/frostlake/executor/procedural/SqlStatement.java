@@ -21,6 +21,8 @@ public class SqlStatement extends Statement {
     private final boolean selectInto;
     private final boolean writtenBinds;
     private final boolean nestedBlock;
+    private boolean followsAStage;
+    private boolean feedsTheNext;
 
     public SqlStatement(final String sql) {
         this(sql, false);
@@ -65,6 +67,27 @@ public class SqlStatement extends Statement {
      */
     public static SqlStatement ofNestedBlock(final String sql) {
         return new SqlStatement(sql, false, false, true);
+    }
+
+    /**
+     * Mark the statement a stage of a flow chain.
+     *
+     * @param follows whether it runs after a stage the arrow joins to it, whose results it reads as {@code $n}
+     * @param feeds   whether the arrow joins it to the statement after it, which reads its result
+     */
+    public void chainedAs(final boolean follows, final boolean feeds) {
+        this.followsAStage = follows;
+        this.feedsTheNext = feeds;
+    }
+
+    /** Whether the statement runs after a flow chain's stage, whose result it reads as {@code $1}. */
+    public boolean followsAStage() {
+        return followsAStage;
+    }
+
+    /** Whether the statement's result feeds the flow chain's next stage. */
+    public boolean feedsTheNext() {
+        return feedsTheNext;
     }
 
     /** Whether the statement is a block that runs from its own text, which places what fails in it from there. */

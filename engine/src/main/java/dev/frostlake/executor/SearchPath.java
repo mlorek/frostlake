@@ -84,7 +84,8 @@ public final class SearchPath {
         final List<String> names = new ArrayList<>();
         final String databaseName = catalog.getCurrentDatabase();
         final String schemaName = catalog.getCurrentSchema();
-        if (databaseName == null || schemaName == null) {
+        // With no current schema, $current names nothing and the other entries still resolve (live-verified).
+        if (databaseName == null) {
             return names;
         }
         final Database database;

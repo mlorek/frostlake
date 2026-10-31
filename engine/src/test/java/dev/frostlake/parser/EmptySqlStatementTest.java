@@ -17,6 +17,7 @@
 package dev.frostlake.parser;
 
 import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.FrostlakeJdbc;
 
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
@@ -94,16 +95,16 @@ public class EmptySqlStatementTest extends BaseDatabaseTest {
     }
 
     /**
-     * The empty string is the same refusal on the ENGINE. It cannot be observed on the account
-     * through JDBC: the driver refuses to send it client-side ("Invalid SQL text:", error 200021 /
-     * SQLSTATE 03000), so the server sentence never comes back. Asserted embedded only, against the
-     * rule the other nine cells measure.
+     * The empty string is the same refusal on the ENGINE. It cannot be observed through JDBC: the
+     * account's driver, and Frostlake's own as it does, refuses to send it client-side ("Invalid SQL
+     * text:", error 200021 / SQLSTATE 03000), so the server sentence never comes back. Asserted
+     * embedded only, against the rule the other nine cells measure.
      */
     @Test
     public void theEmptyStringIsEmptyToo() {
-        Assumptions.assumeFalse(isLiveSnowflake(),
-            "the Snowflake JDBC driver refuses an empty statement client-side, so the account's own "
-            + "sentence is not observable through it");
+        Assumptions.assumeFalse(isLiveSnowflake() || FrostlakeJdbc.enabled(),
+            "a JDBC driver, Snowflake's and Frostlake's alike, refuses an empty statement client-side, so the "
+            + "server's own sentence is not observable through it");
         assertEmptyRefusal("");
     }
 

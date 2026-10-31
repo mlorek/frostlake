@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.hash;
 
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.TypedScalarNode;
@@ -216,7 +217,7 @@ public final class HashCanonicalValue {
         if (Double.isNaN(d) || Double.isInfinite(d)) {
             return String.valueOf(d);
         }
-        return plain(new BigDecimal(Double.toString(d)));
+        return plain(DecimalText.parse(Double.toString(d)));
     }
 
     private static String plain(final BigDecimal value) {

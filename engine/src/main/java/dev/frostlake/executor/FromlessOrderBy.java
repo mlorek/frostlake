@@ -16,8 +16,11 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.ColumnReferenceExpression;
+import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.FunctionCallExpression;
+import dev.frostlake.executor.expressions.SortKeyRole;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.operators.Operator;
 import dev.frostlake.executor.operators.StageOperator;
@@ -27,18 +30,23 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.KeyContexts;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.DataType;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
  * The ORDER BY of a FROM-less select. Its one row needs no sort, but its keys are judged all the same, over the
  * names the select's items publish and in live's order: every key's names, the ordinal range, the function
  * names, the names inside the keys' subqueries, the keys' types, and last whatever else a key's subquery refuses
- * ({@code SELECT 1 AS x ORDER BY (SELECT b FROM t GROUP BY a)} is the grouped select-list refusal). Nothing is
+ * ({@code SELECT 1 AS x ORDER BY (SELECT b FROM t GROUP BY a)} is the grouped select-list refusal). A key of a
+ * type no sort takes is refused as a sorted select's is: {@code SELECT 1 AS x ORDER BY NULL::GEOGRAPHY} is
+ * "Expressions of type GEOGRAPHY cannot be used as ORDER BY keys". Nothing is
  * evaluated, so a key that would fault only on a row — {@code ORDER BY (SELECT 1 / 0)} — is answered. A query
  * nested in a key has a scope of its own and reads none of the published names. All live-verified.
  */
@@ -81,10 +89,15 @@ final class FromlessOrderBy {
         }
         final FromlessSelectScope published = new FromlessSelectScope();
         final List<TableColumn> publishedColumns = new ArrayList<>();
+        // The names as a sort judges them, each typed as its item declares.
+        final Map<String, DataType> sortedTypes = new HashMap<>();
         for (final ResultSetColumn column : columns) {
             published.publish(column.getName(), false);
             publishedColumns.add(new TableColumn(column.getName(), column.getDataType(), true, null, false, false,
                 false));
+            if (column.getStaticType() != null) {
+                sortedTypes.put(column.getName().toUpperCase(Locale.ROOT), column.getStaticType());
+            }
         }
         final ExpressionEvaluator outsideScope = new ExpressionEvaluator(
             new Table("DUMMY", new ArrayList<TableColumn>(), false), executor.getFunctionRegistry(),
@@ -103,9 +116,21 @@ final class FromlessOrderBy {
         final RuntimeException waiting =
             executor.compileSubqueriesIn(keys, FromlessDual.unread(), null, null, lateralContext);
         final Table publishedTable = new Table("DUMMY", publishedColumns, false);
+        final ExpressionEvaluator sorted = new ExpressionEvaluator(
+            new Table("DUMMY", new ArrayList<TableColumn>(), false), executor.getFunctionRegistry(),
+            executor.getCatalog(), executor);
+        sorted.setScopeOpaqueToSubqueries(true);
+        sorted.setOuterLateralContext(lateralContext);
+        sorted.setOutputAliasTypes(sortedTypes);
         for (final ParserRuleContext key : keys) {
             final String text = ParseTreeText.getOriginalText(key);
-            if (OrdinalLiteral.positionOf(text) != OrdinalLiteral.NOT_AN_ORDINAL) {
+            final long position = OrdinalLiteral.positionOf(text);
+            if (position != OrdinalLiteral.NOT_AN_ORDINAL) {
+                // A position sorts by the column it counts to.
+                if (position >= 1 && position <= columns.size()) {
+                    sorted.validateKey(new ColumnReferenceExpression(columns.get((int) position - 1).getName()),
+                        SortKeyRole.ORDER_BY);
+                }
                 continue;
             }
             final ExpressionEvaluator typed = new ExpressionEvaluator(publishedTable, executor.getFunctionRegistry(),
@@ -115,7 +140,9 @@ final class FromlessOrderBy {
             final SourcePosition displaced = ExpressionSource.beginNested(
                 new SourcePosition(key.getStart().getLine(), key.getStart().getCharPositionInLine()));
             try {
-                typed.validateStrict(ExpressionEvaluator.parse(text));
+                final Expression parsed = ExpressionEvaluator.parse(text);
+                typed.validateStrict(parsed);
+                sorted.validateKey(parsed, SortKeyRole.ORDER_BY);
             } finally {
                 ExpressionSource.end(displaced);
             }

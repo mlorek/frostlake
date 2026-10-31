@@ -18,6 +18,7 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.parser.QuantifierListOperation;
 
 import org.antlr.v4.runtime.Token;
 
@@ -45,8 +46,14 @@ import java.util.List;
  * second test after a finished IS test is refused and ends the reading — {@code RETURN a IS NULL IS NULL;}
  * names the second IS — and a quantifier no predicate takes is refused before the token that opens its list:
  * {@code RETURN a NOT LIKE ANY ('x', 'y');} names the ANY and the {@code 'x'}, as a negated LIKE, ILIKE or
- * RLIKE and an RLIKE or REGEXP with ANY or ALL do; an ILIKE ALL names the token alone. Nothing after the
- * semicolon is read: {@code BEGIN RETURN 1; RETURN 2 +; END} is the RETURN alone (all live-verified).
+ * RLIKE and an RLIKE or REGEXP with ANY or ALL do; an ILIKE ALL names the token alone. An operation such a list
+ * holds - any operator but a plus - has the comma or the closing parenthesis after it refused, and ends the
+ * reading: {@code RETURN a NOT LIKE ANY ('x' || 'y');} names the list's {@code )}, {@code ('x' - 'y', 'z')} the
+ * comma (see {@link QuantifierListOperation}). Nothing after the
+ * semicolon is read: {@code BEGIN RETURN 1; RETURN 2 +; END} is the RETURN alone. A comma the semicolon follows
+ * before the first parenthesis or operator is refused, where one an item follows is passed over:
+ * {@code BEGIN RETURN [1, ; END} names the comma, {@code BEGIN RETURN 1, 2; END} the RETURN alone; a parenthesis of
+ * the body's own that closes the frame early is passed over as any token there is (all live-verified).
  */
 final class BlockBodyFrameLines {
 
@@ -84,7 +91,8 @@ final class BlockBodyFrameLines {
             if (type == FrostlakeLexer.SEMI) {
                 return refused;
             }
-            if (isSecondTest(framed, i)) {
+            if (isSecondTest(framed, i)
+                    || type == FrostlakeLexer.COMMA && framed.get(i + 1).getType() == FrostlakeLexer.SEMI) {
                 refused.add(framed.get(i));
                 return refused;
             }
@@ -94,6 +102,9 @@ final class BlockBodyFrameLines {
                 }
                 if (i + 1 < end) {
                     refused.add(framed.get(i + 1));
+                }
+                if (refusesQuantifier(framed, i) && refusedAfterOperation(framed, i, refused)) {
+                    return refused;
                 }
                 final int after = pastBracket(framed, i + 1, end);
                 if (after < 0) {
@@ -177,13 +188,15 @@ final class BlockBodyFrameLines {
      * <ul>
      *   <li>a quantifier no predicate takes, and the token that opens its list, as at the frame's own level —
      *       {@code nosuch(a NOT LIKE ANY ('x', 'y'))} names the {@code a}, the ANY and the {@code 'x'};</li>
-     *   <li>a second test after a finished IS test, which ends the reading — {@code nosuch(a IS NULL IS NULL)}
-     *       and {@code nosuch(a + 1 IS NULL IS NULL)} name the second IS, and nothing after it;</li>
+     *   <li>a second test after a finished IS test, which ends the reading — {@code nosuch(a IS NULL IS NULL)},
+     *       {@code nosuch(a + 1 IS NULL IS NULL)} and {@code nosuch(a IS DISTINCT FROM 1 + 1 IS NULL)} name the
+     *       second IS, and nothing after it;</li>
      *   <li>once an operator or a sign has its operand, an IS NULL or IS DISTINCT FROM test is finished, a LIKE
      *       has its pattern or a query in parentheses is read, the next comma or the bracket's closing parenthesis,
      *       which ends the reading: {@code nosuch(a.b.c + 1)} and {@code nosuch(a.b.c, -1)} name the {@code )},
      *       {@code nosuch(a.b.c + 1, 2)} the comma, {@code nosuch(EXISTS (SELECT 1) IS NULL)} the
-     *       {@code )}; an operator still owed its operand there asks nothing, {@code RETURN (1 +);}.</li>
+     *       {@code )}; an IN list is such an operand, {@code nosuch(a.b.c IN (1, 2))} names the {@code )}; an
+     *       operator still owed its operand there asks nothing, {@code RETURN (1 +);}.</li>
      * </ul>
      * Names, dots, commas, literals and calls in parentheses ask nothing: {@code nosuch(a.b.c, 1)} and
      * {@code nosuch(SUBSTRING('abc' FROM 1 FOR 2))} report nothing more, and neither does a truth test,
@@ -231,11 +244,15 @@ final class BlockBodyFrameLines {
                     }
                     if (refusesOpener(framed, j) && j + 1 < after - 1) {
                         refused.add(framed.get(j + 1));
+                        if (refusesQuantifier(framed, j) && refusedAfterOperation(framed, j, refused)) {
+                            return true;
+                        }
                     } else if (!refusesOpener(framed, j)) {
                         delimiterDue = true;
                     }
                     operandOwed = false;
-                } else if (operandOwed || j + 1 < last && isQueryStart(framed.get(j + 1).getType())) {
+                } else if (operandOwed || framed.get(j - 1).getType() == FrostlakeLexer.IN
+                        || j + 1 < last && isQueryStart(framed.get(j + 1).getType())) {
                     delimiterDue = true;
                     operandOwed = false;
                 }
@@ -278,6 +295,17 @@ final class BlockBodyFrameLines {
 
     private static boolean isQueryStart(final int type) {
         return type == FrostlakeLexer.SELECT || type == FrostlakeLexer.WITH;
+    }
+
+    /** Refuses what an operation in the quantifier's list at {@code open} has refused after it, if anything. */
+    private static boolean refusedAfterOperation(final List<Token> framed, final int open,
+                                                 final List<Token> refused) {
+        final int operated = QuantifierListOperation.refusedAfter(framed, open);
+        if (operated < 0) {
+            return false;
+        }
+        refused.add(framed.get(operated));
+        return true;
     }
 
     /** Whether a token is an operand of its own: a name, a literal, TRUE, FALSE or NULL. */
@@ -348,7 +376,7 @@ final class BlockBodyFrameLines {
 
     /**
      * Whether the IS at {@code at} follows a finished test of the same operand: {@code IS [NOT] NULL}, or
-     * {@code IS [NOT] DISTINCT FROM} and a single-token operand.
+     * {@code IS [NOT] DISTINCT FROM} and its operand, one token or operands joined by operators ({@code 1 + 1}).
      */
     private static boolean isSecondTest(final List<Token> framed, final int at) {
         if (framed.get(at).getType() != FrostlakeLexer.IS || at < 2) {
@@ -357,8 +385,13 @@ final class BlockBodyFrameLines {
         if (framed.get(at - 1).getType() == FrostlakeLexer.NULL) {
             return completesTest(framed, at - 1);
         }
-        return at >= 4 && framed.get(at - 2).getType() == FrostlakeLexer.FROM
-            && framed.get(at - 3).getType() == FrostlakeLexer.DISTINCT && completesTest(framed, at - 3);
+        int operand = at - 1;
+        while (operand >= 2 && isOperator(framed.get(operand - 1).getType())
+                && isOperand(framed.get(operand - 2).getType())) {
+            operand -= 2;
+        }
+        return operand >= 3 && framed.get(operand - 1).getType() == FrostlakeLexer.FROM
+            && framed.get(operand - 2).getType() == FrostlakeLexer.DISTINCT && completesTest(framed, operand - 2);
     }
 
     /** Whether the IS at {@code at} opens a truth test, {@code IS [NOT] TRUE} or {@code IS [NOT] FALSE}. */

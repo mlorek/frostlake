@@ -22,10 +22,9 @@ import java.sql.Date;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.time.Instant;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.GregorianCalendar;
+import java.util.TimeZone;
 
 /**
  * The texts a handler's {@code Variant} holds for a date, a time and a timestamp, and the values read back from
@@ -107,7 +106,7 @@ public final class SnowparkVariantTimes {
         if (month < 1 || month > MAX_MONTH || day < 1 || day > MAX_DAY) {
             throw new IllegalArgumentException();
         }
-        return new Date(day(year, month, day).atStartOfDay(SessionZone.current()).toInstant().toEpochMilli());
+        return new Date(wallClock(year, month, day, 0, 0, 0));
     }
 
     /**
@@ -127,8 +126,7 @@ public final class SnowparkVariantTimes {
         final int hour = Integer.parseInt(text, 0, firstColon, 10);
         final int minute = Integer.parseInt(text, firstColon + 1, secondColon, 10);
         final int second = Integer.parseInt(text, secondColon + 1, length, 10);
-        return new Time(at(LocalDate.of(1970, 1, 1).atStartOfDay(), hour, minute, second, SessionZone.current())
-            .toEpochMilli());
+        return new Time(wallClock(1970, 1, 1, hour, minute, second));
     }
 
     /**
@@ -184,20 +182,22 @@ public final class SnowparkVariantTimes {
         } else {
             second = Integer.parseInt(text, secondColon + 1, length, 10);
         }
-        final Timestamp timestamp = new Timestamp(
-            at(day(year, month, day).atStartOfDay(), hour, minute, second, SessionZone.current()).toEpochMilli());
+        final Timestamp timestamp = new Timestamp(wallClock(year, month, day, hour, minute, second));
         timestamp.setNanos(nanos);
         return timestamp;
     }
 
-    /** A day of a month, one past the month's end counted on into the next. */
-    private static LocalDate day(final int year, final int month, final int day) {
-        return LocalDate.of(year, month, 1).plusDays(day - 1L);
-    }
-
-    /** A wall clock of a zone as its instant, hours, minutes and seconds past their ranges counted on. */
-    private static Instant at(final LocalDateTime midnight, final int hour, final int minute, final int second,
-                              final ZoneId zone) {
-        return midnight.plusHours(hour).plusMinutes(minute).plusSeconds(second).atZone(zone).toInstant();
+    /**
+     * A wall clock of the session's zone as its instant, read as the {@code java.sql} classes read one: in the Julian
+     * calendar before the Gregorian reform, with the zone's standard offset before its first transition, and every
+     * field past its range counted on - {@code 0001-01-01 00:00:00} in America/Los_Angeles is
+     * -62135740800000 (live-verified).
+     */
+    private static long wallClock(final int year, final int month, final int day, final int hour, final int minute,
+                                  final int second) {
+        final GregorianCalendar calendar = new GregorianCalendar(TimeZone.getTimeZone(SessionZone.current()));
+        calendar.clear();
+        calendar.set(year, month - 1, day, hour, minute, second);
+        return calendar.getTimeInMillis();
     }
 }

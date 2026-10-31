@@ -20,12 +20,12 @@ import org.junit.jupiter.api.Test;
 /**
  * GRANT and REVOKE take IDENTIFIER() wherever they take a name: the object, with or without its kind, a bulk
  * grant's schema or database, the role or the user that is granted or holds the grant, a database role. The
- * object is found before the grantee, a grantee's reference is read before the object's, and of two roles the
- * one that is to hold the grant is found first. A reference that is not whole is refused where the object's
- * reading stops, and at the parenthesis where the word IDENTIFIER stands as a role's, a user's, a database
- * role's or a bulk scope's own name; one spelling a path names no role, user, database or warehouse. Grants to
- * a role that does not exist change nothing; the grants that take effect are made to a role and a database
- * role the test creates and drops. Every answer is live-verified.
+ * object is found before the grantee, a grantee's reference and its unset variable are read before the object's,
+ * and of two roles the one that is to hold the grant is found first. A reference that is not whole is refused where
+ * the object's reading stops, and at the parenthesis where the word IDENTIFIER stands as a role's, a user's, a
+ * database role's or a bulk scope's own name; one spelling a path names no role, user, database or warehouse.
+ * Grants to a role that does not exist change nothing; the grants that take effect are made to a role and a
+ * database role the test creates and drops. Every answer is live-verified.
  */
 public class GrantIdentifierReferenceTest extends MeasuredCellsTestSupport {
 
@@ -190,20 +190,16 @@ public class GrantIdentifierReferenceTest extends MeasuredCellsTestSupport {
                 + "primary role <ROLE> must have at least one privilege granted on ROLE NOSUCH_ROLE2_W7.",
             "REVOKE ROLE nosuch_role_w7 FROM ROLE nosuch_role2_w7");
         assertAnswer(
-            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized. Your "
-                + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized.",
             "GRANT ROLE IDENTIFIER($rv) TO USER IDENTIFIER('nosuch_user_w7')");
         assertAnswer(
-            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized. Your "
-                + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized.",
             "GRANT ROLE nosuch_role_w7 TO USER nosuch_user_w7");
         assertAnswer(
-            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized. Your "
-                + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized.",
             "GRANT SELECT ON TABLE t TO USER IDENTIFIER('nosuch_user_w7')");
         assertAnswer(
-            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized. Your "
-                + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized.",
             "GRANT SELECT ON TABLE t TO USER nosuch_user_w7");
         assertAnswer(
             "REFUSED SQL compilation error: | Role 'NOSUCH_ROLE_W7' does not exist or not authorized. Your "
@@ -347,8 +343,7 @@ public class GrantIdentifierReferenceTest extends MeasuredCellsTestSupport {
                 + "primary role <ROLE> must have at least one privilege granted on ROLE NOSUCH_ROLE_W7.",
             "SHOW GRANTS OF ROLE nosuch_role_w7");
         assertAnswer(
-            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized. Your "
-                + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized.",
             "SHOW GRANTS TO USER nosuch_user_w7");
         assertAnswer(
             "REFUSED SQL compilation error: | Schema 'TEST_DB.NOSUCH_S' does not exist or not authorized. Your "
@@ -390,6 +385,10 @@ public class GrantIdentifierReferenceTest extends MeasuredCellsTestSupport {
         assertAnswer(
             "REFUSED SQL compilation error: error line 1 at position 59 | invalid identifier ''c d''",
             "GRANT SELECT ON TABLE IDENTIFIER('a b') TO ROLE IDENTIFIER('c d')");
+        assertAnswer(
+            "REFUSED SQL compilation error: error line 1 at position 65 | Session variable '$NOSUCH_VAR2' does not "
+                + "exist",
+            "GRANT SELECT ON TABLE IDENTIFIER($nosuch_var) TO ROLE IDENTIFIER($nosuch_var2)");
         assertAnswer(
             "REFUSED SQL compilation error: | Table 'IDENTIFIER' does not exist or not authorized. Your primary "
                 + "role <ROLE> must have at least one privilege granted on TABLE IDENTIFIER.",
@@ -460,12 +459,10 @@ public class GrantIdentifierReferenceTest extends MeasuredCellsTestSupport {
                 + "TEST_DB.NOSUCH_DR2.",
             "GRANT DATABASE ROLE nosuch_dr TO DATABASE ROLE nosuch_dr2");
         assertAnswer(
-            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized. Your "
-                + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized.",
             "GRANT DATABASE ROLE nosuch_dr TO USER nosuch_user_w7");
         assertAnswer(
-            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized. Your "
-                + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized.",
             "GRANT DATABASE ROLE IDENTIFIER('nosuch_dr') TO USER IDENTIFIER('nosuch_user_w7')");
         assertAnswer(
             "REFUSED SQL compilation error: | Database role 'TEST_DB.NOSUCH_DR2' does not exist or not "
@@ -473,8 +470,7 @@ public class GrantIdentifierReferenceTest extends MeasuredCellsTestSupport {
                 + "TEST_DB.NOSUCH_DR2.",
             "REVOKE DATABASE ROLE nosuch_dr FROM DATABASE ROLE nosuch_dr2");
         assertAnswer(
-            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized. Your "
-                + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized.",
             "REVOKE DATABASE ROLE nosuch_dr FROM USER nosuch_user_w7");
         assertAnswer(
             "REFUSED SQL compilation error: | Role 'NOSUCH_ROLE_W7' does not exist or not authorized. Your "

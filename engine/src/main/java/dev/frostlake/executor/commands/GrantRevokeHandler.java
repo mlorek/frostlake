@@ -23,6 +23,7 @@ import dev.frostlake.executor.SQLCommandVisitor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StatementErrors;
+import dev.frostlake.executor.UserLookup;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
@@ -136,6 +137,13 @@ public class GrantRevokeHandler implements CommandHandler {
 
     public Object handleGrant(final FrostlakeParser.GrantStatementContext ctx) {
         try {
+            if (ctx.grantCaller() != null) {
+                return new CallerGrantHandler(catalog, queryExecutor).grant(ctx.grantCaller());
+            }
+            if (ctx.ownedPrincipal() != null) {
+                grantPrincipalOwnership(ctx);
+                return null;
+            }
             final DatabaseRole databaseGrantee = ctx.databaseRoleGrantee() == null ? null
                 : AccessControlHandler.databaseRole(catalog,
                     PrincipalNames.parts(ctx.databaseRoleGrantee().referencedName(), queryExecutor));
@@ -175,6 +183,10 @@ public class GrantRevokeHandler implements CommandHandler {
                 }
                 requireBulkAuthority(isFuture, objectKind, scopeType, scopeName,
                     ownership ? Collections.<String>emptyList() : privileges);
+                if (ownership) {
+                    requireManagedOwnershipGrantees(isFuture, objectType, objectKind, scopeType, scopeName,
+                        databaseGrantee != null ? databaseGrantee : catalog.getRoleExact(targetName));
+                }
                 if (ownership && !isFuture && databaseGrantee == null) {
                     // The objects are counted before they change hands, as the privileges of a bulk grant are.
                     final int inScope = AccessControlHandler.objectsInScope(catalog, objectKind, scopeType, scopeName)
@@ -193,12 +205,14 @@ public class GrantRevokeHandler implements CommandHandler {
                         holder.addFutureGrant(objectKind, scopeType, scopeName, privilege, grantOption);
                     }
                 } else {
-                    final List<String> inScope = AccessControlHandler.objectsInScope(catalog, objectKind, scopeType,
-                        scopeName);
-                    for (final String objectName : inScope) {
+                    // A bulk grant is a grant on each object it reaches (documented), each recorded in its owner's
+                    // name as a grant naming the object is.
+                    final Map<String, String> inScope = ownersInScope(objectKind, scopeType, scopeName);
+                    for (final Map.Entry<String, String> object : inScope.entrySet()) {
                         for (final String privilege : privileges) {
-                            grantTo(databaseGrantee, isUser, targetName, privilege, objectKind, objectName, null,
-                                grantOption);
+                            grantTo(databaseGrantee, isUser, targetName, privilege, objectKind, object.getKey(),
+                                grantorFor(objectKind, object.getKey(), object.getValue(), privilege),
+                                object.getValue(), grantOption);
                         }
                     }
                     logger.trace("Granted {} on ALL {} in {} {} to {}", privileges, objectType, scopeType, scopeName,
@@ -219,7 +233,7 @@ public class GrantRevokeHandler implements CommandHandler {
                     // Every user and role holds PUBLIC already: the grant changes nothing, and says so once the
                     // grantee is found.
                     if (ctx.USER() != null) {
-                        catalog.getUserExact(targetName2);
+                        grantee(targetName2);
                     } else {
                         catalog.getRoleExact(targetName2);
                     }
@@ -273,7 +287,8 @@ public class GrantRevokeHandler implements CommandHandler {
                 // A table or a view the current schema does not hold is looked for along the session's
                 // SEARCH_PATH, and the grant is recorded on the one found there (live-verified).
                 final boolean relation = "TABLE".equals(writtenType) || "VIEW".equals(writtenType)
-                    || "MATERIALIZED_VIEW".equals(writtenType);
+                    || "MATERIALIZED_VIEW".equals(writtenType) || "DYNAMIC_TABLE".equals(writtenType)
+                    || "EVENT_TABLE".equals(writtenType);
                 // A grantee written as a reference is read before the object's own reference (live-verified).
                 final String targetName = databaseGrantee != null ? databaseGrantee.getQualifiedName()
                     : granteeName(ctx);
@@ -315,6 +330,12 @@ public class GrantRevokeHandler implements CommandHandler {
                     }
                 }
 
+                if (ownership && !isUser && queryExecutor.getSecurityManager() != null) {
+                    queryExecutor.getSecurityManager().checkManagedOwnershipGrantee(
+                        GrantNames.managedSchema(catalog, objectType, objectName),
+                        objectType + " '" + recordedNames.get(0) + "'",
+                        databaseGrantee != null ? databaseGrantee : catalog.getRoleExact(targetName));
+                }
                 if (ownership && databaseGrantee == null) {
                     // Ownership belongs to ROLES only. Live-verified on a real account:
                     // GRANT OWNERSHIP ON TABLE t TO USER u fails "SQL execution error: Cannot grant
@@ -374,6 +395,15 @@ public class GrantRevokeHandler implements CommandHandler {
 
     public Object handleRevoke(final FrostlakeParser.RevokeStatementContext ctx) {
         try {
+            if (ctx.revokeCaller() != null) {
+                return new CallerGrantHandler(catalog, queryExecutor).revoke(ctx.revokeCaller());
+            }
+            if (ctx.ownedPrincipal() != null) {
+                // A principal always has an owner too: its ownership is only transferred, once both are found.
+                ownedPrincipalOf(ctx.ownedPrincipal());
+                requireGrantee(ctx.USER() != null, principal(ctx.principalName(0)));
+                throw new RuntimeException("SQL execution error: OWNERSHIP can only be transferred.");
+            }
             final DatabaseRole databaseGrantee = ctx.databaseRoleGrantee() == null ? null
                 : AccessControlHandler.databaseRole(catalog,
                     PrincipalNames.parts(ctx.databaseRoleGrantee().referencedName(), queryExecutor));
@@ -716,6 +746,31 @@ public class GrantRevokeHandler implements CommandHandler {
     }
 
     /**
+     * A bulk OWNERSHIP grant passes ownership only as a grant on each object would (see
+     * {@link SecurityManager#checkManagedOwnershipGrantee}), every object asked before anything changes; a future one
+     * in a schema WITH MANAGED ACCESS only to the schema's owner or a role granted to it (documented).
+     */
+    private void requireManagedOwnershipGrantees(final boolean future, final String objectType,
+                                                 final String objectKind, final String scopeType,
+                                                 final String scopeName, final Role grantee) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        if (security == null) {
+            return;
+        }
+        if (future) {
+            if ("SCHEMA".equals(scopeType)) {
+                security.checkManagedOwnershipGrantee(catalog.resolveSchema(QualifiedName.parse(scopeName)),
+                    "future " + objectType + " in schema '" + scopeName + "'", grantee);
+            }
+            return;
+        }
+        for (final String name : ownersInScope(objectKind, scopeType, scopeName).keySet()) {
+            security.checkManagedOwnershipGrantee(GrantNames.managedSchema(catalog, objectKind, name),
+                objectKind + " '" + name + "'", grantee);
+        }
+    }
+
+    /**
      * The role that owns each object a bulk statement reaches, by the name {@link AccessControlHandler#objectsInScope}
      * gives it: a routine's overloads each by their own signature.
      */
@@ -787,13 +842,72 @@ public class GrantRevokeHandler implements CommandHandler {
             return;
         }
         if (toUser) {
-            catalog.getUserExact(granteeName);
+            grantee(granteeName);
         } else {
             catalog.getRoleExact(granteeName);
         }
         final Role role = catalog.getRoleExact(roleName);
         security.checkManageGrants("role '" + role.getName() + "'", "ROLE", role.getName(),
             catalog.isSystemRole(role.getName()) ? null : role.getOwner());
+    }
+
+    /**
+     * GRANT OWNERSHIP ON ROLE | USER | DATABASE ROLE: the principal passes to another role, which from then on decides
+     * the principal's grants as its owner (documented). The principal is found first, then the role it passes to,
+     * and only then is the move judged: the principal's owner may move it, and so may the roles that decide every
+     * grant. Ownership never passes to a user. A role's own grants never block the move: COPY CURRENT GRANTS keeps
+     * the roles granted to it, granted from then on by its new owner, REVOKE CURRENT GRANTS takes them back, and with
+     * neither they stay as they are.
+     */
+    private void grantPrincipalOwnership(final FrostlakeParser.GrantStatementContext ctx) {
+        final FrostlakeParser.OwnedPrincipalContext owned = ctx.ownedPrincipal();
+        final Object principal = ownedPrincipalOf(owned);
+        final User user = principal instanceof User ? (User) principal : null;
+        final Role role = principal instanceof Role ? (Role) principal : null;
+        final String kind = owned.USER() != null ? "USER" : owned.DATABASE() != null ? "DATABASE_ROLE" : "ROLE";
+        final boolean toUser = ctx.USER() != null;
+        final String targetName = principal(ctx.principalName(0));
+        requireGrantee(toUser, targetName);
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        if (security != null) {
+            final String name = user != null ? user.getName() : role instanceof DatabaseRole
+                ? ((DatabaseRole) role).getQualifiedName() : role.getName();
+            final String owner = user != null ? user.getOwner()
+                : catalog.isSystemRole(role.getName()) ? null : role.getOwner();
+            security.checkManageGrants(kind.toLowerCase(Locale.ROOT).replace('_', ' ') + " '" + name + "'", kind,
+                name, owner);
+        }
+        if (toUser) {
+            throw new RuntimeException(OWNERSHIP_TO_USER);
+        }
+        final String newOwner = catalog.getRoleExact(targetName).getName();
+        if (user != null) {
+            user.setOwner(newOwner);
+            return;
+        }
+        final FrostlakeParser.CurrentGrantsContext tail = ctx.currentGrants();
+        if (tail != null) {
+            for (final String child : new ArrayList<>(role.getGrantedRoles())) {
+                if (tail.REVOKE_CURRENT_GRANTS() != null) {
+                    role.revokeRole(child);
+                } else {
+                    role.grantRole(child, newOwner);
+                }
+            }
+        }
+        role.setOwner(newOwner);
+    }
+
+    /** The principal an OWNERSHIP grant or revoke names, found as a GRANT ROLE finds it: a User or a Role. */
+    private Object ownedPrincipalOf(final FrostlakeParser.OwnedPrincipalContext owned) {
+        if (owned.USER() != null) {
+            return grantee(principal(owned.principalName()));
+        }
+        if (owned.DATABASE() != null) {
+            return AccessControlHandler.databaseRole(catalog,
+                PrincipalNames.parts(owned.referencedName(), queryExecutor));
+        }
+        return catalog.getRoleExact(principal(owned.principalName()));
     }
 
     /** A privilege on the account is granted and revoked by the roles that decide every grant alone. */
@@ -950,10 +1064,15 @@ public class GrantRevokeHandler implements CommandHandler {
     /** A grantee that does not exist is refused by its kind and name before anything about the grant. */
     private void requireGrantee(final boolean isUser, final String name) {
         if (isUser) {
-            catalog.getUserExact(name);
+            grantee(name);
         } else {
             catalog.getRoleExact(name);
         }
+    }
+
+    /** The user a grant or a revoke names, found as a statement over grants finds one (see {@link UserLookup}). */
+    private User grantee(final String name) {
+        return UserLookup.asking(catalog, queryExecutor.getSecurityManager(), name, Privilege.MANAGE_GRANTS);
     }
 
     /** Whether a privilege list names OWNERSHIP. */
@@ -995,11 +1114,25 @@ public class GrantRevokeHandler implements CommandHandler {
      * The kind a grant is recorded under. A relation's grant belongs to the relation itself, whichever of
      * TABLE or VIEW the statement wrote: GRANT … ON VIEW t for a table t is the table's grant, listed by
      * SHOW GRANTS ON TABLE t and taken back by REVOKE … ON TABLE t, and a grant ON TABLE v for a view v
-     * is the view's (live-verified). Every other kind is recorded as written.
+     * is the view's (live-verified). A grant ON TABLE or ON VIEW over a materialized view or a dynamic table is
+     * recorded under that kind, where SHOW GRANTS ON and the privilege views read it; an event table's is the
+     * table's, which SHOW GRANTS ON lists under its own kind. Every other kind is recorded as written.
      */
     private String grantedKind(final String writtenType, final String[] parts) {
+        if ("EVENT_TABLE".equals(writtenType)) {
+            return "TABLE";
+        }
+        if ("DYNAMIC_TABLE".equals(writtenType)) {
+            return writtenType;
+        }
         if (!"TABLE".equals(writtenType) && !"VIEW".equals(writtenType) && !"MATERIALIZED_VIEW".equals(writtenType)) {
             return writtenType;
+        }
+        if (!"MATERIALIZED_VIEW".equals(writtenType)) {
+            final GrantedObject materializedOrDynamic = queryExecutor.materializedOrDynamic(parts);
+            if (materializedOrDynamic != null) {
+                return materializedOrDynamic.getKind();
+            }
         }
         final GrantedObject granted = queryExecutor.grantedObject(writtenType, parts, null);
         return granted != null ? granted.getKind() : writtenType;
@@ -1049,28 +1182,36 @@ public class GrantRevokeHandler implements CommandHandler {
         if ("SELECT".equals(privilege) && "MASKING_POLICY".equals(objectType)) {
             throw new RuntimeException("SQL compilation error:\nInvalid object type 'POLICY' for privilege 'SELECT'.");
         }
-        // A network policy, a network rule, a password policy and a secret each take a closed set, and name the
+        // A network policy, a network rule, a policy, a contact and a secret each take a closed set, and name the
         // kind in the refusal as their grants record it — a password policy, like a masking policy, as POLICY.
         final List<String> securityObjectPrivileges = securityObjectPrivileges(objectType);
         if (securityObjectPrivileges != null && !securityObjectPrivileges.contains(privilege)) {
             throw new RuntimeException("SQL compilation error:\nInvalid object type '"
-                + ("PASSWORD_POLICY".equals(objectType) ? "POLICY" : objectType) + "' for privilege '"
-                + privilege.replace('_', ' ') + "'.");
+                + (objectType.endsWith("_POLICY") && !"NETWORK_POLICY".equals(objectType) ? "POLICY" : objectType)
+                + "' for privilege '" + privilege.replace('_', ' ') + "'.");
         }
     }
 
     /**
-     * The privileges a network policy, a network rule, a password policy, a secret or an external volume takes; null
-     * for another kind.
+     * The privileges a network policy, a network rule, a password, aggregation, authentication, join, packages or
+     * projection policy, a contact, a secret, an external volume or an integration takes; null for another kind.
      */
     private static List<String> securityObjectPrivileges(final String objectType) {
         switch (objectType) {
             case "NETWORK_POLICY":
             case "NETWORK_RULE":
             case "EXTERNAL_VOLUME":
+            case "INTEGRATION":
                 return List.of("USAGE");
             case "PASSWORD_POLICY":
+            case "AGGREGATION_POLICY":
+            case "AUTHENTICATION_POLICY":
+            case "JOIN_POLICY":
+            case "PACKAGES_POLICY":
+            case "PROJECTION_POLICY":
                 return List.of("APPLY");
+            case "CONTACT":
+                return List.of("APPLY", "MODIFY");
             case "SECRET":
                 return List.of("READ", "USAGE");
             default:
@@ -1090,6 +1231,8 @@ public class GrantRevokeHandler implements CommandHandler {
             case "MATERIALIZED_VIEW":
                 return List.of("APPLYBUDGET", "DELETE", "DELETE_ERROR_TABLE", "EVOLVE_SCHEMA", "INSERT", "REBUILD",
                     "REFERENCES", "SELECT", "SELECT_ERROR_TABLE", "TRUNCATE", "UPDATE");
+            case "DYNAMIC_TABLE":
+                return List.of("MONITOR", "OPERATE", "SELECT");
             case "VIEW":
                 return List.of("APPLYBUDGET", "DELETE", "DELETE_ERROR_TABLE", "EVOLVE_SCHEMA", "INSERT", "REBUILD",
                     "REFERENCES", "SELECT", "SELECT_ERROR_TABLE", "TRUNCATE", "UPDATE",
@@ -1144,8 +1287,15 @@ public class GrantRevokeHandler implements CommandHandler {
             case "NETWORK_POLICY":
             case "NETWORK_RULE":
             case "PASSWORD_POLICY":
+            case "AGGREGATION_POLICY":
+            case "AUTHENTICATION_POLICY":
+            case "JOIN_POLICY":
+            case "PACKAGES_POLICY":
+            case "PROJECTION_POLICY":
+            case "CONTACT":
             case "SECRET":
             case "EXTERNAL_VOLUME":
+            case "INTEGRATION":
                 return securityObjectPrivileges(objectType);
             default:
                 return List.of("ALL");

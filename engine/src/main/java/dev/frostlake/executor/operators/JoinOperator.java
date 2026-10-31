@@ -153,7 +153,7 @@ public class JoinOperator implements Operator {
         // A USING or NATURAL join matches by key through its evaluator and carries no condition text.
         final String rightSideRead = rightSide.describe() == null ? "" : "{" + rightSide.describe() + "}";
         if (joinType == JoinType.CROSS || joinCondition == null) {
-            return String.format("%s JOIN[%s x %s%s]%s",
+            return String.format(Locale.ROOT, "%s JOIN[%s x %s%s]%s",
                 joinType, leftTable.getName(), rightTable.getName(), keysRead(), rightSideRead);
         }
 
@@ -161,7 +161,7 @@ public class JoinOperator implements Operator {
             ? joinCondition.substring(0, 27) + "..."
             : joinCondition;
 
-        return String.format("%s JOIN[%s x %s ON %s%s]%s",
+        return String.format(Locale.ROOT, "%s JOIN[%s x %s ON %s%s]%s",
             joinType, leftTable.getName(), rightTable.getName(), conditionPreview, keysRead(), rightSideRead);
     }
 

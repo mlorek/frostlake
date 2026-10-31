@@ -27,6 +27,7 @@ import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.ManagedAccount;
 import dev.frostlake.metastore.model.ObjectParameters;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
@@ -38,6 +39,7 @@ import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.transaction.StreamLock;
 import dev.frostlake.transaction.TableLock;
 import dev.frostlake.transaction.Transaction;
 import dev.frostlake.transaction.TransactionManager;
@@ -158,7 +160,8 @@ final class ShowSessionExecutor {
             final String setByUser = sessionUser == null ? null : sessionUser.getParameters().get(key);
             final String setByAccount = AccountParameters.value(catalog, key);
             // JSON_INDENT is the one row whose unset value the ENGINE decides rather than the table:
-            // it is a real setting here, and SHOW must report what the renderer is actually using.
+            // it is a real setting here, and SHOW must report what the renderer is actually using. The account's
+            // own listing reads the account's value, its default where it sets none (live-verified).
             final String inForce;
             if (setBySession) {
                 inForce = String.valueOf(sessionParams.get(key));
@@ -166,7 +169,9 @@ final class ShowSessionExecutor {
                 inForce = setByUser;
             } else if (setByAccount != null) {
                 inForce = setByAccount;
-            } else if ("JSON_INDENT".equals(key)) {
+            } else if (SystemParameters.value(key) != null) {
+                inForce = SystemParameters.value(key);
+            } else if ("JSON_INDENT".equals(key) && !inAccount) {
                 inForce = String.valueOf(VariantJsonFormat.indent());
             } else {
                 inForce = parameter.getDefaultValue();
@@ -174,7 +179,7 @@ final class ShowSessionExecutor {
             // The LEVEL is where the value in force came from: a parameter this session has SET reads
             // SESSION, one the account sets reads ACCOUNT, and one still on its default reads EMPTY.
             rows.add(new Row(Arrays.asList(key, inForce, parameter.getDefaultValue(),
-                levelOf(setBySession ? "SESSION" : setByUser != null ? "USER" : null, setByAccount),
+                levelOf(setBySession ? "SESSION" : setByUser != null ? "USER" : null, setByAccount, key),
                 parameter.getDescription(), parameter.getType())));
         }
         // A session parameter the catalog has never heard of still appears once it is set — with no
@@ -219,7 +224,8 @@ final class ShowSessionExecutor {
      * @param likePattern the LIKE pattern, or null for every row
      */
     public ResultSet showParametersInUser(final String userName, final String likePattern) {
-        final User listed = catalog.getUserExact(userName);
+        final User listed = UserLookup.asking(catalog, facade.getSecurityManager(), userName,
+            Privilege.MANAGE_GRANTS);
         final String user = listed.getName();
         final Map<String, SessionParameterRow> known = new HashMap<>();
         for (final SessionParameterRow parameter : SessionParameterCatalog.rows()) {
@@ -243,10 +249,10 @@ final class ShowSessionExecutor {
                 // The user's own setting, else the account's, else the default.
                 final String setByUser = listed.getParameters().get(key);
                 final String setByAccount = AccountParameters.value(catalog, key);
-                final String inForce = setByUser != null ? setByUser
-                    : setByAccount != null ? setByAccount : parameter.getDefaultValue();
+                final String inForce = setByUser != null ? setByUser : inherited(key, setByAccount,
+                    parameter.getDefaultValue());
                 row = new Row(Arrays.asList(key, inForce, parameter.getDefaultValue(),
-                    levelOf(setByUser != null ? "USER" : null, setByAccount), parameter.getDescription(),
+                    levelOf(setByUser != null ? "USER" : null, setByAccount, key), parameter.getDescription(),
                     parameter.getType()));
             }
             addIfLike(rows, row, likePattern);
@@ -256,16 +262,23 @@ final class ShowSessionExecutor {
 
     /**
      * Where a parameter's value in force came from: the level that set it, else ACCOUNT when the account sets it,
-     * else empty, the default.
+     * else SYSTEM when the system does ({@link SystemParameters}), else empty, the default.
      *
      * @param ownLevel     the level the listed object set it at, or null when it did not
      * @param setByAccount the account's value, or null when the account leaves it at its default
+     * @param key          the parameter's name
      */
-    private static String levelOf(final String ownLevel, final String setByAccount) {
+    private static String levelOf(final String ownLevel, final String setByAccount, final String key) {
         if (ownLevel != null) {
             return ownLevel;
         }
-        return setByAccount != null ? "ACCOUNT" : "";
+        return setByAccount != null ? "ACCOUNT" : SystemParameters.value(key) != null ? "SYSTEM" : "";
+    }
+
+    /** What a parameter inherits where nothing below the account sets it: the account's, the system's, the default. */
+    private static String inherited(final String key, final String setByAccount, final String defaultValue) {
+        return setByAccount != null ? setByAccount
+            : SystemParameters.value(key) != null ? SystemParameters.value(key) : defaultValue;
     }
 
     private static void addIfLike(final List<Row> rows, final Row row, final String likePattern) {
@@ -337,27 +350,29 @@ final class ShowSessionExecutor {
             }
             final String set = task.getSessionParameters().get(key);
             final String setByAccount = AccountParameters.value(catalog, key);
-            final String inherited = setByAccount != null ? setByAccount : row.getDefaultValue();
-            rows.add(new Row(Arrays.asList(key, set != null ? set : inherited, row.getDefaultValue(),
-                levelOf(set != null ? "TASK" : null, setByAccount), row.getDescription(), row.getType())));
+            rows.add(new Row(Arrays.asList(key, set != null ? set : inherited(key, setByAccount,
+                row.getDefaultValue()), row.getDefaultValue(), levelOf(set != null ? "TASK" : null, setByAccount, key),
+                row.getDescription(), row.getType())));
         }
         return new ResultSet(parameterColumns(), rows);
     }
 
     /**
      * SHOW PARAMETERS IN ALERT: the session parameters a task carries for its runs, in the task listing's order,
-     * without the task's own (live-verified); an alert sets none of them, so each is the account's value or its
-     * default. SUSPEND_ALERT_AFTER_NUM_FAILURES is a property of the alert and no parameter: it is not listed.
+     * without the task's own (live-verified): each as ALTER ALERT … SET set it on the alert, at level ALERT, else the
+     * account's value or its default. SUSPEND_ALERT_AFTER_NUM_FAILURES is a property of the alert and no parameter:
+     * it is not listed.
      *
      * @param written     the alert as written
      * @param likePattern the LIKE filter, or null
      * @return the listing
      */
     public ResultSet showParametersInAlert(final SchemaObjectName written, final String likePattern) {
-        if (!written.schema().hasAlert(written.name())) {
+        if (!written.schema().hasAlertExact(written.name())) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Alert",
                 written.schema().qualifiedName(written.name())));
         }
+        final Map<String, String> own = written.schema().getAlertExact(written.name()).getParameters();
         final List<Row> rows = new ArrayList<>();
         for (final String key : SessionParameterCatalog.taskScopeNames()) {
             if (TASK_ONLY.contains(key) || !matchesParameterFilter(key, likePattern)) {
@@ -367,9 +382,11 @@ final class ShowSessionExecutor {
             if (row == null) {
                 continue;
             }
+            final String set = own.get(key);
             final String setByAccount = AccountParameters.value(catalog, key);
-            rows.add(new Row(Arrays.asList(key, setByAccount != null ? setByAccount : row.getDefaultValue(),
-                row.getDefaultValue(), levelOf(null, setByAccount), row.getDescription(), row.getType())));
+            rows.add(new Row(Arrays.asList(key, set != null ? set : inherited(key, setByAccount, row.getDefaultValue()),
+                row.getDefaultValue(), levelOf(set != null ? "ALERT" : null, setByAccount, key), row.getDescription(),
+                row.getType())));
         }
         return new ResultSet(parameterColumns(), rows);
     }
@@ -652,10 +669,6 @@ final class ShowSessionExecutor {
         ));
     }
 
-    public ResultSet showOrganizationAccounts() {
-        return new ResultSet(accountColumns(), List.of(accountRow()));
-    }
-
     public ResultSet showAccounts() {
         return new ResultSet(accountColumns(), List.of(accountRow()));
     }
@@ -756,13 +769,15 @@ final class ShowSessionExecutor {
     }
 
     /**
-     * SHOW LOCKS, in live's shape: one row per (transaction, table) a partition-rewriting DML
-     * statement touched — UPDATE / DELETE / MERGE / TRUNCATE, while an append-only INSERT holds no
-     * lock — with {@code type=PARTITIONS} and {@code status=HOLDING}, the resource as the table's
-     * fully qualified name, and the lock's own {@code acquired_on} / {@code query_id} beside the
-     * owning transaction's id and start; and one row with {@code status=WAITING}, no {@code acquired_on} and
-     * the waiting statement's query ID for a table a statement waits for (live-verified). {@code IN ACCOUNT}
-     * prepends a {@code session} column; the rows are otherwise identical.
+     * SHOW LOCKS, in live's shape: one row per (transaction, table) a DML statement wrote or touched —
+     * an UPDATE, DELETE, MERGE or TRUNCATE, and an INSERT into a table that holds committed rows, where
+     * one into an empty table takes none — with {@code type=PARTITIONS} and
+     * {@code status=HOLDING}, the resource as the table's fully qualified name, and the lock's own
+     * {@code acquired_on} (its first touch) and {@code query_id} (the latest statement that changed a
+     * row of the table) beside the owning transaction's id and start; and one row with
+     * {@code status=WAITING}, no {@code acquired_on} and the waiting statement's query ID for a table a
+     * statement waits for (live-verified). {@code IN ACCOUNT} prepends a {@code session} column; the rows
+     * are otherwise identical.
      */
     public ResultSet showLocks(final boolean inAccount) {
         final List<ResultSetColumn> columns = new ArrayList<>();
@@ -800,13 +815,28 @@ final class ShowSessionExecutor {
                 cells.add(entry.getValue().getQueryId());
                 rows.add(new Row(cells));
             }
+            // A stream a read of the transaction holds is listed in full with the type STREAM (live-verified).
+            for (final StreamLock lock : txn.getStreamLocks()) {
+                final List<Object> cells = new ArrayList<>();
+                if (inAccount) {
+                    cells.add(sessionNumberOf(txn));
+                }
+                cells.add(lock.getResource());
+                cells.add("STREAM");
+                cells.add(transactionDisplayId(txn));
+                cells.add(ShowResultHelpers.createdOn(Instant.ofEpochMilli(txn.getStartTime())));
+                cells.add("HOLDING");
+                cells.add(ShowResultHelpers.createdOn(Instant.ofEpochMilli(lock.getAcquiredOn())));
+                cells.add(lock.getQueryId());
+                rows.add(new Row(cells));
+            }
             if (waitingFor != null) {
                 final List<Object> cells = new ArrayList<>();
                 if (inAccount) {
                     cells.add(sessionNumberOf(txn));
                 }
                 cells.add(waitingFor);
-                cells.add("PARTITIONS");
+                cells.add(txn.isWaitingForStream() ? "STREAM" : "PARTITIONS");
                 cells.add(transactionDisplayId(txn));
                 cells.add(ShowResultHelpers.createdOn(Instant.ofEpochMilli(txn.getStartTime())));
                 cells.add("WAITING");
@@ -901,7 +931,7 @@ final class ShowSessionExecutor {
         final SecurityManager securityManager = facade.getSecurityManager();
         // Live layout: session_id | created_on | updated_on | name | value | type | comment —
         // the variable NAME is folded upper, an unset comment is '', and type names the value's
-        // family (fixed / text / boolean).
+        // family (see VariableListingText).
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("session_id", NumericType.NUMBER),
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
@@ -920,20 +950,14 @@ final class ShowSessionExecutor {
                 continue;
             }
             final Object value = e.getValue();
-            final String type;
-            if (value instanceof Number) {
-                type = "fixed";
-            } else if (value instanceof Boolean) {
-                type = "boolean";
-            } else {
-                type = "text";
-            }
+            final String type = VariableListingText.type(value, securityManager != null
+                && securityManager.getSessionContext().isDecfloatSessionVariable(e.getKey()));
             rows.add(new Row(Arrays.asList(
                 currentSessionNumber(),
                 ShowResultHelpers.createdOn(Instant.ofEpochMilli(startedOnMillis)),
                 ShowResultHelpers.createdOn(Instant.ofEpochMilli(startedOnMillis)),
                 e.getKey().toUpperCase(Locale.ROOT),
-                value != null ? value.toString() : null,
+                VariableListingText.value(value),
                 type,
                 "")));
         }

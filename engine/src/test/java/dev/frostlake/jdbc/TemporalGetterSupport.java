@@ -46,9 +46,9 @@ final class TemporalGetterSupport {
         SELECT '2024-01-02'::DATE AS d, '10:11:12.345'::TIME AS tm, '2024-01-02 10:11:12.345'::TIMESTAMP_NTZ AS ntz,
                '2024-01-02 10:11:12.345'::TIMESTAMP_LTZ AS ltz, '2024-01-02 10:11:12.345 +01:00'::TIMESTAMP_TZ AS tz""";
 
-    /** Cells no temporal getter reads, and the wire forms the refusals quote. */
+    /** Cells no temporal getter reads, and the wire forms the refusals quote; a FLOAT's are FloatColumnChecks'. */
     static final String OTHER = """
-        SELECT '2024-01-02'::VARCHAR AS s, 5::NUMBER AS n, TRUE AS b, 1.5::FLOAT AS f,
+        SELECT '2024-01-02'::VARCHAR AS s, 5::NUMBER AS n, TRUE AS b,
                TO_VARIANT('2024-01-02'::DATE) AS v, '1969-12-31'::DATE AS early, '10:11:12'::TIME(0) AS t0,
                '10:11:12.5'::TIME(3) AS t3, '00:00:00'::TIME AS midnight""";
 

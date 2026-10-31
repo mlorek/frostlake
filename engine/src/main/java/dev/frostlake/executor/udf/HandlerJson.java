@@ -18,6 +18,7 @@ package dev.frostlake.executor.udf;
 
 import dev.frostlake.executor.SessionZone;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.TypedScalarNode;
 import dev.frostlake.values.VariantUndefined;
@@ -30,7 +31,6 @@ import tools.jackson.databind.node.StringNode;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -46,10 +46,11 @@ import java.util.Locale;
  * a fourth a text that would itself read as a mark. An array element the serialiser wrote as {@code undefined}
  * stays one of the array's SQL NULLs, and an object's members come in key order, as any variant's do.
  *
- * <p>What an instant and bytes become depends on whose answer it is. A procedure's answer keeps an instant as
- * its text in the session's zone, {@code 2024-01-01 19:04:05.678 -0800}, and bytes as their hex — see
- * {@link #toVariant}. A function's answer keeps them typed, a TIMESTAMP_LTZ and a BINARY, inside a container
- * and as the whole answer alike — see {@link #toValue}.
+ * <p>What an instant and bytes become depends on whose answer it is. A procedure's answer keeps an instant as the text
+ * of a TIMESTAMP_LTZ in the session's zone and its TIMESTAMP_LTZ_OUTPUT_FORMAT, or its TIMESTAMP_OUTPUT_FORMAT when
+ * that is unset - {@code 2024-01-01 19:04:05.678 -0800} by default, {@code Z} at UTC - and bytes as their hex — see
+ * {@link #toVariant}. A function's answer keeps them typed, a TIMESTAMP_LTZ and a BINARY, inside a container and as the
+ * whole answer alike — see {@link #toValue}.
  */
 public final class HandlerJson {
 
@@ -76,9 +77,6 @@ public final class HandlerJson {
 
     /** {@link #BINARY} as a JavaScript source spells it inside a string literal. */
     public static final String BINARY_IN_SOURCE = "\\u0002B:";
-
-    private static final DateTimeFormatter INSTANT_TEXT =
-        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS xx", Locale.ROOT);
 
     private HandlerJson() {
     }
@@ -142,7 +140,8 @@ public final class HandlerJson {
                 return ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER,
                     OffsetDateTime.ofInstant(instant, SessionZone.current()));
             }
-            return StringNode.valueOf(INSTANT_TEXT.format(instant.atZone(SessionZone.current())));
+            return StringNode.valueOf(SharedFunctionHelpers.textOf(OffsetDateTime.ofInstant(instant,
+                SessionZone.current())));
         }
         if (text.startsWith(TEXT)) {
             return StringNode.valueOf(text.substring(TEXT.length()));

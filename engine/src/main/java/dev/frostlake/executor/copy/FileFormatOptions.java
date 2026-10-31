@@ -43,6 +43,9 @@ import java.util.Map;
  *   TRIM_SPACE                      FALSE    SKIP_BLANK_LINES FALSE
  *   ERROR_ON_COLUMN_COUNT_MISMATCH  TRUE
  *   STRIP_OUTER_ARRAY               FALSE    STRIP_NULL_VALUES FALSE, ALLOW_DUPLICATE FALSE (JSON)
+ *   STRIP_OUTER_ELEMENT             FALSE    DISABLE_AUTO_CONVERT FALSE, PRESERVE_SPACE FALSE (XML)
+ *   REPLACE_INVALID_CHARACTERS      FALSE    IGNORE_UTF8_ERRORS FALSE, its other spelling
+ *   SKIP_BYTE_ORDER_MARK            TRUE     a CSV file's leading BOM is passed over; a JSON file's is either way
  * </pre>
  *
  * <p>The options come from a stage's own format, from a named format and from the statement's inline list, each
@@ -54,6 +57,7 @@ public final class FileFormatOptions {
     private static final String NONE = "NONE";
 
     private String type = "CSV";
+    private String writtenType;
     private String fieldDelimiter = ",";
     private String recordDelimiter = "\n";
     private Character enclosure;
@@ -69,14 +73,21 @@ public final class FileFormatOptions {
     private String fileExtension;
     private String encoding;
     private boolean replaceInvalidCharacters;
+    /** Whether the staged-file query reading the files reads none of their positional columns. */
+    private boolean noPositionalRead;
     private int skipHeader;
     private boolean parseHeader;
     private boolean trimSpace;
     private boolean skipBlankLines;
+    private boolean skipByteOrderMark = true;
     private boolean errorOnColumnCountMismatch = true;
     private boolean stripOuterArray;
     private boolean stripNullValues;
     private boolean allowDuplicate;
+    private boolean ignoreUtf8Errors;
+    private boolean stripOuterElement;
+    private boolean disableAutoConvert;
+    private boolean preserveSpace;
 
     /** DATE_FORMAT, TIME_FORMAT, TIMESTAMP_FORMAT and BINARY_FORMAT as written, by the input format each stands for. */
     private final Map<String, String> inputFormats = new HashMap<>();
@@ -99,6 +110,7 @@ public final class FileFormatOptions {
     public void takeWritten(final FileFormatClause clause) {
         if (clause.writtenType() != null) {
             take("TYPE", clause.writtenType());
+            writtenType = clause.writtenType();
         }
         takeAll(clause.format().getOptions());
     }
@@ -187,6 +199,9 @@ public final class FileFormatOptions {
             case "TRIM_SPACE":
                 trimSpace = "TRUE".equalsIgnoreCase(value);
                 break;
+            case "SKIP_BYTE_ORDER_MARK":
+                skipByteOrderMark = !"FALSE".equalsIgnoreCase(value);
+                break;
             case "SKIP_BLANK_LINES":
                 skipBlankLines = "TRUE".equalsIgnoreCase(value);
                 break;
@@ -201,6 +216,18 @@ public final class FileFormatOptions {
                 break;
             case "ALLOW_DUPLICATE":
                 allowDuplicate = "TRUE".equalsIgnoreCase(value);
+                break;
+            case "IGNORE_UTF8_ERRORS":
+                ignoreUtf8Errors = "TRUE".equalsIgnoreCase(value);
+                break;
+            case "STRIP_OUTER_ELEMENT":
+                stripOuterElement = "TRUE".equalsIgnoreCase(value);
+                break;
+            case "DISABLE_AUTO_CONVERT":
+                disableAutoConvert = "TRUE".equalsIgnoreCase(value);
+                break;
+            case "PRESERVE_SPACE":
+                preserveSpace = "TRUE".equalsIgnoreCase(value);
                 break;
             default:
                 break;
@@ -251,6 +278,10 @@ public final class FileFormatOptions {
     }
 
     /** The format's TYPE, upper-cased; CSV until a format says otherwise. */
+    public String getWrittenType() {
+        return writtenType;
+    }
+
     public String getType() {
         return type;
     }
@@ -324,9 +355,46 @@ public final class FileFormatOptions {
         return encoding;
     }
 
-    /** Whether REPLACE_INVALID_CHARACTERS = TRUE reads an unreadable byte sequence as U+FFFD instead of refusing. */
+    /**
+     * Whether REPLACE_INVALID_CHARACTERS = TRUE, or IGNORE_UTF8_ERRORS = TRUE, its other spelling, reads an unreadable
+     * byte sequence as U+FFFD instead of refusing (live-verified for XML).
+     */
     public boolean replacesInvalidCharacters() {
-        return replaceInvalidCharacters;
+        return replaceInvalidCharacters || ignoreUtf8Errors;
+    }
+
+    /**
+     * Marks the options of a staged-file query that reads none of the files' positional columns — COUNT(*), a
+     * constant, METADATA$ columns alone: a refusal of a file names no column, and a binary record format decodes no
+     * value (live-verified).
+     */
+    public void readNoPositionalColumn() {
+        noPositionalRead = true;
+    }
+
+    /**
+     * Whether the staged-file query reading the files reads none of their positional columns (see
+     * {@link #readNoPositionalColumn}).
+     *
+     * @return true when no positional column is read
+     */
+    public boolean readsNoPositionalColumn() {
+        return noPositionalRead;
+    }
+
+    /** Whether an XML file's records are the elements its outer elements hold (STRIP_OUTER_ELEMENT). */
+    public boolean stripsOuterElement() {
+        return stripOuterElement;
+    }
+
+    /** Whether an XML file's text stays text rather than turning into numbers and booleans (DISABLE_AUTO_CONVERT). */
+    public boolean disablesAutoConvert() {
+        return disableAutoConvert;
+    }
+
+    /** Whether an XML file's text keeps its leading and trailing white space (PRESERVE_SPACE). */
+    public boolean preservesSpace() {
+        return preserveSpace;
     }
 
     /** SKIP_HEADER: how many lines a file's start is passed over. */
@@ -342,6 +410,14 @@ public final class FileFormatOptions {
     /** Whether TRIM_SPACE trims an unenclosed field. */
     public boolean trimsSpace() {
         return trimSpace;
+    }
+
+    /**
+     * Whether SKIP_BYTE_ORDER_MARK passes over the byte order mark a CSV file starts with; FALSE reads it into the
+     * first field (live-verified).
+     */
+    public boolean skipsByteOrderMark() {
+        return skipByteOrderMark;
     }
 
     /** Whether SKIP_BLANK_LINES passes over a blank line rather than reading it as a record of one empty field. */

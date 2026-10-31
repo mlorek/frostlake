@@ -24,6 +24,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * HAVING clause operator - filters rows after GROUP BY based on aggregate conditions.
@@ -66,7 +67,7 @@ public class HavingOperator implements Operator {
 
     @Override
     public String getDescription() {
-        return String.format("HAVING[%s]",
+        return String.format(Locale.ROOT, "HAVING[%s]",
             havingExpression.length() > 50 ? havingExpression.substring(0, 47) + "..." : havingExpression);
     }
 }

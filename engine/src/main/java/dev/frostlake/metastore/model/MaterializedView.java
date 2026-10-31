@@ -51,6 +51,8 @@ public class MaterializedView extends SqlObject {
     private String listedText;
     /** The clustering key's expressions as written, none for an unclustered view. */
     private final List<String> clusterKeys = new ArrayList<>();
+    /** The text the statement that set the key wrote after CLUSTER BY, or null where none was kept. */
+    private String clusterByText;
     /** Whether automatic reclustering is paused; it only shows on a view that has a key. */
     private boolean reclusterSuspended;
 
@@ -120,10 +122,34 @@ public class MaterializedView extends SqlObject {
     }
 
     public void setClusterKeys(final List<String> keys) {
+        setClusterKeys(keys, null);
+    }
+
+    /**
+     * Sets the clustering key with the text its statement wrote after CLUSTER BY, which SHOW and GET_DDL read back.
+     *
+     * @param keys the key's expressions, each as written; null or empty for no key
+     * @param written the text after CLUSTER BY as written, or null
+     */
+    public void setClusterKeys(final List<String> keys, final String written) {
         clusterKeys.clear();
         if (keys != null) {
             clusterKeys.addAll(keys);
         }
+        clusterByText = clusterKeys.isEmpty() ? null : written;
+    }
+
+    /**
+     * The clustering key as written after CLUSTER BY: the statement's own text where it was kept, the keys in
+     * parentheses otherwise.
+     *
+     * @return the text, or null for a view with no key
+     */
+    public String getClusterByText() {
+        if (clusterKeys.isEmpty()) {
+            return null;
+        }
+        return clusterByText != null ? clusterByText : "(" + String.join(", ", clusterKeys) + ")";
     }
 
     public boolean isReclusterSuspended() {

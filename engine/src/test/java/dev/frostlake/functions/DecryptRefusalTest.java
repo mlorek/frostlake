@@ -21,6 +21,8 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -59,7 +61,7 @@ public class DecryptRefusalTest extends BaseDatabaseTest {
     private static String bytes(final int count) {
         final StringBuilder literal = new StringBuilder("X'");
         for (int i = 0; i < count; i++) {
-            literal.append(String.format("%02X", i));
+            literal.append(String.format(Locale.ROOT, "%02X", i));
         }
         return literal.append('\'').toString();
     }

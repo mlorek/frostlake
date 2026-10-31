@@ -101,6 +101,43 @@ public final class CodePointText {
     }
 
     /**
+     * The UTF-8 bytes {@link #repeatTo} would produce for {@code characters} characters of a pattern, counted
+     * without building it, so a caller can refuse a value past {@link LobSize} before allocating one.
+     *
+     * @param pattern    the pattern, not empty
+     * @param characters how many characters would be produced
+     * @return their size in bytes, saturated at Long.MAX_VALUE
+     */
+    public static long repeatedUtf8Length(final String pattern, final long characters) {
+        final int[] points = codePoints(pattern);
+        long cycleBytes = 0;
+        for (final int point : points) {
+            cycleBytes += utf8Length(point);
+        }
+        final long cycles = characters / points.length;
+        final long rest = characters % points.length;
+        long restBytes = 0;
+        for (int i = 0; i < rest; i++) {
+            restBytes += utf8Length(points[i]);
+        }
+        if (cycles > (Long.MAX_VALUE - restBytes) / cycleBytes) {
+            return Long.MAX_VALUE;
+        }
+        return cycles * cycleBytes + restBytes;
+    }
+
+    /** The bytes one code point takes in UTF-8. */
+    private static int utf8Length(final int point) {
+        if (point < 0x80) {
+            return 1;
+        }
+        if (point < 0x800) {
+            return 2;
+        }
+        return point < 0x10000 ? 3 : 4;
+    }
+
+    /**
      * Exactly {@code characters} characters of a pattern repeated from its start — the pad LPAD and RPAD
      * lay down.
      *

@@ -27,12 +27,12 @@ import dev.frostlake.http.rest.RestRow;
 import dev.frostlake.http.rest.RestShow;
 import dev.frostlake.http.rest.RestSql;
 import dev.frostlake.http.rest.RestTags;
+import dev.frostlake.types.DecimalText;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -164,7 +164,7 @@ public final class ComputePoolResource implements RestResource {
                 node.putNull("storage_gib");
             } else {
                 try {
-                    node.put("storage_gib", new BigDecimal(storage.trim()).doubleValue());
+                    node.put("storage_gib", DecimalText.parse(storage.trim()).doubleValue());
                 } catch (final NumberFormatException notNumeric) {
                     node.put("storage_gib", storage);
                 }

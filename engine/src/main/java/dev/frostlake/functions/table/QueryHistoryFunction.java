@@ -41,6 +41,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -290,8 +291,8 @@ public class QueryHistoryFunction extends TableFunction {
         }
     }
 
-    /** A statement text's hash: the hex MD5 of the text as written. */
-    private static String textHash(final String text) {
+    /** A statement text's hash: the hex MD5 of the text as written, as TASK_HISTORY also reports a run's. */
+    static String textHash(final String text) {
         if (text == null) {
             return null;
         }
@@ -299,7 +300,7 @@ public class QueryHistoryFunction extends TableFunction {
             final byte[] digest = MessageDigest.getInstance("MD5").digest(text.getBytes(StandardCharsets.UTF_8));
             final StringBuilder hex = new StringBuilder();
             for (final byte b : digest) {
-                hex.append(String.format("%02x", b & 0xff));
+                hex.append(String.format(Locale.ROOT, "%02x", b & 0xff));
             }
             return hex.toString();
         } catch (final NoSuchAlgorithmException unavailable) {
@@ -320,6 +321,7 @@ public class QueryHistoryFunction extends TableFunction {
             case "SCHEMA_NAME": return q.getSchema();
             case "QUERY_TYPE": return q.getQueryTypeName();
             case "SESSION_ID": return q.getSessionId();
+            case "QUERY_TAG": return q.getQueryTag();
             case "AUTHN_EVENT_ID": return q.getSessionId();
             case "ERROR_CODE": return q.getErrorCode() == null ? null : Long.valueOf(q.getErrorCode().longValue());
             case "WAREHOUSE_SIZE": return q.getWarehouseSize();
@@ -340,11 +342,14 @@ public class QueryHistoryFunction extends TableFunction {
             case "EXTERNAL_FUNCTION_TOTAL_SENT_BYTES":
             case "EXTERNAL_FUNCTION_TOTAL_RECEIVED_BYTES":
             case "QUERY_ACCELERATION_BYTES_SCANNED":
+            case "QUERY_ACCELERATION_PARTITIONS_SCANNED":
+            case "QUERY_ACCELERATION_UPPER_LIMIT_SCALE_FACTOR":
             case "QUERY_RETRY_TIME":
             case "FAULT_HANDLING_TIME":
             case "BYTES_WRITTEN_TO_RESULT":
                 // Nothing travels between regions, no external function or query acceleration is reached and no
-                // statement is retried; no size is told for a result.
+                // statement is retried; no size is told for a result. Every statement's acceleration cells read 0,
+                // and its QUERY_RETRY_CAUSE NULL (live-verified).
                 return Long.valueOf(0L);
             case "CREDITS_USED_CLOUD_SERVICES": return BigDecimal.ZERO.setScale(CREDITS.getScale());
             case "RELEASE_VERSION": return BuildInfo.version();

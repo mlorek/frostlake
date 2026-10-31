@@ -42,6 +42,8 @@ public class RoleSnapshot implements Serializable {
     /** When each role in grantedRoles was granted, by role name. */
     public HashMap<String, Instant> roleGrantTimes;
     public List<FutureGrantSnapshot> futureGrants;
+    /** The caller grants this role holds. Null in a snapshot written before they were kept. */
+    public List<CallerGrantSnapshot> callerGrants;
     /** The database roles granted to this role, by qualified name, each with its grantor. */
     public HashMap<String, String> databaseRoleGrants;
     /** When each database role in databaseRoleGrants was granted, by qualified name. */

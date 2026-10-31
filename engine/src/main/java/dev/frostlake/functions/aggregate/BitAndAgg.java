@@ -47,4 +47,10 @@ public class BitAndAgg extends AggregateFunction {
         return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
+    /** A VECTOR is no integer either, refused by its type however many rows reach the call (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
 }

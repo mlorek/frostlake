@@ -422,8 +422,8 @@ final class ShowPipelineExecutor {
 
     /**
      * The tables a stream reads, as SHOW STREAMS lists them: a table stream's table, and the tables a view stream's
-     * view reads rather than the view itself, or how many of them are gone, as for a table stream lost in a clone
-     * (live-verified).
+     * view reads rather than the view itself, a comma and a space between two, or how many of them are gone, as for
+     * a table stream lost in a clone (live-verified).
      */
     private String baseTablesText(final Stream stream, final String source, final boolean tableGone) {
         if (stream.isLostInClone()) {
@@ -433,13 +433,17 @@ final class ShowPipelineExecutor {
             return TABLE_GONE;
         }
         if (stream.getSourceType() == StreamSourceType.VIEW) {
+            final List<String> shown = StreamSources.shownBaseTableNames(catalog, stream);
+            if (shown != null) {
+                return String.join(", ", shown);
+            }
             final int missing = StreamSources.missingBaseCount(catalog, stream);
             if (missing > 0) {
                 return missing + " inaccessible table(s)";
             }
             final List<String> bases = StreamSources.baseTableFullNames(catalog, stream);
             if (bases != null) {
-                return String.join(",", bases);
+                return String.join(", ", bases);
             }
         }
         return source;
@@ -463,6 +467,11 @@ final class ShowPipelineExecutor {
      * tables does too.
      */
     private boolean stale(final Schema home, final Stream stream) {
+        if (stream.getSourceType() == StreamSourceType.VIEW
+                && StreamSources.shownBaseTableNames(catalog, stream) != null) {
+            // A stream re-bound to the tables that replaced its own is listed as reading them (see Stream#showOn).
+            return false;
+        }
         return stream.isStale() || (stream.getSourceType() == StreamSourceType.TABLE
             && StreamSources.sourceOf(catalog, home, stream) == null)
             || StreamSources.missingBaseOf(catalog, stream) != null;
@@ -588,6 +597,11 @@ final class ShowPipelineExecutor {
                 written.isQualified() ? written.fullName() : streamName));
         }
         final Stream stream = schema.getStream(streamName);
+        if (!seen("STREAM", schema, stream.getName(), stream.getOwner())) {
+            // A stream the session does not see is refused as a missing one is, not answered as no row.
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Stream",
+                written.isQualified() ? written.fullName() : streamName));
+        }
 
         final ResultSet listed = showStreams(written.database().getName(), schema.getName());
         final List<Row> rows = new ArrayList<>();
@@ -604,6 +618,10 @@ final class ShowPipelineExecutor {
         final Schema schema = written.schema();
         // Named exactly: a quoted name in another case is another task, which is not there (live-verified).
         final Task task = schema.getTaskExact(written.name());
+        // One the session does not see is refused as a missing one is, as GET_DDL refuses it (documented).
+        if (!seen("TASK", schema, task.getName(), task.getOwner())) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Task", schema.qualifiedName(task.getName())));
+        }
         final List<Row> rows = new ArrayList<>();
         rows.add(taskRow(task, written.database().getName(), schema.getName()));
         return new ResultSet(taskColumns(), rows);
@@ -646,6 +664,11 @@ final class ShowPipelineExecutor {
         final String dbName = written.database().getName();
         final String scName = written.schema().getName();
         final Sequence sequence = written.schema().getSequenceExact(written.name());
+        // One the session does not see is refused as a missing one is, as GET_DDL refuses it (documented).
+        if (!seen("SEQUENCE", written.schema(), sequence.getName(), sequence.getOwner())) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Sequence",
+                written.schema().qualifiedName(sequence.getName())));
+        }
 
         final List<Row> rows = new ArrayList<>();
         // The same ten cells SHOW SEQUENCES prints for the one sequence — the creation instant and
@@ -712,6 +735,12 @@ final class ShowPipelineExecutor {
     /** DESCRIBE CORTEX SEARCH SERVICE — the one service, in the SHOW shape. */
     public ResultSet describeCortexSearchService(final String[] serviceParts) {
         final CortexSearchService service = catalog.resolveCortexSearchService(serviceParts);
+        final String recorded =
+            QualifiedName.join(service.getDatabaseName(), service.getSchemaName(), service.getName());
+        if (!ownership.sees("CORTEX_SEARCH_SERVICE", recorded, service.getOwner())) {
+            // One the session does not see is answered as one that does not exist.
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Cortex Search Service", recorded));
+        }
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(cortexSearchServiceRow(service)));
         return new ResultSet(cortexSearchServiceColumns(), rows);
@@ -720,7 +749,8 @@ final class ShowPipelineExecutor {
     private void appendCortexSearchServiceRows(final Schema schema, final String like,
                                                final List<Row> rows) {
         for (final CortexSearchService service : schema.getCortexSearchServices()) {
-            if (like == null || matchesLike(service.getName(), like)) {
+            if ((like == null || matchesLike(service.getName(), like))
+                    && seen("CORTEX_SEARCH_SERVICE", schema, service.getName(), service.getOwner())) {
                 rows.add(new Row(cortexSearchServiceRow(service)));
             }
         }
@@ -829,20 +859,20 @@ final class ShowPipelineExecutor {
             if (!seen("DYNAMIC_TABLE", schema, dt.getName(), dt.getOwner())) {
                 continue;
             }
-            final List<String> clusterKeys = dt.getClusterKeys();
+            final String clusterBy = ClusteringKeySpelling.listed(dt.getClusterByText());
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(dt.getCreatedTime()),
                 dt.getName(), dbName, scName,
-                clusterKeys.isEmpty() ? "" : "LINEAR(" + String.join(", ", clusterKeys) + ")",
+                clusterBy == null ? "" : clusterBy,
                 dt.getRefreshedRows(), 0L,
                 dt.getOwner(),
                 dt.getTargetLag(),
                 resolvedRefreshMode(dt),
-                null,
+                dt.getFullRefreshReason(),
                 dt.getWarehouse(),
                 ShowResultHelpers.text(dt.getComment()),
                 dynamicTableText(dt),
-                clusterKeys.isEmpty() || dt.isReclusterSuspended() ? "OFF" : "ON",
+                clusterBy == null || dt.isReclusterSuspended() ? "OFF" : "ON",
                 dt.getSchedulingState(),
                 ShowResultHelpers.createdOn(dt.getLastSuspendedOn()), dt.isClone() ? "true" : "false", "false",
                 "false",
@@ -869,13 +899,15 @@ final class ShowPipelineExecutor {
 
     /**
      * The refresh_mode CELL reports the RESOLVED mode: a dynamic table configured AUTO runs (and
-     * reads back) INCREMENTAL for the plain projections this engine evaluates, live-verified,
-     * while configured_refresh_mode keeps the declared word.
+     * reads back) INCREMENTAL, or FULL where its query holds a construct an incremental refresh does
+     * not follow (see DynamicTableRefreshReason), live-verified, while configured_refresh_mode keeps
+     * the declared word.
      */
     private static String resolvedRefreshMode(final DynamicTable dt) {
-        return dt.getRefreshMode() == RefreshMode.AUTO
-            ? RefreshMode.INCREMENTAL.name()
-            : dt.getRefreshMode().name();
+        if (dt.getRefreshMode() != RefreshMode.AUTO) {
+            return dt.getRefreshMode().name();
+        }
+        return dt.getFullRefreshReason() != null ? RefreshMode.FULL.name() : RefreshMode.INCREMENTAL.name();
     }
 
     /** SHOW DYNAMIC TABLES in live's column order — the definition column is named {@code text}. */

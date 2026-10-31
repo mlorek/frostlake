@@ -29,7 +29,7 @@ import java.util.List;
  * input's hex digits, a space anywhere passed over; BASE64, whole padded groups of four, a space anywhere passed over;
  * UTF-8 (also UTF8), the input's UTF-8 bytes. With no format the session's BINARY_INPUT_FORMAT reads it, HEX unless
  * set, and a format that is none of these is refused, {@code Invalid binary format string 'FOO'} (live-verified). A
- * binary input passes through unchanged. NULL → NULL.
+ * binary input passes through unchanged. NULL → NULL, and a NULL format answers NULL too (live-verified).
  */
 public class ToBinary extends BuiltInFunction {
     public ToBinary() { super("TO_BINARY", BinaryType.UNSIZED); }
@@ -46,8 +46,10 @@ public class ToBinary extends BuiltInFunction {
         if (args.size() < 2) {
             return SessionInputFormats.binary(input);
         }
-        final BinaryFormat format = args.get(1) != null
-            ? BinaryFormat.fromString(args.get(1).toString()) : BinaryFormat.HEX;
+        if (args.get(1) == null) {
+            return null;
+        }
+        final BinaryFormat format = BinaryFormat.fromString(args.get(1).toString());
         if (format == null) {
             throw new RuntimeException("Invalid binary format string '" + args.get(1) + "'");
         }

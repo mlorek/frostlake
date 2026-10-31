@@ -31,7 +31,11 @@ import org.antlr.v4.runtime.Token;
  *   IF (EXISTS (CREATE TABLE zz (x INT))) THEN …       'CREATE', then the last ')': one too many
  *   IF (EXISTS (CREATE TABLE zz (x INT) y)) THEN …     'CREATE', then the 'y' where the IF's ')' is due
  *   IF (EXISTS (VALUES (1))) THEN …                    'VALUES', then the last ')'
+ *   IF (EXISTS (DROP TABLE zz (a))) THEN …             'DROP', then the last ')'
  * </pre>
+ *
+ * <p>A query's EXISTS with a word after its closing parenthesis refuses the word alone: the brackets after it close
+ * the EXISTS and the IF — {@code IF (EXISTS (SELECT 1) x)) THEN …} is the {@code x} (live-verified).
  */
 final class AlertConditionLines {
 
@@ -67,7 +71,13 @@ final class AlertConditionLines {
                 word = i + 2;
             }
         }
-        if (word < 0 || !opensNoQuery(spoken.get(word).getType()) || spoken.get(word).getTokenIndex() > faultIndex) {
+        if (word >= 0 && !opensNoQuery(spoken.get(word).getType())) {
+            final int close = closingParen(spoken, word - 1);
+            return close > 0 && close + 1 < end && spoken.get(close + 1).getTokenIndex() == faultIndex
+                && lines.size() > 1 ? lines.subList(0, 1) : lines;
+        }
+        // A fault at the end of the text stands after the word too.
+        if (word < 0 || faultIndex >= 0 && spoken.get(word).getTokenIndex() > faultIndex) {
             return lines;
         }
         final List<String> read = new ArrayList<>();
@@ -85,6 +95,20 @@ final class AlertConditionLines {
             read.add(SyntaxErrorListener.sentence(spoken.get(close + 2)));
         }
         return read;
+    }
+
+    /** The index of the ')' closing the '(' at {@code open}, or -1. */
+    private static int closingParen(final List<Token> spoken, final int open) {
+        int depth = 0;
+        for (int i = open; i < spoken.size(); i++) {
+            final int type = spoken.get(i).getType();
+            if (type == FrostlakeLexer.LPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.RPAREN && --depth == 0) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private static boolean opensNoQuery(final int type) {

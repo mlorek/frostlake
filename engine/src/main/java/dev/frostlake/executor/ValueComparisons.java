@@ -20,6 +20,7 @@ import dev.frostlake.executor.expressions.CollatedKey;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.ApproximateValues;
 import dev.frostlake.values.DayTimeInterval;
 import dev.frostlake.values.NonFiniteDoubles;
@@ -150,7 +151,7 @@ public final class ValueComparisons {
         if (value instanceof Float && (((Float) value).isNaN() || ((Float) value).isInfinite())) {
             return value;
         }
-        final BigDecimal exact = new BigDecimal(value.toString()).stripTrailingZeros();
+        final BigDecimal exact = DecimalText.parse(value.toString()).stripTrailingZeros();
         if (exact.scale() <= 0) {
             try {
                 return Long.valueOf(exact.longValueExact());
@@ -191,7 +192,7 @@ public final class ValueComparisons {
             if (ApproximateValues.isApproximate(v1) || ApproximateValues.isApproximate(v2)) {
                 return ApproximateValues.order(((Number) v1).doubleValue(), ((Number) v2).doubleValue());
             }
-            return new BigDecimal(v1.toString()).compareTo(new BigDecimal(v2.toString()));
+            return DecimalText.parse(v1.toString()).compareTo(DecimalText.parse(v2.toString()));
         }
         // A key that carries a collation orders by it, so one comparator serves every key site. A
         // collated key beside a plain string still compares under the collation: the key's rules are
@@ -278,14 +279,15 @@ public final class ValueComparisons {
     /**
      * Compare two ORDER BY key values, returning the final (already ASC/DESC-adjusted) ordering. NULL
      * placement follows an explicit NULLS FIRST/LAST when {@code nullsFirst} is non-null, otherwise the
-     * Snowflake default: NULLS LAST for ASC, NULLS FIRST for DESC.
+     * session's DEFAULT_NULL_ORDERING (see {@link SessionNullOrdering}): by default NULLS LAST for ASC and
+     * NULLS FIRST for DESC.
      */
     public static int compareOrderKey(final Object v1, final Object v2, final boolean ascending, final Boolean nullsFirst) {
         if (v1 == null && v2 == null) {
             return 0;
         }
         if (v1 == null || v2 == null) {
-            final boolean nf = nullsFirst != null ? nullsFirst.booleanValue() : !ascending;
+            final boolean nf = SessionNullOrdering.nullsFirst(ascending, nullsFirst);
             if (v1 == null) {
                 return nf ? -1 : 1;
             }

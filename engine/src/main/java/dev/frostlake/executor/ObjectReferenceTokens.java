@@ -18,15 +18,22 @@ package dev.frostlake.executor;
 
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.StatementSession;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.RelationKind;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.types.DataType;
 
 import java.security.SecureRandom;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -44,10 +51,21 @@ import java.util.Set;
  *       on a table is {@code Invalid object type 'TABLE' for privilege 'USAGE'.}, a write on a view {@code Privilege
  *       'INSERT' is not allowed on domain 'VIEW' during 'SESSION' reference creation.}; a materialized view has no
  *       privileges unless some are given;</li>
+ *   <li>a function and a procedure take USAGE alone, else {@code Invalid object type 'PROCEDURE' for privilege
+ *       'SELECT'.}, and a warehouse USAGE, OPERATE, MONITOR, MODIFY and APPLYBUDGET, of which a reference that is not
+ *       PERSISTENT takes USAGE alone ({@code Privilege 'OPERATE' is not allowed on domain 'WAREHOUSE' during
+ *       'SESSION' reference creation.});</li>
  *   <li>a function's and a procedure's name carries its argument types, else the signature is a syntax error at its
- *       end; a table, a view or a stream must be there, of the domain named ({@code Object type VIEW does not match
- *       the specified type TABLE for reference creation}), and so must a warehouse.</li>
+ *       end, and names an overload there ({@code Procedure 'pr_mark(NUMBER)' does not exist or not authorized.}); a
+ *       table, a view or a stream must be there, of the domain named ({@code Object type VIEW does not match the
+ *       specified type TABLE for reference creation}), and so must a warehouse.</li>
  * </ul>
+ *
+ * <p>A table or a view reference made with no privilege takes SELECT alone; a function's token calls the function in
+ * {@code IDENTIFIER(:r)(…)}, and a procedure's or a function's in {@code CALL IDENTIFIER(:r)(…)}. A SESSION
+ * reference lasts the session that made it, which alone reads it; a CALL or a PERSISTENT reference a query makes
+ * lasts its statement, read by a later one it names no object. One made with no scope written is a SESSION one,
+ * unless a CALL's arguments make it: it is then the call's (all live-verified).
  */
 final class ObjectReferenceTokens {
 
@@ -66,9 +84,29 @@ final class ObjectReferenceTokens {
     /** The privileges a view's reference may carry of a table's. */
     private static final Set<String> VIEW_PRIVILEGES = new HashSet<>(Arrays.asList("SELECT", "REFERENCES"));
 
+    /** The privileges a reference to a warehouse may carry, and USAGE alone unless it is PERSISTENT. */
+    private static final Set<String> WAREHOUSE_PRIVILEGES = new HashSet<>(Arrays.asList(
+        "USAGE", "OPERATE", "MONITOR", "MODIFY", "APPLYBUDGET"));
+
     private static final SecureRandom DRAW = new SecureRandom();
 
     private static final char[] HEX = "0123456789ABCDEF".toCharArray();
+
+    /** How many issued tokens are remembered, the oldest forgotten first. */
+    private static final int REMEMBERED = 10000;
+
+    /**
+     * The tokens issued for a table, a view, a stream, a function or a procedure, and what each stands for: a name an
+     * IDENTIFIER() or a TABLE() reads as one of them reads the object it stands for (live-verified).
+     */
+    private static final Map<String, ObjectReference> ISSUED = new LinkedHashMap<String, ObjectReference>() {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        protected boolean removeEldestEntry(final Map.Entry<String, ObjectReference> eldest) {
+            return size() > REMEMBERED;
+        }
+    };
 
     private ObjectReferenceTokens() {
     }
@@ -87,7 +125,8 @@ final class ObjectReferenceTokens {
                     + (i + 1) + "], expected " + Math.max(2, i + 1) + ", got {4}"));
             }
         }
-        final String scope = args.size() > 2 && args.get(2) != null ? upper(args.get(2)) : "SESSION";
+        final boolean scopeWritten = args.size() > 2 && args.get(2) != null;
+        final String scope = scopeWritten ? upper(args.get(2)) : "SESSION";
         if (!SCOPES.contains(scope)) {
             throw new RuntimeException("Scope " + scope + " not valid. Scope must be SESSION, CALL or PERSISTENT.");
         }
@@ -103,8 +142,63 @@ final class ObjectReferenceTokens {
             throw new RuntimeException("No default privileges defined for reference domain MATERIALIZED_VIEW. Please"
                 + " provide allowed privileges during reference creation.");
         }
-        requireObject(catalog, domain, args.get(1).toString());
-        return token(domain);
+        final String[] object = requireObject(catalog, domain, args.get(1).toString());
+        final String token = token(domain);
+        if (object != null) {
+            final List<String> privileges = new ArrayList<>();
+            for (int i = 3; i < args.size(); i++) {
+                privileges.add(upper(args.get(i)));
+            }
+            if (privileges.isEmpty() && ("TABLE".equals(domain) || "VIEW".equals(domain))) {
+                privileges.add("SELECT");
+            }
+            final boolean lastsSession = "SESSION".equals(scope) && (scopeWritten || !CallArgumentScope.active());
+            final Instant lasts = lastsSession ? null : StatementClock.statementStart();
+            synchronized (ISSUED) {
+                ISSUED.put(token, new ObjectReference(domain, object, privileges, lasts, StatementSession.current()));
+            }
+        }
+        return token;
+    }
+
+    /**
+     * The object a name stands for when it is a token SYSTEM$REFERENCE issued for a table, a view, a stream or a
+     * function, and one the statement running may still read.
+     *
+     * @param name the name as an IDENTIFIER() or a TABLE() reads it
+     * @return the reference, or null for any other name
+     */
+    static ObjectReference issued(final String name) {
+        if (name == null || !name.startsWith("ENT_REF_")) {
+            return null;
+        }
+        final ObjectReference reference;
+        synchronized (ISSUED) {
+            reference = ISSUED.get(name.trim());
+        }
+        return reference != null && reference.lastsFor(StatementClock.statementStart(), StatementSession.current())
+            ? reference : null;
+    }
+
+    /**
+     * Refuses a row change through a reference whose privileges allow none of it: an INSERT through a reference made
+     * for SELECT is {@code Specified object does not exist or not authorized for the reference with allowed
+     * privileges: SELECT.}, and an UPDATE or a DELETE that reads the rows it changes takes SELECT beside its own
+     * privilege (live-verified). Any other name passes.
+     *
+     * @param name      the name the statement writes through
+     * @param change    the privilege the change takes: INSERT, UPDATE or DELETE
+     * @param readsRows whether the change reads the rows it changes: a WHERE, a FROM or USING, an assignment reading
+     *                  a column
+     */
+    static void requireWrite(final String name, final String change, final boolean readsRows) {
+        final ObjectReference reference = issued(name);
+        if (reference == null || reference.getPrivileges().contains(change)
+                && (!readsRows || reference.getPrivileges().contains("SELECT"))) {
+            return;
+        }
+        throw new RuntimeException("Specified object does not exist or not authorized for the reference with allowed"
+            + " privileges: " + String.join(", ", reference.getPrivileges()) + ".");
     }
 
     /**
@@ -129,7 +223,13 @@ final class ObjectReferenceTokens {
             throw new RuntimeException(SqlCompilationError.of("Invalid object type '" + domain + "' for privilege '"
                 + privilege + "'."));
         }
-        if ("VIEW".equals(domain) && TABLE_PRIVILEGES.contains(privilege) && !VIEW_PRIVILEGES.contains(privilege)) {
+        if (("FUNCTION".equals(domain) || "PROCEDURE".equals(domain)) && !"USAGE".equals(privilege)
+                || "WAREHOUSE".equals(domain) && !WAREHOUSE_PRIVILEGES.contains(privilege)) {
+            throw new RuntimeException(SqlCompilationError.of("Invalid object type '" + domain + "' for privilege '"
+                + privilege + "'."));
+        }
+        if ("VIEW".equals(domain) && TABLE_PRIVILEGES.contains(privilege) && !VIEW_PRIVILEGES.contains(privilege)
+                || "WAREHOUSE".equals(domain) && !"USAGE".equals(privilege) && !"PERSISTENT".equals(scope)) {
             throw new RuntimeException("Privilege '" + privilege + "' is not allowed on domain '" + domain
                 + "' during '" + scope + "' reference creation.");
         }
@@ -145,25 +245,34 @@ final class ObjectReferenceTokens {
         }
     }
 
-    /** A table, a view, a stream or a warehouse the reference names is there, of the domain named. */
-    private static void requireObject(final Catalog catalog, final String domain, final String written) {
+    /**
+     * A table, a view, a stream, a warehouse or a routine the reference names is there, of the domain named.
+     *
+     * @return the canonical name of the table, the view, the stream, the function or the procedure, or null for any
+     *         other domain
+     */
+    private static String[] requireObject(final Catalog catalog, final String domain, final String written) {
+        if ("FUNCTION".equals(domain) || "PROCEDURE".equals(domain)) {
+            return routineNamed(catalog, domain, written);
+        }
         if ("WAREHOUSE".equals(domain)) {
             final String name = SqlIdentifiers.canonicalText(written);
             if (!catalog.hasWarehouseExact(name)) {
                 throw new RuntimeException(SqlCompilationError.doesNotExist("Warehouse", name));
             }
-            return;
+            return null;
         }
         final RelationKind wanted = "TABLE".equals(domain) ? RelationKind.TABLE
             : "VIEW".equals(domain) ? RelationKind.VIEW : "STREAM".equals(domain) ? RelationKind.STREAM : null;
         if (wanted == null) {
-            return;
+            return null;
         }
         final String[] parts = SqlIdentifiers.identifierReferenceParts(written);
         final String noun = domain.charAt(0) + domain.substring(1).toLowerCase(Locale.ROOT);
         final RelationKind held;
+        final Schema schema;
         try {
-            final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+            schema = catalog.requireOwningSchema(QualifiedName.of(parts));
             held = schema.relationKindOf(parts[parts.length - 1]);
         } catch (final RuntimeException noSchema) {
             throw new RuntimeException(SqlCompilationError.doesNotExist(noun, QualifiedName.join(parts)), noSchema);
@@ -175,6 +284,33 @@ final class ObjectReferenceTokens {
             throw new RuntimeException("Object type " + held.spelling() + " does not match the specified type "
                 + domain + " for reference creation");
         }
+        return new String[] {schema.getDatabaseName(), schema.getName(), parts[parts.length - 1]};
+    }
+
+    /**
+     * The canonical name of the user function or procedure a signature names, {@code fr(NUMBER)}: the name read as an
+     * identifier reference, the types picking the overload as a DROP's do. One that names none is refused in the
+     * domain's words, the signature as written (live-verified).
+     */
+    private static String[] routineNamed(final Catalog catalog, final String domain, final String written) {
+        final FrostlakeParser.RoutineReferenceContext reference = RoutineReferenceText.parse(written);
+        final List<DataType> types = reference == null ? null
+            : RoutineReferenceText.writtenTypes(reference.dataTypeList());
+        if (types != null) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(reference.qualifiedName());
+            try {
+                final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+                final String name = parts[parts.length - 1];
+                final String held = "PROCEDURE".equals(domain)
+                    ? schema.getProcedureByWrittenSignature(name, types).getName()
+                    : schema.getFunctionByWrittenSignature(name, types).getName();
+                return new String[] {schema.getDatabaseName(), schema.getName(), held};
+            } catch (final RuntimeException missing) {
+                // Refused below, as a routine that is not there.
+            }
+        }
+        throw new RuntimeException(SqlCompilationError.of(("PROCEDURE".equals(domain) ? "Procedure '" : "Function '")
+            + written + "' does not exist or not authorized."));
     }
 
     /** A new token for a domain: its name, sixteen decimal digits and forty hexadecimal ones. */

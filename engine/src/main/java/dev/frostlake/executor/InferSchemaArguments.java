@@ -27,6 +27,7 @@ import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.types.DecimalText;
 
 import org.antlr.v4.runtime.Token;
 
@@ -246,7 +247,7 @@ final class InferSchemaArguments {
         if (value != null && isConstant(value)) {
             final Object constant = constant(value);
             if (constant instanceof Number) {
-                final BigDecimal count = new BigDecimal(constant.toString());
+                final BigDecimal count = DecimalText.parse(constant.toString());
                 if (count.signum() > 0 && count.stripTrailingZeros().scale() <= 0) {
                     return;
                 }
@@ -342,7 +343,7 @@ final class InferSchemaArguments {
                 : ((LiteralExpression) value).getValue();
         }
         if (value instanceof UnaryOperationExpression) {
-            return new BigDecimal(((LiteralExpression) ((UnaryOperationExpression) value).getOperand())
+            return DecimalText.parse(((LiteralExpression) ((UnaryOperationExpression) value).getOperand())
                 .getValue().toString()).negate();
         }
         return evaluator.evaluate(value, null);

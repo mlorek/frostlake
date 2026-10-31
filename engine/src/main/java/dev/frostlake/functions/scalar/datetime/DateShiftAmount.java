@@ -17,6 +17,8 @@
 package dev.frostlake.functions.scalar.datetime;
 
 import dev.frostlake.executor.expressions.IntervalUnit;
+import dev.frostlake.functions.scalar.WholeNumberArgument;
+import dev.frostlake.functions.scalar.math.FloatingPointRefusal;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 
@@ -42,6 +44,10 @@ public final class DateShiftAmount {
     private static final int MONTHS_PER_YEAR = 12;
     private static final BigDecimal LONG_MIN = BigDecimal.valueOf(Long.MIN_VALUE);
     private static final BigDecimal LONG_MAX = BigDecimal.valueOf(Long.MAX_VALUE);
+    /** The first count a FIXED[SB4](9,0) does not hold. */
+    private static final double NARROW_LIMIT = 1e9;
+    /** The first count a FIXED[SB8](18,0) does not hold. */
+    private static final double WIDE_LIMIT = 1e18;
 
     private DateShiftAmount() {
     }
@@ -58,6 +64,28 @@ public final class DateShiftAmount {
             throw new RuntimeException("Numeric value '" + whole.toPlainString() + "' is not recognized");
         }
         return whole.longValueExact();
+    }
+
+    /**
+     * Refuses a FLOAT amount the fixed-point count its unit takes cannot hold (live-verified): a day or coarser, or
+     * an hour, takes a FIXED[SB4](9,0) and anything finer a FIXED[SB8](18,0), so NaN, an infinity and an amount that
+     * rounds half away from zero to a billion, or to 10^18, are refused in the cast's words, the amount printed as
+     * C's {@code %g} prints it and the argument's nullability spelled in: {@code DATEADD(day, 3e9::FLOAT, d)} is
+     * "Number out of representable range: type FIXED[SB4](9,0){not null}, value 3e+09", where the NUMBER 3000000000
+     * is "Numeric value '3000000000' is out of range".
+     *
+     * @param amount   the amount
+     * @param unit     the unit it counts
+     * @param nullable whether the argument may be NULL
+     */
+    public static void requireFixedCount(final double amount, final IntervalUnit unit, final boolean nullable) {
+        final boolean narrow = isBounded(unit);
+        if (!Double.isNaN(amount) && Math.floor(Math.abs(amount) + 0.5) < (narrow ? NARROW_LIMIT : WIDE_LIMIT)) {
+            return;
+        }
+        throw new RuntimeException("Number out of representable range: type "
+            + (narrow ? WholeNumberArgument.PART : WholeNumberArgument.WIDE)
+            + "{" + (nullable ? "nullable" : "not null") + "}, value " + FloatingPointRefusal.number(amount));
     }
 
     /**

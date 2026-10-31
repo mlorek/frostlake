@@ -16,132 +16,59 @@
 
 package dev.frostlake.executor.copy;
 
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.w3c.dom.NamedNodeMap;
-import org.w3c.dom.Node;
-import org.w3c.dom.NodeList;
-import org.xml.sax.ErrorHandler;
-import org.xml.sax.SAXParseException;
+import dev.frostlake.functions.scalar.semistructured.ParseXml;
 import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.node.ArrayNode;
-import tools.jackson.databind.node.JsonNodeFactory;
-import tools.jackson.databind.node.ObjectNode;
-
-import javax.xml.XMLConstants;
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
 
 import java.io.IOException;
-import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
- * XML staged-file reader (JDK DOM — no external dependency). The document is loaded into a VARIANT-shaped
- * {@link JsonNode}: one record per file, keyed by the root element name (Snowflake's default, which keeps
- * the outer element). Attributes become {@code @name} fields, repeated child elements become arrays, and a
- * text-only element becomes a scalar. External entities and DOCTYPEs are disabled (XXE hardening).
+ * XML staged-file reader. A file reads as records in Snowflake's XML-in-VARIANT model, as PARSE_XML builds it (see
+ * {@link ParseXml#parseRecords}): every top-level element a record, or every element those hold under
+ * STRIP_OUTER_ELEMENT, attribute and element text turned into numbers and booleans unless DISABLE_AUTO_CONVERT, and
+ * text trimmed unless PRESERVE_SPACE (live-verified). External entities and external DTDs are never read.
  */
 public class XmlStageReader implements StageFileReader {
 
-    private static final JsonNodeFactory NODES = JsonNodeFactory.instance;
-
     @Override
     public List<JsonNode> readRecords(final Path file) throws IOException {
-        final List<JsonNode> records = new ArrayList<>();
-        try (final InputStream in = StagedFileIo.inputStream(file)) {
-            final DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-            factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
-            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-            factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
-            factory.setNamespaceAware(false);
-            factory.setExpandEntityReferences(false);
-            final DocumentBuilder builder = factory.newDocumentBuilder();
-            // The default handler prints "[Fatal Error] …" to stderr before throwing; parse errors
-            // are reported through the exception alone.
-            builder.setErrorHandler(new ErrorHandler() {
-                @Override
-                public void warning(final SAXParseException exception) {
-                }
+        return readRecords(file, new FileFormatOptions(), String.valueOf(file.getFileName()));
+    }
 
-                @Override
-                public void error(final SAXParseException exception) throws SAXParseException {
-                    throw exception;
-                }
-
-                @Override
-                public void fatalError(final SAXParseException exception) throws SAXParseException {
-                    throw exception;
-                }
-            });
-            final Document doc = builder.parse(in);
-            final Element root = doc.getDocumentElement();
-            root.normalize();
-            final ObjectNode record = NODES.objectNode();
-            record.set(root.getNodeName(), elementToJson(root));
-            records.add(record);
-        } catch (final IOException io) {
-            throw io;
-        } catch (final Exception xmlError) {
+    /**
+     * A file's records under its format's options. A byte that is no part of UTF-8 refuses the file in the account's
+     * words — {@code Error parsing XML: invalid UTF-8 sequence: 0xE9}, the file, the line and the byte's character
+     * within it — unless REPLACE_INVALID_CHARACTERS or IGNORE_UTF8_ERRORS reads each such byte as U+FFFD
+     * (live-verified).
+     *
+     * @param file      the file
+     * @param options   the format's options
+     * @param shownName the file as a refusal names it
+     * @return the records
+     * @throws IOException when the file cannot be read
+     */
+    @Override
+    public List<JsonNode> readRecords(final Path file, final FileFormatOptions options, final String shownName)
+            throws IOException {
+        final String marked = StagedFileIo.readMarked(file, StandardCharsets.UTF_8);
+        final int unreadable = StagedFileIo.firstUnreadable(marked);
+        if (unreadable >= 0 && !options.replacesInvalidCharacters()) {
+            throw StagedFileIo.unreadableRefusal("XML", marked, unreadable, shownName,
+                !options.readsNoPositionalColumn());
+        }
+        try {
+            return ParseXml.parseRecords(StagedFileIo.unreadableReplaced(marked), options.disablesAutoConvert(),
+                options.preservesSpace(), options.stripsOuterElement());
+        } catch (final IllegalArgumentException xmlError) {
             throw new RuntimeException("Invalid XML in file " + file.getFileName() + ": " + xmlError.getMessage(),
                 xmlError);
         }
-        return records;
     }
 
     @Override
     public String formatType() {
         return "XML";
-    }
-
-    /** Convert one element to JSON: attributes → {@code @attr}, child elements nested (repeats → arrays), text → value. */
-    private JsonNode elementToJson(final Element element) {
-        final ObjectNode object = NODES.objectNode();
-
-        final NamedNodeMap attributes = element.getAttributes();
-        for (int i = 0; i < attributes.getLength(); i++) {
-            final Node attribute = attributes.item(i);
-            object.put("@" + attribute.getNodeName(), attribute.getNodeValue());
-        }
-
-        final NodeList children = element.getChildNodes();
-        final StringBuilder text = new StringBuilder();
-        boolean hasElementChild = false;
-        for (int i = 0; i < children.getLength(); i++) {
-            final Node child = children.item(i);
-            if (child.getNodeType() == Node.ELEMENT_NODE) {
-                hasElementChild = true;
-                addChild(object, child.getNodeName(), elementToJson((Element) child));
-            } else if (child.getNodeType() == Node.TEXT_NODE || child.getNodeType() == Node.CDATA_SECTION_NODE) {
-                text.append(child.getNodeValue());
-            }
-        }
-
-        final String textValue = text.toString().trim();
-        if (!hasElementChild && attributes.getLength() == 0) {
-            return NODES.textNode(textValue);   // a leaf element is just its text
-        }
-        if (!textValue.isEmpty()) {
-            object.put("#text", textValue);
-        }
-        return object;
-    }
-
-    /** Add a child under {@code name}, promoting to an array when the name repeats. */
-    private void addChild(final ObjectNode object, final String name, final JsonNode value) {
-        final JsonNode existing = object.get(name);
-        if (existing == null) {
-            object.set(name, value);
-        } else if (existing instanceof ArrayNode) {
-            ((ArrayNode) existing).add(value);
-        } else {
-            final ArrayNode array = NODES.arrayNode();
-            array.add(existing);
-            array.add(value);
-            object.set(name, array);
-        }
     }
 }

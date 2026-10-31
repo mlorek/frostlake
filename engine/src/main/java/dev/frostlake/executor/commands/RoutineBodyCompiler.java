@@ -18,11 +18,14 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.CalledRoutineSecrets;
 import dev.frostlake.executor.CalledRoutineSources;
+import dev.frostlake.executor.DynamicStatementCount;
 import dev.frostlake.executor.IntoClausePlacement;
 import dev.frostlake.executor.LeadingCommentOffset;
+import dev.frostlake.executor.ProceduralExecutor;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SideEffectFunctions;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.executor.expressions.CaretOperator;
 import dev.frostlake.executor.expressions.OuterJoinOperandException;
@@ -35,8 +38,10 @@ import dev.frostlake.executor.udf.JavaAggregateFunctions;
 import dev.frostlake.executor.udf.JavaFunctionCompiler;
 import dev.frostlake.executor.udf.JavaHandlerFailure;
 import dev.frostlake.executor.udf.JavaHandlerInstances;
+import dev.frostlake.executor.udf.JavaHandlerMethods;
 import dev.frostlake.executor.udf.JavaRuntimeLevel;
 import dev.frostlake.executor.udf.JavaTableFunctions;
+import dev.frostlake.executor.udf.PythonSnowparkPackage;
 import dev.frostlake.executor.udf.SnowparkPackage;
 import dev.frostlake.executor.udf.UdfLanguageRuntime;
 import dev.frostlake.executor.udf.UdfRuntimes;
@@ -44,6 +49,9 @@ import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.UdfLanguage;
+import dev.frostlake.parser.AssignedTableNameLines;
+import dev.frostlake.parser.BlockKeywordValueLines;
+import dev.frostlake.parser.BlockValueSubqueryLines;
 import dev.frostlake.parser.EndOfInput;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
@@ -51,8 +59,11 @@ import dev.frostlake.parser.LimitValueSyntax;
 import dev.frostlake.parser.OperandRefusal;
 import dev.frostlake.parser.OperandRefusals;
 import dev.frostlake.parser.SqlCharStream;
+import dev.frostlake.parser.SqlSyntaxException;
 import dev.frostlake.parser.StageArgumentSyntax;
 import dev.frostlake.parser.TypelessLetReading;
+import dev.frostlake.parser.UnknownTypeReading;
+import dev.frostlake.parser.UnknownTypeWords;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.types.DataType;
 
@@ -65,6 +76,7 @@ import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
+import java.io.File;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
@@ -145,6 +157,9 @@ final class RoutineBodyCompiler {
 
     private static final Pattern INVALID_IDENTIFIER = Pattern.compile("invalid identifier '([^']*)'");
 
+    /** How a refusal for a relation that cannot be found ends. */
+    private static final String MISSING_OBJECT = " does not exist or not authorized.";
+
     /** Shared, like the UDF invoker's own: javac start-up is what costs, not the compile. */
     private static final JavaFunctionCompiler JAVA_COMPILER = new JavaFunctionCompiler();
 
@@ -203,6 +218,14 @@ final class RoutineBodyCompiler {
             throw new RuntimeException(SqlCompilationError.of("syntax error " + describe(spoken.get(0)) + "."));
         }
         final FrostlakeParser.SqlScriptContext written = queryExecutor.scriptOf(body);
+        if (written == null) {
+            // A body that does not parse is refused for a word naming no type where a type stands, its own faults
+            // first, as a block run on its own is (see UnknownTypeWords#readBlock).
+            final SqlSyntaxException unknownType = UnknownTypeWords.blockRefusal(body);
+            if (unknownType != null) {
+                throw unknownType;
+            }
+        }
         // The caret between two values is refused as the procedure is created, in a block and in a statement
         // written without one (see CaretOperator).
         CaretOperator.rejectIn(written);
@@ -221,6 +244,15 @@ final class RoutineBodyCompiler {
             }
         } finally {
             LeadingCommentOffset.end(outer);
+        }
+        // A body is counted as a request's text is: under the count in force a block with a statement after it, and a
+        // text of several, are refused by their number, a ->> chain counted as one and an empty statement as none,
+        // while under MULTI_STATEMENT_COUNT = 0 the body is created and a call runs its block (live-verified: BEGIN
+        // RETURN 1; END; SELECT 2 and SELECT 1; SELECT 2; alike). A replay creates again what was created.
+        if (written != null && written.flowChain().size() > 1 && !StatementClock.isReplay()) {
+            final ProceduralExecutor procedural = queryExecutor.getProceduralExecutor();
+            DynamicStatementCount.require(written.flowChain().size(), queryExecutor.getSecurityManager(),
+                procedural != null && procedural.isExecutingBlock());
         }
         final String trimmed = body.trim();
         final FrostlakeParser.BeginEndBlockContext block = queryExecutor.proceduralBlockOf(body);
@@ -256,6 +288,23 @@ final class RoutineBodyCompiler {
             // And a tag function one of the body's own expressions calls is answered now (see CompiledTagCalls).
             CompiledTagCalls.requireInProcedureBody(block, queryExecutor);
             return;
+        }
+        // A query a block assigns whose only faults are TABLE( over bare names is refused at CREATE as the block run on
+        // its own is (see AssignedTableNameLines).
+        final List<String> tableNameLines = AssignedTableNameLines.linesOf(body);
+        if (tableNameLines != null) {
+            throw new RuntimeException(SqlCompilationError.of(String.join("\n", tableNameLines)));
+        }
+        // A block's value that is a query in parentheses which does not parse is refused at CREATE, at the query's
+        // SELECT and then its own fault (see BlockValueSubqueryLines).
+        final List<String> valueLines = BlockValueSubqueryLines.lines(body, spokenTokens(body));
+        if (valueLines != null) {
+            throw new RuntimeException(SqlCompilationError.of(String.join("\n", valueLines)));
+        }
+        // So is a value a CASE, a CAST or a WHEN opens where a name is meant (see BlockKeywordValueLines).
+        final List<String> keywordLines = BlockKeywordValueLines.lines(body, spokenTokens(body));
+        if (keywordLines != null) {
+            throw new RuntimeException(SqlCompilationError.of(String.join("\n", keywordLines)));
         }
         // A block whose one fault is a LET of a name alone is refused for that at CREATE, as a DECLARE's is.
         final SourcePosition statements = LeadingCommentOffset.begin(null);
@@ -339,6 +388,15 @@ final class RoutineBodyCompiler {
         final List<Token> tokens = spokenTokens(body);
         if (tokens.size() < 2) {
             return "syntax error " + describeEndOfBody(body) + ".";
+        }
+        // The block's first word refused, the frame reads on as it does for a block that reads as none:
+        // BEGIN RETURN nosuch((SELECT a FROM t LIMIT '1')); END is the RETURN and the second '(' (live-verified).
+        final String framed = "(" + body + ")";
+        final List<Token> framedTokens = spokenTokens(framed);
+        final String frame = framedTokens.size() > 3 ? blockFrameLines(framed, framedTokens, framedTokens.get(2))
+            : null;
+        if (frame != null) {
+            return frame;
         }
         final StringBuilder lines = new StringBuilder("syntax error ").append(describeInBody(tokens.get(1))).append('.');
         for (int i = 2; i + 1 < tokens.size(); i++) {
@@ -524,6 +582,41 @@ final class RoutineBodyCompiler {
             + SqlCompilationError.of(literalLeftOpenRefusal(body, literal, read, syntax)));
     }
 
+    /** Whether a body opens with BEGIN or DECLARE, as a block does. */
+    private static boolean opensABlock(final String body) {
+        final List<Token> spoken = spokenTokens(body);
+        final int first = spoken.isEmpty() ? Token.EOF : spoken.get(0).getType();
+        return first == FrostlakeLexer.BEGIN || first == FrostlakeLexer.DECLARE;
+    }
+
+    /**
+     * Whether the account reads a SQL function's body as a Snowscript UDF: a block it can read, or one statement
+     * ending in its semicolon, whatever the statement is. Several statements are refused by their count instead, and a
+     * scripting statement alone is no body at all (live-verified).
+     *
+     * @param queryExecutor the executor creating the function
+     * @param body          the body as written
+     * @return whether the body takes a Snowscript UDF's return types
+     */
+    static boolean readsAsSnowscript(final QueryExecutor queryExecutor, final String body) {
+        final String trimmed = body.trim();
+        if (queryExecutor.statementCountOf(trimmed) > 1) {
+            return false;
+        }
+        final FrostlakeParser.BeginEndBlockContext block = queryExecutor.proceduralBlockOf(trimmed);
+        if (block != null) {
+            return block.blockEndWord() == null;
+        }
+        final FrostlakeParser.SqlScriptContext script = queryExecutor.scriptOf(trimmed);
+        if (!endsWithSemicolon(body) || script == null || script.flowChain().size() != 1
+                || script.flowChain().get(0).statement().size() != 1) {
+            return false;
+        }
+        final FrostlakeParser.ProceduralStatementContext scripting =
+            script.flowChain().get(0).statement().get(0).proceduralStatement();
+        return scripting == null || scripting.callStatement() != null;
+    }
+
     /** The one statement a script holds when it is neither a scripting statement nor a query, or null. */
     private static FrostlakeParser.StatementContext oneSqlStatement(final FrostlakeParser.SqlScriptContext script) {
         if (script == null || script.flowChain().size() != 1 || script.flowChain().get(0).statement().size() != 1) {
@@ -543,9 +636,9 @@ final class RoutineBodyCompiler {
             new ScriptingUdfBodyValidator(queryExecutor, queryExecutor.getCatalog(), routineName);
         requireStagePlacement(queryExecutor.routineBodyScript(body), body, tableFunction);
         // A body that closes its own frame and then writes a semicolon is the statement the semicolon ends; nothing
-        // after it is read.
+        // after it is read. A block that reads as none is read on by its frame instead (see blockFrameLines).
         final SqlUdfBodyFrame frame = SqlUdfBodyFrame.closedAtSemicolon(body);
-        if (frame != null && !frame.isFramed()) {
+        if (frame != null && !frame.isFramed() && !opensABlock(body)) {
             compileFunctionBody(queryExecutor, language, frame.statement(), tableFunction, routineName, parameters,
                 scopeDatabase, scopeSchema);
             return;
@@ -555,7 +648,32 @@ final class RoutineBodyCompiler {
                 scopeDatabase, scopeSchema);
             return;
         }
+        // A word naming no type where a type stands reads as a name: the body is compiled with known types in the
+        // words' places, so its syntax and its relations are told first, and is then refused for the first such word
+        // before any of its columns or calls is judged (live-verified: SELECT CAST(1 AS nosuch) FROM nosuch is the
+        // relation, SELECT CAST(nosuch_col AS nosuch) FROM t the type). A word written with parameters fails the body's
+        // compilation.
+        final UnknownTypeReading unknownTypes = opensABlock(body) ? null : UnknownTypeWords.standIns(body);
+        if (unknownTypes != null) {
+            try {
+                compileReadableBody(queryExecutor, language, unknownTypes.getSubstituted(), tableFunction,
+                    routineName, parameters, scopeDatabase, scopeSchema);
+            } catch (final RuntimeException refused) {
+                final String message = String.valueOf(refused.getMessage());
+                if (SYNTAX_LINE.matcher(message).find() || message.contains(MISSING_OBJECT)) {
+                    throw refused;
+                }
+            }
+            throw new RuntimeException((unknownTypes.refused().isParameterized() ? "Compilation of SQL UDF failed: "
+                : "") + SqlCompilationError.of(unknownTypes.sentence()));
+        }
         final String trimmed = body.trim();
+        // A body of several statements is refused by their count, whatever the statements are.
+        final int statements = queryExecutor.statementCountOf(trimmed);
+        if (statements > 1) {
+            throw new RuntimeException("Actual statement count " + statements
+                + " did not match the desired statement count 1.");
+        }
 
         // A body written SELECT … INTO reads as the scripting statement, whose INTO clause a function cannot carry.
         final FrostlakeParser.SqlScriptContext script = queryExecutor.scriptOf(trimmed);
@@ -565,7 +683,7 @@ final class RoutineBodyCompiler {
         final FrostlakeParser.SqlScriptContext queryBody = queryExecutor.queryStatementOf(trimmed);
         if (queryBody != null) {
             rejectCaret(queryBody);
-            rejectQueryBodyEnding(queryExecutor, body, trimmed, tableFunction);
+            rejectQueryBodyEnding(body);
             rejectIntoClauses(queryBody);
             rejectUnknownTypedLiteral(queryBody);
             SideEffectFunctions.rejectInStoredQuery(queryBody);
@@ -592,13 +710,6 @@ final class RoutineBodyCompiler {
         final FrostlakeParser.BeginEndBlockContext block = read == null || read.blockEndWord() != null
             || !tableFunction && ScriptingUdfBodyValidator.holdsWhatNoBlockReads(read) ? null : read;
         if (block != null) {
-            if (tableFunction) {
-                // Live-verified: `RETURNS TABLE(x INT) AS $$ BEGIN RETURN TABLE(SELECT …); END $$` is a
-                // plain syntax error on the account — a block is a body shape only a SCALAR UDF has.
-                throw new RuntimeException("Compilation of SQL UDF failed: SQL compilation error: syntax error "
-                    + describe(AntlrExpressionParser.failurePoint(trimmed))
-                    + ". A table function body must be a query, not a Snowflake Scripting block.");
-            }
             try {
                 LimitValueSyntax.requireNumericValuesAsWritten(block);
             } catch (final RuntimeException uncompiled) {
@@ -625,6 +736,14 @@ final class RoutineBodyCompiler {
         try {
             expression = AntlrExpressionParser.parseTree(trimmed);
         } catch (final RuntimeException notAnExpression) {
+            // A comma inside a cast's parentheses is a fault the body positively holds (see SqlFunctionBodyCastCommas);
+            // a block's is read by the block's own frame (see blockReadAsExpression).
+            final List<String> castComma = opensABlock(body) ? null
+                : SqlFunctionBodyCastCommas.lines(body, spokenTokens(body));
+            if (castComma != null) {
+                throw new RuntimeException("Compilation of SQL UDF failed: "
+                    + SqlCompilationError.of(String.join("\n", castComma)));
+            }
             // A parenthesised list of values reads as a ROW: its names and calls are judged here, and the type
             // check refuses the ROW no declared type takes.
             final FrostlakeParser.ExprTupleContext row = tableFunction ? null : SqlUdfBodyFrame.rowOf(body);
@@ -700,6 +819,10 @@ final class RoutineBodyCompiler {
         SqlUdfBodyNames.rejectUnknownNames(body.equals(trimmed) ? expression : AntlrExpressionParser.parseTree(body),
             declared);
         SqlUdfBodyCalls.reject(queryExecutor, expression, trimmed, routineName, scopeDatabase, scopeSchema);
+        if (tableFunction) {
+            // A table function's body is a query; an expression is told so once its names and calls are found.
+            throw new RuntimeException("Table function definition expected a subquery, found '" + body + "'.");
+        }
         // A SQL function the body calls is expanded into it: a relation that function reads that is gone refuses
         // the CREATE. The body's own parameters are the values a call passes, read from no row here.
         final Set<String> parameterNames = new HashSet<String>();
@@ -865,33 +988,16 @@ final class RoutineBodyCompiler {
      * How a QUERY body may end. It is a SQL UDF body only WITHOUT a terminating semicolon. With one, the
      * account reads the body as a Snowscript UDF, where a query is not a statement: {@code $$ SELECT 1; $$}
      * is refused as "Unsupported statement type for Snowscript UDF: SELECT" — a CTE, a
-     * parenthesised query, a single-quoted body, a doubled {@code ;;} and a trailing comment alike. More
-     * than one statement is refused by COUNT before that, whatever the statements are ("Actual statement
-     * count 2 did not match the desired statement count 1."). A body that ends INSIDE a line comment,
-     * {@code $$ SELECT 1 -- c $$}, cannot be framed at all (see {@link #endsInsideLineComment}) and is a
-     * syntax error where the frame breaks — as is either other shape in a TABLE function, which has no
-     * Snowscript form. Live-verified, every cell.
+     * parenthesised query, a single-quoted body, a doubled {@code ;;} and a trailing comment alike; a table
+     * function has been refused for its return type by then (see {@link #readsAsSnowscript}). A body that ends
+     * INSIDE a line comment, {@code $$ SELECT 1 -- c $$}, cannot be framed at all (see
+     * {@link #endsInsideLineComment}) and is a syntax error where the frame breaks. Live-verified, every cell.
      */
-    private static void rejectQueryBodyEnding(final QueryExecutor queryExecutor, final String body,
-                                              final String trimmed, final boolean tableFunction) {
-        final int statements = queryExecutor.statementCountOf(trimmed);
-        final boolean terminated = endsWithSemicolon(body);
-        final boolean unframed = endsInsideLineComment(body);
-        if (tableFunction) {
-            if (terminated || statements > 1 || unframed) {
-                throw new RuntimeException("Compilation of SQL UDF failed: "
-                    + SqlCompilationError.of("syntax error " + misframedQueryBody(body) + "."));
-            }
-            return;
-        }
-        if (statements > 1) {
-            throw new RuntimeException("Actual statement count " + statements
-                + " did not match the desired statement count 1.");
-        }
-        if (terminated) {
+    private static void rejectQueryBodyEnding(final String body) {
+        if (endsWithSemicolon(body)) {
             throw new RuntimeException("Unsupported statement type for Snowscript UDF: SELECT");
         }
-        if (unframed) {
+        if (endsInsideLineComment(body)) {
             throw new RuntimeException("Compilation of SQL UDF failed: "
                 + SqlCompilationError.of("syntax error " + misframedQueryBody(body) + "."));
         }
@@ -953,7 +1059,11 @@ final class RoutineBodyCompiler {
         final List<Token> framedTokens = spokenTokens(framed);
         final Token semicolon = semicolonAfterClosedFrame(framedTokens);
         if (semicolon != null) {
-            return describeFramedStatement(framed, framedTokens, semicolon);
+            // A block that reads as none is read on by its frame wherever the body closes the frame: BEGIN RETURN
+            // 1 + ) ; END is the RETURN and the ')' (live-verified).
+            final String block = blockFrameLines(framed, framedTokens,
+                framedStatementBreak(framed, framedTokens, semicolon));
+            return block != null ? block : describeFramedStatement(framed, framedTokens, semicolon);
         }
         int unclosed = 0;
         boolean holdsQuery = false;
@@ -971,16 +1081,39 @@ final class RoutineBodyCompiler {
             if (SqlUdfQueryBodyRefusal.readsWithBareAlias(queryExecutor, body)) {
                 return null;
             }
+            // A query whose one fault is a table function written bare in its FROM clause is read on by the account
+            // through its first select item and the call (see SqlUdfBareCallLines).
+            final String bareCall = stop == null ? SqlUdfBareCallLines.lines(framedTokens) : null;
+            if (bareCall != null) {
+                return bareCall;
+            }
+            final String rowCount = RowCountFaults.lines(framedTokens);
+            if (rowCount != null) {
+                return rowCount;
+            }
             if (!readsToEarlyClose(framedTokens, stop)) {
                 final String query = SqlUdfQueryBodyRefusal.describe(framed, framedTokens, stop, unclosed);
                 if (query != null) {
                     // A query this grammar stops reading before its end may hold a construct only the account's
-                    // grammar has, ORDER BY ALL, and stays FAIL-OPEN; one that runs out of text is refused.
-                    return stop == null || SqlUdfQueryBodyRefusal.runsOut(framed)
-                        || SqlUdfQueryBodyRefusal.stopsAtSureFault(framedTokens, stop) ? query : null;
+                    // grammar has, ORDER BY ALL, and stays FAIL-OPEN; one that runs out of text is refused. A WINDOW
+                    // clause it stopped on is named after the first word (live-verified).
+                    final boolean refused = stop == null || SqlUdfQueryBodyRefusal.runsOut(framed)
+                        || SqlUdfQueryBodyRefusal.stopsAtSureFault(framedTokens, stop);
+                    // A body refused for a window it names is read on as the account reads it (see
+                    // FramedQueryReading).
+                    if (refused && SqlUdfQueryBodyRefusal.namesWindow(framedTokens)) {
+                        return FramedQueryReading.lines(framedTokens);
+                    }
+                    return refused ? query : null;
                 }
             }
         } else {
+            // A body opening with CASE, CAST or WHEN where a parameter so named is meant is read as what the word
+            // opens (see SqlUdfKeywordBodyLines).
+            final String keywordBody = SqlUdfKeywordBodyLines.lines(framed, framedTokens);
+            if (keywordBody != null) {
+                return keywordBody;
+            }
             // A character the lexer cannot read is a token no expression takes: the frame breaks there unless it
             // broke before it.
             final int unread = firstLexerFault(framed);
@@ -1009,21 +1142,22 @@ final class RoutineBodyCompiler {
             // The account abandons the CAST at the frame's closing character, where this grammar reads on past it.
             stop = framedTokens.get(framedTokens.size() - 1);
         }
-        final String refusal = "syntax error " + describe(stop) + ".";
-        final int opening = framedTokens.size() > 3 ? framedTokens.get(1).getType() : Token.EOF;
-        final int refusedAt = opening == FrostlakeLexer.VALUES ? 1
-            : opening == FrostlakeLexer.BEGIN || opening == FrostlakeLexer.DECLARE ? 2 : -1;
-        if (refusedAt > 0 && stop.getStartIndex() == framedTokens.get(refusedAt).getStartIndex()
-                && BlockBodyFrameLines.isReadOnFrom(stop)) {
-            // A block that reads as none, and a VALUES: the frame reads on to the body's first semicolon (see
-            // BlockBodyFrameLines).
-            final StringBuilder lines = new StringBuilder(refusal);
-            for (final Token later : BlockBodyFrameLines.refusedAfter(framed, framedTokens, refusedAt)) {
-                lines.append("\nsyntax error ").append(describe(later)).append('.');
-            }
-            return lines.toString();
+        final String methodTail = describeMethodTail(framedTokens, stop, body);
+        if (methodTail != null) {
+            return methodTail;
         }
-        if (stop.getType() == FrostlakeLexer.RPAREN && stop.getStartIndex() == framed.length() - 1 && unclosed > 0
+        final String refusal = "syntax error " + describe(stop) + ".";
+        final String block = blockFrameLines(framed, framedTokens, stop);
+        if (block != null) {
+            return block;
+        }
+        final int beforeClose = framedTokens.size() > 1 ? framedTokens.get(framedTokens.size() - 2).getType()
+            : Token.EOF;
+        final boolean atFrameClose = stop.getType() == FrostlakeLexer.RPAREN
+            && stop.getStartIndex() == framed.length() - 1;
+        // After a '!' the frame's ')' is no method's name and ends the report; after an OVER it is taken for the
+        // window's, and the frame's own is wanting at the end of input: x OVER (live-verified).
+        if (atFrameClose && (unclosed > 0 && beforeClose != FrostlakeLexer.BANG || beforeClose == FrostlakeLexer.OVER)
                 && !castLeavesFrameClosed) {
             return refusal + "\nsyntax error " + describeEndOfBody(body) + ".";
         }
@@ -1078,6 +1212,76 @@ final class RoutineBodyCompiler {
     }
 
     /** Whether a parenthesis after {@code token} opens a call's argument list: the token is a name. */
+    /**
+     * The refusal of a body broken at a method called with {@code !}, as the account's frame reads it (all
+     * live-verified). After a value that is no name the {@code !} is taken and the token after it is refused:
+     * {@code 1 !} at the frame's ')', {@code 1 ! y} at 'y'. After a method's name that no parenthesis follows, one is
+     * taken to open before the token, which is refused; then a value run into the one before it among those
+     * arguments, and the end of input where the arguments close at the frame's ')': {@code x ! y} is ')' and the end
+     * of input, {@code x ! y z w} 'z', 'w' and the end of input. Null for a body broken anywhere else.
+     */
+    private static String describeMethodTail(final List<Token> framed, final Token stop, final String body) {
+        int at = -1;
+        for (int i = 0; i < framed.size() && at < 0 && stop.getType() != Token.EOF; i++) {
+            if (framed.get(i).getStartIndex() == stop.getStartIndex()) {
+                at = i;
+            }
+        }
+        if (at < 2) {
+            return null;
+        }
+        if (stop.getType() == FrostlakeLexer.BANG && endsUnnamedValue(framed.get(at - 1)) && at + 1 < framed.size()) {
+            final StringBuilder lines = new StringBuilder("syntax error " + describe(framed.get(at + 1)) + ".");
+            if (at + 2 < framed.size() && isCalledName(framed.get(at + 1))
+                    && framed.get(at + 2).getType() == FrostlakeLexer.LPAREN) {
+                lines.append("\nsyntax error ").append(describe(framed.get(at + 2))).append('.');
+            }
+            return lines.toString();
+        }
+        if (at < 3 || framed.get(at - 2).getType() != FrostlakeLexer.BANG || !isCalledName(framed.get(at - 1))
+                || stop.getType() == FrostlakeLexer.LPAREN) {
+            return null;
+        }
+        final StringBuilder lines = new StringBuilder("syntax error " + describe(stop) + ".");
+        int depth = 1;
+        boolean runIn = false;
+        for (int i = at; i < framed.size(); i++) {
+            final int type = framed.get(i).getType();
+            if (type == FrostlakeLexer.LPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.RPAREN && --depth == 0) {
+                if (i == framed.size() - 1) {
+                    lines.append("\nsyntax error ").append(describeEndOfBody(body)).append('.');
+                }
+                break;
+            } else if (!runIn && depth == 1 && i > at && endsValue(framed.get(i - 1)) && startsValue(framed.get(i))) {
+                lines.append("\nsyntax error ").append(describe(framed.get(i))).append('.');
+                runIn = true;
+            }
+        }
+        return lines.toString();
+    }
+
+    /** Whether a token ends a value that is no name: a closing bracket or a literal. */
+    private static boolean endsUnnamedValue(final Token token) {
+        final int type = token.getType();
+        return type == FrostlakeLexer.RPAREN || type == FrostlakeLexer.RBRACKET
+            || type == FrostlakeLexer.INTEGER_LITERAL || type == FrostlakeLexer.FLOAT_LITERAL
+            || type == FrostlakeLexer.STRING_LITERAL;
+    }
+
+    /** Whether a token ends a value: a name, or one that is no name. */
+    private static boolean endsValue(final Token token) {
+        return isCalledName(token) || endsUnnamedValue(token);
+    }
+
+    /** Whether a token starts a value: a name, a literal or an opening parenthesis. */
+    private static boolean startsValue(final Token token) {
+        final int type = token.getType();
+        return isCalledName(token) || type == FrostlakeLexer.INTEGER_LITERAL || type == FrostlakeLexer.FLOAT_LITERAL
+            || type == FrostlakeLexer.STRING_LITERAL || type == FrostlakeLexer.LPAREN;
+    }
+
     private static boolean isCalledName(final Token token) {
         return token.getType() == FrostlakeLexer.IDENTIFIER || token.getType() == FrostlakeLexer.QUOTED_IDENTIFIER;
     }
@@ -1165,6 +1369,26 @@ final class RoutineBodyCompiler {
     }
 
     /**
+     * The lines of a block that reads as none, and of a VALUES, refused at its first word: that word, then what the
+     * frame reads on to the body's first semicolon (see {@link BlockBodyFrameLines}); null for a body refused
+     * anywhere else.
+     */
+    private static String blockFrameLines(final String framed, final List<Token> framedTokens, final Token stop) {
+        final int opening = framedTokens.size() > 3 ? framedTokens.get(1).getType() : Token.EOF;
+        final int refusedAt = opening == FrostlakeLexer.VALUES ? 1
+            : opening == FrostlakeLexer.BEGIN || opening == FrostlakeLexer.DECLARE ? 2 : -1;
+        if (refusedAt < 0 || stop == null || stop.getStartIndex() != framedTokens.get(refusedAt).getStartIndex()
+                || !BlockBodyFrameLines.isReadOnFrom(stop)) {
+            return null;
+        }
+        final StringBuilder lines = new StringBuilder("syntax error " + describe(stop) + ".");
+        for (final Token later : BlockBodyFrameLines.refusedAfter(framed, framedTokens, refusedAt)) {
+            lines.append("\nsyntax error ").append(describe(later)).append('.');
+        }
+        return lines.toString();
+    }
+
+    /**
      * The refusal of the statement a semicolon ends after the body closed its frame: the token the statement breaks
      * on, or the semicolon when the statement stops before its expression does — {@code 1) +;} at ';',
      * position 5, {@code 1) 2;} at '2', position 4. The statement is an expression, so a query clause after the
@@ -1245,8 +1469,10 @@ final class RoutineBodyCompiler {
             final String framed = "(" + body + ")";
             final List<Token> framedTokens = spokenTokens(framed);
             final Token semicolon = semicolonAfterClosedFrame(framedTokens);
+            final String block = semicolon == null ? null
+                : blockFrameLines(framed, framedTokens, framedStatementBreak(framed, framedTokens, semicolon));
             throw new RuntimeException("Compilation of SQL UDF failed: " + SqlCompilationError.of(
-                describeFramedStatement(framed, framedTokens, semicolon)));
+                block != null ? block : describeFramedStatement(framed, framedTokens, semicolon)));
         }
         rejectOperands(expression);
         rejectIntoClauses(expression, true);
@@ -1578,6 +1804,33 @@ final class RoutineBodyCompiler {
     }
 
     /**
+     * A Java table function whose handler class its IMPORTS hold — no inline body — has the class judged as it is
+     * created, as an inline one's is: its getOutputClass, its process method and its overloads, its endPartition
+     * and its output class's fields - two process methods of the function's argument count are {@code Cannot
+     * determine which implementation of handler "process" to invoke}, and no function is left (live-verified). An
+     * import this engine cannot read here tells nothing, and the function is created.
+     *
+     * @param function      the function being created
+     * @param queryExecutor the executor creating it, which finds the files its imports name
+     */
+    static void requireImportedTableHandler(final Function function, final QueryExecutor queryExecutor) {
+        if (function == null || function.getUdfLanguage() != UdfLanguage.JAVA || !function.isTableFunction()
+                || function.isAggregate() || function.getHandler() == null || function.getImports().isEmpty()
+                || function.getBody() != null && !function.getBody().trim().isEmpty()) {
+            return;
+        }
+        final ImportLocalizer outer = JarHandlerLoader.localizeWith(queryExecutor);
+        try {
+            if (Boolean.TRUE.equals(JarHandlerLoader.holdsClass(function.getImports(), function.getHandler(),
+                    queryExecutor.getCatalog(), queryExecutor.getS3PathResolver()))) {
+                JavaTableFunctions.check(function, queryExecutor.getCatalog(), queryExecutor.getS3PathResolver());
+            }
+        } finally {
+            JarHandlerLoader.restore(outer);
+        }
+    }
+
+    /**
      * A Java routine whose code its IMPORTS hold — no inline body — has its handler looked for in them as it is
      * created: a handler that names no method is {@code Invalid function name JS in function F with handler JS}, and a
      * class no import holds is refused as the account's class loader refuses it, {@code
@@ -1618,10 +1871,109 @@ final class RoutineBodyCompiler {
         }
     }
 
+    /**
+     * A Java function's handler its IMPORTS hold — no inline body — judged as it is created, as an inline body's is
+     * (see {@link #judgeHandler}): {@code Failed to find a public method named "f" with 1 arguments}, {@code Cannot
+     * determine which implementation of handler "f" to invoke}, and a non-static handler of a class with no public
+     * zero-argument constructor are refused, and no function is left (live-verified). A class no import holds is
+     * refused before (see {@link #requireImportedHandler}), and an import this engine cannot read here tells nothing.
+     *
+     * @param function      the function being created
+     * @param queryExecutor the executor creating it, which finds the files its imports name
+     */
+    static void requireImportedHandlerMethod(final Function function, final QueryExecutor queryExecutor) {
+        if (function == null || function.getUdfLanguage() != UdfLanguage.JAVA || function.isTableFunction()
+                || function.isAggregate()) {
+            return;
+        }
+        final List<DataType> argumentTypes = new ArrayList<>();
+        if (function.getParameters() != null) {
+            for (final Parameter parameter : function.getParameters()) {
+                argumentTypes.add(parameter.getDataType());
+            }
+        }
+        judgeImportedHandler(function.getHandler(), function.getImports(), function.getBody(), argumentTypes.size(),
+            function.getName(), argumentTypes, function.getReturnType(), false, false, queryExecutor);
+    }
+
+    /**
+     * A Java procedure's handler its IMPORTS hold, judged as a function's is (see {@link
+     * #requireImportedHandlerMethod(Function, QueryExecutor)}), the Session it takes first counted among its
+     * arguments: {@code Failed to find a public method named "run" with 2 arguments in function P …} for a
+     * procedure of one parameter (live-verified).
+     *
+     * @param procedure     the procedure being created
+     * @param queryExecutor the executor creating it, which finds the files its imports name
+     */
+    static void requireImportedHandlerMethod(final Procedure procedure, final QueryExecutor queryExecutor) {
+        if (procedure == null || procedure.getUdfLanguage() != UdfLanguage.JAVA) {
+            return;
+        }
+        final List<DataType> argumentTypes = new ArrayList<>();
+        for (final Parameter parameter : procedure.getParameters()) {
+            argumentTypes.add(parameter.getDataType());
+        }
+        judgeImportedHandler(procedure.getHandler(), procedure.getImports(), procedure.getBody(),
+            argumentTypes.size() + 1, procedure.getName(), argumentTypes,
+            procedure.returnsTable() ? null : procedure.getReturnType(), true, procedure.returnsTable(),
+            queryExecutor);
+    }
+
+    /** A routine's IMPORTS handler class, loaded from its imports and judged (see {@link #judgeHandler}). */
+    private static void judgeImportedHandler(final String handler, final List<String> imports, final String body,
+                                             final int arity, final String routineName,
+                                             final List<DataType> argumentTypes, final DataType returnType,
+                                             final boolean procedure, final boolean table,
+                                             final QueryExecutor queryExecutor) {
+        if (handler == null || imports == null || imports.isEmpty() || body != null && !body.trim().isEmpty()) {
+            return;
+        }
+        final int dot = handler.lastIndexOf('.');
+        if (dot <= 0) {
+            return;
+        }
+        final String className = handler.substring(0, dot);
+        final ImportLocalizer outer = JarHandlerLoader.localizeWith(queryExecutor);
+        final Class<?> handled;
+        try {
+            // A class this engine's own Java cannot load - one a newer runtime the routine names reads - tells
+            // nothing here, and the routine is created.
+            if (!Boolean.TRUE.equals(JarHandlerLoader.holdsClass(imports, className, queryExecutor.getCatalog(),
+                    queryExecutor.getS3PathResolver()))
+                    || JarHandlerLoader.classFileVersion(imports, className, queryExecutor.getCatalog(),
+                        queryExecutor.getS3PathResolver()) > Runtime.version().feature() + CLASS_FILE_OFFSET) {
+                return;
+            }
+            handled = JarHandlerLoader.loadAnew(imports, className, queryExecutor.getCatalog(),
+                queryExecutor.getS3PathResolver());
+        } finally {
+            JarHandlerLoader.restore(outer);
+        }
+        judgeHandler(handled, handler.substring(dot + 1), arity, routineName, handler, argumentTypes, returnType,
+            procedure, table);
+    }
+
     /** Compile {@code function}'s body, throwing whatever its compiler said if it will not build. */
     static void compileFunctionBody(final Function function) {
+        compileFunctionBody(function, null);
+    }
+
+    /**
+     * Compile {@code function}'s body (see {@link #compileFunctionBody(Function)}). An inline Java body is compiled
+     * with the jars its IMPORTS name on the class path, as the account compiles it (live-verified), where the
+     * executor finds them.
+     *
+     * @param function      the function being created
+     * @param queryExecutor the executor creating it, or null where its imports are not read
+     */
+    static void compileFunctionBody(final Function function, final QueryExecutor queryExecutor) {
         if (function == null || !judgeable(function.getUdfLanguage(), function.getBody(),
-                function.getImports().isEmpty())) {
+                function.getImports().isEmpty()
+                    || readsImportedJars(function.getUdfLanguage(), function.getImports(), queryExecutor))) {
+            return;
+        }
+        if (function.getUdfLanguage() == UdfLanguage.JAVA && function.isAggregate()
+                && !function.getImports().isEmpty()) {
             return;
         }
         if (function.getUdfLanguage() == UdfLanguage.JAVA && function.isAggregate()) {
@@ -1633,7 +1985,16 @@ final class RoutineBodyCompiler {
         if (function.getUdfLanguage() == UdfLanguage.JAVA && function.isTableFunction()) {
             // A table function's handler is a class: its process method, its output class and that class's
             // fields are judged as the function is created (live-verified).
-            JavaTableFunctions.check(function, null, null);
+            if (function.getImports().isEmpty()) {
+                JavaTableFunctions.check(function, null, null);
+                return;
+            }
+            final ImportLocalizer outer = JarHandlerLoader.localizeWith(queryExecutor);
+            try {
+                JavaTableFunctions.check(function, queryExecutor.getCatalog(), queryExecutor.getS3PathResolver());
+            } finally {
+                JarHandlerLoader.restore(outer);
+            }
             return;
         }
         if (function.getUdfLanguage() == UdfLanguage.JAVA) {
@@ -1645,7 +2006,8 @@ final class RoutineBodyCompiler {
             }
             compileJava(function.getBody(), function.getHandler(), argumentTypes.size(), function.getName(),
                 argumentTypes, function.isTableFunction() ? null : function.getReturnType(), false, false,
-                function.getRuntimeVersion(), SnowparkPackage.isNamed(function.getEnvironment().getPackages()));
+                function.getRuntimeVersion(), SnowparkPackage.isNamed(function.getEnvironment().getPackages()),
+                importedJars(function.getImports(), queryExecutor));
             return;
         }
         final UdfLanguageRuntime runtime = UdfRuntimes.installed(function.getUdfLanguage());
@@ -1656,9 +2018,25 @@ final class RoutineBodyCompiler {
 
     /** Compile {@code procedure}'s body — see the language table for which languages that means. */
     static void compileProcedureBody(final Procedure procedure) {
+        compileProcedureBody(procedure, null);
+    }
+
+    /**
+     * Compile {@code procedure}'s body (see {@link #compileProcedureBody(Procedure)}), an inline Java body with the
+     * jars its IMPORTS name on the class path (see {@link #compileFunctionBody(Function, QueryExecutor)}).
+     *
+     * @param procedure     the procedure being created
+     * @param queryExecutor the executor creating it, or null where its imports are not read
+     */
+    static void compileProcedureBody(final Procedure procedure, final QueryExecutor queryExecutor) {
+        if (procedure != null && procedure.getUdfLanguage() == UdfLanguage.PYTHON
+                && PythonSnowparkPackage.namesNone(procedure.getPackages())) {
+            // Its handler is handed a Snowpark session the account cannot build without the package.
+            throw PythonSnowparkPackage.missing(procedure.getName(), procedure.getHandler());
+        }
         if (procedure == null || procedure.getUdfLanguage() == UdfLanguage.PYTHON
-                || !judgeable(procedure.getUdfLanguage(), procedure.getBody(),
-                    procedure.getImports().isEmpty())) {
+                || !judgeable(procedure.getUdfLanguage(), procedure.getBody(), procedure.getImports().isEmpty()
+                    || readsImportedJars(procedure.getUdfLanguage(), procedure.getImports(), queryExecutor))) {
             return;
         }
         if (procedure.getUdfLanguage() == UdfLanguage.JAVA) {
@@ -1672,7 +2050,7 @@ final class RoutineBodyCompiler {
             compileJava(procedure.getBody(), procedure.getHandler(), argumentTypes.size() + 1, procedure.getName(),
                 argumentTypes, procedure.returnsTable() ? null : procedure.getReturnType(), true,
                 procedure.returnsTable(), procedure.getRuntimeVersion(),
-                SnowparkPackage.isNamed(procedure.getPackages()));
+                SnowparkPackage.isNamed(procedure.getPackages()), importedJars(procedure.getImports(), queryExecutor));
             return;
         }
         final UdfLanguageRuntime runtime = UdfRuntimes.installed(procedure.getUdfLanguage());
@@ -1681,11 +2059,33 @@ final class RoutineBodyCompiler {
         }
     }
 
+    /** What a Java feature release adds to give the class-file version it writes: 55 for Java 11. */
+    private static final int CLASS_FILE_OFFSET = 44;
+
     /** The classes a table procedure's handler hands back, the Java API's and the Scala API's. */
     private static final Set<String> DATA_FRAMES = Set.of("com.snowflake.snowpark_java.DataFrame",
         "com.snowflake.snowpark.DataFrame");
 
     /** Whether a body of this language is the engine's to judge at all. */
+    /** Whether a routine's inline body is compiled against the jars its IMPORTS name: a Java one's, read here. */
+    private static boolean readsImportedJars(final UdfLanguage language, final List<String> imports,
+                                             final QueryExecutor queryExecutor) {
+        return language == UdfLanguage.JAVA && !imports.isEmpty() && queryExecutor != null;
+    }
+
+    /** The jars a Java routine's IMPORTS name, as the executor finds them; none without imports or an executor. */
+    private static List<File> importedJars(final List<String> imports, final QueryExecutor queryExecutor) {
+        if (imports.isEmpty() || queryExecutor == null) {
+            return Collections.emptyList();
+        }
+        final ImportLocalizer outer = JarHandlerLoader.localizeWith(queryExecutor);
+        try {
+            return JarHandlerLoader.localJars(imports, queryExecutor.getCatalog(), queryExecutor.getS3PathResolver());
+        } finally {
+            JarHandlerLoader.restore(outer);
+        }
+    }
+
     private static boolean judgeable(final UdfLanguage language, final String body,
                                      final boolean inlineBody) {
         return inlineBody
@@ -1711,7 +2111,8 @@ final class RoutineBodyCompiler {
     private static void compileJava(final String body, final String handler, final int arity,
                                     final String routineName, final List<DataType> argumentTypes,
                                     final DataType returnType, final boolean procedure, final boolean table,
-                                    final String runtimeVersion, final boolean snowpark) {
+                                    final String runtimeVersion, final boolean snowpark,
+                                    final List<File> jars) {
         if (handler == null) {
             return;
         }
@@ -1726,7 +2127,8 @@ final class RoutineBodyCompiler {
         final Class<?> compiled;
         try {
             // A load of its own: the class a later statement or CALL runs is not this one.
-            compiled = JAVA_COMPILER.load(body, className, null, JavaRuntimeLevel.of(runtimeVersion), where, snowpark);
+            compiled = JAVA_COMPILER.load(body, className, null, JavaRuntimeLevel.of(runtimeVersion), where, snowpark,
+                jars);
         } catch (final RuntimeException unloaded) {
             if (String.valueOf(unloaded.getMessage()).startsWith("No class bytes generated for")) {
                 throw new RuntimeException(JavaHandlerFailure.missingClass(className,
@@ -1742,32 +2144,30 @@ final class RoutineBodyCompiler {
         if (arity < 0) {
             return;
         }
-        Method found = null;
-        int definitions = 0;
-        for (final Method method : compiled.getMethods()) {
-            if (method.getName().equals(methodName) && method.getParameterCount() == arity) {
-                found = method;
-                definitions++;
-            }
-        }
-        if (found == null) {
-            throw new RuntimeException("Failed to find a public method named \"" + methodName + "\" with "
-                + arity + " arguments in function " + routineName + " with handler " + handler);
-        }
-        if (definitions > 1) {
-            throw new RuntimeException("Cannot determine which implementation of handler \"" + methodName
-                + "\" to invoke since there are multiple definitions with " + arity + " arguments in function "
-                + routineName + " with handler " + handler);
-        }
+        judgeHandler(compiled, methodName, arity, routineName, handler, argumentTypes, returnType, procedure, table);
+    }
+
+    /**
+     * The handler method a Java routine's class holds, judged as the routine is created: the one public method of
+     * its name and argument count (see {@link JavaHandlerMethods}), a procedure's DataFrame answering exactly a
+     * table, its Java types against the routine's, and an instance made of the class for a method that is not
+     * static (live-verified).
+     */
+    private static void judgeHandler(final Class<?> compiled, final String methodName, final int arity,
+                                     final String routineName, final String handler,
+                                     final List<DataType> argumentTypes, final DataType returnType,
+                                     final boolean procedure, final boolean table) {
+        final Method found = JavaHandlerMethods.resolve(compiled, methodName, arity, routineName, handler);
         if (procedure && table != DATA_FRAMES.contains(found.getReturnType().getName())) {
             // A procedure answers a table exactly when its handler hands back a DataFrame (live-verified).
             throw new RuntimeException("Expected stored procedure to return TABLE if and only if handler method"
                 + " returns DATAFRAME in function " + routineName + " with handler " + handler);
         }
         JavaHandlerSignature.check(found, argumentTypes, returnType, routineName, handler, procedure);
-        if (!procedure && !Modifier.isStatic(found.getModifiers())) {
-            // A function's handler that is no static method is called on an instance, and the account makes one
-            // as the function is created: a class it cannot make one of is refused here (live-verified).
+        if (!Modifier.isStatic(found.getModifiers())) {
+            // A handler that is no static method is called on an instance, and the account makes one as the
+            // routine is created, a procedure's as a function's: a class it cannot make one of, or one whose
+            // constructor raises, is refused here (live-verified).
             JavaHandlerInstances.create(compiled, " in function " + routineName + " with handler " + handler);
         }
     }

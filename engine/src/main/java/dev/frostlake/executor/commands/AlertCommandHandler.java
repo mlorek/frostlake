@@ -24,6 +24,8 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.WarehouseReference;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.CreationGrants;
+import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.NameTakenException;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Alert;
@@ -32,6 +34,7 @@ import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -94,9 +97,9 @@ public final class AlertCommandHandler {
         }
         // Asked once the warehouse is known to be there (live-verified).
         queryExecutor.requireCreatePrivilege(Privilege.CREATE_ALERT, schema);
-        if (schema.hasAlert(name)) {
+        if (schema.hasAlertExact(name)) {
             if (ctx.or_alter() != null) {
-                alterInPlace(schema, schema.getAlert(name), definition);
+                alterInPlace(schema, schema.getAlertExact(name), definition);
                 // An existing alert is altered, and the statement answers as an ALTER does.
                 ConditionalDdlOutcome.alteredInPlace();
                 return null;
@@ -114,25 +117,28 @@ public final class AlertCommandHandler {
         if (definition.CLONE() != null) {
             final String[] sourceParts = ParseTreeText.qualifiedNameParts(definition.qualifiedName());
             final Schema sourceSchema = catalog.requireOwningSchema(QualifiedName.of(sourceParts));
-            alert = sourceSchema.getAlert(sourceParts[sourceParts.length - 1]).copy(name);
+            alert = sourceSchema.getAlertExact(sourceParts[sourceParts.length - 1]).copy(name);
         } else {
             alert = new Alert(name, sourceText(definition.alertCondition()),
                 ParseTreeText.taskBodyText(definition.taskBody()));
             applyProperties(catalog, alert, definition.alertProperty());
         }
-        if (schema.hasAlert(name)) {
-            final Alert replaced = schema.getAlert(name);
+        if (schema.hasAlertExact(name)) {
+            final Alert replaced = schema.getAlertExact(name);
             final TaskScheduler scheduler = queryExecutor.getTaskScheduler();
             if (scheduler != null) {
                 scheduler.suspendAlert(schema.getDatabaseName(), schema.getName(), replaced);
             }
-            schema.dropAlert(name);
+            schema.dropAlertExact(name);
         }
-        alert.setOwner(catalog.currentRoleForOwner());
+        // The future grants on the schema's or the database's alerts are the new alert's (documented).
+        final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "ALERT", schema, name);
+        alert.setOwner(grantsOfNew.owner());
         if (definition.tagList() != null) {
             InlineTags.apply(alert, definition.tagList(), queryExecutor);
         }
         schema.addAlert(alert);
+        grantsOfNew.apply();
         return null;
     }
 
@@ -213,10 +219,10 @@ public final class AlertCommandHandler {
         final String[] parts = ParseTreeText.qualifiedNameParts(name);
         final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
         final String alertName = parts[parts.length - 1];
-        if (!schema.hasAlert(alertName)) {
+        if (!schema.hasAlertExact(alertName)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Alert", schema.qualifiedName(alertName)));
         }
-        return schema.getAlert(alertName);
+        return schema.getAlertExact(alertName);
     }
 
     /** ALTER ALERT … RESUME | SUSPEND | SET | UNSET | MODIFY CONDITION | MODIFY ACTION (tags are the caller's). */
@@ -224,6 +230,9 @@ public final class AlertCommandHandler {
         final String[] parts = ParseTreeText.qualifiedNameParts(name);
         final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
         final Alert alert = require(name);
+        // OPERATE resumes and suspends an alert; every other change is its owner's (documented).
+        queryExecutor.requirePrivilege(action.RESUME() != null || action.SUSPEND() != null ? Privilege.OPERATE
+            : Privilege.MODIFY, "ALERT", parts, null);
         final TaskScheduler scheduler = queryExecutor.getTaskScheduler();
         if (action.RESUME() != null) {
             if (scheduler != null) {
@@ -238,13 +247,40 @@ public final class AlertCommandHandler {
                 alert.setState(AlertState.SUSPENDED);
             }
         } else if (action.SET() != null) {
+            final List<FrostlakeParser.AlertPropertyContext> properties = new ArrayList<>();
+            final List<FrostlakeParser.AlertSettingContext> parameters = new ArrayList<>();
+            final List<String> names = new ArrayList<>();
+            final List<WrittenParameterValue> values = new ArrayList<>();
+            for (final FrostlakeParser.AlertSettingContext setting : action.alertSetting()) {
+                if (setting.alertProperty() != null) {
+                    properties.add(setting.alertProperty());
+                } else {
+                    parameters.add(setting);
+                    names.add(setting.identifier().getText());
+                    values.add(WrittenParameterValue.of(setting.taskPropertyValue()));
+                }
+            }
+            judgeParameters(names, values, alert);
             final String schedule = alert.getSchedule();
-            applyProperties(catalog, alert.copy(alert.getName()), action.alertProperty());
-            applyProperties(catalog, alert, action.alertProperty());
+            applyProperties(catalog, alert.copy(alert.getName()), properties);
+            applyProperties(catalog, alert, properties);
+            for (final FrostlakeParser.AlertSettingContext parameter : parameters) {
+                alert.getParameters().put(ParameterRegistry.canonical(parameter.identifier().getText()),
+                    TaskPropertyValue.of(parameter.taskPropertyValue()).text());
+            }
             rescheduleIfChanged(schema, alert, schedule);
         } else if (action.UNSET() != null) {
+            final List<String> names = new ArrayList<>();
             for (final FrostlakeParser.AlertParameterContext parameter : action.alertParameter()) {
-                if (parameter.WAREHOUSE() != null) {
+                if (parameter.identifier() != null) {
+                    names.add(parameter.identifier().getText());
+                }
+            }
+            judgeParameters(names, null, alert);
+            for (final FrostlakeParser.AlertParameterContext parameter : action.alertParameter()) {
+                if (parameter.identifier() != null) {
+                    alert.getParameters().remove(ParameterRegistry.canonical(parameter.identifier().getText()));
+                } else if (parameter.WAREHOUSE() != null) {
                     alert.setWarehouse(null);
                 } else if (parameter.COMMENT() != null) {
                     alert.setComment(null);
@@ -261,6 +297,22 @@ public final class AlertCommandHandler {
         } else if (action.ACTION() != null) {
             alert.setAction(ParseTreeText.taskBodyText(action.taskBody()));
         }
+    }
+
+    /**
+     * Judges the parameters an ALTER ALERT … SET or UNSET names before any is applied (live-verified): a session
+     * parameter or an alert's own LOG_LEVEL and its kin is taken; a few parameters are refused at the alert's level,
+     * {@code cannot set parameter 'NETWORK_POLICY' at 'ALERT'}; any other parameter for want of access, "Insufficient
+     * privileges to operate on alert 'A'."; and a name no parameter has as an invalid property of an alert. A SET's
+     * value of another kind than its parameter's type is refused first, as an ALTER TABLE's is.
+     */
+    private static void judgeParameters(final List<String> names, final List<WrittenParameterValue> values,
+                                        final Alert alert) {
+        final List<Boolean> taken = new ArrayList<>();
+        for (final String name : names) {
+            taken.add(Boolean.valueOf(ParameterRegistry.isAlertParameter(ParameterRegistry.canonical(name))));
+        }
+        ParameterLevels.judgeAlter(names, taken, values, "ALERT", "alert", alert.getName());
     }
 
     private void rescheduleIfChanged(final Schema schema, final Alert alert, final String previousSchedule) {
@@ -281,21 +333,23 @@ public final class AlertCommandHandler {
             : ParseTreeText.qualifiedNameParts(ctx.qualifiedName());
         final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
         final String name = parts[parts.length - 1];
-        if (DropPurge.written(ctx.dropBehavior()) && (ifExists || schema.hasAlert(name))) {
+        if (DropPurge.written(ctx.dropBehavior()) && (ifExists || schema.hasAlertExact(name))) {
             throw DropPurge.refusal(parts);
         }
-        if (!schema.hasAlert(name)) {
+        if (!schema.hasAlertExact(name)) {
             if (ifExists) {
                 ConditionalDdlOutcome.dropSkipped();
                 return null;
             }
             throw new RuntimeException(SqlCompilationError.doesNotExist("Alert", schema.qualifiedName(name)));
         }
+        // Dropping an alert needs OWNERSHIP of it, as dropping any object does.
+        queryExecutor.requireOwnership("ALERT", parts, null);
         final TaskScheduler scheduler = queryExecutor.getTaskScheduler();
         if (scheduler != null) {
-            scheduler.suspendAlert(schema.getDatabaseName(), schema.getName(), schema.getAlert(name));
+            scheduler.suspendAlert(schema.getDatabaseName(), schema.getName(), schema.getAlertExact(name));
         }
-        schema.dropAlert(name);
+        schema.dropAlertExact(name);
         return null;
     }
 
@@ -334,7 +388,9 @@ public final class AlertCommandHandler {
                     continue;
                 }
                 for (final Alert alert : schema.getAlerts()) {
-                    rows.add(row(database.getName(), schema.getName(), alert));
+                    if (visible(schema, alert)) {
+                        rows.add(row(database.getName(), schema.getName(), alert));
+                    }
                 }
             }
         }
@@ -346,9 +402,23 @@ public final class AlertCommandHandler {
         final String[] parts = ParseTreeText.qualifiedNameParts(name);
         final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
         final Alert alert = require(name);
+        if (!visible(schema, alert)) {
+            // One the session does not see is answered as one that does not exist.
+            throw new RuntimeException(
+                SqlCompilationError.doesNotExist("Alert", schema.qualifiedName(alert.getName())));
+        }
         final List<Row> rows = new ArrayList<>();
         rows.add(row(schema.getDatabaseName(), schema.getName(), alert));
         return new ResultSet(columns(), rows);
+    }
+
+    /**
+     * Whether SHOW ALERTS lists an alert, and DESCRIBE answers it: only when the session sees it - its roles own it or
+     * hold a privilege on it, or hold MANAGE GRANTS (documented).
+     */
+    private boolean visible(final Schema schema, final Alert alert) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        return security == null || security.sees("ALERT", schema.qualifiedName(alert.getName()), alert.getOwner());
     }
 
     private static List<ResultSetColumn> columns() {

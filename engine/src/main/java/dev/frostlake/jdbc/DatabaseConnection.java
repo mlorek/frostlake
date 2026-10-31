@@ -21,30 +21,20 @@ import dev.frostlake.http.SessionNamespace;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.sql.Array;
-import java.sql.Blob;
 import java.sql.CallableStatement;
-import java.sql.Clob;
-import java.sql.Connection;
-import java.sql.NClob;
 import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLClientInfoException;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
-import java.sql.SQLWarning;
-import java.sql.SQLXML;
-import java.sql.Savepoint;
 import java.sql.Statement;
 import java.sql.Struct;
-import java.util.Map;
+import java.time.ZoneId;
 import java.util.Properties;
 import java.util.concurrent.Executor;
 
 /**
  * JDBC Connection implementation for Frostlake SQL Engine
  */
-public class DatabaseConnection implements Connection {
+public class DatabaseConnection extends AbstractFrostlakeConnection implements ResultColumnCase, SessionZoneSource {
     private static final Logger logger = LoggerFactory.getLogger(DatabaseConnection.class);
 
     private final HttpClient httpClient;
@@ -144,11 +134,6 @@ public class DatabaseConnection implements Connection {
     }
 
     @Override
-    public String nativeSQL(final String sql) throws SQLException {
-        return sql;
-    }
-
-    @Override
     public void setAutoCommit(final boolean autoCommit) throws SQLException {
         checkClosed();
         // ALTER SESSION drives the engine's real per-session autocommit flag; a plain SET would only
@@ -190,6 +175,13 @@ public class DatabaseConnection implements Connection {
     public void close() throws SQLException {
         if (!closed) {
             closed = true;
+            // A connection releases its resources at once (java.sql.Connection#close): what a statement of it runs on
+            // another thread is canceled first, so the release does not wait for it and its effects are not kept.
+            try {
+                httpClient.cancelInFlight();
+            } catch (final SQLException unreachable) {
+                // The release below is bounded too, and the server's idle sweep reclaims what it leaves.
+            }
             httpClient.releaseSession();
             logger.debug("Closed connection (session: {})", httpClient.getSessionId());
         }
@@ -201,21 +193,19 @@ public class DatabaseConnection implements Connection {
     }
 
     @Override
+    public boolean labelsIgnoreCase() {
+        return httpClient.labelsIgnoreCase();
+    }
+
+    @Override
+    public ZoneId sessionZone() {
+        return httpClient.sessionZone();
+    }
+
+    @Override
     public java.sql.DatabaseMetaData getMetaData() throws SQLException {
         checkClosed();
         return new DatabaseMetaData(this, httpClient);
-    }
-
-    @Override
-    public void setReadOnly(final boolean readOnly) throws SQLException {
-        checkClosed();
-        // No-op for now
-    }
-
-    @Override
-    public boolean isReadOnly() throws SQLException {
-        checkClosed();
-        return false;
     }
 
     @Override
@@ -266,102 +256,6 @@ public class DatabaseConnection implements Connection {
     }
 
     @Override
-    public void setTransactionIsolation(final int level) throws SQLException {
-        checkClosed();
-        // No-op for now
-    }
-
-    @Override
-    public int getTransactionIsolation() throws SQLException {
-        checkClosed();
-        return Connection.TRANSACTION_READ_COMMITTED;
-    }
-
-    @Override
-    public SQLWarning getWarnings() throws SQLException {
-        checkClosed();
-        return null;
-    }
-
-    @Override
-    public void clearWarnings() throws SQLException {
-        checkClosed();
-    }
-
-    @Override
-    public Statement createStatement(final int resultSetType, final int resultSetConcurrency) throws SQLException {
-        return createStatement();
-    }
-
-    @Override
-    public PreparedStatement prepareStatement(final String sql, final int resultSetType, final int resultSetConcurrency) throws SQLException {
-        return prepareStatement(sql);
-    }
-
-    @Override
-    public CallableStatement prepareCall(final String sql, final int resultSetType, final int resultSetConcurrency) throws SQLException {
-        checkClosed();
-        return new DatabaseCallableStatement(this, httpClient, sql);
-    }
-
-    @Override
-    public Map<String, Class<?>> getTypeMap() throws SQLException {
-        throw new SQLFeatureNotSupportedException("Type maps not supported");
-    }
-
-    @Override
-    public void setTypeMap(final Map<String, Class<?>> map) throws SQLException {
-        throw new SQLFeatureNotSupportedException("Type maps not supported");
-    }
-
-    @Override
-    public void setHoldability(final int holdability) throws SQLException {
-        checkClosed();
-    }
-
-    @Override
-    public int getHoldability() throws SQLException {
-        checkClosed();
-        return ResultSet.HOLD_CURSORS_OVER_COMMIT;
-    }
-
-    @Override
-    public Savepoint setSavepoint() throws SQLException {
-        throw new SQLException("Savepoints are not supported by Snowflake");
-    }
-
-    @Override
-    public Savepoint setSavepoint(final String name) throws SQLException {
-        throw new SQLException("Savepoints are not supported by Snowflake");
-    }
-
-    @Override
-    public void rollback(final Savepoint savepoint) throws SQLException {
-        throw new SQLException("Savepoints are not supported by Snowflake");
-    }
-
-    @Override
-    public void releaseSavepoint(final Savepoint savepoint) throws SQLException {
-        throw new SQLException("Savepoints are not supported by Snowflake");
-    }
-
-    @Override
-    public Statement createStatement(final int resultSetType, final int resultSetConcurrency, final int resultSetHoldability) throws SQLException {
-        return createStatement();
-    }
-
-    @Override
-    public PreparedStatement prepareStatement(final String sql, final int resultSetType, final int resultSetConcurrency, final int resultSetHoldability) throws SQLException {
-        return prepareStatement(sql);
-    }
-
-    @Override
-    public CallableStatement prepareCall(final String sql, final int resultSetType, final int resultSetConcurrency, final int resultSetHoldability) throws SQLException {
-        checkClosed();
-        return new DatabaseCallableStatement(this, httpClient, sql);
-    }
-
-    @Override
     public PreparedStatement prepareStatement(final String sql, final int autoGeneratedKeys) throws SQLException {
         return prepareStatement(sql);
     }
@@ -377,30 +271,8 @@ public class DatabaseConnection implements Connection {
     }
 
     @Override
-    public Clob createClob() throws SQLException {
-        throw new SQLFeatureNotSupportedException("Clobs not supported");
-    }
-
-    @Override
-    public Blob createBlob() throws SQLException {
-        throw new SQLFeatureNotSupportedException("Blobs not supported");
-    }
-
-    @Override
-    public NClob createNClob() throws SQLException {
-        throw new SQLFeatureNotSupportedException("NClobs not supported");
-    }
-
-    @Override
-    public SQLXML createSQLXML() throws SQLException {
-        throw new SQLFeatureNotSupportedException("SQLXML not supported");
-    }
-
-    @Override
     public boolean isValid(final int timeout) throws SQLException {
-        if (timeout < 0) {
-            throw new SQLException("The timeout is negative: " + timeout);
-        }
+        requireValidTimeout(timeout);
         if (closed) {
             return false;
         }
@@ -415,30 +287,6 @@ public class DatabaseConnection implements Connection {
 
     void setMultiStatementCount(final int count) {
         this.multiStatementCount = count;
-    }
-
-    public void setClientInfo(final String name, final String value) throws SQLClientInfoException {
-        // No-op
-    }
-
-    @Override
-    public void setClientInfo(final Properties properties) throws SQLClientInfoException {
-        // No-op
-    }
-
-    @Override
-    public String getClientInfo(final String name) throws SQLException {
-        return null;
-    }
-
-    @Override
-    public Properties getClientInfo() throws SQLException {
-        return new Properties();
-    }
-
-    @Override
-    public Array createArrayOf(final String typeName, final Object[] elements) throws SQLException {
-        throw new SQLFeatureNotSupportedException("Arrays not supported");
     }
 
     @Override
@@ -467,36 +315,7 @@ public class DatabaseConnection implements Connection {
         close();
     }
 
-    @Override
-    public void setNetworkTimeout(final Executor executor, final int milliseconds) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public int getNetworkTimeout() throws SQLException {
-        return 0;
-    }
-
-    @Override
-    public <T> T unwrap(final Class<T> iface) throws SQLException {
-        if (iface.isAssignableFrom(getClass())) {
-            return iface.cast(this);
-        }
-        throw new SQLException("Cannot unwrap to " + iface.getName());
-    }
-
-    @Override
-    public boolean isWrapperFor(final Class<?> iface) throws SQLException {
-        return iface.isAssignableFrom(getClass());
-    }
-
     // Helper methods
-
-    private void checkClosed() throws SQLException {
-        if (closed) {
-            throw new SQLException("Connection is closed");
-        }
-    }
 
     /**
      * Runs a statement that sets session state, ignoring a refusal, and answers whether it ran. A session

@@ -17,14 +17,19 @@
 package dev.frostlake.rt.py;
 
 import dev.frostlake.executor.SessionZone;
+import dev.frostlake.executor.udf.GuestWatch;
 import dev.frostlake.executor.udf.TruffleLogBridge;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.TypeCategory;
+import dev.frostlake.types.VariantType;
+import dev.frostlake.types.VectorElementType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantText;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
+import dev.frostlake.values.VectorValue;
+import java.io.File;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -33,6 +38,7 @@ import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
+import java.time.temporal.TemporalAccessor;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -42,7 +48,6 @@ import java.util.TimeZone;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import org.graalvm.polyglot.Context;
@@ -90,12 +95,11 @@ public final class PythonRuntime {
     }
 
     /**
-     * GraalPy venv whose site-packages the contexts import from (numpy/pandas — the local stand-in for
-     * Snowflake's {@code PACKAGES=(...)}), or null for the standard library only. Set once from
-     * {@code EngineConfig} before the first Python execution; contexts created earlier keep the
-     * environment they were built with.
+     * The GraalPy venv whose site-packages the contexts import from (numpy/pandas — the local stand-in for
+     * Snowflake's {@code PACKAGES=(...)}), or none for the standard library only: one venv a JVM, as each thread
+     * keeps its context whichever engine calls it.
      */
-    private static volatile String venvDirectory;
+    private static final PythonVenvChoice VENV = new PythonVenvChoice();
 
     /**
      * The JVM default time zone before any Python ran. GraalPy's {@code import pandas} (via its time
@@ -146,29 +150,157 @@ public final class PythonRuntime {
      * {@code module} makes a helper module of the runtime's from its source. A namespace keeps only the names the
      * interpreter itself defines in it, the dunder ones. {@code restore} puts back what the interpreter shares
      * between calls as it stood when the runtime was made, or a helper module once it was made: the built-in names
-     * and the environment whole, and the modules the runtime made - a helper module and those it installed on
-     * {@code sys.modules}, which no file holds - under their names there, each member a routine replaced or deleted
-     * put back, and so for the classes they define. A member a routine added to a module is left: the import system
-     * itself adds a package's submodules as members.
+     * and the environment whole, the modules the runtime made - a helper module and those it installed on
+     * {@code sys.modules}, which no file holds - under their names there, and what the runtime's own code is made
+     * of. That is each module the runtime made (this one included) and every class and function its sources define,
+     * whether a module holds it, a closure does (the snowpark emulation defines its classes inside a function and
+     * names them by Snowpark's modules, {@code snowflake.snowpark.relational_grouped_dataframe}, so those count as
+     * the runtime's too) or only {@code object.__subclasses__()} finds it: a member a routine
+     * replaced or deleted is put back and one it added is removed - an added {@code Session.__getattribute__} would
+     * otherwise answer for {@code session.sql} in every later statement - and so for a class's bases, a module's
+     * class and a function's code, defaults and closure cells. The cpython worker ({@code cpython_worker.py}) does
+     * the same, function for function. {@code parse} builds an argument's Python value from its text through the
+     * runtime's own references to {@code json}, {@code decimal}, {@code datetime} and {@code array}, bound as it is
+     * made, as the worker decodes one: a routine that replaced {@code json.loads} or {@code decimal.Decimal} then
+     * changes no argument a routine it calls receives, as no routine's change reaches another on the account.
+     * The standard library's modules imported by then are put back too, but only
+     * in part: a member a routine replaced or deleted comes back - a dunder one aside, which the import system
+     * sets ({@code import importlib} renames {@code _frozen_importlib}) -, and the module on {@code sys.modules}, while
+     * one added stays, as the modules gain members as they run (a package its submodules, a cache its entries). The
+     * runtime imports {@code array}, {@code datetime}, {@code decimal} and {@code json} first, as the worker does for
+     * its own use, so that the same modules are covered on both backends; one first imported later is not, as a
+     * routine may have changed it before it is seen. What a routine put on {@code sys.modules} that no import made
+     * goes (a module without a spec, or no module at all, unless its parent module holds it under that name, as
+     * {@code pyexpat} holds {@code pyexpat.errors}), while a real module a routine imported stays: numpy cannot be
+     * imported twice in one process. The working directory and the decimal context are put back as well.
      */
     private static final String RUNTIME_SOURCE = """
         import types as _types
         import builtins as _builtins
         import os as _os
         import sys as _sys
+        import array as _array
+        import datetime as _datetime
+        import decimal as _decimal
+        import json as _json
         _namespace = None
         _base = None
         _builtins_base = None
         _environ_base = None
         _installed = {}
         _guarded = []
+        _functions = []
+        _guarded_ids = set()
         _missing = object()
-        def bind(namespace):
+        _stdlib = []
+        _modules_base = set()
+        _getcwd = _os.getcwd
+        _chdir = _os.chdir
+        _setcontext = _decimal.setcontext
+        _cwd_base = None
+        _decimal_base = None
+        _kept = {}
+        def bind(namespace, runtime):
             global _namespace, _base, _builtins_base, _environ_base
             _namespace = namespace
             _base = dict((k, v) for k, v in namespace.items() if k.startswith('__') and k.endswith('__'))
             _builtins_base = dict(_builtins.__dict__)
             _environ_base = dict(_os.environ)
+            _snapshot()
+            _guard(runtime)
+        def _standard_library():
+            import sysconfig
+            paths = sysconfig.get_paths()
+            stdlib = _os.path.join(paths['stdlib'], '')
+            packages = tuple(_os.path.join(paths[key], '') for key in ('purelib', 'platlib'))
+            found = []
+            for name, module in list(_sys.modules.items()):
+                if (not issubclass(type(module), _types.ModuleType) or name in ('__main__', 'builtins')
+                        or name.startswith('__frostlake')):
+                    continue
+                members = module.__dict__
+                origin = getattr(members.get('__spec__'), 'origin', None)
+                path = members.get('__file__')
+                if origin in ('built-in', 'frozen') or (isinstance(path, str) and path.startswith(stdlib)
+                                                        and not path.startswith(packages)):
+                    found.append((name, module, type(module), dict((key, value) for key, value in members.items()
+                                                            if not (key.startswith('__') and key.endswith('__')))))
+            return found
+        def _snapshot():
+            global _cwd_base, _decimal_base
+            _stdlib.extend(_standard_library())
+            _modules_base.update(_sys.modules)
+            _cwd_base = _getcwd()
+            _decimal_base = _decimal.getcontext().copy()
+        def _imported(key, value):
+            if issubclass(type(value), _types.ModuleType) and value.__dict__.get('__spec__') is not None:
+                return True
+            parent, dot, child = key.rpartition('.')
+            holder = _sys.modules.get(parent) if dot else None
+            return issubclass(type(holder), _types.ModuleType) and holder.__dict__.get(child, _missing) is value
+        def _put_back_standard_library():
+            for name, module, kind, pristine in _stdlib:
+                if type(module) is not kind:
+                    module.__class__ = kind
+                _put_back_members(module.__dict__, pristine)
+            modules = _sys.modules
+            for name, module, kind, pristine in _stdlib:
+                if modules.get(name, _missing) is not module:
+                    modules[name] = module
+            for key in [k for k in modules if k not in _modules_base and k not in _installed]:
+                if not _imported(key, modules[key]):
+                    del modules[key]
+            try:
+                moved = _getcwd() != _cwd_base
+            except OSError:
+                moved = True
+            if moved:
+                _chdir(_cwd_base)
+            _setcontext(_decimal_base.copy())
+        _decode = _json.JSONDecoder().decode
+        # A SQL NULL a VARIANT parameter takes: a sqlNullWrapper, its type made where no module name is, so it has
+        # no __module__ (live-verified). The interpreter reads a type's missing module unlike the account's, so the
+        # type's own type says it as the account does.
+        class _SqlNullType(type):
+            @property
+            def __module__(cls):
+                # Told whose attribute it is, the fault offers no other name in its place.
+                fault = AttributeError('__module__')
+                fault.obj = cls
+                raise fault
+            def __repr__(cls):
+                return "<class '" + cls.__qualname__ + "'>"
+        _sql_null_namespace = {'__builtins__': _builtins, 'kind': _SqlNullType}
+        exec("sqlNullWrapper = kind('sqlNullWrapper', (), {'__slots__': (), 'is_sql_null': True})", _sql_null_namespace)
+        sqlNullWrapper = _sql_null_namespace['sqlNullWrapper']
+        del sqlNullWrapper.__slots__
+        _decimal_type = _decimal.Decimal
+        _date_type = _datetime.date
+        _time_type = _datetime.time
+        _datetime_type = _datetime.datetime
+        _array_type = _array.array
+        def parse(kind, text):
+            if kind == 'json':
+                return _decode(text)
+            if kind == 'decimal':
+                return _decimal_type(text)
+            if kind == 'int':
+                return int(text)
+            if kind == 'date':
+                return _date_type.fromisoformat(text)
+            if kind == 'time':
+                return _time_type.fromisoformat(text)
+            if kind == 'datetime':
+                return _datetime_type.fromisoformat(text)
+            if kind == 'bytes':
+                return bytes.fromhex(text)
+            if kind == 'sqlnull':
+                return sqlNullWrapper()
+            if kind == 'f':
+                return memoryview(_array_type('f', [float(e) for e in text.split(',')]))
+            if kind == 'i':
+                return memoryview(_array_type('i', [int(e) for e in text.split(',')]))
+            raise ValueError('unknown kind ' + kind)
         def enter():
             saved = dict(_namespace)
             _namespace.clear()
@@ -177,15 +309,60 @@ public final class PythonRuntime {
         def leave(saved):
             _namespace.clear()
             _namespace.update(saved)
+        def resume(key):
+            saved = dict(_namespace)
+            _namespace.clear()
+            kept = _kept.get(key)
+            _namespace.update(_base if kept is None else kept)
+            return [saved, kept is not None]
+        def keep(key):
+            _kept[key] = dict(_namespace)
+        def forget(key):
+            _kept.pop(key, None)
+        def _owned(value):
+            if value is sqlNullWrapper:
+                return True
+            module = str(getattr(value, '__module__', ''))
+            return module.startswith('__frostlake') or module.startswith('snowflake.snowpark')
         def _guard(holder):
-            for kept, _ in _guarded:
-                if kept is holder:
+            if id(holder) in _guarded_ids:
+                return
+            _guarded_ids.add(id(holder))
+            _guarded.append((holder, type(holder), dict(holder.__dict__), getattr(holder, '__bases__', None)))
+            for value in list(holder.__dict__.values()):
+                _guard_member(value)
+        def _guard_member(value):
+            if isinstance(value, (staticmethod, classmethod)):
+                value = value.__func__
+            if isinstance(value, property):
+                for part in (value.fget, value.fset, value.fdel):
+                    _guard_member(part)
+            elif isinstance(value, type):
+                if _owned(value):
+                    _guard(value)
+            elif isinstance(value, _types.FunctionType) and _owned(value):
+                if id(value) in _guarded_ids:
                     return
-            _guarded.append((holder, dict(holder.__dict__)))
-            if isinstance(holder, _types.ModuleType):
-                for value in list(holder.__dict__.values()):
-                    if isinstance(value, type) and str(getattr(value, '__module__', '')).startswith('__frostlake'):
-                        _guard(value)
+                _guarded_ids.add(id(value))
+                cells = [_cell(cell) for cell in value.__closure__ or ()]
+                _functions.append((value, value.__code__, value.__defaults__, value.__kwdefaults__, cells))
+                for held in cells:
+                    _guard_member(held)
+        def _cell(cell):
+            try:
+                return cell.cell_contents
+            except ValueError:
+                return _missing
+        def _guard_classes():
+            seen = set()
+            pending = [object]
+            while pending:
+                for sub in type.__subclasses__(pending.pop()):
+                    if id(sub) not in seen:
+                        seen.add(id(sub))
+                        pending.append(sub)
+                        if _owned(sub):
+                            _guard(sub)
         def module(name, source):
             before = set(_sys.modules)
             made = _types.ModuleType(name)
@@ -196,16 +373,38 @@ public final class PythonRuntime {
                 if isinstance(installed, _types.ModuleType) and getattr(installed, '__spec__', None) is None:
                     _installed[key] = installed
                     _guard(installed)
+            _guard_classes()
             return made
         def _put_back_members(current, pristine):
             for key, value in pristine.items():
                 if current.get(key, _missing) is not value:
                     current[key] = value
-        def _put_back_class(holder, pristine):
+        def _put_back(holder, kind, pristine, bases):
+            if type(holder) is not kind:
+                holder.__class__ = kind
+            current = holder.__dict__
+            for key in [k for k in current if k not in pristine]:
+                delattr(holder, key)
             for key, value in pristine.items():
-                if holder.__dict__.get(key, _missing) is not value:
+                if current.get(key, _missing) is not value:
                     setattr(holder, key, value)
+            if bases is not None and holder.__bases__ != bases:
+                holder.__bases__ = bases
+        def _put_back_function(function, code, defaults, kwdefaults, cells):
+            if function.__code__ is not code:
+                function.__code__ = code
+            if function.__defaults__ is not defaults:
+                function.__defaults__ = defaults
+            if function.__kwdefaults__ is not kwdefaults:
+                function.__kwdefaults__ = kwdefaults
+            for cell, value in zip(function.__closure__ or (), cells):
+                if _cell(cell) is not value:
+                    if value is _missing:
+                        del cell.cell_contents
+                    else:
+                        cell.cell_contents = value
         def restore():
+            _put_back_standard_library()
             current = _builtins.__dict__
             for key in [k for k in current if k not in _builtins_base]:
                 del current[key]
@@ -219,11 +418,10 @@ public final class PythonRuntime {
             for key, installed in _installed.items():
                 if _sys.modules.get(key) is not installed:
                     _sys.modules[key] = installed
-            for holder, pristine in _guarded:
-                if isinstance(holder, type):
-                    _put_back_class(holder, pristine)
-                else:
-                    _put_back_members(holder.__dict__, pristine)
+            for holder, kind, pristine, bases in _guarded:
+                _put_back(holder, kind, pristine, bases)
+            for guarded in _functions:
+                _put_back_function(*guarded)
         """;
 
     /** Makes {@link #RUNTIME_SOURCE} a module bound to the namespace it runs in, leaving no name of its own there. */
@@ -232,7 +430,7 @@ public final class PythonRuntime {
         __fl_runtime = __fl_types.ModuleType('__frostlake_runtime')
         exec(compile(__fl_runtime_source, '<frostlake>', 'exec'), __fl_runtime.__dict__)
         del __fl_types, __fl_runtime_source
-        __fl_runtime.bind(globals())
+        __fl_runtime.bind(globals(), __fl_runtime)
         """;
 
     /** A new interpreter, with the runtime's own module made on it. */
@@ -259,7 +457,7 @@ public final class PythonRuntime {
             // Hand Python the host's zone explicitly: without TZ, GraalPy's tzset falls back to GMT
             // and (see HOST_TIME_ZONE) mutates the JVM default when pandas imports.
             .environment("TZ", HOST_TIME_ZONE.getID());
-        final String venv = venvDirectory;
+        final String venv = VENV.build();
         if (venv != null) {
             // Pointing the interpreter's executable into the venv is how GraalPy activates one when
             // embedded: site.py finds pyvenv.cfg next to the executable and adds the venv's
@@ -299,10 +497,16 @@ public final class PythonRuntime {
         }
     };
 
-    /** Longest a single Python execution may run before its context is treated as wedged. */
-    private static final long EXECUTION_TIMEOUT_SECONDS = 60;
+    /** Longest a discarded context's close may take before the thread closing it is interrupted. */
+    private static final long CLOSE_TIMEOUT_SECONDS = 60;
 
-    /** Watchdog that cancels a wedged Python execution. One daemon thread for the whole JVM. */
+    /**
+     * The watch the outermost Python execution on this thread keeps on its statement (see {@link #eval}), or null
+     * while none runs: the executions a handler's queries make inside it are covered by it.
+     */
+    private static final ThreadLocal<Object> WATCH = new ThreadLocal<>();
+
+    /** Watchdog that interrupts a wedged close of a discarded context. One daemon thread for the JVM. */
     private static final ScheduledExecutorService WATCHDOG =
         Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
             @Override
@@ -317,19 +521,38 @@ public final class PythonRuntime {
     }
 
     /**
-     * Configure the GraalPy venv packages become importable from (see {@link #venvDirectory}). A null,
-     * blank, or non-existent directory leaves the runtime on the standard library alone — a missing venv
-     * must not break every Python handler that never imports third-party packages.
+     * Configure the GraalPy venv packages become importable from (see {@link #VENV}). A null, blank, or
+     * non-existent directory leaves the runtime on the standard library alone — a missing venv must not
+     * break every Python handler that never imports third-party packages.
      */
     public static void configureVenv(final String venvDir) {
+        VENV.configure(validVenv(venvDir));
+    }
+
+    /**
+     * The venv a {@code python.venv} setting names, trimmed, or null where it names none GraalPy can activate: blank,
+     * or no directory holding a {@code pyvenv.cfg}.
+     *
+     * @param venvDir the setting, or null
+     * @return the venv, or null
+     */
+    static String validVenv(final String venvDir) {
         if (venvDir == null || venvDir.trim().isEmpty()) {
-            return;
+            return null;
         }
         final String trimmed = venvDir.trim();
-        if (!new java.io.File(trimmed, "pyvenv.cfg").isFile()) {
-            return;
-        }
-        venvDirectory = trimmed;
+        return new File(trimmed, "pyvenv.cfg").isFile() ? trimmed : null;
+    }
+
+    /**
+     * Refuse a Python call of an engine whose {@code python.venv} names a venv other than the one this JVM's GraalPy
+     * contexts import from: each thread keeps one context whichever engine calls it, so a JVM's GraalPy runs one
+     * venv. The first call naming a venv fixes it (see {@link PythonVenvChoice#require}).
+     *
+     * @param requested the venv the calling engine names (see {@link #validVenv}), or null for none
+     */
+    static void requireVenv(final String requested) {
+        VENV.require(requested);
     }
 
     /** This thread's Python context, created on first use; every execution on it passes here (see {@link #RAN}). */
@@ -358,6 +581,48 @@ public final class PythonRuntime {
     }
 
     /**
+     * Enter the module namespace a call site of a routine keeps for the running statement, as the site's last call
+     * left it, or a namespace of its own where the site made no call yet (see {@link #enterModule()} and
+     * PythonModuleState).
+     *
+     * @param key the call site's key
+     * @return the frame, to be left with {@link #leaveModule(PythonModuleFrame)} once the call is through
+     */
+    static PythonModuleFrame resumeModule(final String key) {
+        final Context context = context();
+        final Value entered = RUNTIME.get().invokeMember("resume", key);
+        return new PythonModuleFrame(context, entered.getArrayElement(0), entered.getArrayElement(1).asBoolean());
+    }
+
+    /**
+     * Keep the namespace the running call holds for its call site's next call (see {@link #resumeModule}).
+     *
+     * @param key the call site's key
+     */
+    static void keepModule(final String key) {
+        if (CONTEXT.get() != null && RUNTIME.get() != null) {
+            RUNTIME.get().invokeMember("keep", key);
+        }
+    }
+
+    /**
+     * Forget the namespace a call site kept: its statement has ended. An interpreter thrown away meanwhile kept
+     * nothing, and one that cannot forget is thrown away.
+     *
+     * @param key the call site's key
+     */
+    static void forgetModule(final String key) {
+        if (CONTEXT.get() == null || RUNTIME.get() == null) {
+            return;
+        }
+        try {
+            RUNTIME.get().invokeMember("forget", key);
+        } catch (final RuntimeException unforgettable) {
+            discardContext();
+        }
+    }
+
+    /**
      * Leave a frame {@link #enterModule()} entered, its namespace holding again what it held before. A frame whose
      * interpreter was thrown away meanwhile has nothing to put back, and an interpreter that cannot put it back is
      * thrown away.
@@ -378,9 +643,11 @@ public final class PythonRuntime {
     /**
      * An outermost statement on this thread has ended: what its routines changed in the state the interpreter shares
      * between calls - the built-in names, the environment, the runtime's helper modules and the snowpark emulation's
-     * classes - is put back (see {@link #RUNTIME_SOURCE}), so that no routine reaches the next statement's, whichever
-     * engine runs it, through them. A thread with no interpreter, or whose interpreter ran nothing since the state
-     * was last put back, has nothing to put back, and an interpreter that cannot put it back is thrown away.
+     * classes, the members of the standard library's modules imported by then, what a routine put on
+     * {@code sys.modules}, the working directory and the decimal context - is put back (see {@link #RUNTIME_SOURCE}),
+     * so that no routine reaches the next statement's, whichever engine runs it, through them. A thread with no
+     * interpreter, or whose interpreter ran nothing since the state was last put back, has nothing to put back, and an
+     * interpreter that cannot put it back is thrown away.
      */
     static void restoreShared() {
         if (CONTEXT.get() == null || RUNTIME.get() == null || !Boolean.TRUE.equals(RAN.get())) {
@@ -459,7 +726,7 @@ public final class PythonRuntime {
             public void run() {
                 closer.interrupt();
             }
-        }, EXECUTION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        }, CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
 
     /**
@@ -508,10 +775,10 @@ public final class PythonRuntime {
     /**
      * Execute Python source in this thread's context, reusing a cached {@link Source} per body.
      *
-     * <p>Guarded by a watchdog that cancels the context after {@link #EXECUTION_TIMEOUT_SECONDS}. A leaked
-     * Python lock (see {@link #discardContext()}) otherwise blocks the calling thread FOREVER, and callers
-     * hold the engine's lock while running a UDF — one wedged thread stalled 16 others in a vendor test
-     * run. Cancellation turns that into an ordinary statement error, which callers already handle.
+     * <p>The statement the execution runs for bounds it, and nothing else does: once the statement is canceled, times
+     * out or its session is aborted, the context is cancelled (see {@link GuestWatch}), and the failure is the
+     * statement's (see TrackedRuntime). A procedure runs as long as its statement may, past any minute (live-verified).
+     * The outermost execution on this thread keeps the watch; those a handler's queries make inside it share it.
      */
     public static Value eval(final String code) {
         final Map<String, Source> cache = SOURCES.get();
@@ -521,20 +788,26 @@ public final class PythonRuntime {
             cache.put(code, source);
         }
         final Context context = context();
-        final ScheduledFuture<?> alarm = WATCHDOG.schedule(new Runnable() {
+        final Object watch = WATCH.get() != null ? null : GuestWatch.begin(new Runnable() {
             @Override
             public void run() {
                 try {
-                    context.close(true);   // cancels the in-flight execution on the blocked thread
+                    context.close(true);   // cancels the in-flight execution on the statement's thread
                 } catch (final RuntimeException alreadyUnwinding) {
                     // Best effort.
                 }
             }
-        }, EXECUTION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        });
+        if (watch != null) {
+            WATCH.set(watch);
+        }
         try {
             return context.eval(source);
         } finally {
-            alarm.cancel(false);
+            if (watch != null) {
+                GuestWatch.end(watch);
+                WATCH.remove();
+            }
             // Undo any process-global time-zone mutation the executed Python caused (pandas import
             // sets the JVM default to GMT) so the engine's clock stays consistent across the run.
             if (!HOST_TIME_ZONE.equals(TimeZone.getDefault())) {
@@ -552,12 +825,10 @@ public final class PythonRuntime {
      */
     public static boolean bindJson(final String name, final Object value) {
         if (value instanceof VariantValue) {
-            final String variantHolder = "__json_text_" + name;
             // The JSON of the value, not the display form: a variant STRING displays its content unquoted
             // and an XML variant displays as XML, and json.loads can read neither — nor the bare token an
             // array's SQL NULL element is written as, which arrives as None (live-verified).
-            bind(variantHolder, VariantText.standard(VariantUndefined.withNulls(((VariantValue) value).node())));
-            eval("import json\n" + name + " = json.loads(" + variantHolder + ")\n");
+            bindParsed(name, "json", VariantText.standard(VariantUndefined.withNulls(((VariantValue) value).node())));
             return true;
         }
         if (!(value instanceof CharSequence)) {
@@ -568,9 +839,7 @@ public final class PythonRuntime {
         } catch (final RuntimeException notJson) {
             return false;
         }
-        final String holder = "__json_text_" + name;
-        bind(holder, value.toString());
-        eval("import json\n" + name + " = json.loads(" + holder + ")\n");
+        bindParsed(name, "json", value.toString());
         return true;
     }
 
@@ -580,10 +849,21 @@ public final class PythonRuntime {
      * the handler an opaque foreign value.
      */
     public static boolean bindBytes(final String name, final String hex) {
-        final String holder = "__hex_text_" + name;
-        bind(holder, hex);
-        eval(name + " = bytes.fromhex(" + holder + ")\n");
+        bindParsed(name, "bytes", hex);
         return true;
+    }
+
+    /**
+     * Bind a global to the Python value the runtime's {@code parse} builds from a text (see {@link #RUNTIME_SOURCE}).
+     *
+     * @param name the global
+     * @param kind what the text is: {@code json}, {@code decimal}, {@code int}, {@code date}, {@code time},
+     *             {@code datetime}, {@code bytes}, or a VECTOR's array type code {@code f} or {@code i}
+     * @param text the text
+     */
+    private static void bindParsed(final String name, final String kind, final String text) {
+        final Context context = context();
+        context.getBindings("python").putMember(name, RUNTIME.get().invokeMember("parse", kind, text));
     }
 
     /**
@@ -592,7 +872,8 @@ public final class PythonRuntime {
      * {@code decimal.Decimal} at that scale, a DATE a {@code datetime.date}, a TIME a {@code datetime.time} and a
      * TIMESTAMP a {@code datetime.datetime} — without a zone for NTZ, at the session's wall clock for LTZ and with
      * its own offset for TZ, to the microsecond —, a semi-structured value a dict, a list or the scalar it holds,
-     * and a BINARY {@code bytes}. A BOOLEAN, a FLOAT and a text bind as they are.
+     * a BINARY {@code bytes} and a VECTOR a {@code memoryview} of its 32-bit elements (see {@link #bindVector}). A
+     * BOOLEAN, a FLOAT and a text bind as they are.
      *
      * @param name  the parameter's name
      * @param value the argument, converted to the parameter's SQL type
@@ -600,7 +881,12 @@ public final class PythonRuntime {
      */
     public static void bindArgument(final String name, final Object value, final DataType type) {
         if (value == null) {
-            bind(name, null);
+            // A SQL NULL is a sqlNullWrapper to a VARIANT parameter and None to any other (live-verified).
+            if (type instanceof VariantType) {
+                bindParsed(name, "sqlnull", "");
+            } else {
+                bind(name, null);
+            }
             return;
         }
         final boolean semiStructured = type != null && type.getCategory() == TypeCategory.SEMI_STRUCTURED;
@@ -608,31 +894,36 @@ public final class PythonRuntime {
                 && bindJson(name, value)) {
             return;
         }
+        if (semiStructured && (value instanceof TemporalAccessor || value instanceof BinaryValue)) {
+            // A semi-structured argument holding a DATE, a TIME, a timestamp or a BINARY is the text the VARIANT
+            // shows, '2024-01-02 10:11:12.000', as a member of an ARRAY or an OBJECT is (live-verified).
+            bind(name, ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value).asText());
+            return;
+        }
         if (value instanceof BinaryValue) {
             bindBytes(name, ((BinaryValue) value).toHex());
             return;
         }
-        final String holder = "__arg_text_" + name;
+        if (value instanceof VectorValue) {
+            bindVector(name, (VectorValue) value);
+            return;
+        }
         if (value instanceof BigDecimal) {
             final BigDecimal number = (BigDecimal) value;
-            bind(holder, number.toPlainString());
-            eval(number.scale() > 0 ? "import decimal\n" + name + " = decimal.Decimal(" + holder + ")\n"
-                : name + " = int(" + holder + ")\n");
+            bindParsed(name, number.scale() > 0 ? "decimal" : "int", number.toPlainString());
             return;
         }
         if (value instanceof LocalDate) {
-            bind(holder, value.toString());
-            eval("import datetime\n" + name + " = datetime.date.fromisoformat(" + holder + ")\n");
+            bindParsed(name, "date", value.toString());
             return;
         }
         if (value instanceof LocalTime) {
-            bind(holder, ((LocalTime) value).truncatedTo(ChronoUnit.MICROS).format(PYTHON_TIME));
-            eval("import datetime\n" + name + " = datetime.time.fromisoformat(" + holder + ")\n");
+            bindParsed(name, "time", ((LocalTime) value).truncatedTo(ChronoUnit.MICROS).format(PYTHON_TIME));
             return;
         }
         if (value instanceof LocalDateTime) {
-            bind(holder, ((LocalDateTime) value).truncatedTo(ChronoUnit.MICROS).format(PYTHON_DATE_TIME));
-            eval("import datetime\n" + name + " = datetime.datetime.fromisoformat(" + holder + ")\n");
+            bindParsed(name, "datetime",
+                ((LocalDateTime) value).truncatedTo(ChronoUnit.MICROS).format(PYTHON_DATE_TIME));
             return;
         }
         if (value instanceof OffsetDateTime || value instanceof ZonedDateTime) {
@@ -641,12 +932,34 @@ public final class PythonRuntime {
             final boolean keepsItsZone = type != null && type.getName() != null
                 && type.getName().toUpperCase(Locale.ROOT).endsWith("_TZ");
             // A TIMESTAMP_TZ keeps its offset; a TIMESTAMP_LTZ is the session's wall clock at that instant.
-            bind(holder, keepsItsZone ? zoned.format(PYTHON_ZONED)
+            bindParsed(name, "datetime", keepsItsZone ? zoned.format(PYTHON_ZONED)
                 : zoned.atZoneSameInstant(SessionZone.current()).toLocalDateTime().format(PYTHON_DATE_TIME));
-            eval("import datetime\n" + name + " = datetime.datetime.fromisoformat(" + holder + ")\n");
             return;
         }
         bind(name, value);
+    }
+
+    /**
+     * Bind a VECTOR argument as the Python value Snowflake's SQL-Python type mapping names for it, a {@code memoryview}
+     * (docs.snowflake.com/en/developer-guide/udf-stored-procedure-data-type-mapping; its format is not documented, and
+     * is taken to be the elements' own): one over an {@code array} of 32-bit floats ({@code 'f'}) for a
+     * {@code VECTOR(FLOAT, n)} and of 32-bit ints ({@code 'i'}) for a {@code VECTOR(INT, n)}, which a handler indexes,
+     * iterates, measures and turns into a list ({@code tolist()}) as it would the elements themselves. The cpython
+     * worker builds the same from its {@code $vec}. Binding the engine's value instead handed the handler a foreign
+     * object it could not index.
+     */
+    static void bindVector(final String name, final VectorValue vector) {
+        final boolean integral = vector.getElementType() == VectorElementType.INT;
+        final StringBuilder text = new StringBuilder();
+        for (int i = 0; i < vector.dimension(); i++) {
+            if (i > 0) {
+                text.append(',');
+            }
+            // A float32 element is exact as a double, and Double.toString's text (NaN and Infinity too) reads back
+            // through float() to that same double.
+            text.append(integral ? Long.toString((long) vector.element(i)) : Double.toString(vector.element(i)));
+        }
+        bindParsed(name, integral ? "i" : "f", text.toString());
     }
 
     private static final DateTimeFormatter PYTHON_TIME = DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSS");
@@ -718,34 +1031,18 @@ public final class PythonRuntime {
         return value.toString();
     }
 
-    /** {@code str(datetime)} — {@code 2024-10-16 19:47:11.488000}; no fraction when the microsecond is 0. */
+    /** {@code str(datetime)}; see {@link PythonValueText#pythonDatetimeStr(LocalDateTime)}. */
     public static String pythonDatetimeStr(final LocalDateTime dt) {
-        return String.format("%04d-%02d-%02d %s",
-            dt.getYear(), dt.getMonthValue(), dt.getDayOfMonth(), pythonTimeStr(dt.toLocalTime()));
+        return PythonValueText.pythonDatetimeStr(dt);
     }
 
-    /** {@code str(time)} — {@code 19:47:11.488000}; no fraction when the microsecond is 0. */
+    /** {@code str(time)}; see {@link PythonValueText#pythonTimeStr}. */
     public static String pythonTimeStr(final LocalTime t) {
-        final int micro = t.getNano() / 1000;
-        final String base = String.format("%02d:%02d:%02d", t.getHour(), t.getMinute(), t.getSecond());
-        return micro == 0 ? base : base + String.format(".%06d", micro);
+        return PythonValueText.pythonTimeStr(t);
     }
 
-    /**
-     * A temporal nested INSIDE a returned container as the text Snowflake stores in a VARIANT: Python's
-     * {@code str()} of the value, with the naive fields verbatim. A top-level return keeps its
-     * {@code java.time} type instead — only container members are stringified.
-     */
+    /** See {@link PythonValueText#temporalInContainer}. */
     public static Object temporalInContainer(final Object value) {
-        if (value instanceof LocalDateTime) {
-            return pythonDatetimeStr((LocalDateTime) value);
-        }
-        if (value instanceof LocalTime) {
-            return pythonTimeStr((LocalTime) value);
-        }
-        if (value instanceof LocalDate) {
-            return value.toString();
-        }
-        return value;
+        return PythonValueText.temporalInContainer(value);
     }
 }

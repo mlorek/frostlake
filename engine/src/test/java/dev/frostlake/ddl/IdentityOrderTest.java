@@ -128,12 +128,90 @@ public class IdentityOrderTest extends BaseDatabaseTest {
         assertEquals(duplicate, outcome("CREATE TABLE tx (a INT AUTOINCREMENT ORDER NOORDER)"));
         assertEquals(duplicate, outcome("CREATE TABLE tx (a INT AUTOINCREMENT ORDER ORDER)"));
         assertEquals(duplicate, outcome("CREATE TABLE tx (a INT IDENTITY NOORDER NOORDER)"));
-        assertEquals("SQL compilation error:|syntax error line 1 at position 47 unexpected 'ORDER'.",
-            outcome("CREATE TABLE tx (a INT IDENTITY (1, 1) NOORDER ORDER)"));
+        assertEquals(duplicate, outcome("CREATE TABLE tx (a INT IDENTITY (1, 1) NOORDER ORDER)"));
+        assertEquals(duplicate, outcome("CREATE TABLE tx (a INT AUTOINCREMENT (1, 1) ORDER ORDER)"));
+        assertEquals(duplicate, outcome("CREATE TABLE tx (a INT IDENTITY (1, 1) ORDER NOORDER ORDER)"));
         assertEquals("ok", outcome("CREATE TABLE tx (a INT IDENTITY START 1 ORDER INCREMENT 1)"));
         assertEquals(rows("A=YES"), ordered("TX"));
         assertEquals("SQL compilation error:|syntax error line 1 at position 23 unexpected 'ORDER'.",
             outcome("CREATE TABLE ty (a INT ORDER)"));
+    }
+
+    @Test
+    public void everyOptionIsWrittenOnceAndTheFirstRepeatedIsTheOneTold() {
+        final String order = "SQL compilation error:|duplicate property 'SEQUENCE_ORDER';";
+        final String start = "SQL compilation error:|duplicate property 'SEQUENCE_START';";
+        final String increment = "SQL compilation error:|duplicate property 'SEQUENCE_INCREMENT';";
+        assertEquals(start, outcome("CREATE TABLE tx (a INT IDENTITY START 1 START 2)"));
+        assertEquals(start, outcome("CREATE TABLE tx (a INT AUTOINCREMENT START WITH 1 START 2)"));
+        assertEquals(increment, outcome("CREATE TABLE tx (a INT IDENTITY INCREMENT 1 INCREMENT 2)"));
+        assertEquals(start, outcome("CREATE TABLE tx (a INT IDENTITY START 1 INCREMENT 1 START 2)"));
+        assertEquals(order, outcome("CREATE TABLE tx (a INT IDENTITY ORDER ORDER START 1 START 2)"));
+        assertEquals(start, outcome("CREATE TABLE tx (a INT IDENTITY START 1 START 2 ORDER ORDER)"));
+        assertEquals(increment, outcome("CREATE TABLE tx (a INT IDENTITY INCREMENT 1 START 1 INCREMENT 2 START 2)"));
+        assertEquals(start, outcome("CREATE TABLE tx (a INT IDENTITY START 1 ORDER START 2 NOORDER)"));
+    }
+
+    @Test
+    public void aPairTakesOneChoiceBeforeItAndAnyNumberAfterIt() {
+        for (final String form : new String[] {"IDENTITY ORDER (5, 2)", "AUTOINCREMENT ORDER (5, 2)", "IDENTITY (5, 2) ORDER"}) {
+            engine.execute("CREATE OR REPLACE TABLE tp (a INT " + form + ", b INT)");
+            assertEquals(rows("A=YES", "B=null"), ordered("TP"));
+            assertEquals("IDENTITY START 5 INCREMENT 2 ORDER", describeCell("tp", "A", "default"));
+        }
+        engine.execute("CREATE OR REPLACE TABLE tp (a INT IDENTITY NOORDER (5, 2), b INT)");
+        assertEquals("IDENTITY START 5 INCREMENT 2 NOORDER", describeCell("tp", "A", "default"));
+        engine.execute("ALTER TABLE tp ADD COLUMN c INT IDENTITY ORDER (1, 1)");
+        assertEquals("IDENTITY START 1 INCREMENT 1 ORDER", describeCell("tp", "C", "default"));
+        assertEquals("SQL compilation error:|duplicate property 'SEQUENCE_ORDER';",
+            outcome("ALTER TABLE tp ADD COLUMN d INT IDENTITY (1, 1) ORDER ORDER"));
+        // Nothing but that choice stands beside a pair, and the report ends at the word that does.
+        final String[][] cells = {
+            {"IDENTITY ORDER (1, 1) ORDER", "45", "ORDER"}, {"IDENTITY ORDER (1, 1) NOORDER", "45", "NOORDER"},
+            {"IDENTITY ORDER (1, 1) START 1", "45", "START"}, {"IDENTITY ORDER (1, 1) (1, 1)", "45", "("},
+            {"IDENTITY (1, 1) START 1", "39", "START"}, {"IDENTITY (1, 1) START WITH 1", "39", "START"},
+            {"IDENTITY (1, 1) INCREMENT 1", "39", "INCREMENT"}, {"IDENTITY (1, 1) ORDER START 1", "45", "START"},
+            {"IDENTITY (1, 1) NOORDER START 5", "47", "START"}, {"IDENTITY (1, 1) (1, 1)", "39", "("},
+            {"IDENTITY (1, 1) NOORDER (1, 1)", "47", "("}, {"AUTOINCREMENT (1, 1) START 1", "44", "START"},
+            {"IDENTITY ()", "33", ")"}, {"AUTOINCREMENT ()", "38", ")"}, {"IDENTITY (x, 1)", "33", "x"},
+            {"IDENTITY (1.5, 1)", "33", "1.5"}, {"IDENTITY (, 1)", "33", ","}, {"IDENTITY ORDER ()", "39", ")"},
+        };
+        for (final String[] cell : cells) {
+            assertEquals("SQL compilation error:|syntax error line 1 at position " + cell[1] + " unexpected '" + cell[2]
+                + "'.", outcome("CREATE TABLE tx (a INT " + cell[0] + ")"), cell[0]);
+        }
+        // Two choices before a pair are a word list, which no pair follows.
+        assertTrue(outcome("CREATE TABLE tx (a INT IDENTITY NOORDER ORDER (1, 1))")
+            .startsWith("SQL compilation error:|syntax error line 1 at position 46 unexpected '('."));
+        assertTrue(outcome("CREATE TABLE tx (a INT IDENTITY START 1 (1, 1))")
+            .startsWith("SQL compilation error:|syntax error line 1 at position 40 unexpected '('."));
+    }
+
+    @Test
+    public void startAndIncrementTakeTheirWordAndAnEqualsSign() {
+        final String[][] forms = {
+            {"START WITH 5", "5", "1"}, {"START = 5", "5", "1"}, {"START WITH = 5", "5", "1"}, {"INCREMENT BY 3", "1", "3"},
+            {"INCREMENT = 3", "1", "3"}, {"INCREMENT BY = 3", "1", "3"}, {"START WITH 5 INCREMENT BY 3", "5", "3"},
+            {"START WITH = 5 INCREMENT BY = 3", "5", "3"}, {"INCREMENT BY 3 START WITH 5", "5", "3"},
+        };
+        for (final String[] form : forms) {
+            engine.execute("CREATE OR REPLACE TABLE ts (a INT IDENTITY " + form[0] + ", b INT)");
+            assertEquals("IDENTITY START " + form[1] + " INCREMENT " + form[2] + " NOORDER",
+                describeCell("ts", "A", "default"), form[0]);
+        }
+        engine.execute("CREATE OR REPLACE TABLE ts (a INT AUTOINCREMENT START WITH -5 INCREMENT BY -3 NOORDER, b INT)");
+        assertEquals("IDENTITY START -5 INCREMENT -3 NOORDER", describeCell("ts", "A", "default"));
+        engine.execute("INSERT INTO ts (b) VALUES (1)");
+        assertEquals("-5", String.valueOf(engine.executeQuery("SELECT a FROM ts").getRows().get(0).getValue(0)));
+        final String[][] refused = {
+            {"START +1", "38", "+"}, {"START WITH +1", "43", "+"}, {"START = +1", "40", "+"}, {"START 1.5", "38", "1.5"},
+            {"START BY 1", "38", "BY"}, {"START WITH", "42", ")"}, {"START =", "39", ")"}, {"START WITH =", "44", ")"},
+            {"START", "37", ")"}, {"INCREMENT BY", "44", ")"}, {"INCREMENT =", "43", ")"}, {"INCREMENT = BY 1", "44", "BY"},
+        };
+        for (final String[] cell : refused) {
+            assertEquals("SQL compilation error:|syntax error line 1 at position " + cell[1] + " unexpected '" + cell[2]
+                + "'.", outcome("CREATE TABLE tx (a INT IDENTITY " + cell[0] + ")"), cell[0]);
+        }
     }
 
     @Test

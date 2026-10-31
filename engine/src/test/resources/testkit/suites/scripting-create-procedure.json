@@ -59,7 +59,7 @@
     {"name": "a-procedure-with-a-loop-and-an-object-return", "steps": [
       {"sql": "CREATE PROCEDURE process_with_loop(max_iterations INTEGER) RETURNS OBJECT AS 'DECLARE counter INTEGER := 0; outcome OBJECT; BEGIN WHILE (counter < 10) DO counter := counter + 1; END WHILE; outcome := OBJECT_CONSTRUCT(''count'', counter, ''status'', ''completed''); RETURN outcome; END'"},
       {"sql": "SHOW PROCEDURES LIKE 'process_with_loop'", "expect": {"rowCount": 1}},
-      {"sql": "CALL process_with_loop(5)", "expect": {"value": "{\"count\":10,\"status\":\"completed\"}"}}
+      {"sql": "CALL process_with_loop(5)", "expect": {"value": "{\n\"count\": 10,\n\"status\": \"completed\"\n}"}}
     ]}
   ]
 }

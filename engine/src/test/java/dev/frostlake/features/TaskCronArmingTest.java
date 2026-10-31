@@ -20,7 +20,6 @@ import dev.frostlake.DatabaseEngine;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.task.TaskScheduler;
 
-import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
@@ -62,11 +61,6 @@ public class TaskCronArmingTest {
         return engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC").getTask(name);
     }
 
-    /** The next-run stamp is the host's wall clock, as every other task stamp is. */
-    private static LocalDateTime hostWallClock(final ZonedDateTime instant) {
-        return instant.withZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime();
-    }
-
     @Test
     public void resumeArmsTheNextCalendarFire() {
         engine.execute("CREATE TASK new_year SCHEDULE = 'USING CRON 0 0 1 1 * UTC' AS SELECT 1");
@@ -74,7 +68,7 @@ public class TaskCronArmingTest {
 
         final ZonedDateTime now = ZonedDateTime.now(ZoneOffset.UTC);
         final ZonedDateTime newYear = ZonedDateTime.of(now.getYear() + 1, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC);
-        assertEquals(hostWallClock(newYear), task("NEW_YEAR").getNextRunTime());
+        assertEquals(newYear.toInstant(), task("NEW_YEAR").getNextRunTime());
         assertTrue(engine.getTaskScheduler().isScheduled(TaskScheduler.schedulerKey("TEST_DB", "PUBLIC", "NEW_YEAR")));
     }
 
@@ -89,7 +83,7 @@ public class TaskCronArmingTest {
         if (!expected.isAfter(now)) {
             expected = expected.plusYears(1);
         }
-        assertEquals(hostWallClock(expected), task("NOON_TOKYO").getNextRunTime());
+        assertEquals(expected.toInstant(), task("NOON_TOKYO").getNextRunTime());
     }
 
     @Test

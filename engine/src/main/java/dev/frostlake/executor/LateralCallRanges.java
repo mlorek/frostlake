@@ -25,8 +25,10 @@ import java.util.List;
  * The interval of each column a table function computes, united over the calls it makes for the rows to its left. A
  * function called once per row of another relation is tagged by all of its calls, as the account tags it by the
  * argument column's statistics: {@code TABLE(t_div(ti.i))} over {@code ti} holding 3 and 300 is [SB2] where each call
- * alone would be [SB1] or its declared width (live-verified). The shape the join is planned with keeps the interval
- * its NULL-bound reading found until a run unites the calls, and gets it back for a run that makes none.
+ * alone would be [SB1] or its declared width (live-verified). A SQL function's body typed by those statistics is
+ * united too ({@link #addTyped}), so a function called for some of the rows alone - the relation to its left filters
+ * the others - is tagged as one called for all. The shape the join is planned with keeps the interval its NULL-bound
+ * reading found until a run unites the calls, and gets it back for a run that makes none.
  */
 final class LateralCallRanges {
 
@@ -82,6 +84,33 @@ final class LateralCallRanges {
             } else {
                 united[i] = united[i] == null ? range : united[i].union(range);
             }
+        }
+    }
+
+    /** @return whether the run made a call */
+    boolean called() {
+        return called;
+    }
+
+    /**
+     * Widens the calls' intervals to the columns of the body typed by the statistics of the relations to the left:
+     * each column reaches the ends its typing found, whatever rows were called, and keeps the NULLs the calls found.
+     *
+     * @param typed the relation the typing answered
+     */
+    void addTyped(final Table typed) {
+        if (!called || typed.getColumns().size() != united.length) {
+            return;
+        }
+        for (int i = 0; i < united.length; i++) {
+            final ValueRange range = typed.getColumns().get(i).getValueRange();
+            if (unknown[i] || united[i] == null || range == null || range.isEmpty() || range.getMin() == null
+                    || range.getMax() == null) {
+                continue;
+            }
+            united[i] = united[i].isEmpty()
+                ? ValueRange.between(range.getMin(), range.getMax()).withNullable(united[i].isNullable())
+                : united[i].including(range.getMin()).including(range.getMax());
         }
     }
 

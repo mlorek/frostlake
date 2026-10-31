@@ -255,21 +255,84 @@ public class ScriptingUdfBodyTest extends BaseDatabaseTest {
         assertTrue(failure.getMessage().contains("Numeric value 'abc' is not recognized"), failure.getMessage());
     }
 
-    /** Live: a block-bodied UDF declared {@code RETURNS VARIANT} / ARRAY / OBJECT is CREATED without
-     *  complaint and then fails on every call — {@code Unsupported return type for Snowscript UDF: VARIANT}
-     *  (Snowflake compiles the block lazily). BINARY, DATE, TIMESTAMP_NTZ, BOOLEAN, FLOAT and NUMBER(p,s)
-     *  were all verified to work. */
+    /**
+     * Live: a Snowscript UDF declared to return a semi-structured or a geospatial value is refused at CREATE, the type
+     * in its whole spelling, whatever the body holds. A body that is no block is another matter.
+     */
     @Test
-    public void semiStructuredReturnTypeIsRejectedAtCallTime() {
-        engine.execute("CREATE FUNCTION f_variant() RETURNS VARIANT AS $$ BEGIN RETURN 1; END $$");
+    public void aSemiStructuredReturnIsRefusedAtCreate() {
+        final String[][] types = {{"VARIANT", "VARIANT"}, {"OBJECT", "OBJECT"}, {"ARRAY", "ARRAY"},
+            {"OBJECT(a INT)", "OBJECT(a NUMBER(38,0))"}, {"ARRAY(INT)", "ARRAY(NUMBER(38,0))"},
+            {"MAP(VARCHAR, INT)", "MAP(VARCHAR(134217728), NUMBER(38,0))"}, {"GEOGRAPHY", "GEOGRAPHY"},
+            {"GEOMETRY", "GEOMETRY"}};
+        for (final String[] type : types) {
+            assertRefusedWith("Unsupported return type for Snowscript UDF: " + type[1],
+                "CREATE OR REPLACE FUNCTION f_sv() RETURNS " + type[0] + " AS $$ BEGIN RETURN 1; END $$");
+        }
+        final String variant = "Unsupported return type for Snowscript UDF: VARIANT";
+        for (final String body : new String[] {"BEGIN RETURN nosuch; END", "BEGIN SELECT 1; RETURN 1; END",
+            "BEGIN RETURN (SELECT 1); END", "BEGIN RETURN ; END", "DECLARE x INT; BEGIN RETURN 1; END",
+            "BEGIN RETURN 1; END;", "SELECT 1;", "CREATE TABLE t (a INT);"}) {
+            assertRefusedWith(variant, "CREATE OR REPLACE FUNCTION f_sv() RETURNS VARIANT AS $$ " + body + " $$");
+        }
+        engine.execute("CREATE FUNCTION f_taken() RETURNS INT AS $$ BEGIN RETURN 1; END $$");
+        assertRefusedWith(variant, "CREATE FUNCTION IF NOT EXISTS f_taken() RETURNS VARIANT AS $$ BEGIN RETURN 1; END $$");
+        assertRefusedWith(variant, "CREATE OR REPLACE SECURE FUNCTION f_sv() RETURNS VARIANT AS $$ BEGIN RETURN 1; END $$");
+        // What does not read as a block or as a statement of its own is told as ever.
+        assertRefusedWith(udfSyntax(8, "RETURN"), "CREATE OR REPLACE FUNCTION f_sv() RETURNS VARIANT AS $$ BEGIN RETURN 1 $$");
+        assertRefusedWith(udfSyntax(9, "1"), "CREATE OR REPLACE FUNCTION f_sv() RETURNS VARIANT AS $$ RETURN 1; $$");
+        assertRefusedWith("Declared return type 'VARIANT' is incompatible with actual return type 'NUMBER(1,0)'",
+            "CREATE OR REPLACE FUNCTION f_sv() RETURNS VARIANT AS $$ SELECT 1 $$");
+        // The argument may be of any of these types, and a procedure may return one.
+        engine.execute("CREATE FUNCTION f_sv(x VARIANT) RETURNS INT AS $$ BEGIN RETURN 1; END $$");
+        assertEquals(1, intResult("SELECT f_sv(1::VARIANT)"));
+        engine.execute("CREATE PROCEDURE p_sv() RETURNS VARIANT LANGUAGE SQL AS $$ BEGIN RETURN 1; END $$");
+    }
+
+    /** Live: a DECFLOAT is refused on the call, in lower case, and only a block's: a query body is compiled as ever. */
+    @Test
+    public void aDecfloatReturnIsRefusedOnTheCall() {
+        engine.execute("CREATE FUNCTION f_df() RETURNS DECFLOAT AS $$ BEGIN RETURN 1.5::DECFLOAT; END $$");
         final RuntimeException failure = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
-                engine.executeQuery("SELECT f_variant()");
+                engine.executeQuery("SELECT f_df()");
             }
         });
-        assertTrue(failure.getMessage().contains("Unsupported return type for Snowscript UDF: VARIANT"),
+        assertTrue(failure.getMessage().contains("Unsupported return type for Snowscript UDF: decfloat"),
             failure.getMessage());
+        engine.execute("CREATE FUNCTION f_df(x DECFLOAT) RETURNS INT AS $$ BEGIN RETURN 1; END $$");
+        assertEquals(1, intResult("SELECT f_df(1::DECFLOAT)"));
+    }
+
+    /** Live: several statements are refused by their count, a block among them or not, whatever the function returns. */
+    @Test
+    public void severalStatementsAreRefusedByTheirCount() {
+        final String count = "Actual statement count 2 did not match the desired statement count 1.";
+        for (final String returned : new String[] {"NUMBER", "VARIANT", "TABLE (a NUMBER)"}) {
+            assertRefusedWith(count, "CREATE OR REPLACE FUNCTION f_sc() RETURNS " + returned + " AS $$ SELECT 1; SELECT 2; $$");
+            assertRefusedWith(count,
+                "CREATE OR REPLACE FUNCTION f_sc() RETURNS " + returned + " AS $$ BEGIN RETURN 1; END; SELECT 1 $$");
+        }
+    }
+
+    /** Live: a table function's body is a query; an expression is told so, in the body's own text. */
+    @Test
+    public void aTableFunctionBodyThatIsAnExpressionIsRefused() {
+        final String[] bodies = {"$$ 1 $$", "$$ 'x' $$", "$$ 1 + 1 $$", "$$ ABS(1) $$", "$$ (1) $$", "$$\n1\n$$", "'1'",
+            "$$ 1::INT $$", "$$ 1 /* c */ $$", "$$ CASE WHEN TRUE THEN 1 END $$"};
+        final String[] found = {" 1 ", " 'x' ", " 1 + 1 ", " ABS(1) ", " (1) ", "\n1\n", "1", " 1::INT ", " 1 /* c */ ",
+            " CASE WHEN TRUE THEN 1 END "};
+        for (int i = 0; i < bodies.length; i++) {
+            assertRefusedWith("Table function definition expected a subquery, found '" + found[i] + "'.",
+                "CREATE OR REPLACE FUNCTION f_tx() RETURNS TABLE (a NUMBER) AS " + bodies[i]);
+        }
+        assertRefusedWith("Table function definition expected a subquery, found ' 1 '.",
+            "CREATE OR REPLACE FUNCTION f_tx() RETURNS TABLE () AS $$ 1 $$");
+        // Its names and its calls are found first.
+        assertRefusedWith("invalid identifier 'NOSUCH'", "CREATE OR REPLACE FUNCTION f_tx() RETURNS TABLE (a NUMBER) AS $$ nosuch $$");
+        assertRefusedWith("Unknown function NOSUCH.",
+            "CREATE OR REPLACE FUNCTION f_tx() RETURNS TABLE (a NUMBER) AS $$ nosuch(1) $$");
     }
 
     /** Live: NUMBER(p,s) and BOOLEAN block-bodied functions return normally. */
@@ -412,7 +475,7 @@ public class ScriptingUdfBodyTest extends BaseDatabaseTest {
                     + "$$ BEGIN RETURN (SELECT COUNT(*) FROM tf_src); END $$");
             }
         });
-        assertTrue(failure.getMessage().contains("Compilation of SQL UDF failed"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("Unsupported return type for Snowscript UDF: TABLE return type"), failure.getMessage());
     }
 
     // ---------------------------------------------------------------- scope hygiene and nesting
@@ -635,19 +698,23 @@ public class ScriptingUdfBodyTest extends BaseDatabaseTest {
     }
 
     /**
-     * Live: a TABLE function has no Snowscript form, so a terminated body, or one of several statements, is
-     * a syntax error at the body's first word.
+     * Live: a terminated body is a Snowscript UDF's, which returns no table, whatever the statement is. A body that
+     * reads as neither a block nor a statement is told as a table function's.
      */
     @Test
-    public void aTerminatedTableFunctionBodyIsASyntaxErrorAtItsFirstWord() {
-        assertRefusedWith(udfSyntax(2, "SELECT"),
-            "CREATE OR REPLACE FUNCTION f_tf1() RETURNS TABLE (a NUMBER) AS $$ SELECT 1; $$");
-        assertRefusedWith(udfSyntax(1, "SELECT"),
-            "CREATE OR REPLACE FUNCTION f_tf2() RETURNS TABLE (a NUMBER) AS $$SELECT 1;$$");
-        assertRefusedWith(udfSyntax(4, "SELECT"),
-            "CREATE OR REPLACE FUNCTION f_tf3() RETURNS TABLE (a NUMBER) AS $$   SELECT 1; $$");
-        assertRefusedWith(udfSyntax(2, "SELECT"),
-            "CREATE OR REPLACE FUNCTION f_tf4() RETURNS TABLE (a NUMBER) AS $$ SELECT 1; SELECT 2; $$");
+    public void aTerminatedTableFunctionBodyIsRefusedForItsReturnType() {
+        final String head = "CREATE OR REPLACE FUNCTION f_tf() RETURNS TABLE (a NUMBER) AS ";
+        for (final String body : new String[] {"$$ SELECT 1; $$", "$$SELECT 1;$$", "$$   SELECT 1; $$", "$$(SELECT 1 AS a);$$",
+            "$$\nSELECT 1;$$", "$$ SELECT 1 AS a; -- c$$", "$$ WITH c AS (SELECT 1 a) SELECT * FROM c; $$",
+            "$$ CREATE TABLE t (a INT); $$", "$$ INSERT INTO t VALUES (1); $$", "$$ CALL p(); $$", "$$ SHOW TABLES; $$",
+            "'BEGIN RETURN 1; END'", "$$ BEGIN RETURN (SELECT 1); END $$", "$$ DECLARE x INT; BEGIN RETURN 1; END $$",
+            "$$ BEGIN RETURN 1; END; $$"}) {
+            assertRefusedWith("Unsupported return type for Snowscript UDF: TABLE return type", head + body);
+        }
+        assertRefusedWith(udfSyntax(9, "1"), head + "$$ RETURN 1; $$");
+        assertRefusedWith(udfSyntax(3, ";"), head + "$$ 1; $$");
+        assertRefusedWith(udfSyntax(2, ";"), head + "$$ ; $$");
+        assertRefusedWith(udfSyntax(8, "END"), head + "$$ BEGIN END $$");
     }
 
     /**
@@ -747,8 +814,6 @@ public class ScriptingUdfBodyTest extends BaseDatabaseTest {
             "CREATE OR REPLACE FUNCTION f_pg5() RETURNS NUMBER AS $$(SELECT 1) UNION (SELECT 2) -- c$$");
         assertRefusedWith(udfSyntax(22, "<EOF>"),
             "CREATE OR REPLACE FUNCTION f_pg6() RETURNS TABLE (a NUMBER) AS $$(SELECT 1 AS a) -- c$$");
-        assertRefusedWith(udfSyntax(16, ";"),
-            "CREATE OR REPLACE FUNCTION f_pg7() RETURNS TABLE (a NUMBER) AS $$(SELECT 1 AS a);$$");
         assertRefusedWith(udfSyntax(18, "UNION"),
             "CREATE OR REPLACE FUNCTION f_pg8() RETURNS TABLE (a NUMBER) AS $$ (SELECT 1 AS a) UNION ALL (SELECT 2) -- c$$");
         engine.execute("CREATE OR REPLACE FUNCTION f_pg9() RETURNS TABLE (a NUMBER) AS $$(SELECT 1 AS a)$$");
@@ -807,8 +872,6 @@ public class ScriptingUdfBodyTest extends BaseDatabaseTest {
             "CREATE OR REPLACE FUNCTION f_ll1() RETURNS NUMBER AS $$1\n;$$");
         assertRefusedWith(udfSyntax(2, 2, ";"),
             "CREATE OR REPLACE FUNCTION f_ll2() RETURNS NUMBER AS $$  1\n  ;$$");
-        assertRefusedWith(udfSyntax(2, 0, "SELECT"),
-            "CREATE OR REPLACE FUNCTION f_ll3() RETURNS TABLE (a NUMBER) AS $$\nSELECT 1;$$");
     }
 
     /** Live's body syntax error on the body's first line. */

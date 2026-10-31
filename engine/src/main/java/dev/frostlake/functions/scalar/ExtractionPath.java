@@ -116,8 +116,9 @@ public final class ExtractionPath {
     /**
      * Adds a member's name to a path: bare after a dot when it is a plain name, between brackets and single
      * quotes when it is not — an empty name, a digit first, or any character that is no letter, digit or
-     * underscore ({@code ['a b']}, {@code ['a$']}, {@code ['0']}, {@code ['']}). Inside the quotes a quote,
-     * a backslash and a control character are escaped (live-verified).
+     * underscore ({@code ['a b']}, {@code ['a$']}, {@code ['0']}, {@code ['']}). Inside the quotes a quote and
+     * a backslash are escaped, a newline, a tab, a carriage return, a backspace and a form feed by their letters,
+     * and any other control character and DEL by three octal digits, {@code ['a\001b']} (live-verified).
      */
     static void appendMember(final StringBuilder path, final String key) {
         if (isPlainName(key)) {
@@ -153,7 +154,12 @@ public final class ExtractionPath {
                     path.append("\\f");
                     break;
                 default:
-                    path.append(c);
+                    if (c < ' ' || c == 0x7F) {
+                        path.append('\\').append((char) ('0' + (c >> 6))).append((char) ('0' + ((c >> 3) & 7)))
+                            .append((char) ('0' + (c & 7)));
+                    } else {
+                        path.append(c);
+                    }
                     break;
             }
         }

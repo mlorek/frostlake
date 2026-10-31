@@ -90,14 +90,14 @@ public class OnePrivilegeDecisionTest {
         engine.execute("CREATE TABLE t (a INT)");
         engine.execute("GRANT OWNERSHIP ON TABLE t TO ROLE owner_role");
         asRole("SYSADMIN");
-        final SecurityException refused = assertThrows(SecurityException.class, new Executable() {
+        final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
                 engine.execute("DROP TABLE t");
             }
         });
-        assertTrue(refused.getMessage().startsWith("Permission denied: "), refused.getMessage());
-        assertTrue(refused.getMessage().contains("does not have DROP privilege on TABLE"), refused.getMessage());
+        assertEquals("SQL access control error:\nInsufficient privileges to operate on table 'T'. "
+            + "Your primary role SYSADMIN must have OWNERSHIP granted on TABLE OD.PUBLIC.T.", refused.getMessage());
         // The owner's role granted to the administrative role is what lets it drop the table.
         asSystem();
         engine.execute("GRANT ROLE owner_role TO ROLE SYSADMIN");

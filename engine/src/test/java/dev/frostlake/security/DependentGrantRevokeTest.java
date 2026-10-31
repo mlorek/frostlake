@@ -126,6 +126,13 @@ public class DependentGrantRevokeTest {
     }
 
     @Test
+    public void aDroppedRoleTakesTheGrantsPassedOnThroughItsOptionWithIt() {
+        engine.execute("DROP ROLE b");
+        assertEquals("A:true:SYSADMIN", selectGrants());
+        assertEquals("refused", reads("UC", "c"));
+    }
+
+    @Test
     public void restrictRefusesWhileADependentGrantStandsAndChangesNothing() {
         assertEquals(dependent("C"), refusal("REVOKE SELECT ON TABLE p.public.t FROM ROLE b"));
         assertEquals(dependent("C"), refusal("REVOKE SELECT ON TABLE p.public.t FROM ROLE b RESTRICT"));

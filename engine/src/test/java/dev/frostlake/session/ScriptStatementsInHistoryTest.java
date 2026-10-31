@@ -110,7 +110,8 @@ public class ScriptStatementsInHistoryTest {
         assertEquals("INSERT INTO t VALUES (3);", historyColumn("query_text", ids[1]));
         assertEquals("CREATE TABLE t2 (a INT);", historyColumn("query_text", ids[2]));
         assertEquals("INSERT", historyColumn("query_type", ids[1]));
-        assertEquals("1", historyColumn("rows_produced", ids[1]));
+        // A block's write produces its table's rows once it is done, as one sent on its own does (live-verified).
+        assertEquals("3", historyColumn("rows_produced", ids[1]));
         assertEquals("CREATE_TABLE", historyColumn("query_type", ids[2]));
         assertEquals("SUCCESS", historyColumn("execution_status", ids[2]));
         // Each completes, and is listed, before the block it ran in.

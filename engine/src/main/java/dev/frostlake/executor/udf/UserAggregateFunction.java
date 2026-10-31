@@ -225,8 +225,16 @@ public final class UserAggregateFunction extends AggregateFunction {
         if (function.getUdfLanguage() == UdfLanguage.JAVA) {
             return JavaAggregateFunctions.run(function, rows, catalog, s3Resolver);
         }
-        final Object answered = GuestResults.declared(function, UdfRuntimes.require(function.getUdfLanguage())
-            .executeAggregate(function, declaredArguments(function, rows)));
+        // Each call as written keeps its own handler state: the function its call settled on tells it apart (see
+        // StatementHandlerStates).
+        final Object outerSite = StatementHandlerStates.enterReference(this);
+        final Object answered;
+        try {
+            answered = GuestResults.declared(function, UdfRuntimes.require(function.getUdfLanguage())
+                .executeAggregate(function, declaredArguments(function, rows)));
+        } finally {
+            StatementHandlerStates.exitSite(outerSite);
+        }
         // A whole number a FLOAT function answers is a FLOAT's: 15.0, not 15.
         return answered instanceof Number && NumericType.isApproximate(function.getReturnType())
             ? Double.valueOf(((Number) answered).doubleValue()) : answered;

@@ -80,6 +80,25 @@ public final class VariantJsonFormat {
     }
 
     /**
+     * A cell of a Snowflake Scripting RETURN's answer — a SQL procedure's CALL, an anonymous block run directly or by
+     * EXECUTE IMMEDIATE — as its client reads it: an array or object laid out across lines at the session's
+     * JSON_INDENT, at width zero too, where a query's value reads compact — <code>{\n"a": 1\n}</code> for
+     * {@code {"a":1}}, an empty one still {@code {}} (live-verified through the driver). A JavaScript or Python
+     * procedure's answer, a table a procedure returns and a function's value read as any value does.
+     *
+     * @param cell the cell
+     * @return its laid-out text, or null for a cell that is no array or object, or an XML element
+     */
+    public static String scriptingAnswerText(final Object cell) {
+        if (!(cell instanceof VariantValue)) {
+            return null;
+        }
+        final JsonNode node = ((VariantValue) cell).node();
+        return (node.isArray() || node.isObject()) && !XmlVariants.isXmlElement(node) ? indented(node, indent())
+            : null;
+    }
+
+    /**
      * {@code node} rendered at the given width, whatever width the session is at: a scalar as its JSON text, an
      * array or object across lines.
      *

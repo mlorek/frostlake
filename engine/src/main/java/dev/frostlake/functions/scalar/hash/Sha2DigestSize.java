@@ -16,6 +16,8 @@
 
 package dev.frostlake.functions.scalar.hash;
 
+import dev.frostlake.types.DecimalText;
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
@@ -60,10 +62,10 @@ final class Sha2DigestSize {
         }
         final BigDecimal written;
         if (size instanceof Number) {
-            written = new BigDecimal(size.toString());
+            written = DecimalText.parse(size.toString());
         } else {
             try {
-                written = new BigDecimal(size.toString().trim());
+                written = DecimalText.parse(size.toString().trim());
             } catch (final NumberFormatException noNumber) {
                 throw new RuntimeException("Numeric value '" + size + "' is not recognized");
             }

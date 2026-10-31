@@ -77,7 +77,8 @@ final class StageListing {
         final String prefix = stage.stagePath() == null ? "" : stage.stagePath().getText().substring(1);
         final String shownStage;
         final String location;
-        // An internal stage keeps its files encrypted, and a listing shows the size they are stored at.
+        // An internal stage keeps its files encrypted, and a listing shows the size they are stored at; one
+        // encrypted on the server side shows the file's own (live-verified).
         final boolean encrypted;
         if (stage.TILDE() != null) {
             shownStage = null;
@@ -92,7 +93,8 @@ final class StageListing {
             final Stage named = StageReferenceShape.namedStage(stage, executor.getCatalog());
             shownStage = named.getName().toLowerCase(Locale.ROOT);
             location = "@" + QualifiedName.join(StageReferenceShape.nameParts(stage).toArray(new String[0]));
-            encrypted = named.getType() == StageType.INTERNAL && named.getUrl() == null;
+            encrypted = named.getType() == StageType.INTERNAL && named.getUrl() == null
+                && !"SNOWFLAKE_SSE".equalsIgnoreCase(named.getEncryptionType());
         }
         final Path root = executor.resolveCopyBaseDir(location);
         final String stored = executor.copyPatternPrefix(location);

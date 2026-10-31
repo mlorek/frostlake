@@ -60,7 +60,8 @@ public class TextArgumentReadingTest extends MeasuredCellsTestSupport {
         assertAnswer("REFUSED Boolean value 'maybe' is not recognized", "SELECT TRUE UNION SELECT 'maybe'");
         assertAnswer("maybe ;; true", "SELECT 'maybe' UNION SELECT TRUE");
         assertAnswer("true ;; true", "SELECT * FROM (SELECT TRUE UNION ALL SELECT 'yes') ORDER BY 1");
-        answer("SELECT * FROM (SELECT 'no' UNION ALL SELECT FALSE) ORDER BY 1");
+        assertAnswer("REFUSED String 'false' is too long and would be truncated",
+            "SELECT * FROM (SELECT 'no' UNION ALL SELECT FALSE) ORDER BY 1");
         assertAnswer("<a>1</a>", "SELECT PARSE_XML('<a>1</a>', 'TRUE')");
         assertAnswer("<a>1</a>", "SELECT PARSE_XML('<a>1</a>', 'yes')");
         assertAnswer("REFUSED SQL compilation error: error line 1 at position 7 | Invalid argument types for function "

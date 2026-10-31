@@ -22,14 +22,14 @@ package dev.frostlake.metastore;
  * through it resolves as far as the account resolves it — a listing over it is empty where a missing schema would be
  * refused, and a missing object in it is named where the schema would be.
  *
- * <p>Three facts differ schema by schema, all measured: who owns it (most have no owner, as INFORMATION_SCHEMA has
- * none; some are the SNOWFLAKE application's), whether INFORMATION_SCHEMA.SCHEMATA lists it, and whether a USE
- * reaches it.
+ * <p>Four facts differ schema by schema, all measured: who owns it (most have no owner, as INFORMATION_SCHEMA has
+ * none; some are the SNOWFLAKE application's), whether INFORMATION_SCHEMA.SCHEMATA lists it, whether a USE reaches
+ * it, and whether DESCRIBE SCHEMA answers it as a schema that is not there.
  */
 public enum SystemSchema {
 
     ACCESS_INTELLIGENCE(true, false, true),
-    ACCESS_INTELLIGENCE_INTERNAL(false, false, true),
+    ACCESS_INTELLIGENCE_INTERNAL(false, false, true, true),
     ACCOUNT_USAGE(false, true, true),
     ALERT(false, true, true),
     BCR_ROLLOUT(false, true, true),
@@ -50,7 +50,7 @@ public enum SystemSchema {
     NETWORK_SECURITY(true, false, true),
     NOTIFICATION(false, true, true),
     ORGANIZATION_USAGE(false, true, true),
-    ORG_USAGE_LOCAL(false, false, false),
+    ORG_USAGE_LOCAL(false, false, false, true),
     POSTGRES(true, false, true),
     READER_ACCOUNT_USAGE(false, true, true),
     SNOWPARK(false, true, true),
@@ -59,7 +59,7 @@ public enum SystemSchema {
     TAGS(true, false, true),
     TELEMETRY(true, false, true),
     TRUST_CENTER(true, false, true),
-    TRUST_CENTER_INTERNAL(false, false, false),
+    TRUST_CENTER_INTERNAL(false, false, false, true),
     WORKLOAD_INSIGHTS(false, true, true),
     WORKLOAD_OPTIMIZATION(false, true, true);
 
@@ -73,11 +73,18 @@ public enum SystemSchema {
     private final boolean applicationOwned;
     private final boolean inSchemata;
     private final boolean usable;
+    private final boolean hidden;
 
     SystemSchema(final boolean applicationOwned, final boolean inSchemata, final boolean usable) {
+        this(applicationOwned, inSchemata, usable, false);
+    }
+
+    SystemSchema(final boolean applicationOwned, final boolean inSchemata, final boolean usable,
+                 final boolean hidden) {
         this.applicationOwned = applicationOwned;
         this.inSchemata = inSchemata;
         this.usable = usable;
+        this.hidden = hidden;
     }
 
     /** @return the owner SHOW SCHEMAS names, or null for a schema nobody owns */
@@ -98,6 +105,11 @@ public enum SystemSchema {
     /** @return whether USE SCHEMA reaches the schema */
     public boolean isUsable() {
         return usable;
+    }
+
+    /** @return whether DESCRIBE SCHEMA answers the schema as one that does not exist, though SHOW SCHEMAS lists it */
+    public boolean isHidden() {
+        return hidden;
     }
 
     /**

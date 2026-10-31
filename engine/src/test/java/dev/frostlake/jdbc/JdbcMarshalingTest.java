@@ -17,15 +17,15 @@
 package dev.frostlake.jdbc;
 
 import dev.frostlake.BaseJdbcTest;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import java.nio.charset.StandardCharsets;
-import java.sql.Array;
 import java.sql.Date;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.sql.Types;
@@ -36,6 +36,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -86,22 +87,21 @@ public class JdbcMarshalingTest extends BaseJdbcTest {
         assertEquals(Types.OTHER, JdbcMarshaling.toSqlType("VARIANT"));
     }
 
+    /** An ARRAY column is reported as text and read as its JSON text; no driver hands it back as an Array. */
     @Test
-    public void arrayColumnExposesJavaSqlArray() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(),
-            "asserts the FROSTLAKE driver's own marshaling — both drivers report an ARRAY column as "
-            + "Types.VARCHAR (12), but only Frostlake's also hands it back as a java.sql.Array");
+    public void arrayColumnReadsAsItsJsonText() throws SQLException {
         statement.execute("CREATE TABLE arr (a ARRAY)");
         statement.execute("INSERT INTO arr SELECT ARRAY_CONSTRUCT(1, 2, 3)");
         try (ResultSet rs = statement.executeQuery("SELECT a FROM arr")) {
             assertTrue(rs.next());
             assertEquals(Types.VARCHAR, rs.getMetaData().getColumnType(1));
-            final Array array = rs.getArray(1);
-            final Object[] elements = (Object[]) array.getArray();
-            assertEquals(3, elements.length);
-            assertEquals(1, ((Number) elements[0]).intValue());
-            assertEquals(2, ((Number) elements[1]).intValue());
-            assertEquals(3, ((Number) elements[2]).intValue());
+            assertEquals("[1,2,3]", rs.getString(1));
+            assertThrows(SQLFeatureNotSupportedException.class, new Executable() {
+                @Override
+                public void execute() throws SQLException {
+                    rs.getArray(1);
+                }
+            });
         }
     }
 

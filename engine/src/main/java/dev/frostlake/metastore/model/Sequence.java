@@ -27,6 +27,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * Represents a database SEQUENCE object
  */
 public class Sequence implements Named {
+    /** What a sequence's draws are recorded under, before its name (see StatementDraws). */
+    public static final String COUNTER_PREFIX = "SEQUENCE:";
+
     private String name;
     /** The value the next draw serves: the START value until something is drawn, whatever the step becomes. */
     private final AtomicLong nextValue;
@@ -60,7 +63,7 @@ public class Sequence implements Named {
      */
     public long nextVal() {
         // A statement replayed from the write-ahead log takes the value it first drew (StatementDraws).
-        final String counter = "SEQUENCE:" + name;
+        final String counter = COUNTER_PREFIX + name;
         final Long replayed = StatementDraws.replayed(counter);
         while (true) {
             final long value = nextValue.get();
@@ -108,6 +111,22 @@ public class Sequence implements Named {
      */
     public long peekNextValue() {
         return nextValue.get();
+    }
+
+    /**
+     * Moves the sequence on so the next draw serves {@code next} or a value further along its step, never back: what
+     * the write-ahead log's replay does with the mark of where the sequence stood once a statement drew from it.
+     *
+     * @param next the value the sequence served next when the mark was logged
+     */
+    public void advanceTo(final long next) {
+        long current = nextValue.get();
+        while (increment >= 0 ? current < next : current > next) {
+            if (nextValue.compareAndSet(current, next)) {
+                return;
+            }
+            current = nextValue.get();
+        }
     }
 
     /**

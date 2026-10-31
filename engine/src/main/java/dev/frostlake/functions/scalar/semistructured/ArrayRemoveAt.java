@@ -20,6 +20,7 @@ import dev.frostlake.functions.ArrayArgumentKind;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.functions.scalar.WholeNumberArgument;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.node.ArrayNode;
@@ -34,8 +35,9 @@ public class ArrayRemoveAt extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
         if (src == null || args.get(1) == null) return null;
-        // A position is read as the whole number it gives, a fraction rounded: 0.6 is 1 (see wholeNumber).
-        int idx = wholeNumber(args.get(1));
+        // A position is read as the 32-bit whole number it gives, a fraction rounded: 0.6 is 1 (see
+        // WholeNumberArgument#part).
+        int idx = WholeNumberArgument.part(args.get(1));
         if (idx < 0) idx = src.size() + idx;
         final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         for (int i = 0; i < src.size(); i++) {

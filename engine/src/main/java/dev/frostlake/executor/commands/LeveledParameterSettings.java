@@ -50,6 +50,7 @@ final class LeveledParameterSettings {
 
     private static final String NUMBER = "NUMBER";
     private static final String FLOAT = "FLOAT";
+    private static final String FALLBACK_WAREHOUSE = "FALLBACK_WAREHOUSE";
 
     private LeveledParameterSettings() {
     }
@@ -71,6 +72,28 @@ final class LeveledParameterSettings {
             }
         }
         return null;
+    }
+
+    /**
+     * The kind of value a parameter of any level takes, a session's own and a warehouse's own included: what an
+     * ALTER of a schema or a database judges a value against before the level, so a session's BOOLEAN
+     * TELEMETRY_ENABLE_INTERACTIVE_MODE = 'x' and a warehouse's FALLBACK_WAREHOUSE = 1 are invalid values there, not
+     * access refusals (live-verified).
+     *
+     * @param name the parameter's name, upper case
+     * @return BOOLEAN, NUMBER, FLOAT or STRING; null when no level has a parameter of that name
+     */
+    static String valueTypeOf(final String name) {
+        final String leveled = typeOf(name);
+        if (leveled != null) {
+            return leveled;
+        }
+        final SessionParameterRow row = SessionParameterCatalog.find(name);
+        if (row != null) {
+            return row.getType();
+        }
+        // The warehouse parameter no session carries, typed as SHOW PARAMETERS IN WAREHOUSE lists it.
+        return FALLBACK_WAREHOUSE.equals(name) ? "STRING" : null;
     }
 
     /**
@@ -103,19 +126,21 @@ final class LeveledParameterSettings {
     }
 
     /**
-     * Orders the names, then refuses a repeated one and one that is no parameter's.
+     * Orders the names, then refuses a repeated one and one that is no parameter's — of several such, the first
+     * written (live-verified: UNSET NOSUCH_A, NOSUCH_2 names NOSUCH_A).
      *
      * @param settings the settings, put in the order they are judged and applied in
      * @param level    ACCOUNT or USER, as the refusal names it
      */
     static void requireNames(final List<SessionParameterSetting> settings, final String level) {
+        final List<SessionParameterSetting> written = new ArrayList<>(settings);
         Collections.sort(settings, new SessionParameterSettingOrder());
         for (int i = 1; i < settings.size(); i++) {
             if (settings.get(i).written().equals(settings.get(i - 1).written())) {
                 throw new RuntimeException(SqlCompilationError.duplicateProperty(settings.get(i).written()));
             }
         }
-        for (final SessionParameterSetting setting : settings) {
+        for (final SessionParameterSetting setting : written) {
             if (setting.key() == null) {
                 throw ParameterRegistry.invalidProperty(setting.written(), level);
             }
@@ -159,6 +184,20 @@ final class LeveledParameterSettings {
         for (final SessionParameterSetting setting : settings) {
             if (setting.stored() != null && setting.isSessionParameter()) {
                 SessionParameterSettings.requireTaken(setting, catalog);
+            }
+        }
+    }
+
+    /**
+     * Judges the catalog a CATALOG setting names (see {@link IcebergTables}).
+     *
+     * @param settings the settings, judged for their kinds
+     * @param catalog  the catalog
+     */
+    static void requireCatalog(final List<SessionParameterSetting> settings, final Catalog catalog) {
+        for (final SessionParameterSetting setting : settings) {
+            if ("CATALOG".equals(setting.key()) && setting.stored() != null) {
+                IcebergTables.requireCatalogParameter(String.valueOf(setting.stored()), catalog);
             }
         }
     }

@@ -45,7 +45,9 @@ import org.antlr.v4.runtime.tree.TerminalNode;
  *
  * <p>The operators refused are the value operators: concatenation, the arithmetic ones, a cast, a path, a
  * subscript, the outer-join marker, IS, and a COLLATE, which live reads as an alias and so refuses at its
- * specification. A comparison, LIKE, RLIKE, BETWEEN or IN after the predicate is taken as written, except after
+ * specification. An EXISTS is no value operator's operand on either side: on the right it is refused itself, and its
+ * query's SELECT and its ')' follow — {@code SELECT (1 + EXISTS (SELECT 1 FROM g))} is 'EXISTS', 'SELECT', ')'. A
+ * comparison, LIKE, RLIKE, BETWEEN or IN after the predicate is taken as written, except after
  * EXISTS, which takes no operator at all. An IS DISTINCT FROM is finished for an IS alone. A parenthesized predicate is an ordinary operand, and a predicate
  * standing on the right of an operator is never the one refused: {@code TRUE = 'a' IS NULL} answers.
  *
@@ -85,13 +87,45 @@ public final class FinishedPredicateSyntax {
                 first = refused;
                 firstNode = node;
             }
+            final FrostlakeParser.ExistsExprContext operand = existsOperand(node);
+            if (operand != null && (first == null
+                    || operand.EXISTS().getSymbol().getTokenIndex() < first.getTokenIndex())) {
+                first = operand.EXISTS().getSymbol();
+                firstNode = operand;
+            }
             for (int i = 0; i < node.getChildCount(); i++) {
                 pending.push(node.getChild(i));
             }
         }
+        if (first != null && firstNode instanceof FrostlakeParser.ExistsExprContext) {
+            // An EXISTS a value operator takes as its right operand is refused itself, and live's recovery names its
+            // query's SELECT and its ')': SELECT 1 + EXISTS (SELECT 1 FROM g)::INT (live-verified).
+            final FrostlakeParser.ExistsExprContext exists = (FrostlakeParser.ExistsExprContext) firstNode;
+            final List<String> stacked = new ArrayList<>();
+            stacked.add(SyntaxErrorListener.sentence(exists.selectStatement().getStart()));
+            stacked.add(SyntaxErrorListener.sentence(exists.RPAREN().getSymbol()));
+            refuse(first, stacked, sql);
+        }
         if (first != null) {
             refuse(first, FinishedPredicateRecovery.stackedLines(firstNode, first, tokens, sql), sql);
         }
+    }
+
+    /** The EXISTS a concatenation or an arithmetic operator takes as its right operand, a cast of it included. */
+    private static FrostlakeParser.ExistsExprContext existsOperand(final ParseTree node) {
+        ParseTree operand;
+        if (node instanceof FrostlakeParser.AdditiveExprContext) {
+            operand = ((FrostlakeParser.AdditiveExprContext) node).expression(1);
+        } else if (node instanceof FrostlakeParser.MultiplicativeExprContext) {
+            operand = ((FrostlakeParser.MultiplicativeExprContext) node).expression(1);
+        } else {
+            return null;
+        }
+        while (operand instanceof FrostlakeParser.CastExpr2Context) {
+            operand = ((FrostlakeParser.CastExpr2Context) operand).expression();
+        }
+        return operand instanceof FrostlakeParser.ExistsExprContext ? (FrostlakeParser.ExistsExprContext) operand
+            : null;
     }
 
     /** Whether the statement has a word that can finish a predicate: IS, IN, EXISTS or ESCAPE. */

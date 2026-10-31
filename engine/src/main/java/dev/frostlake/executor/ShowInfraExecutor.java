@@ -106,6 +106,11 @@ final class ShowInfraExecutor {
         final String currentWarehouse = catalog.getCurrentWarehouse();
         final List<Row> rows = new ArrayList<>();
         for (final Warehouse wh : catalog.getAllWarehouses()) {
+            // Only a warehouse the session sees is listed: its roles own it or hold a privilege on it, or hold MANAGE
+            // GRANTS (documented).
+            if (!ownership.sees("WAREHOUSE", wh.getName(), wh.getOwner())) {
+                continue;
+            }
             final OffsetDateTime created = ShowResultHelpers.createdOn(wh.getCreatedAt());
             final OffsetDateTime lastChange = wh.getLastStateChange() != null
                 ? ShowResultHelpers.createdOn(wh.getLastStateChange()) : created;
@@ -269,6 +274,10 @@ final class ShowInfraExecutor {
         );
         final List<Row> rows = new ArrayList<>();
         for (final ComputePool pool : catalog.getComputePools()) {
+            // Only a compute pool the session sees is listed, as a warehouse is.
+            if (!ownership.sees("COMPUTE_POOL", pool.getName(), pool.getOwner())) {
+                continue;
+            }
             rows.add(new Row(computePoolRow(pool, false)));
         }
         return new ResultSet(columns, rows);
@@ -396,6 +405,10 @@ final class ShowInfraExecutor {
             new ResultSetColumn("kind", StringType.VARCHAR)
         );
         final Warehouse wh = catalog.getWarehouseExact(warehouseName);
+        if (!ownership.sees("WAREHOUSE", wh.getName(), wh.getOwner())) {
+            // One the session does not see is answered as one that does not exist.
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Warehouse", wh.getName()));
+        }
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(Arrays.asList(
             ShowResultHelpers.createdOn(wh.getCreatedAt()), wh.getName(), "WAREHOUSE")));
@@ -404,23 +417,6 @@ final class ShowInfraExecutor {
 
     /** How DESCRIBE STAGE spells the moment of a directory table's last refresh. */
     private static final DateTimeFormatter LAST_REFRESHED = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS xx");
-
-    /** The copy-option rows of DESC STAGE: property, type, default. */
-    private static final String[][] STAGE_COPY_OPTION_PROPERTIES = {
-        {"ON_ERROR", "String", "ABORT_STATEMENT"},
-        {"SIZE_LIMIT", "Long", ""},
-        {"PURGE", "Boolean", "false"},
-        {"RETURN_FAILED_ONLY", "Boolean", "false"},
-        {"ENFORCE_LENGTH", "Boolean", "true"},
-        {"TRUNCATECOLUMNS", "Boolean", "false"},
-        {"FORCE", "Boolean", "false"},
-    };
-
-    /** The copy options DESC STAGE lists only once they are set, after the others (live-verified). */
-    private static final String[][] STAGE_COPY_OPTION_PROPERTIES_WHEN_SET = {
-        {"MATCH_BY_COLUMN_NAME", "String", "NONE"},
-        {"LOAD_MODE", "String", "FULL_INGEST"},
-    };
 
     /**
      * DESC STAGE in live's five-column shape — a property TREE grouped as STAGE_FILE_FORMAT,
@@ -448,7 +444,7 @@ final class ShowInfraExecutor {
             rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property.name, property.type,
                 FileFormatSurfaces.described(property, written.get(property.name)), shownDefault)));
         }
-        for (final String[] property : STAGE_COPY_OPTION_PROPERTIES) {
+        for (final String[] property : StageCopyOptionKinds.ALWAYS) {
             rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1],
                 spelled(copyOptions.get(property[0]), property[1], property[2]), property[2])));
         }
@@ -459,7 +455,7 @@ final class ShowInfraExecutor {
 
     /** The rows of the copy options listed only once set, each that is. */
     private void addCopyOptionsWhenSet(final List<Row> rows, final Map<String, String> copyOptions) {
-        for (final String[] property : STAGE_COPY_OPTION_PROPERTIES_WHEN_SET) {
+        for (final String[] property : StageCopyOptionKinds.WHEN_SET) {
             if (copyOptions.containsKey(property[0])) {
                 rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1],
                     spelled(copyOptions.get(property[0]), property[1], property[2]), property[2])));
@@ -502,7 +498,7 @@ final class ShowInfraExecutor {
                 rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property.name, property.type,
                     FileFormatSurfaces.described(property, null), property.shownDefault)));
             }
-            for (final String[] property : STAGE_COPY_OPTION_PROPERTIES) {
+            for (final String[] property : StageCopyOptionKinds.ALWAYS) {
                 rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1], property[2], property[2])));
             }
         }
@@ -544,7 +540,7 @@ final class ShowInfraExecutor {
             rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property.name, property.type,
                 FileFormatSurfaces.described(property, written), shownDefault)));
         }
-        for (final String[] property : STAGE_COPY_OPTION_PROPERTIES) {
+        for (final String[] property : StageCopyOptionKinds.ALWAYS) {
             rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1],
                 spelled(stage.getCopyOptions().get(property[0]), property[1], property[2]), property[2])));
         }

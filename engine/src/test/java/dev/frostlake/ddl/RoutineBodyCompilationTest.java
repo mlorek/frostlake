@@ -129,8 +129,7 @@ public class RoutineBodyCompilationTest extends BaseDatabaseTest {
 
     @Test
     public void tableFunctionBodyThatIsAScriptingBlockIsRejected() {
-        // The one UDF shape a block is still wrong for: live, a RETURNS TABLE(...) function with a
-        // BEGIN...END body is an ordinary SQL-UDF syntax error.
+        // The one UDF shape a block is still wrong for: live, a Snowscript UDF returns no table.
         final RuntimeException failure = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
@@ -138,7 +137,7 @@ public class RoutineBodyCompilationTest extends BaseDatabaseTest {
                     + "AS 'BEGIN RETURN 1; END'");
             }
         });
-        assertTrue(failure.getMessage().contains("SQL compilation error"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("Unsupported return type for Snowscript UDF: TABLE return type"), failure.getMessage());
     }
 
     @Test
@@ -221,9 +220,9 @@ public class RoutineBodyCompilationTest extends BaseDatabaseTest {
         assertTrue(showListsName(engine.executeQuery("SHOW USER FUNCTIONS"), "F_JAVA3"));
     }
 
-    /** A handler that lives in an IMPORTS jar is not in the body, so the body is not judged. */
+    /** A body is compiled where its handler would live in an IMPORTS jar, so one that is no Java is refused. */
     @Test
-    public void anImportsHandlerLeavesTheBodyAlone() throws IOException {
+    public void anImportsHandlerStillHasItsBodyCompiled() throws IOException {
         Assumptions.assumeFalse(isLiveSnowflake(), LOCAL_STAGE_ONLY);
         // The stage and the jar have to exist: live validates BOTH at CREATE time, so a routine naming a
         // stage that was never made is refused before it can demonstrate anything about its body.
@@ -231,10 +230,18 @@ public class RoutineBodyCompilationTest extends BaseDatabaseTest {
         Files.writeString(stageDir.resolve("handlers.jar"), "not really a jar");
         engine.execute("CREATE STAGE stg URL='file://" + stageDir + "'");
 
-        engine.execute("CREATE FUNCTION f_jar(x INTEGER) RETURNS INTEGER LANGUAGE JAVA"
-            + " RUNTIME_VERSION = '11' IMPORTS = ('@stg/handlers.jar') HANDLER = 'C.go'"
-            + " AS 'not java at all'");
-        assertTrue(showListsName(engine.executeQuery("SHOW USER FUNCTIONS"), "F_JAR"));
+        final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE FUNCTION f_jar(x INTEGER) RETURNS INTEGER LANGUAGE JAVA"
+                    + " RUNTIME_VERSION = '11' IMPORTS = ('@stg/handlers.jar') HANDLER = 'C.go'"
+                    + " AS 'not java at all'");
+            }
+        });
+        final String message = String.valueOf(refused.getMessage());
+        assertTrue(message.startsWith("Error while compiling source: /InlineCode.java:1: error: ")
+            && message.endsWith(" in function F_JAR with handler C.go"), message);
+        assertFalse(showListsName(engine.executeQuery("SHOW USER FUNCTIONS"), "F_JAR"));
     }
 
     /** And the validation itself: live refuses the stage leg and the file leg, each with its own words. */

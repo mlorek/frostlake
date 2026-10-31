@@ -71,6 +71,8 @@ final class IcebergTables {
 
     /** The parameter a table without an EXTERNAL_VOLUME option takes its volume from. */
     private static final String VOLUME_PARAMETER = "EXTERNAL_VOLUME";
+    /** The parameter a table without a CATALOG option takes its catalog from. */
+    private static final String CATALOG_PARAMETER = "CATALOG";
 
     /**
      * The volume the nearest container sets — the schema, its database, then the account — or null. A parameter
@@ -90,10 +92,26 @@ final class IcebergTables {
     }
 
     /**
+     * The catalog the nearest container sets — the schema, its database, then the account — or null. The empty text
+     * is a value like any other: it names no catalog, and what a further container sets stays out of it.
+     */
+    private static String inheritedCatalog(final Schema schema, final Database database, final Catalog catalog) {
+        if (schema.getParameters().isSet(CATALOG_PARAMETER)) {
+            return schema.getParameters().get(CATALOG_PARAMETER);
+        }
+        if (database != null && database.getParameters().isSet(CATALOG_PARAMETER)) {
+            return database.getParameters().get(CATALOG_PARAMETER);
+        }
+        return AccountParameters.value(catalog, CATALOG_PARAMETER);
+    }
+
+    /**
      * Makes a table created with CREATE ICEBERG TABLE an Iceberg table: its metadata comes from the table
      * options, a clone or a copy starting from its Iceberg source's. A table that names no external volume takes
-     * the EXTERNAL_VOLUME parameter of its schema, else its database's, else the account's; the volume must exist,
-     * and the catalog must be SNOWFLAKE.
+     * the EXTERNAL_VOLUME parameter of its schema, else its database's, else the account's, and its catalog comes
+     * from the CATALOG parameter the same way. All live-verified, in this order: a table kept in managed storage
+     * takes the SNOWFLAKE catalog alone; a volume must exist, and a table on one must name a catalog, which is
+     * SNOWFLAKE here; then the storage serialization policy is read, and only then the base location.
      *
      * @param ctx the CREATE statement
      * @param table the table being created
@@ -108,8 +126,10 @@ final class IcebergTables {
             return;
         }
         final String schemaPath = databaseName + "/" + schema.getName();
-        final IcebergTableMetadata metadata = source != null && source.getIcebergMetadata() != null
-            ? source.getIcebergMetadata().copy() : new IcebergTableMetadata();
+        final boolean copied = source != null && source.getIcebergMetadata() != null;
+        final IcebergTableMetadata metadata = copied ? source.getIcebergMetadata().copy() : new IcebergTableMetadata();
+        String named = copied ? metadata.getCatalog() : null;
+        String policy = null;
         for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
             if (tail.optionKey() == null || tail.copyOptionValue() == null) {
                 continue;
@@ -117,36 +137,60 @@ final class IcebergTables {
             final String key = tail.optionKey().getText().toUpperCase(Locale.ROOT);
             final String value = optionValue(tail.copyOptionValue());
             if ("EXTERNAL_VOLUME".equals(key)) {
-                metadata.setExternalVolume(value);
+                // The empty text names none.
+                metadata.setExternalVolume(value.isEmpty() ? metadata.getExternalVolume() : value);
             } else if ("CATALOG".equals(key)) {
-                metadata.setCatalog(value);
+                named = value;
             } else if ("BASE_LOCATION".equals(key)) {
                 metadata.setBaseLocation(value);
             } else if ("CATALOG_SYNC".equals(key)) {
                 metadata.setCatalogSync(value);
             } else if ("STORAGE_SERIALIZATION_POLICY".equals(key)) {
-                metadata.setStorageSerializationPolicy(policy(value));
+                if (tail.copyOptionValue().INTEGER_LITERAL() != null) {
+                    // A number is no text of any kind.
+                    throw new RuntimeException(SqlCompilationError.invalidValueForParameter(value, key));
+                }
+                policy = value;
             }
         }
+        final Database database = catalog.getDatabase(databaseName);
         if (metadata.getExternalVolume() == null) {
-            metadata.setExternalVolume(inheritedVolume(schema, catalog.getDatabase(databaseName), catalog));
+            metadata.setExternalVolume(inheritedVolume(schema, database, catalog));
         }
-        if (metadata.getExternalVolume() == null && !IcebergTableMetadata.SNOWFLAKE_CATALOG.equalsIgnoreCase(
-                metadata.getCatalog())) {
+        final String catalogName = named != null ? named : inheritedCatalog(schema, database, catalog);
+        final boolean namesCatalog = catalogName != null && !catalogName.isEmpty();
+        final boolean ofIntegration = namesCatalog
+            && !IcebergTableMetadata.SNOWFLAKE_CATALOG.equalsIgnoreCase(catalogName);
+        if (metadata.getExternalVolume() == null && ofIntegration) {
             throw new RuntimeException("Iceberg table " + table.getName() + " must have the table parameter"
                 + " EXTERNAL_VOLUME defined on the table, schema, database, or account.");
         }
-        requireCatalog(metadata, catalog);
         final boolean managedStorage = metadata.getExternalVolume() == null
             || DEFAULT_VOLUME.equalsIgnoreCase(metadata.getExternalVolume());
+        if (managedStorage && ofIntegration) {
+            throw new RuntimeException("SQL Compilation Error: Iceberg tables using Snowflake managed storage must"
+                + " specify 'SNOWFLAKE' as the catalog.");
+        }
+        if (!managedStorage) {
+            metadata.setExternalVolume(requireVolume(metadata.getExternalVolume(), catalog).getName());
+            if (!namesCatalog) {
+                throw new RuntimeException(SqlCompilationError.inline(
+                    "Iceberg tables require a catalog integration to be specified"));
+            }
+            if (ofIntegration) {
+                throw refusedCatalog(catalogName, ctx, catalog);
+            }
+        }
+        metadata.setCatalog(IcebergTableMetadata.SNOWFLAKE_CATALOG);
+        if (policy != null) {
+            metadata.setStorageSerializationPolicy(policy(policy));
+        }
         if (managedStorage) {
             if (metadata.getBaseLocation() != null && ctx.CLONE() == null && ctx.LIKE() == null) {
                 throw new RuntimeException("SQL Compilation Error: BASE_LOCATION property is not supported for"
                     + " Iceberg tables using Snowflake Managed Storage.");
             }
             metadata.setExternalVolume(DEFAULT_VOLUME);
-        } else {
-            metadata.setExternalVolume(requireVolume(metadata.getExternalVolume(), catalog).getName());
         }
         // A clone keeps its source's files; any other table gets a directory of its own.
         if (metadata.getBaseLocation() == null || ctx.LIKE() != null && source != null
@@ -168,21 +212,46 @@ final class IcebergTables {
         table.setChangeTracking(true);
     }
 
-    /** The name of the catalog an Iceberg table names: SNOWFLAKE, or an existing catalog integration. */
-    private static void requireCatalog(final IcebergTableMetadata metadata, final Catalog catalog) {
-        final String written = metadata.getCatalog();
-        if (IcebergTableMetadata.SNOWFLAKE_CATALOG.equalsIgnoreCase(written)) {
-            metadata.setCatalog(IcebergTableMetadata.SNOWFLAKE_CATALOG);
-            return;
-        }
+    /** The catalog integration of a name, matched exactly and then as an unquoted name folds, or null. */
+    private static Integration catalogIntegration(final String written, final Catalog catalog) {
         final Integration integration = findByName(catalog.getIntegrations().find(written),
             catalog.getIntegrations().find(written.toUpperCase(Locale.ROOT)));
-        if (integration == null || integration.getKind() != IntegrationKind.CATALOG) {
-            throw new RuntimeException("Catalog integration " + written.toUpperCase(Locale.ROOT)
+        return integration != null && integration.getKind() == IntegrationKind.CATALOG ? integration : null;
+    }
+
+    /**
+     * The refusal of a table on a volume under another catalog than SNOWFLAKE. The name must be a catalog
+     * integration's, as it is written, and such a table takes no column list (live-verified); any other such table
+     * would read its data and its metadata from outside.
+     */
+    private static RuntimeException refusedCatalog(final String written, final FrostlakeParser.CreateStatementContext ctx,
+                                                   final Catalog catalog) {
+        final Integration integration = catalogIntegration(written, catalog);
+        if (integration == null) {
+            return new RuntimeException("Catalog integration " + written
                 + " either does not exist or is not of type CATALOG. Please verify that catalog integration is valid.");
         }
-        throw new RuntimeException(SqlCompilationError.of("Unsupported feature 'CATALOG = " + integration.getName()
+        if (ctx.columnList() != null) {
+            return new RuntimeException(SqlCompilationError.inline("Column specifications are only allowed for Iceberg"
+                + " tables using the Snowflake catalog or Iceberg tables created within a catalog-linked database."));
+        }
+        return new RuntimeException(SqlCompilationError.of("Unsupported feature 'CATALOG = " + integration.getName()
             + "': an externally managed Iceberg table reads its data files from outside, which Frostlake does not."));
+    }
+
+    /**
+     * Judges what a CATALOG parameter is set to, at any level: none, SNOWFLAKE in any case, or a catalog integration
+     * (live-verified).
+     *
+     * @param written the name as SHOW PARAMETERS reports it
+     * @param catalog the catalog
+     */
+    static void requireCatalogParameter(final String written, final Catalog catalog) {
+        if (!written.isEmpty() && !IcebergTableMetadata.SNOWFLAKE_CATALOG.equalsIgnoreCase(written)
+                && catalogIntegration(written, catalog) == null) {
+            throw new RuntimeException("Catalog integration " + written
+                + " is not valid. Please ensure required properties are valid.");
+        }
     }
 
     /** The eight random characters that end a generated base location's directory name. */
@@ -210,8 +279,8 @@ final class IcebergTables {
     private static String policy(final String value) {
         final String upper = value.toUpperCase(Locale.ROOT);
         if (!POLICIES.contains(upper)) {
-            throw new RuntimeException(SqlCompilationError.invalidValueForParameter(value,
-                "STORAGE_SERIALIZATION_POLICY"));
+            throw new RuntimeException("SQL Compilation error:\nInvalid value for storage serialization policy."
+                + " Supported are COMPATIBLE,OPTIMIZED.");
         }
         return upper;
     }

@@ -742,6 +742,12 @@ public class JavaScriptErrorPlaceTest extends BaseDatabaseTest {
                 "TypeError: Cannot use 'in' operator to search for 'x' in 1 in EP at 'return 'x' in 1;' position 11\nstackstrace: \nEP line: 1"},
             {"return new 1;",
                 "TypeError: 1 is not a constructor in EP at 'return new 1;' position 7\nstackstrace: \nEP line: 1"},
+            {"return new RegExp('(');",
+                "SyntaxError: Invalid regular expression: /(/: Unterminated group in EP at 'return new RegExp('(');'"
+                    + " position 7\nstackstrace: \nEP line: 1"},
+            {"return Promise.resolve().then.call(1);",
+                "TypeError: Method Promise.prototype.then called on incompatible receiver 1 in EP at"
+                    + " 'return Promise.resolve().then.call(1);' position 30\nstackstrace: \nEP line: 1"},
             {"return Object.defineProperty(1, 'x', {});",
                 "TypeError: Object.defineProperty called on non-object in EP at 'return Object.defineProperty(1, 'x', {});' position 14\nstackstrace: \nEP line: 1"},
             {"return (function(){ const c = 1; c = 2; })();",

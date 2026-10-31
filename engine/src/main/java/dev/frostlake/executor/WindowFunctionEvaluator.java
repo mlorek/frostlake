@@ -54,13 +54,18 @@ import dev.frostlake.functions.aggregate.DeclaredArgumentAccumulator;
 import dev.frostlake.functions.aggregate.ExactFrameSums;
 import dev.frostlake.functions.aggregate.ListAggAccumulator;
 import dev.frostlake.functions.aggregate.MaxByMinByAccumulator;
+import dev.frostlake.functions.aggregate.MedianAccumulator;
+import dev.frostlake.functions.aggregate.NumericAggregateInput;
 import dev.frostlake.functions.aggregate.ObjectAggAccumulator;
+import dev.frostlake.functions.aggregate.PairStatisticAccumulator;
 import dev.frostlake.functions.aggregate.PercentileContAccumulator;
 import dev.frostlake.functions.aggregate.PercentileDiscAccumulator;
 import dev.frostlake.functions.aggregate.RegrAccumulator;
 import dev.frostlake.functions.scalar.conversion.BooleanWords;
+import dev.frostlake.functions.window.FloatFrameMoments;
 import dev.frostlake.functions.window.FloatFrameSums;
 import dev.frostlake.functions.window.FrameExtremes;
+import dev.frostlake.functions.window.MomentStatistic;
 import dev.frostlake.functions.window.WholePartitionAggregates;
 import dev.frostlake.functions.window.WindowFunctionHelper;
 import dev.frostlake.functions.window.WindowFunctionNames;
@@ -73,6 +78,7 @@ import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
@@ -119,6 +125,9 @@ final class WindowFunctionEvaluator {
 
     /** CURRENT ROW's place among a frame's bounds (see boundRank). */
     private static final int CURRENT_ROW_RANK = 2;
+
+    /** What {@link #declaredRatioScale} answers for a DECFLOAT call, whose share is worked out as DECFLOAT. */
+    private static final int DECFLOAT_RATIO = -2;
 
     /** The moment two INTERVAL offsets are measured from, to tell which of them reaches further. */
     private static final LocalDateTime INTERVAL_BASE = LocalDateTime.of(2000, 1, 1, 0, 0);
@@ -526,7 +535,7 @@ final class WindowFunctionEvaluator {
             return;
         }
         final int order = from.INTERVAL() == null
-            ? new BigDecimal(from.getText()).compareTo(new BigDecimal(to.getText()))
+            ? DecimalText.parse(from.getText()).compareTo(DecimalText.parse(to.getText()))
             : RangeFrameKeys.compare(RangeFrameKeys.shift(INTERVAL_BASE, frameConstant(from), 1),
                 RangeFrameKeys.shift(INTERVAL_BASE, frameConstant(to), 1));
         // Two PRECEDING offsets run from the larger; two FOLLOWING offsets to the larger.
@@ -997,6 +1006,12 @@ final class WindowFunctionEvaluator {
                 rejectFileWindowKeys(call.overClause(), table);
             }
         }
+        // The aliases the window calls read are computed for every row in the order the rows came, as the projection
+        // computes the items before any window reads them: a sequence's NEXTVAL read by MAX(n) OVER (PARTITION BY
+        // ...) is drawn in row order, not in the order the partitions are read (live-verified).
+        if (!rowsAreProjected) {
+            keepAliasesRead(rows, ctx, table, selectWindowCalls);
+        }
 
         // Per OVER clause: rows grouped into partitions (PARTITION BY) and each partition sorted
         // (ORDER BY) exactly once, then reused across every row — instead of re-partitioning/re-sorting
@@ -1051,6 +1066,80 @@ final class WindowFunctionEvaluator {
      * reads the row's place among them, as the projection's does (live-verified).
      */
     private Object evaluateAsItsRow(final String text, final Row row, final Table table) {
+        final String alias = keptAlias(text.trim(), row, table);
+        if (alias == null) {
+            return evaluateOverItsRow(text, row, table);
+        }
+        // A select alias of the row is computed once and read alike by every window and by the projection: a
+        // sequence's NEXTVAL is drawn once a row through SUM(n) OVER () or LAG(n) (live-verified).
+        if (state().aliasValues.holds(row, alias)) {
+            return state().aliasValues.valueOf(row, alias);
+        }
+        final Object value = evaluateOverItsRow(text, row, table);
+        state().aliasValues.remember(row, alias, value);
+        return value;
+    }
+
+    /** Compute and keep, row by row in select-list order, the aliases {@code calls} read (see aliasValues). */
+    private void keepAliasesRead(final List<Row> rows, final FrostlakeParser.SelectClauseContext ctx,
+                                 final Table table, final List<FrostlakeParser.FunctionCallExprContext> calls) {
+        if (state().aliasValues == null || state().windowSelectAliases.isEmpty()) {
+            return;
+        }
+        final Set<String> read = new HashSet<>();
+        for (final FrostlakeParser.FunctionCallExprContext call : calls) {
+            collectAliasNames(call, table, read);
+        }
+        final List<String> ordered = new ArrayList<>();
+        for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
+            final String alias = SelectItemAccessors.getItemAlias(item);
+            if (alias != null && read.contains(canonicalName(alias)) && !ordered.contains(canonicalName(alias))) {
+                ordered.add(canonicalName(alias));
+            }
+        }
+        for (final Row row : rows) {
+            for (final String alias : ordered) {
+                if (state().aliasValues.holds(row, alias)) {
+                    continue;
+                }
+                try {
+                    state().aliasValues.remember(row, alias, evaluateOverItsRow(
+                        expandAliasExpression(state().windowSelectAliases.get(alias), table), row, table));
+                } catch (final RuntimeException unread) {
+                    // A value the item cannot compute for the row is raised where a window or the projection reads it.
+                }
+            }
+        }
+    }
+
+    /** The select aliases a subtree names bare where no column of the relation is named so. */
+    private void collectAliasNames(final ParseTree node, final Table table, final Set<String> out) {
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            return;
+        }
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final String[] parts =
+                ParseTreeText.qualifiedNameParts(((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName());
+            if (parts.length == 1 && state().windowSelectAliases.containsKey(parts[0]) && !table.hasColumn(parts[0])) {
+                out.add(parts[0]);
+            }
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectAliasNames(node.getChild(i), table, out);
+        }
+    }
+
+    /** The alias a key or an argument names, when its value for the row is kept; null otherwise. */
+    private String keptAlias(final String text, final Row row, final Table table) {
+        if (state().aliasValues == null || row == null || !isSimpleIdentifier(text)) {
+            return null;
+        }
+        final String canon = canonicalName(text);
+        return table.hasColumn(canon) || !state().windowSelectAliases.containsKey(canon) ? null : canon;
+    }
+
+    private Object evaluateOverItsRow(final String text, final Row row, final Table table) {
         final Long ordinal = row == null ? null : state().windowRowOrdinals.get(row);
         if (ordinal == null) {
             return executor.evaluateExpression(text, row, table);
@@ -1123,6 +1212,28 @@ final class WindowFunctionEvaluator {
         final GroupedExpressionValues saved = state().groupedValues;
         state().groupedValues = values;
         return saved;
+    }
+
+    /**
+     * Install the select aliases' kept values for the computation about to run (see
+     * WindowComputationState#aliasValues), answering the ones installed before.
+     *
+     * @param values the values, or null where the items are computed again
+     * @return the values installed before, for {@link #endAliasValues}
+     */
+    WhereAliasValues beginAliasValues(final WhereAliasValues values) {
+        final WhereAliasValues saved = state().aliasValues;
+        state().aliasValues = values;
+        return saved;
+    }
+
+    /**
+     * Restore the values saved by {@link #beginAliasValues}.
+     *
+     * @param saved the values to put back
+     */
+    void endAliasValues(final WhereAliasValues saved) {
+        state().aliasValues = saved;
     }
 
     /**
@@ -1586,8 +1697,21 @@ final class WindowFunctionEvaluator {
                     executor.getFunctionRegistry().getAggregateFunction(functionName);
                 if (genericAgg != null) {
                     if (!isWholePartitionFrame(overClause)) {
-                        return computeGenericWindowAggregate(genericAgg, funcCtx,
-                            frameRows(overClause, sortedPartition, position, table), table);
+                        final Object moving = movingMomentValue(functionName, funcCtx, sortedPartition, position,
+                            table);
+                        if (moving != NOT_SUMMARIZED) {
+                            return moving;
+                        }
+                        // The rows of one peer group, and any rows whose frames coincide, share one answer.
+                        final int[] frame = frameBounds(overClause, sortedPartition, position, table);
+                        final Map<Long, Object> answers = frameAnswersFor(sortedPartition, funcCtx);
+                        final Long bounds = frameKey(frame[0], frame[1]);
+                        if (!answers.containsKey(bounds)) {
+                            answers.put(bounds, computeGenericWindowAggregate(genericAgg, funcCtx,
+                                frame[0] > frame[1] ? new ArrayList<Row>()
+                                    : sortedPartition.subList(frame[0], frame[1] + 1), table));
+                        }
+                        return answers.get(bounds);
                     }
                     // Every row of the partition has the whole partition as its frame: one answer serves them all.
                     final Map<ParserRuleContext, Object> byCall = summariesFor(sortedPartition);
@@ -2097,6 +2221,33 @@ final class WindowFunctionEvaluator {
             }
         };
 
+    // Per-batch, per-thread: whether each sorted partition's values all take a SUM's or an AVG's double path, by the
+    // call; each partition's moving-frame FLOAT moments, by the variance-family call; and each frame's answer, by the
+    // call and the frame's bounds (see frameKey).
+    private final ThreadLocal<Map<List<Row>, Map<ParserRuleContext, Boolean>>> approximatePartitions =
+        new ThreadLocal<Map<List<Row>, Map<ParserRuleContext, Boolean>>>() {
+            @Override
+            protected Map<List<Row>, Map<ParserRuleContext, Boolean>> initialValue() {
+                return new IdentityHashMap<List<Row>, Map<ParserRuleContext, Boolean>>();
+            }
+        };
+
+    private final ThreadLocal<Map<List<Row>, Map<ParserRuleContext, Object>>> movingFrameMoments =
+        new ThreadLocal<Map<List<Row>, Map<ParserRuleContext, Object>>>() {
+            @Override
+            protected Map<List<Row>, Map<ParserRuleContext, Object>> initialValue() {
+                return new IdentityHashMap<List<Row>, Map<ParserRuleContext, Object>>();
+            }
+        };
+
+    private final ThreadLocal<Map<List<Row>, Map<ParserRuleContext, Map<Long, Object>>>> frameAnswers =
+        new ThreadLocal<Map<List<Row>, Map<ParserRuleContext, Map<Long, Object>>>>() {
+            @Override
+            protected Map<List<Row>, Map<ParserRuleContext, Map<Long, Object>>> initialValue() {
+                return new IdentityHashMap<List<Row>, Map<ParserRuleContext, Map<Long, Object>>>();
+            }
+        };
+
     private final ThreadLocal<Map<List<Row>, Map<Row, Integer>>> inputPositions =
         new ThreadLocal<Map<List<Row>, Map<Row, Integer>>>() {
             @Override
@@ -2228,6 +2379,9 @@ final class WindowFunctionEvaluator {
         partitionSlots.get().clear();
         movingFrameSums.get().clear();
         cumulativeFrames.get().clear();
+        approximatePartitions.get().clear();
+        movingFrameMoments.get().clear();
+        frameAnswers.get().clear();
         inputPositions.get().clear();
         partitionInputOrders.get().clear();
         frameSummaries.get().clear();
@@ -2235,6 +2389,7 @@ final class WindowFunctionEvaluator {
         frameArgVectors.get().clear();
         argumentFactMemo.get().clear();
         windowKeyRules.get().clear();
+        state().ratioDeclaredScales.clear();
     }
 
     // Per-batch, per-thread: each sorted partition's evaluated ARGUMENT VECTORS, keyed by the
@@ -2710,10 +2865,10 @@ final class WindowFunctionEvaluator {
         if (asked == null) {
             buckets = BigDecimal.ZERO;
         } else if (asked instanceof Number) {
-            buckets = new BigDecimal(asked.toString()).setScale(0, RoundingMode.HALF_UP);
+            buckets = DecimalText.parse(asked.toString()).setScale(0, RoundingMode.HALF_UP);
         } else {
             try {
-                buckets = new BigDecimal(asked.toString().trim()).setScale(0, RoundingMode.HALF_UP);
+                buckets = DecimalText.parse(asked.toString().trim()).setScale(0, RoundingMode.HALF_UP);
             } catch (final NumberFormatException noNumber) {
                 throw new RuntimeException("Numeric value '" + asked + "' is not recognized");
             }
@@ -2764,7 +2919,20 @@ final class WindowFunctionEvaluator {
             ? ParseTreeText.getOriginalText(windowArgs(funcCtx).get(0)) : null;
         final Object curVal = extractColumnValue(currentRow, colExpr, table);
         final List<Object> allVals = frameValues(sortedPartition, 0, sortedPartition.size() - 1, colExpr, table);
+        if (ratioScale(funcCtx, table) == DECFLOAT_RATIO) {
+            return WindowFunctionHelper.decfloatRatioToReport(curVal, allVals);
+        }
         return ratioAtDeclaredScale(funcCtx, WindowFunctionHelper.ratioToReport(curVal, allVals), table);
+    }
+
+    /** The scale a ratio's call declares, read once per call (see {@link #declaredRatioScale}). */
+    private int ratioScale(final FrostlakeParser.FunctionCallExprContext funcCtx, final Table table) {
+        Integer scale = state().ratioDeclaredScales.get(funcCtx);
+        if (scale == null) {
+            scale = Integer.valueOf(declaredRatioScale(funcCtx, table));
+            state().ratioDeclaredScales.put(funcCtx, scale);
+        }
+        return scale.intValue();
     }
 
     /**
@@ -2787,19 +2955,17 @@ final class WindowFunctionEvaluator {
         if (!(ratio instanceof Number)) {
             return ratio;
         }
-        Integer scale = state().ratioDeclaredScales.get(funcCtx);
-        if (scale == null) {
-            scale = Integer.valueOf(declaredRatioScale(funcCtx, table));
-            state().ratioDeclaredScales.put(funcCtx, scale);
-        }
-        if (scale.intValue() < 0) {
+        final int scale = ratioScale(funcCtx, table);
+        if (scale < 0) {
             return ratio;
         }
-        return BigDecimal.valueOf(((Number) ratio).doubleValue())
-            .setScale(scale.intValue(), RoundingMode.HALF_UP);
+        return BigDecimal.valueOf(((Number) ratio).doubleValue()).setScale(scale, RoundingMode.HALF_UP);
     }
 
-    /** The declared scale of one RATIO_TO_REPORT call, or -1 when its type is not an exact number. */
+    /**
+     * The declared scale of one RATIO_TO_REPORT call, or -1 when its type is not an exact number, and {@link
+     * #DECFLOAT_RATIO} when it is a DECFLOAT.
+     */
     private int declaredRatioScale(final FrostlakeParser.FunctionCallExprContext funcCtx,
                                    final Table table) {
         final DataType declared;
@@ -2809,6 +2975,9 @@ final class WindowFunctionEvaluator {
                 ExpressionEvaluator.parse(ParseTreeText.getOriginalText(funcCtx)));
         } catch (final RuntimeException undetermined) {
             return -1;
+        }
+        if (NumericType.isDecfloat(declared)) {
+            return DECFLOAT_RATIO;
         }
         return declared instanceof NumericType && !NumericType.isApproximate(declared)
             ? ((NumericType) declared).getScale() : -1;
@@ -2860,7 +3029,7 @@ final class WindowFunctionEvaluator {
         // The n is a number written out, or a text that spells one; what else it may be is refused while the
         // statement compiles, and a negative one here (live-verified).
         final Object written = constantArgValue(ParseTreeText.getOriginalText(windowArgs(funcCtx).get(1)));
-        final int n = written == null ? 1 : new BigDecimal(written.toString().trim())
+        final int n = written == null ? 1 : DecimalText.parse(written.toString().trim())
             .setScale(0, RoundingMode.HALF_UP).intValue();
         if (n < 0) {
             throw new RuntimeException("Invalid parameter value: " + n
@@ -3218,6 +3387,19 @@ final class WindowFunctionEvaluator {
             if (cumulative != NOT_SUMMARIZED) {
                 return cumulative;
             }
+            final Object reverse = reverseCumulativeFrameValue(functionName, funcCtx, partition, from, to, table,
+                colExpr, vector);
+            if (reverse instanceof RuntimeException) {
+                throw (RuntimeException) reverse;
+            }
+            if (reverse != NOT_SUMMARIZED) {
+                return reverse;
+            }
+            final Object running = floatRowsFrameValue(functionName, funcCtx, partition, table, position, colExpr,
+                vector);
+            if (running != NOT_SUMMARIZED) {
+                return running;
+            }
         }
         // A whole partition under an ORDER BY is summed in the rows' INPUT order, as live sums it: over 0.3,
         // 0.7, 0.1 and 0.5 squared, ORDER BY i DESC answers 0.83999999999999985789 rather than the
@@ -3374,6 +3556,95 @@ final class WindowFunctionEvaluator {
     }
 
     /**
+     * A FLOAT SUM or AVG over the RANGE frame from the current row to the partition's end, read from the partition's
+     * peer-group sums in one pass from its LAST row. Live adds this frame a peer group at a time from the end, each
+     * group's sum corrected and the groups joining one running sum, as the frame from the partition's start is added
+     * from the start: over 0.17, 0.17, 0.9, 0.9, 0.1, 0.1, 0.6, 0.17 and 0.17 keyed 1, 1, 2, 2, 3, 3, 4, 5 and 5,
+     * SUM answers 2.94000000000000039080 on the second key, where the groups added from the first give
+     * 2.93999999999999994671. Answers the refusal a frame meets as the value, and {@link #NOT_SUMMARIZED} for any
+     * other call or frame, or a partition whose values do not all take the double path.
+     */
+    private Object reverseCumulativeFrameValue(final String functionName,
+                                               final FrostlakeParser.FunctionCallExprContext funcCtx,
+                                               final List<Row> partition, final int from, final int to,
+                                               final Table table, final String colExpr, final Object[] vector) {
+        final boolean sum = "SUM".equals(functionName);
+        final FrostlakeParser.OverClauseContext over = funcCtx.overClause();
+        if (!sum && !"AVG".equals(functionName) || over == null || to != partition.size() - 1
+                || !isReverseCumulativeFrame(over.windowFrame())
+                || !everyValueApproximate(functionName, funcCtx, partition, table, colExpr, vector)) {
+            return NOT_SUMMARIZED;
+        }
+        Map<ParserRuleContext, CumulativeFrameValues> byCall = cumulativeFrames.get().get(partition);
+        if (byCall == null) {
+            byCall = new IdentityHashMap<ParserRuleContext, CumulativeFrameValues>();
+            cumulativeFrames.get().put(partition, byCall);
+        }
+        CumulativeFrameValues summary = byCall.get(funcCtx);
+        if (summary == null) {
+            final Object[] values = frameInputs(functionName, partition, table, colExpr, vector);
+            if (values == null) {
+                return NOT_SUMMARIZED;
+            }
+            final List<List<Object>> fromLast = new ArrayList<>();
+            final List<Integer> starts = new ArrayList<>();
+            final List<Object> all = Arrays.asList(values);
+            int start = 0;
+            while (start < values.length) {
+                final int end = Math.max(start, Math.min(values.length - 1, lastPeer(partition, start, over, table)));
+                fromLast.add(0, all.subList(start, end + 1));
+                starts.add(Integer.valueOf(start));
+                start = end + 1;
+            }
+            final boolean keepsDouble = isStaticallyVariantArgumentMemo(colExpr, table)
+                || !sum && isApproximateColumn(colExpr, table);
+            final List<Object> read = new ArrayList<>(sum
+                ? AggregateNumerics.cumulativeWindowSums(fromLast, keepsDouble)
+                : AggregateNumerics.cumulativeWindowAvgs(fromLast, keepsDouble));
+            Collections.reverse(read);
+            summary = new CumulativeFrameValues(starts, read);
+            byCall.put(funcCtx, summary);
+        }
+        return summary.through(from, NOT_SUMMARIZED);
+    }
+
+    /** RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING: the current row's peers through the partition's end. */
+    private static boolean isReverseCumulativeFrame(final FrostlakeParser.WindowFrameContext frame) {
+        if (frame == null || frame.RANGE() == null || frame.frameBound().size() != 2) {
+            return false;
+        }
+        final FrostlakeParser.FrameBoundContext end = frame.frameBound(1);
+        return frame.frameBound(0).CURRENT() != null && end.UNBOUNDED() != null && end.FOLLOWING() != null;
+    }
+
+    /**
+     * Whether every value a SUM or AVG call reads in the partition takes the double path — a FLOAT, a VARIANT or a
+     * text, which leaves no exact running total to refuse — so that each of its frames sums to a double whatever rows
+     * it holds. Judged once per partition and call; a partition one of whose values does not read is not.
+     */
+    private boolean everyValueApproximate(final String functionName,
+                                          final FrostlakeParser.FunctionCallExprContext funcCtx,
+                                          final List<Row> partition, final Table table, final String colExpr,
+                                          final Object[] vector) {
+        Map<ParserRuleContext, Boolean> byCall = approximatePartitions.get().get(partition);
+        if (byCall == null) {
+            byCall = new IdentityHashMap<ParserRuleContext, Boolean>();
+            approximatePartitions.get().put(partition, byCall);
+        }
+        Boolean verdict = byCall.get(funcCtx);
+        if (verdict == null) {
+            final Object[] values = frameInputs(functionName, partition, table, colExpr, vector);
+            boolean approximate = values != null;
+            for (int i = 0; approximate && i < values.length; i++) {
+                approximate = values[i] == null || AggregateNumerics.isApproximateInput(values[i]);
+            }
+            verdict = Boolean.valueOf(approximate);
+            byCall.put(funcCtx, verdict);
+        }
+        return verdict.booleanValue();
+    }
+
+    /**
      * Every row's argument as the aggregate takes it, or null when a row's argument does not read — a row outside
      * one frame is refused only where a frame reads it, so such a partition is read frame by frame.
      */
@@ -3428,6 +3699,55 @@ final class WindowFunctionEvaluator {
                 || isWholePartitionFrame(over)) {
             return computed;
         }
+        final FloatFrameSums sums = floatFrameSums(funcCtx, partition, table, colExpr, vector);
+        if (sums == null) {
+            return computed;
+        }
+        final int at = anchorOrLast(position, partition);
+        final int count = sums.count(at);
+        if (count == 0) {
+            return computed;
+        }
+        return "SUM".equals(funcCtx.functionName().getText().toUpperCase(Locale.ROOT))
+            ? Double.valueOf(sums.sum(at)) : Double.valueOf(sums.sum(at) / count);
+    }
+
+    /**
+     * A FLOAT SUM or AVG over a ROWS frame that moves along its partition, read from the partition's running sum (see
+     * {@link FloatFrameSums}) before any frame is added up on its own: when every value of the partition takes the
+     * double path, each frame's own sum would only be set aside for the running one. Answers {@link #NOT_SUMMARIZED}
+     * for any other call or frame, or a partition whose values do not all take that path or convert.
+     */
+    private Object floatRowsFrameValue(final String functionName,
+                                       final FrostlakeParser.FunctionCallExprContext funcCtx,
+                                       final List<Row> partition, final Table table, final int position,
+                                       final String colExpr, final Object[] vector) {
+        final FrostlakeParser.OverClauseContext over = funcCtx.overClause();
+        final FrostlakeParser.WindowFrameContext frame = over == null ? null : over.windowFrame();
+        final boolean sum = "SUM".equals(functionName);
+        if (!sum && !"AVG".equals(functionName) || frame == null || frame.ROWS() == null || isWholePartitionFrame(over)
+                || !everyValueApproximate(functionName, funcCtx, partition, table, colExpr, vector)) {
+            return NOT_SUMMARIZED;
+        }
+        final FloatFrameSums sums = floatFrameSums(funcCtx, partition, table, colExpr, vector);
+        if (sums == null) {
+            return NOT_SUMMARIZED;
+        }
+        final int at = anchorOrLast(position, partition);
+        final int count = sums.count(at);
+        if (count == 0) {
+            return null;
+        }
+        return sum ? Double.valueOf(sums.sum(at)) : Double.valueOf(sums.sum(at) / count);
+    }
+
+    /**
+     * A SUM's or an AVG's running FLOAT sums over a ROWS frame, built once per partition and call; null when a row's
+     * value does not convert, which a frame refuses only where it reads that row.
+     */
+    private FloatFrameSums floatFrameSums(final FrostlakeParser.FunctionCallExprContext funcCtx,
+                                          final List<Row> partition, final Table table, final String colExpr,
+                                          final Object[] vector) {
         final Map<ParserRuleContext, FloatFrameSums> byCall = memoFor(movingFrameSums.get(), partition);
         FloatFrameSums sums = byCall.get(funcCtx);
         if (sums == null) {
@@ -3440,22 +3760,142 @@ final class WindowFunctionEvaluator {
                     terms[i] = value == null ? null : Double.valueOf(AggregateNumerics.doubleTerm(value));
                 }
             } catch (final RuntimeException notEveryRowConverts) {
-                // A row outside this frame that cannot convert is refused only where a frame reads it.
-                return computed;
+                return null;
             }
-            final List<FrostlakeParser.FrameBoundContext> bounds = frame.frameBound();
+            final List<FrostlakeParser.FrameBoundContext> bounds = funcCtx.overClause().windowFrame().frameBound();
             final Long start = frameOffset(bounds.get(0));
             final Long end = bounds.size() > 1 ? frameOffset(bounds.get(1)) : Long.valueOf(0L);
             sums = new FloatFrameSums(terms, start, end, "SUM".equals(functionName));
             byCall.put(funcCtx, sums);
         }
-        final int at = anchorOrLast(position, partition);
-        final int count = sums.count(at);
-        if (count == 0) {
-            return computed;
+        return sums;
+    }
+
+    /**
+     * A variance-family aggregate — VARIANCE, VAR_POP, STDDEV, STDDEV_POP and their spellings — over a FLOAT frame that
+     * moves along its partition, read from the partition's running moments (see {@link FloatFrameMoments}) in one walk.
+     * The walk is live's for each shape it covers: a ROWS frame walks as a SUM's does (see {@link FloatFrameSums}),
+     * RANGE from UNBOUNDED PRECEDING to the CURRENT ROW (the frame an ORDER BY brings) walks from the partition's
+     * start, and a RANGE frame with an offset and no UNBOUNDED edge walks from the start with plain sums. Every
+     * other RANGE frame — from the CURRENT ROW to UNBOUNDED FOLLOWING, which live adds up afresh for each peer group —
+     * answers {@link #NOT_SUMMARIZED}, as do an exact or DISTINCT argument and a partition whose values do not all
+     * read.
+     */
+    private Object movingMomentValue(final String functionName, final FrostlakeParser.FunctionCallExprContext funcCtx,
+                                     final List<Row> partition, final int position, final Table table) {
+        final MomentStatistic statistic = MomentStatistic.named(functionName);
+        if (statistic == null || funcCtx.DISTINCT() != null || funcCtx.overClause() == null) {
+            return NOT_SUMMARIZED;
         }
-        return "SUM".equals(funcCtx.functionName().getText().toUpperCase(Locale.ROOT))
-            ? Double.valueOf(sums.sum(at)) : Double.valueOf(sums.sum(at) / count);
+        Map<ParserRuleContext, Object> byCall = movingFrameMoments.get().get(partition);
+        if (byCall == null) {
+            byCall = new IdentityHashMap<ParserRuleContext, Object>();
+            movingFrameMoments.get().put(partition, byCall);
+        }
+        Object moments = byCall.get(funcCtx);
+        if (moments == null) {
+            moments = frameMoments(functionName, funcCtx, partition, table);
+            byCall.put(funcCtx, moments);
+        }
+        return moments == NOT_SUMMARIZED ? NOT_SUMMARIZED
+            : statistic.of((FloatFrameMoments) moments, anchorOrLast(position, partition));
+    }
+
+    /** The partition's frame moments for a variance-family call, or {@link #NOT_SUMMARIZED} (see movingMomentValue). */
+    private Object frameMoments(final String functionName, final FrostlakeParser.FunctionCallExprContext funcCtx,
+                                final List<Row> partition, final Table table) {
+        final FrostlakeParser.OverClauseContext over = funcCtx.overClause();
+        final FrostlakeParser.WindowFrameContext frame = over.windowFrame();
+        final List<FrostlakeParser.BooleanExprContext> args = windowArgs(funcCtx);
+        if (over.orderByClause() == null || args.size() != 1) {
+            return NOT_SUMMARIZED;
+        }
+        boolean backward = false;
+        boolean compensated = true;
+        if (frame != null && frame.ROWS() != null) {
+            final List<FrostlakeParser.FrameBoundContext> bounds = frame.frameBound();
+            final Long start = frameOffset(bounds.get(0));
+            final Long end = bounds.size() > 1 ? frameOffset(bounds.get(1)) : Long.valueOf(0L);
+            backward = end == null || start != null && end.longValue() > 0L;
+        } else if (frame != null && !isRangeFromStartToCurrentRow(frame)) {
+            if (!isBoundedRangeOffsetFrame(frame)) {
+                return NOT_SUMMARIZED;
+            }
+            compensated = false;
+        }
+        final String argExpr = ParseTreeText.getOriginalText(args.get(0));
+        final Object[] values = frameInputs(functionName, partition, table, argExpr, null);
+        if (values == null) {
+            return NOT_SUMMARIZED;
+        }
+        // An exact argument is read exactly instead (see ExactMoments), frame by frame.
+        final boolean declaredApproximate = isApproximateColumn(argExpr, table);
+        final Double[] terms = new Double[values.length];
+        try {
+            for (int i = 0; i < values.length; i++) {
+                if (values[i] == null) {
+                    continue;
+                }
+                if (!declaredApproximate && !AggregateNumerics.isApproximateInput(values[i])) {
+                    return NOT_SUMMARIZED;
+                }
+                terms[i] = Double.valueOf(NumericAggregateInput.asDouble(values[i]));
+            }
+        } catch (final RuntimeException notEveryRowConverts) {
+            // A row that does not convert is refused only where a frame reads it.
+            return NOT_SUMMARIZED;
+        }
+        final int[] lows = new int[values.length];
+        final int[] highs = new int[values.length];
+        for (int i = 0; i < values.length; i++) {
+            final int[] bounds = frameBounds(over, partition, i, table);
+            lows[i] = bounds[0];
+            highs[i] = bounds[1];
+        }
+        return new FloatFrameMoments(terms, lows, highs, backward, compensated);
+    }
+
+    /** RANGE from UNBOUNDED PRECEDING to the CURRENT ROW, spelled with one bound or with both. */
+    private static boolean isRangeFromStartToCurrentRow(final FrostlakeParser.WindowFrameContext frame) {
+        final List<FrostlakeParser.FrameBoundContext> bounds = frame.frameBound();
+        return frame.RANGE() != null && bounds.get(0).UNBOUNDED() != null && bounds.get(0).PRECEDING() != null
+            && (bounds.size() == 1 || bounds.get(1).CURRENT() != null);
+    }
+
+    /** A RANGE frame with an offset bound and neither edge UNBOUNDED. */
+    private static boolean isBoundedRangeOffsetFrame(final FrostlakeParser.WindowFrameContext frame) {
+        if (frame.RANGE() == null) {
+            return false;
+        }
+        boolean offset = false;
+        for (final FrostlakeParser.FrameBoundContext bound : frame.frameBound()) {
+            if (bound.UNBOUNDED() != null) {
+                return false;
+            }
+            offset = offset || bound.frameOffset() != null;
+        }
+        return offset;
+    }
+
+    /** The answers a call's frames have had in one partition, by {@link #frameKey}. */
+    private Map<Long, Object> frameAnswersFor(final List<Row> partition,
+                                              final FrostlakeParser.FunctionCallExprContext funcCtx) {
+        Map<ParserRuleContext, Map<Long, Object>> byCall = frameAnswers.get().get(partition);
+        if (byCall == null) {
+            byCall = new IdentityHashMap<ParserRuleContext, Map<Long, Object>>();
+            frameAnswers.get().put(partition, byCall);
+        }
+        Map<Long, Object> answers = byCall.get(funcCtx);
+        if (answers == null) {
+            answers = new HashMap<Long, Object>();
+            byCall.put(funcCtx, answers);
+        }
+        return answers;
+    }
+
+    /** A frame's inclusive bounds as one key. */
+    private static Long frameKey(final int from, final int to) {
+        return Long.valueOf(((long) from << 32) | (to & 0xffffffffL));
     }
 
     /** A ROWS bound as an offset from the current row, negative when PRECEDING; null when UNBOUNDED. */
@@ -3550,7 +3990,8 @@ final class WindowFunctionEvaluator {
     /**
      * A cumulative RANGE frame — an ORDER BY with no frame, or RANGE from UNBOUNDED PRECEDING to the
      * CURRENT ROW or from the CURRENT ROW to UNBOUNDED FOLLOWING — which live adds a PEER GROUP at a time:
-     * each group's FLOAT sum corrected, the groups summed as a running sum. Over rows that all share the
+     * each group's FLOAT sum corrected, the groups summed as a running sum from the partition's edge the frame
+     * is pinned to (see reverseCumulativeFrameValue). Over rows that all share the
      * ORDER BY key it answers the corrected 0.57999999999999984901 where the same rows under ROWS
      * UNBOUNDED PRECEDING answer 0.57999999999999996003.
      */
@@ -3708,7 +4149,14 @@ final class WindowFunctionEvaluator {
                 return from > to ? 0L : prefix[to + 1] - prefix[from];
             }
         }
-        // DISTINCT counts each value of the frame once, as the grouped COUNT does.
+        // DISTINCT counts each value of the frame once, as the grouped COUNT does; the rows of one peer group, and any
+        // rows whose frames coincide, share one count.
+        final Map<Long, Object> answers = frameAnswersFor(partition, funcCtx);
+        final Long bounds = frameKey(from, to);
+        final Object known = answers.get(bounds);
+        if (known != null) {
+            return known;
+        }
         final Set<Object> seen = funcCtx.DISTINCT() != null ? new HashSet<>() : null;
         long count = 0;
         for (int i = from; i <= to; i++) {
@@ -3718,6 +4166,7 @@ final class WindowFunctionEvaluator {
                 count++;
             }
         }
+        answers.put(bounds, Long.valueOf(count));
         return count;
     }
 
@@ -3756,11 +4205,18 @@ final class WindowFunctionEvaluator {
             && (acc instanceof PercentileContAccumulator || acc instanceof PercentileDiscAccumulator);
         if (orderedPercentile) {
             final double fraction = args.isEmpty() ? 0.5d
-                : new BigDecimal(ParseTreeText.getOriginalText(args.get(0)).trim()).doubleValue();
+                : DecimalText.parse(ParseTreeText.getOriginalText(args.get(0)).trim()).doubleValue();
             if (acc instanceof PercentileContAccumulator) {
                 ((PercentileContAccumulator) acc).setPercentile(fraction);
             } else {
                 ((PercentileDiscAccumulator) acc).setPercentile(fraction);
+            }
+            // WITHIN GROUP (ORDER BY x DESC) counts the fraction from the greatest value, as the grouped call does.
+            final boolean ordersDown = withinGroup.orderItem(0).DESC() != null;
+            if (acc instanceof PercentileContAccumulator) {
+                ((PercentileContAccumulator) acc).setDescending(ordersDown);
+            } else {
+                ((PercentileDiscAccumulator) acc).setDescending(ordersDown);
             }
         }
         final String argExpr = orderedPercentile
@@ -3778,8 +4234,18 @@ final class WindowFunctionEvaluator {
             ((DeclaredArgumentAccumulator) acc).setDeclaredArgumentType(declaredArgumentType(argExpr, table));
         }
         if (acc instanceof DecfloatAwareAccumulator) {
-            ((DecfloatAwareAccumulator) acc).setDecfloatArgument(
-                NumericType.isDecfloat(declaredArgumentType(argExpr, table)));
+            // A statistic of pairs is a DECFLOAT when either of its arguments is one.
+            final boolean decfloat = NumericType.isDecfloat(declaredArgumentType(argExpr, table))
+                || acc instanceof PairStatisticAccumulator && secondExpr != null
+                && NumericType.isDecfloat(declaredArgumentType(secondExpr, table));
+            ((DecfloatAwareAccumulator) acc).setDecfloatArgument(decfloat);
+            final boolean partitioned = funcCtx.overClause() != null
+                && funcCtx.overClause().partitionByClause() != null;
+            if (acc instanceof PercentileContAccumulator) {
+                ((PercentileContAccumulator) acc).setPerGroup(partitioned);
+            } else if (acc instanceof MedianAccumulator) {
+                ((MedianAccumulator) acc).setPerGroup(partitioned);
+            }
         }
         if (acc instanceof ConstantArgumentsAccumulator) {
             ((ConstantArgumentsAccumulator) acc).setConstantArgumentTexts(tupleArgumentTexts(funcCtx, args, table));
@@ -3791,7 +4257,7 @@ final class WindowFunctionEvaluator {
         if (secondExpr != null && acc instanceof ListAggAccumulator) {
             ((ListAggAccumulator) acc).setDelimiter(String.valueOf(constantArgValue(secondExpr)));
         } else if (secondExpr != null && acc instanceof ApproxPercentileAccumulator) {
-            ((ApproxPercentileAccumulator) acc).setPercentile(new BigDecimal(secondExpr.trim()).doubleValue());
+            ((ApproxPercentileAccumulator) acc).setPercentile(DecimalText.parse(secondExpr.trim()).doubleValue());
         }
         if (acc instanceof MultiArgumentAccumulator) {
             // The tuple-fed seam, as on the grouped path: an accumulator that wants every argument gets
@@ -3801,12 +4267,16 @@ final class WindowFunctionEvaluator {
                 tupleArgumentTexts(funcCtx, args, table), frame, table, funcCtx.DISTINCT() != null);
             return acc.getResult();
         }
+        // A WITHIN GROUP ordering orders what the call collects, as the grouped call's does: ARRAY_AGG(i) WITHIN GROUP
+        // (ORDER BY i DESC) OVER (PARTITION BY g) is [2,1], and so for LISTAGG and a DISTINCT call (live-verified).
+        final List<Row> fed = withinGroup != null && !withinGroup.orderItem().isEmpty() && !orderedPercentile
+            ? sortRowsForWindow(frame, withinGroup, table) : frame;
         final boolean pairFed = secondExpr != null
             && (acc instanceof MaxByMinByAccumulator || acc instanceof ObjectAggAccumulator
                 || acc instanceof CorrAccumulator || acc instanceof CovarAccumulator
                 || acc instanceof RegrAccumulator);
         final Set<Object> seen = funcCtx.DISTINCT() != null ? new HashSet<>() : null;
-        for (final Row r : frame) {
+        for (final Row r : fed) {
             // Same JSON-null rule as the grouped path: a VARIANT JSON null is missing input for a
             // value-computing aggregate (live: COUNT ignores it, SUM over {JSON null, 3}
             // is 3) and a VALUE for an ordering/collecting one (MAX over {JSON null, 5} is the JSON
@@ -3822,6 +4292,10 @@ final class WindowFunctionEvaluator {
                     ((MaxByMinByAccumulator) acc).accumulate(v, second);
                 } else if (acc instanceof ObjectAggAccumulator) {
                     ((ObjectAggAccumulator) acc).accumulate(v, second);
+                } else if (v != null && second != null && acc instanceof PairStatisticAccumulator
+                        && ((PairStatisticAccumulator) acc).isDecfloat()) {
+                    // A DECFLOAT statistic reads its pairs as they are (see DecfloatPairStatistics).
+                    ((PairStatisticAccumulator) acc).accumulateDecfloat(v, second);
                 } else if (v != null && second != null) {
                     final double dy = WindowFunctionHelper.toDouble(v);
                     final double dx = WindowFunctionHelper.toDouble(second);
@@ -4084,6 +4558,7 @@ final class WindowFunctionEvaluator {
         // evaluating it raw threw "Column not found" per row, which the catch below silently turned
         // into a NULL order key, so RANK/ROW_NUMBER saw every row as equal and QUALIFY filtered nothing.
         String toEvaluate = trimmed;
+        final String kept = keptAlias(trimmed, row, table);
         if (!state().windowSelectAliases.isEmpty() && isSimpleIdentifier(trimmed)) {
             final String canon = canonicalName(trimmed);
             if (!table.hasColumn(canon) && state().windowSelectAliases.containsKey(canon)) {
@@ -4093,7 +4568,15 @@ final class WindowFunctionEvaluator {
             toEvaluate = readThroughAliases(trimmed, table);
         }
         try {
-            return evaluateAsItsRow(toEvaluate, row, table);
+            if (kept == null) {
+                return evaluateAsItsRow(toEvaluate, row, table);
+            }
+            if (state().aliasValues.holds(row, kept)) {
+                return state().aliasValues.valueOf(row, kept);
+            }
+            final Object value = evaluateAsItsRow(toEvaluate, row, table);
+            state().aliasValues.remember(row, kept, value);
+            return value;
         } catch (final RuntimeException e) {
             // A key over a cell a relation deferred reads that cell, so its fault is raised, not a NULL key; and so is
             // a value the key cannot compute for the row, a conversion or a division by zero, as the statement's

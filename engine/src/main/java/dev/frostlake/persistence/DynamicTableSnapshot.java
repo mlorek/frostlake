@@ -32,6 +32,8 @@ public class DynamicTableSnapshot implements Serializable {
     public String targetLag;
     public String warehouse;
     public String refreshMode;
+    /** Why an AUTO refresh mode settled on FULL, or null. */
+    public String fullRefreshReason;
     public String initialize;
     public String state;
     public String comment;
@@ -40,6 +42,8 @@ public class DynamicTableSnapshot implements Serializable {
     public String owner;
     /** The CLUSTER BY keys as written; null in a snapshot taken before they were kept. */
     public List<String> clusterKeys;
+    /** The text written after CLUSTER BY; null in a snapshot taken before it was kept, and for no key. */
+    public String clusterByText;
     /**
      * The table's own column list — names, declared types (null where the query's is kept) and comments, in
      * step; null in a snapshot taken before it was kept, and for a table that declares none.
@@ -79,8 +83,14 @@ public class DynamicTableSnapshot implements Serializable {
     public Long firstRefreshedMillis;
     /** The rows its last refresh read, for the next refresh to tell what changed; null when there are none. */
     public List<List<Object>> refreshImage;
+    /** The micro-partition each of those rows lies in, in step with them; null on older snapshots. */
+    public List<Long> refreshImagePartitions;
+    /** Each input's micro-partitions as the last refresh read them, by the input's name; null on older snapshots. */
+    public HashMap<String, HashMap<Long, Long>> inputPartitions;
     /** The refreshes the table keeps for time travel, oldest first: where each fell, when it ran, its rows. */
     public List<Long> refreshSequences;
     public List<Long> refreshMillis;
     public List<List<List<Object>>> refreshRows;
+    /** Each kept refresh's row identities, an entry null where not known; null on snapshots that predate them. */
+    public List<List<String>> refreshRowIds;
 }

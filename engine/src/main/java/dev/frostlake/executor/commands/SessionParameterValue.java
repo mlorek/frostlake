@@ -20,6 +20,7 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.security.SecurityManager;
+import dev.frostlake.types.DecimalText;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -132,6 +133,11 @@ final class SessionParameterValue {
         if (value.SESSION_VAR_REF() != null) {
             return held(variable(value.SESSION_VAR_REF().getText().substring(1), queryExecutor));
         }
+        if (value.listValue() != null) {
+            // A parenthesized list reads as the parser's word for it, written bare (live-verified).
+            final String word = ListValues.word(value.listValue());
+            return text(word, word);
+        }
         return word(value);
     }
 
@@ -167,7 +173,7 @@ final class SessionParameterValue {
             return new SessionParameterValue(SessionValueKind.BOOLEAN, flag ? "TRUE" : "FALSE", null, null, flag);
         }
         if (held instanceof Number) {
-            final BigDecimal number = new BigDecimal(held.toString());
+            final BigDecimal number = DecimalText.parse(held.toString());
             if (number.scale() <= 0) {
                 return new SessionParameterValue(SessionValueKind.INTEGER, number.toPlainString(),
                     number.toBigInteger(), null, false);

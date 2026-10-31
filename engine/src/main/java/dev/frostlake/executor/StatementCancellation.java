@@ -15,12 +15,15 @@
  */
 package dev.frostlake.executor;
 
+import dev.frostlake.security.SessionSettings;
+
 import java.util.HashMap;
 import java.util.Map;
 
 /**
  * What can end a running statement before its answer: its session's STATEMENT_TIMEOUT_IN_SECONDS, a driver's query
- * timeout, and a cancel — the driver's {@code Statement.cancel()} or SYSTEM$CANCEL_QUERY — from another thread. One
+ * timeout, a cancel — the driver's {@code Statement.cancel()} or SYSTEM$CANCEL_QUERY — from another thread, and
+ * another session's SYSTEM$ABORT_SESSION of its session (see {@link SessionSettings#isAborted()}). One
  * is pinned per outermost statement, as the statement's clock is, and the engine's long-running points call
  * {@link #check()}: the operator pipeline between stages, a join's rows, SYSTEM$WAIT, GENERATOR, a block's loops and
  * each statement a block runs. A timeout of zero is the longest, seven days (live-verified).
@@ -47,6 +50,8 @@ public final class StatementCancellation {
     private volatile long started;
     private volatile long sessionSeconds;
     private volatile String queryId;
+    /** The settings of the session the statement runs in, or null for a statement of none. */
+    private volatile SessionSettings session;
 
     /**
      * A token for one statement.
@@ -80,15 +85,17 @@ public final class StatementCancellation {
      * one, timed from now by the session's timeout.
      *
      * @param sessionTimeoutSeconds the session's STATEMENT_TIMEOUT_IN_SECONDS, 0 for the longest
+     * @param session               the settings of the session the statement runs in, or null
      * @return the token pinned before, to restore with {@link #end}
      */
-    static StatementCancellation begin(final long sessionTimeoutSeconds) {
+    static StatementCancellation begin(final long sessionTimeoutSeconds, final SessionSettings session) {
         final StatementCancellation displaced = PINNED.get();
         final StatementCancellation offered = OFFERED.get();
         OFFERED.remove();
         final StatementCancellation token = offered != null ? offered : new StatementCancellation(0);
         token.started = System.nanoTime();
         token.sessionSeconds = sessionTimeoutSeconds > 0 ? sessionTimeoutSeconds : LONGEST_SECONDS;
+        token.session = session;
         PINNED.set(token);
         return displaced;
     }
@@ -129,6 +136,56 @@ public final class StatementCancellation {
     }
 
     /**
+     * Run a child statement of the pinned statement — one of a block's, a procedure's or an EXECUTE IMMEDIATE's text —
+     * under its own query ID until {@link #childEnded}: what it writes is named by that ID, and SYSTEM$CANCEL_QUERY
+     * finds the statement by it too.
+     *
+     * @param id the child statement's query ID
+     * @return the ID the pinned statement ran under before, to put back with {@link #childEnded}
+     */
+    static String childRunningAs(final String id) {
+        final StatementCancellation token = PINNED.get();
+        if (token == null || id == null) {
+            return null;
+        }
+        final String before = token.queryId;
+        token.queryId = id;
+        synchronized (RUNNING) {
+            RUNNING.put(id, token);
+        }
+        return before;
+    }
+
+    /**
+     * The child statement {@link #childRunningAs} began has ended: the pinned statement runs under the ID it ran
+     * under before.
+     *
+     * @param id     the child statement's query ID
+     * @param before what {@link #childRunningAs} answered
+     */
+    static void childEnded(final String id, final String before) {
+        final StatementCancellation token = PINNED.get();
+        if (token == null || id == null) {
+            return;
+        }
+        synchronized (RUNNING) {
+            RUNNING.remove(id);
+        }
+        token.queryId = before;
+    }
+
+    /**
+     * The query ID the pinned statement runs under: the innermost statement this thread runs that is recorded
+     * under an ID of its own, a procedure's statement rather than its CALL.
+     *
+     * @return the ID, or null when no statement is pinned or it has none yet
+     */
+    public static String runningQueryId() {
+        final StatementCancellation token = PINNED.get();
+        return token == null ? null : token.queryId;
+    }
+
+    /**
      * Cancel the running statement a query ID names.
      *
      * @param id the query ID
@@ -146,13 +203,41 @@ public final class StatementCancellation {
         return true;
     }
 
-    /** End the pinned statement here if it was canceled or its time is up; nothing when none is pinned. */
+    /**
+     * The token pinned to the statement this thread runs: what a watch on a guest language's execution reads from
+     * another thread (see GuestWatch).
+     *
+     * @return the token, or null when no statement is pinned
+     */
+    public static StatementCancellation pinned() {
+        return PINNED.get();
+    }
+
+    /**
+     * Whether the statement this token is pinned to is over: canceled, its session aborted, or its time up, as
+     * {@link #check()} judges it. Read from any thread.
+     *
+     * @return whether it is over
+     */
+    public boolean isOver() {
+        if (canceled || session != null && session.isAborted()) {
+            return true;
+        }
+        final long elapsed = System.nanoTime() - started;
+        return driverSeconds > 0 && elapsed >= driverSeconds * NANOS_PER_SECOND
+            || elapsed >= sessionSeconds * NANOS_PER_SECOND;
+    }
+
+    /**
+     * End the pinned statement here if it was canceled, its session was aborted or its time is up; nothing when none
+     * is pinned.
+     */
     public static void check() {
         final StatementCancellation token = PINNED.get();
         if (token == null) {
             return;
         }
-        if (token.canceled) {
+        if (token.canceled || token.session != null && token.session.isAborted()) {
             throw StatementCanceledException.canceled();
         }
         final long elapsed = System.nanoTime() - token.started;

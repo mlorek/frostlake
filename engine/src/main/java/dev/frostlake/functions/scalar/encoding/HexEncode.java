@@ -70,6 +70,12 @@ public class HexEncode extends BuiltInFunction {
         throw new RuntimeException("Numeric value is out of range, error: " + chosen);
     }
 
+    /** The input is held to the width its type declares (live-verified). */
+    @Override
+    public boolean holdsDeclaredWidth(final int position) {
+        return position == 0;
+    }
+
     /** A VECTOR is refused by its argument type, in every position (live-verified). */
     @Override
     public SemiStructuredRejection vectorRejection(final int position) {

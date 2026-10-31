@@ -35,6 +35,9 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  */
 public final class SessionDirectory {
 
+    /** The refusal of every request of a session SYSTEM$ABORT_SESSION ended, in the account's words. */
+    public static final String SESSION_GONE = "Session no longer exists.  New login required to access the service.";
+
     private final Map<Long, SessionReference> sessions = new ConcurrentHashMap<Long, SessionReference>();
     private final ReferenceQueue<AbortableSession> collected = new ReferenceQueue<AbortableSession>();
     private final Queue<AbortableSession> aborted = new ConcurrentLinkedQueue<AbortableSession>();

@@ -16,9 +16,15 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.functions.scalar.WholeNumberArgument;
+import dev.frostlake.values.CodePointText;
+
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -184,6 +190,93 @@ public final class RegexpHelper {
         if (option != 0 && option != 1) {
             throw outOfRange(option, "Return option must be 0, 1, or NULL");
         }
+    }
+
+    /**
+     * The whole number an optional argument holds, or the default when the call leaves it out.
+     *
+     * @param args    the call's arguments
+     * @param index   the argument's place
+     * @param absent  the default
+     * @return its value
+     */
+    public static int wholeArgument(final List<Object> args, final int index, final int absent) {
+        return args.size() > index && args.get(index) != null ? WholeNumberArgument.widePosition(args.get(index))
+            : absent;
+    }
+
+    /**
+     * The text an optional argument holds — the regex parameters — or null when the call leaves it out.
+     *
+     * @param args  the call's arguments
+     * @param index the argument's place
+     * @return its text, or null
+     */
+    public static String textArgument(final List<Object> args, final int index) {
+        return args.size() > index && args.get(index) != null ? SharedFunctionHelpers.textOf(args.get(index)) : null;
+    }
+
+    /**
+     * The capture group an optional argument names, or null when the call leaves it out.
+     *
+     * @param args  the call's arguments
+     * @param index the argument's place
+     * @return the group, or null
+     */
+    public static Integer groupArgument(final List<Object> args, final int index) {
+        return args.size() > index && args.get(index) != null
+            ? Integer.valueOf(WholeNumberArgument.widePosition(args.get(index))) : null;
+    }
+
+    /**
+     * The offset a search from a 1-based character position starts at — the position counts characters, a
+     * supplementary one included (live-verified) — or -1 when it lies past the subject's end.
+     *
+     * @param subject  the text searched
+     * @param position the 1-based position
+     * @return the offset, or -1
+     */
+    public static int searchStart(final String subject, final int position) {
+        final int start = Math.max(0, position - 1);
+        return start > CodePointText.length(subject) ? -1 : CodePointText.offset(subject, start);
+    }
+
+    /**
+     * Advance a matcher to the occurrence-th match at or after an offset.
+     *
+     * @param matcher    the matcher
+     * @param from       the offset the search starts at
+     * @param occurrence the match wanted, counting from one
+     * @return whether there is one; when true the matcher stands on it
+     */
+    public static boolean findOccurrence(final Matcher matcher, final int from, final int occurrence) {
+        if (!matcher.find(from)) {
+            return false;
+        }
+        for (int found = 1; found < occurrence; found++) {
+            if (!matcher.find()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * What the match a matcher stands on yields: with the {@code e} flag or a group number, that capture group (group
+     * 1 by default, NULL past the pattern's groups) — a pattern with no groups falling back to the whole match — and
+     * otherwise the whole match.
+     *
+     * @param matcher  the matcher, on a match
+     * @param extract  whether a group is asked for
+     * @param groupNum the group named, or null
+     * @return the text, or null
+     */
+    public static String matchedText(final Matcher matcher, final boolean extract, final Integer groupNum) {
+        if (extract && matcher.groupCount() >= 1) {
+            final int group = groupNum != null ? groupNum : 1;
+            return group <= matcher.groupCount() ? matcher.group(group) : null;
+        }
+        return matcher.group();
     }
 
     private static RuntimeException outOfRange(final int value, final String reason) {

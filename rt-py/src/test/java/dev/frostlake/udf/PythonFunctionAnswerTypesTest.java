@@ -26,7 +26,9 @@ import org.junit.jupiter.api.Test;
  * TIMESTAMP_TZ keeps a {@code datetime}'s offset and a TIMESTAMP_NTZ or TIMESTAMP_LTZ refuses one with an offset,
  * a VARCHAR is {@code str()} of the answer, an INT {@code int()} of it and a FLOAT {@code float()} of it, and inside
  * a VARIANT a {@code Decimal}, {@code bytes} and a {@code datetime} are their {@code str()}. A NUMBER with a scale
- * rounds half to even, and an answer its type does not take is refused naming the function and its handler.
+ * rounds half to even, and an answer its type does not take is refused naming the function and its handler. A
+ * VECTOR answer is a list, a tuple or a memoryview of its elements, cast as {@code ::VECTOR} casts it, with its
+ * refusals (unmeasured on an account).
  */
 public class PythonFunctionAnswerTypesTest extends MeasuredCellsTestSupport {
 
@@ -209,6 +211,27 @@ public class PythonFunctionAnswerTypesTest extends MeasuredCellsTestSupport {
         assertCells(new String[][] {
             {"INSERT INTO tzt SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-1)))", "1"},
             {"SELECT REPLACE(t::VARCHAR, ':', '.') FROM tzt", "2024-01-02 03.04.05.000 +0530"},
+        });
+    }
+
+    @Test
+    public void aVectorAnswerIsCastAsAVector() {
+        engine.execute("CREATE OR REPLACE FUNCTION vf() RETURNS VECTOR(FLOAT,2) LANGUAGE PYTHON RUNTIME_VERSION = "
+            + "'3.12' HANDLER = 'h' AS $$\ndef h():\n    return [1.0, 2.5]\n$$");
+        engine.execute("CREATE OR REPLACE FUNCTION vi(k INT) RETURNS VECTOR(INT,2) LANGUAGE PYTHON RUNTIME_VERSION = "
+            + "'3.12' HANDLER = 'h' AS $$\nimport array\ndef h(k):\n    return [[1, 2], (3, 4), "
+            + "memoryview(array.array('i', [5, 6])), [1, 2, 3], [1.5, 2], 'abc', None][k]\n$$");
+        assertCells(new String[][] {
+            {"SELECT vf(), TYPEOF(vf()::VARIANT), vf() = [1,2.5]::VECTOR(FLOAT,2)", "[1.000000,2.500000]|VECTOR|true"},
+            {"SELECT vi(0), vi(2), vi(4), vi(6)", "[1,2]|[5,6]|[1,2]|null"},
+            {"SELECT VECTOR_INNER_PRODUCT(vi(0), [1,1]::VECTOR(INT,2))", "3.0"},
+            // Only a list or what answers tolist() is a vector, of the declared length.
+            {"SELECT vi(1)", "REFUSED Vectors returned from Python must be lists or array-like in function VI with "
+                + "handler h"},
+            {"SELECT vi(3)", "REFUSED Returned list dimension, 3, does not match the expected vector dimension, 2 in "
+                + "function VI with handler h"},
+            {"SELECT vi(5)", "REFUSED Vectors returned from Python must be lists or array-like in function VI with "
+                + "handler h"},
         });
     }
 }

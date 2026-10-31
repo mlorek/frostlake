@@ -16,6 +16,8 @@
 
 package dev.frostlake.values;
 
+import dev.frostlake.types.DecimalText;
+
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.MathContext;
@@ -102,7 +104,7 @@ public final class Decfloats {
             }
             return held(new BigDecimal(approximate));
         }
-        return held(new BigDecimal(value.toString()));
+        return held(DecimalText.parse(value.toString()));
     }
 
     /** The significant digits a FLOAT written into a DECFLOAT column keeps. */
@@ -143,7 +145,7 @@ public final class Decfloats {
      */
     public static boolean holds(final String text) {
         try {
-            held(new BigDecimal(text.trim()));
+            held(DecimalText.parse(text.trim()));
             return true;
         } catch (final DecfloatRangeException outOfRange) {
             return false;
@@ -211,6 +213,25 @@ public final class Decfloats {
         } catch (final DecfloatRangeException outOfRange) {
             throw DecfloatRangeException.naming(text(left) + " / " + text(right));
         }
+    }
+
+    /**
+     * A DECFLOAT converted to an exact NUMBER(precision, scale): rounded half away from zero to the scale, or refused
+     * where the type has no room for it, the refusal naming the conversion with the DECFLOAT as it was written -
+     * {@code Decfloat out of representable range, operation: TO_NUMBER(99.95, 3, 1)} - whatever converts it: a cast,
+     * TO_NUMBER or TO_DECIMAL, or a write into the column (live-verified). An INT is NUMBER(38,0) here.
+     *
+     * @param value     the DECFLOAT
+     * @param precision the NUMBER's precision
+     * @param scale     the NUMBER's scale
+     * @return the value at the scale
+     */
+    public static BigDecimal toNumber(final BigDecimal value, final int precision, final int scale) {
+        final BigDecimal atScale = value.setScale(scale, RoundingMode.HALF_UP);
+        if (atScale.precision() - atScale.scale() > precision - scale) {
+            throw DecfloatRangeException.naming("TO_NUMBER(" + text(value) + ", " + precision + ", " + scale + ")");
+        }
+        return atScale;
     }
 
     /**

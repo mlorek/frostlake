@@ -19,8 +19,11 @@ package dev.frostlake.metastore;
 import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.UniqueConstraint;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.types.SqlTypeNames;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -34,6 +37,22 @@ import java.util.List;
 public final class HybridKeys {
 
     private HybridKeys() {
+    }
+
+    /**
+     * Refuse a hybrid table with a DECFLOAT column, ahead of its keys: {@code This feature is not supported for hybrid
+     * tables: 'DECFLOAT(38)'.} (live-verified).
+     */
+    public static void requireSupportedTypes(final Table table) {
+        if (!table.isHybrid()) {
+            return;
+        }
+        for (final TableColumn column : table.getColumns()) {
+            if (NumericType.isDecfloat(column.getDataType())) {
+                throw new RuntimeException("This feature is not supported for hybrid tables: '"
+                    + SqlTypeNames.canonical(column.getDataType()) + "'.");
+            }
+        }
     }
 
     /** Refuse a hybrid table declared without a PRIMARY KEY: {@code A hybrid table must contain primary key.} */
@@ -91,6 +110,15 @@ public final class HybridKeys {
             values.add(ValueComparisons.canonicalGroupKeyValue(value));
         }
         return values;
+    }
+
+    /**
+     * The refusal of a TRUNCATE of a hybrid table another hybrid table's foreign key references, which documented
+     * cannot be truncated as long as the relationship exists.
+     */
+    public static String referencedTableTruncated(final Table table) {
+        return "Table '" + table.getName() + "' cannot be truncated as long as a FOREIGN KEY constraint references"
+            + " it.";
     }
 
     /** The refusal of a row whose foreign key no parent row holds, a NULL one included. */

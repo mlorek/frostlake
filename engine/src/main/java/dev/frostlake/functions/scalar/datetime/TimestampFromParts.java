@@ -49,6 +49,11 @@ public class TimestampFromParts extends BuiltInFunction {
 
     /** The fewest arguments of the signature that takes the parts one by one. */
     private static final int PARTS = 6;
+    private static final long SECONDS_PER_DAY = 86_400L;
+    private static final long NANOS_PER_SECOND = 1_000_000_000L;
+    /** The first and the last second a timestamp can hold. */
+    private static final long MIN_EPOCH_SECOND = LocalDateTime.MIN.toEpochSecond(ZoneOffset.UTC);
+    private static final long MAX_EPOCH_SECOND = LocalDateTime.MAX.toEpochSecond(ZoneOffset.UTC);
 
     /** Whether the name builds a TIMESTAMP_LTZ or a TIMESTAMP_TZ, a value placed in a zone. */
     private final boolean zoned;
@@ -75,8 +80,7 @@ public class TimestampFromParts extends BuiltInFunction {
         final int second = DateFromParts.part(args.get(5));
         final long nanos = args.size() > 6 && args.get(6) != null ? DateFromParts.nanosPart(args.get(6)) : 0L;
         // A part out of its range rolls over into the next one, as a date's parts do.
-        final LocalDateTime wall = DateFromParts.rolledOver(year, month, day).atStartOfDay()
-            .plusHours(hour).plusMinutes(minute).plusSeconds(second).plusNanos(nanos);
+        final LocalDateTime wall = wallClock(year, month, day, hour, minute, second, nanos);
         if (!zoned) {
             return wall;
         }
@@ -91,6 +95,21 @@ public class TimestampFromParts extends BuiltInFunction {
         // A TIMESTAMP_TZ shows that instant at the offset the same clock written as text would take.
         final ZoneOffset skipped = SkippedWallClock.offset(wall, zone);
         return placed.toInstant().atOffset(skipped != null ? skipped : placed.getOffset()).toZonedDateTime();
+    }
+
+    /**
+     * The wall clock the parts name, every part rolling over into the next one. A moment past the years a timestamp
+     * can hold is refused in the sentence a timestamp out of its range is given, {@code Timestamp <seconds> is out of
+     * range}.
+     */
+    private static LocalDateTime wallClock(final int year, final int month, final int day, final int hour,
+                                           final int minute, final int second, final long nanos) {
+        final long epochSecond = DateFromParts.epochDay(year, month, day) * SECONDS_PER_DAY + hour * 3_600L
+            + minute * 60L + second + Math.floorDiv(nanos, NANOS_PER_SECOND);
+        if (epochSecond < MIN_EPOCH_SECOND || epochSecond > MAX_EPOCH_SECOND) {
+            throw new RuntimeException("Timestamp " + epochSecond + " is out of range");
+        }
+        return LocalDateTime.ofEpochSecond(epochSecond, (int) Math.floorMod(nanos, NANOS_PER_SECOND), ZoneOffset.UTC);
     }
 
     /** A date and a time put together, the two-argument form of the names that build a TIMESTAMP_NTZ. */

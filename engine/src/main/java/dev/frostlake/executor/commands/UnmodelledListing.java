@@ -45,6 +45,11 @@ enum UnmodelledListing {
         created_on@ name is_unique table columns included_columns database_name schema_name owner status status_info
         owner_role_type
         """, true),
+    /** The indexes of a table named, whose listing words their columns otherwise and goes on past the schema's. */
+    TABLE_INDEXES("""
+        created_on@ name is_unique table key_expressions included_expressions database_name schema_name owner status
+        status_info owner_role_type kind progress_percentage# storage_bytes##
+        """, true),
     REGIONS("snowflake_region cloud region display_name", false),
     SESSION_POLICIES("created_on@ name database_name schema_name kind owner comment owner_role_type options", false),
     AUTHENTICATION_POLICIES(SESSION_POLICIES.spec, false),
@@ -63,7 +68,7 @@ enum UnmodelledListing {
         snowflake_region created_on@ account_name name type comment is_primary primary object_types
         allowed_integration_types allowed_accounts organization_name account_locator replication_schedule
         secondary_state next_scheduled_refresh@ owner is_listing_auto_fulfillment_group error_integration
-        is_optimized_refresh_enabled
+        is_primary_read_only is_optimized_refresh_enabled
         """, false),
     REPLICATION_ACCOUNTS("""
         snowflake_region created_on@ account_name account_locator comment organization_name is_org_admin

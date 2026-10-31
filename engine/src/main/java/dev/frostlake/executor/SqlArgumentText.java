@@ -130,7 +130,12 @@ public final class SqlArgumentText {
         }
         if (value != null && declared != null && declared.getCategory() == TypeCategory.SEMI_STRUCTURED
                 && !(value instanceof VariantValue) && !(value instanceof String)) {
-            return "TO_VARIANT(" + ofValue(value) + ")";
+            return "TO_VARIANT(" + ofValue(value, written) + ")";
+        }
+        if (NumericType.isDecfloat(declared) && value instanceof Number) {
+            // Read as the DECFLOAT it is, as a scalar function's parameter is (see forParameter): its plain digits
+            // would be a NUMBER, or a FLOAT where they pass 38.
+            return decfloat((Number) value);
         }
         if (declared instanceof DateTimeType && temporal(value) != null) {
             // The argument's digits are the parameter's, or it would not have been taken.
@@ -194,12 +199,12 @@ public final class SqlArgumentText {
             }
             // A text is the JSON the caller's value was carried as; anything else is the VARIANT of itself.
             return value instanceof String ? "PARSE_JSON(" + SqlStringLiterals.encode((String) value) + ")"
-                : "TO_VARIANT(" + ofValue(value) + ")";
+                : "TO_VARIANT(" + ofValue(value, converted ? null : written) + ")";
         }
         if (NumericType.isDecfloat(declared) && value instanceof Number) {
             // A DECFLOAT parameter is read as the DECFLOAT it holds, every digit kept: x + 1 over a DECFLOAT third is
             // 1.3333333333333333333333333333333333333 (live-verified).
-            return SqlStringLiterals.encode(Decfloats.text(Decfloats.of((Number) value, "TO_DECFLOAT"))) + "::DECFLOAT";
+            return decfloat((Number) value);
         }
         if (declared instanceof NumericType && value instanceof Number
                 && !NonFiniteDoubles.isNonFinite((Number) value)) {
@@ -222,6 +227,24 @@ public final class SqlArgumentText {
             return SqlStringLiterals.encode((String) value) + "::VARCHAR";
         }
         return ofValue(value);
+    }
+
+    /**
+     * {@link #ofValue(Object)}, a number of a DECFLOAT static type written as that DECFLOAT: a runtime DECFLOAT is a
+     * decimal like a NUMBER's, so its type is known from the argument's static type alone. The VARIANT of it is
+     * then a DECFLOAT member, every digit kept, as {@code TO_VARIANT(1.5::DECFLOAT)} is (see DecfloatTextNode),
+     * where its plain digits would make a DECIMAL, or a DOUBLE past 38 of them.
+     */
+    private static String ofValue(final Object value, final DataType written) {
+        if (value instanceof Number && NumericType.isDecfloat(written)) {
+            return decfloat((Number) value);
+        }
+        return ofValue(value);
+    }
+
+    /** A number as the DECFLOAT literal of its every digit. */
+    private static String decfloat(final Number value) {
+        return SqlStringLiterals.encode(Decfloats.text(Decfloats.of(value, "TO_DECFLOAT"))) + "::DECFLOAT";
     }
 
     /**
@@ -309,8 +332,9 @@ public final class SqlArgumentText {
         final int ownScale = Math.max(exact.scale(), 0);
         final int ownPrecision = Math.max(1, exact.precision() - exact.scale() + ownScale);
         if (written.getScale() >= declared.getScale() && written.getScale() == ownScale
-                && written.getPrecision() == ownPrecision) {
-            // A type the digits give themselves, a literal's: the number as it is (see exactNumber).
+                && written.getPrecision() == ownPrecision && exact.stripTrailingZeros().scale() == exact.scale()) {
+            // A type the digits give themselves, a literal's: the number as it is (see exactNumber). Digits ending
+            // in zeros type a narrower literal, so CAST(1.5 AS NUMBER(38,37)) is spelled with its type (live-verified).
             return null;
         }
         final int precision = written.getScale() >= declared.getScale() ? written.getPrecision()

@@ -87,6 +87,7 @@ public class InlineProcedureExecutionTest extends BaseDatabaseTest {
             RETURNS STRING
             LANGUAGE PYTHON
             RUNTIME_VERSION = '3.11'
+            PACKAGES = ('snowflake-snowpark-python')
             HANDLER = 'run'
             AS $$
             def run(session):

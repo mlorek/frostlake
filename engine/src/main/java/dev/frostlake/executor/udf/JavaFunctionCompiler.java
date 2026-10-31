@@ -16,16 +16,10 @@
 
 package dev.frostlake.executor.udf;
 
-import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.node.ArrayNode;
-
 import java.io.File;
 import java.io.StringWriter;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.math.BigDecimal;
-import java.math.BigInteger;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.ArrayList;
@@ -97,6 +91,42 @@ public class JavaFunctionCompiler {
     }
 
     /**
+     * Compiles Java source code and caches the resulting class (see {@link #compile(String, String, int, String)}),
+     * with a routine's IMPORTS jars on the class path and beside the class.
+     *
+     * @param sourceCode the Java source code
+     * @param className the fully qualified class name to compile
+     * @param release   the language level (see {@link JavaRuntimeLevel}), or 0 for the JDK's own
+     * @param where     the end of a refusal's sentence, {@code  in function F with handler H.f}
+     * @param jars      the jars the routine imports, in class path order
+     * @return the compiled Class object
+     */
+    public Class<?> compile(final String sourceCode, final String className, final int release,
+                            final String where, final List<File> jars) {
+        if (jars.isEmpty()) {
+            return compile(sourceCode, className, release, where);
+        }
+        final JavaSourceKey cacheKey = new JavaSourceKey(className, sourceCode, release, true, jarsKey(jars));
+        final Class<?> cached = compiledClasses.get(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+        final Class<?> compiledClass = load(sourceCode, className, null, release, where, true, jars);
+        compiledClasses.put(cacheKey, compiledClass);
+        return compiledClass;
+    }
+
+    /** The jars a compilation reads, each path with its length and time, as a cache key holds them. */
+    private static String jarsKey(final List<File> jars) {
+        final StringBuilder key = new StringBuilder();
+        for (final File jar : jars) {
+            key.append(jar.getAbsolutePath()).append(':').append(jar.length()).append(':').append(jar.lastModified())
+                .append('|');
+        }
+        return key.toString();
+    }
+
+    /**
      * Loads a source's classes anew at the JDK's own level.
      *
      * @param sourceCode the Java source code
@@ -138,17 +168,43 @@ public class JavaFunctionCompiler {
      */
     public Class<?> load(final String sourceCode, final String className, final ClassLoader parent,
                          final int release, final String where, final boolean snowpark) {
+        return load(sourceCode, className, parent, release, where, snowpark, Collections.<File>emptyList());
+    }
+
+    /**
+     * Loads a source's classes anew (see {@link #load(String, String, ClassLoader, int, String, boolean)}), compiled
+     * with a routine's IMPORTS jars on the class path and loaded beside them: a class a jar holds is the jar's, one of
+     * the same name the source declares included, and the handler's class may be one a jar alone holds
+     * (live-verified).
+     *
+     * @param sourceCode the Java source code
+     * @param className  the class the handler names
+     * @param parent     the loader every other class comes from, or null for the system's
+     * @param release    the language level (see {@link JavaRuntimeLevel}), or 0 for the JDK's own
+     * @param where      the end of a refusal's sentence, {@code  in function F with handler H.f}
+     * @param snowpark   whether the routine names Snowpark (see {@link SnowparkPackage})
+     * @param jars       the jars the routine imports, in class path order
+     * @return the handler's class
+     */
+    public Class<?> load(final String sourceCode, final String className, final ClassLoader parent,
+                         final int release, final String where, final boolean snowpark, final List<File> jars) {
         // Every class the source declares is loaded with the handler's: a nested class, an enum, an
         // anonymous class and another top-level class are part of the body the handler runs.
-        final Map<String, byte[]> classes = compileClasses(sourceCode, className, release, where, snowpark);
-        if (!classes.containsKey(className)) {
+        final Map<String, byte[]> classes = compileClasses(sourceCode, className, release, where, snowpark, jars);
+        if (!classes.containsKey(className) && jars.isEmpty()) {
             throw new RuntimeException("No class bytes generated for: " + className);
         }
-        final InMemoryClassLoader classLoader = parent == null ? new InMemoryClassLoader(classes)
-            : new InMemoryClassLoader(classes, parent);
+        final ClassLoader beside = jars.isEmpty() ? parent : JarHandlerLoader.jarLoader(jars,
+            parent != null ? parent : Thread.currentThread().getContextClassLoader());
+        final InMemoryClassLoader classLoader = beside == null ? new InMemoryClassLoader(classes)
+            : new InMemoryClassLoader(classes, beside);
         try {
             return classLoader.loadClass(className);
         } catch (final ClassNotFoundException | LinkageError e) {
+            if (!classes.containsKey(className)) {
+                // Neither the body nor a jar it imports holds the handler's class.
+                throw new RuntimeException("No class bytes generated for: " + className, e);
+            }
             throw new RuntimeException("Failed to compile Java function: " + e.getMessage(), e);
         }
     }
@@ -195,7 +251,29 @@ public class JavaFunctionCompiler {
      */
     public Map<String, byte[]> compileClasses(final String sourceCode, final String className, final int release,
                                               final String where, final boolean snowpark) {
-        final JavaSourceKey key = new JavaSourceKey(className, sourceCode, release, snowpark);
+        return compileClasses(sourceCode, className, release, where, snowpark, Collections.<File>emptyList());
+    }
+
+    /**
+     * Compiles Java source code (see {@link #compileClasses(String, String, int, String, boolean)}) with a routine's
+     * IMPORTS jars on the class path. A report names each jar where the account's sandbox keeps it,
+     * {@code /home/udf/0/a.jar} for the first (live-verified for one import).
+     *
+     * @param sourceCode the Java source code
+     * @param className  the class the source declares
+     * @param release    the language level (see {@link JavaRuntimeLevel}), or 0 for the JDK's own
+     * @param where      the end of the refusal's sentence, {@code  in function F with handler H.f}
+     * @param snowpark   whether the routine names Snowpark (see {@link SnowparkPackage})
+     * @param jars       the jars the routine imports, in class path order
+     * @return the classes' bytes by binary name, in name order
+     */
+    public Map<String, byte[]> compileClasses(final String sourceCode, final String className, final int release,
+                                              final String where, final boolean snowpark, final List<File> jars) {
+        final StringBuilder jarPath = new StringBuilder();
+        for (final File jar : jars) {
+            jarPath.append(File.pathSeparator).append(jar.getAbsolutePath());
+        }
+        final JavaSourceKey key = new JavaSourceKey(className, sourceCode, release, snowpark, jarsKey(jars));
         final Map<String, byte[]> kept = JavaCompiledSources.get(key);
         if (kept != null) {
             return kept;
@@ -210,7 +288,7 @@ public class JavaFunctionCompiler {
         // it raises ("Error while compiling source: …"), and a body rejected at CREATE is useless to the caller
         // without knowing which line broke it.
         final StringWriter report = new StringWriter();
-        final List<String> options = new ArrayList<>(Arrays.asList("-classpath", classpath()));
+        final List<String> options = new ArrayList<>(Arrays.asList("-classpath", classpath() + jarPath));
         if (release > 0) {
             options.add("--release");
             options.add(String.valueOf(release));
@@ -218,7 +296,11 @@ public class JavaFunctionCompiler {
         final JavaCompiler.CompilationTask task = compiler.getTask(report, fileManager, null, options, null,
             Arrays.asList(new InMemoryJavaFile(sourceCode)));
         if (!task.call()) {
-            final String printed = report.toString();
+            String printed = report.toString();
+            for (int i = 0; i < jars.size(); i++) {
+                printed = printed.replace(jars.get(i).getAbsolutePath(),
+                    "/home/udf/" + i + "/" + jars.get(i).getName());
+            }
             throw new RuntimeException("Error while compiling source: " + printed
                 + (printed.endsWith("\n") || where.isEmpty() ? "" : "\n") + where);
         }
@@ -292,191 +374,4 @@ public class JavaFunctionCompiler {
             throw new RuntimeException("Failed to invoke Java function method: " + failed.getMessage(), failed);
         }
     }
-
-    /**
-     * Invokes a static method on a compiled class
-     *
-     * @param clazz the compiled class
-     * @param methodName the name of the static method to invoke
-     * @param args the arguments to pass to the method
-     * @return the result of the method invocation
-     */
-    public Object invokeMethod(final Class<?> clazz, final String methodName, final Object... args) {
-        Method method = null;
-        try {
-            final Class<?>[] paramTypes = new Class<?>[args.length];
-            for (int i = 0; i < args.length; i++) {
-                // A null argument matches any reference parameter type (checked in the compatibility pass).
-                paramTypes[i] = args[i] != null ? args[i].getClass() : null;
-            }
-
-            method = findMethod(clazz, methodName, paramTypes);
-            if (method == null) {
-                throw new RuntimeException("Method not found: " + methodName + " in class " + clazz.getName());
-            }
-
-            method.setAccessible(true);
-            UdfConsoleCapture.enter();
-            try {
-                return method.invoke(null, adaptArgs(method.getParameterTypes(), args));
-            } finally {
-                UdfConsoleCapture.exit();
-            }
-
-        } catch (final InvocationTargetException e) {
-            // Surface the handler's own exception, not the reflection wrapper (whose message is null).
-            final Throwable cause = e.getCause() != null ? e.getCause() : e;
-            throw new RuntimeException("Java function handler "
-                + (method != null ? method.getName() : methodName) + " threw: " + cause, cause);
-        } catch (final RuntimeException e) {
-            throw e;
-        } catch (final Exception e) {
-            throw new RuntimeException("Failed to invoke Java function method: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * Adapt argument values to the resolved method's parameter types where the SQL and JVM representations
-     * differ: an ARRAY value (its JSON text, e.g. {@code ["a","b"]}) becomes the {@code String[]} that
-     * Snowflake's Java UDF type mapping passes for ARRAY parameters.
-     */
-    private Object[] adaptArgs(final Class<?>[] paramTypes, final Object[] args) {
-        Object[] adapted = args;
-        for (int i = 0; i < args.length; i++) {
-            if (paramTypes[i] == String[].class && args[i] instanceof String) {
-                if (adapted == args) {
-                    adapted = args.clone();
-                }
-                adapted[i] = jsonArrayToStringArray((String) args[i]);
-            } else if (args[i] instanceof Number && isNumeric(paramTypes[i])) {
-                if (adapted == args) {
-                    adapted = args.clone();
-                }
-                adapted[i] = toNumber((Number) args[i], paramTypes[i]);
-            }
-        }
-        return adapted;
-    }
-
-    /** Whether a parameter takes a number: a numeric primitive, its box, or an arbitrary-precision number. */
-    private static boolean isNumeric(final Class<?> type) {
-        return type == int.class || type == Integer.class || type == long.class || type == Long.class
-            || type == short.class || type == Short.class || type == byte.class || type == Byte.class
-            || type == double.class || type == Double.class || type == float.class || type == Float.class
-            || type == BigDecimal.class || type == BigInteger.class;
-    }
-
-    /** A SQL number as the Java number a handler's parameter takes: a NUMBER is an int, a long or a BigDecimal alike. */
-    private static Object toNumber(final Number value, final Class<?> type) {
-        if (type == int.class || type == Integer.class) {
-            return Integer.valueOf(value.intValue());
-        }
-        if (type == long.class || type == Long.class) {
-            return Long.valueOf(value.longValue());
-        }
-        if (type == short.class || type == Short.class) {
-            return Short.valueOf(value.shortValue());
-        }
-        if (type == byte.class || type == Byte.class) {
-            return Byte.valueOf(value.byteValue());
-        }
-        if (type == double.class || type == Double.class) {
-            return Double.valueOf(value.doubleValue());
-        }
-        if (type == float.class || type == Float.class) {
-            return Float.valueOf(value.floatValue());
-        }
-        if (type == BigDecimal.class) {
-            return value instanceof BigDecimal ? value : new BigDecimal(value.toString());
-        }
-        return value instanceof BigInteger ? value : new BigDecimal(value.toString()).toBigInteger();
-    }
-
-    /** Parse a JSON array text into its element strings (textual elements unquoted, others as JSON text). */
-    private String[] jsonArrayToStringArray(final String jsonArrayText) {
-        final ArrayNode array = ArrayFunctionHelper.parseArray(jsonArrayText);
-        if (array == null) {
-            throw new RuntimeException("Cannot pass a non-array value to a String[] parameter: " + jsonArrayText);
-        }
-        final String[] out = new String[array.size()];
-        for (int i = 0; i < array.size(); i++) {
-            final JsonNode element = array.get(i);
-            out[i] = element.isNull() ? null : element.isTextual() ? element.asText() : element.toString();
-        }
-        return out;
-    }
-
-    private Method findMethod(final Class<?> clazz, final String methodName, final Class<?>[] paramTypes) {
-        try {
-            // The exact lookup cannot express "null argument" — fall through to the compatibility scan.
-            for (final Class<?> paramType : paramTypes) {
-                if (paramType == null) {
-                    throw new NoSuchMethodException();
-                }
-            }
-            return clazz.getMethod(methodName, paramTypes);
-        } catch (final NoSuchMethodException e) {
-            // Try to find a compatible method considering primitive/boxed type conversions
-            for (final Method method : clazz.getMethods()) {
-                if (method.getName().equals(methodName) && method.getParameterCount() == paramTypes.length) {
-                    final Class<?>[] methodParamTypes = method.getParameterTypes();
-                    boolean compatible = true;
-                    for (int i = 0; i < paramTypes.length; i++) {
-                        if (!isCompatibleType(paramTypes[i], methodParamTypes[i])) {
-                            compatible = false;
-                            break;
-                        }
-                    }
-                    if (compatible) {
-                        return method;
-                    }
-                }
-            }
-            return null;
-        }
-    }
-
-    private boolean isCompatibleType(final Class<?> argType, final Class<?> paramType) {
-        if (argType == null) {
-            return !paramType.isPrimitive();
-        }
-        if (paramType.isAssignableFrom(argType)) {
-            return true;
-        }
-        // A SQL number is handed to whichever Java number the handler declares - see adaptArgs.
-        if (Number.class.isAssignableFrom(argType) && isNumeric(paramType)) {
-            return true;
-        }
-        // A SQL ARRAY value (JSON text) is adaptable to a String[] parameter — see adaptArgs.
-        if (paramType == String[].class && argType == String.class) {
-            return true;
-        }
-        // Check primitive/boxed type conversions
-        if (paramType == int.class && argType == Integer.class) {
-            return true;
-        }
-        if (paramType == long.class && argType == Long.class) {
-            return true;
-        }
-        if (paramType == double.class && argType == Double.class) {
-            return true;
-        }
-        if (paramType == float.class && argType == Float.class) {
-            return true;
-        }
-        if (paramType == boolean.class && argType == Boolean.class) {
-            return true;
-        }
-        if (paramType == byte.class && argType == Byte.class) {
-            return true;
-        }
-        if (paramType == short.class && argType == Short.class) {
-            return true;
-        }
-        if (paramType == char.class && argType == Character.class) {
-            return true;
-        }
-        return false;
-    }
-
 }

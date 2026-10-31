@@ -31,6 +31,7 @@ import dev.frostlake.http.rest.RestStatement;
 import dev.frostlake.http.rest.RestTags;
 
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
+import dev.frostlake.metastore.SystemDatabase;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
@@ -127,7 +128,9 @@ public final class DatabaseRoleResource implements RestResource {
             throw RestException.badRequest("Invalid value " + limit + " for query parameter 'showLimit': "
                 + "expected 1 to " + RestShow.MAX_LIMIT + ".");
         }
-        if (limit != null || fromName != null) {
+        // The SNOWFLAKE database's roles are listed whole: a page size alone is told, as the statement refuses it.
+        final boolean shared = SystemDatabase.is(call.identifier("database").name());
+        if (limit != null || fromName != null && !shared) {
             sql.append(" LIMIT ").append(limit != null ? limit.longValue() : RestShow.MAX_LIMIT);
             if (fromName != null) {
                 sql.append(" FROM ").append(RestSql.literal(fromName));

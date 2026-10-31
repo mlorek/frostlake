@@ -126,7 +126,13 @@ public class HttpJdbcSurfaceTest {
             assertEquals(42, cs.getInt(1));
             assertEquals(42L, cs.getLong(1));
             assertEquals((short) 42, cs.getShort(1));
-            assertEquals((byte) 42, cs.getByte(1));
+            assertEquals("Cannot convert value in the driver from type:REAL to type:byte, value=.",
+                assertThrows(SQLException.class, new Executable() {
+                    @Override
+                    public void execute() throws Throwable {
+                        cs.getByte(1);
+                    }
+                }).getMessage(), "a FLOAT refuses getByte, as a FLOAT column does");
             assertEquals(0, cs.getBigDecimal(1).compareTo(new BigDecimal("42")));
             assertNotNull(cs.getObject(1));
             assertFalse(cs.wasNull());

@@ -34,6 +34,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -304,20 +305,96 @@ public class StreamManager {
      */
     public void trackDynamicTableRefresh(final String databaseName, final String tableName,
                                          final List<List<Object>> rows) {
+        trackDynamicTableRefresh(databaseName, tableName, rows, null);
+    }
+
+    /**
+     * {@link #trackDynamicTableRefresh(String, String, List)} with each row's identity: where the stream's image
+     * knows its rows' too, a row of one identity whose values changed is an update, a DELETE and an INSERT under one
+     * row id with METADATA$ISUPDATE TRUE, and a row deleted and inserted again under another identity is both
+     * (live-verified).
+     *
+     * @param databaseName the dynamic table's database
+     * @param tableName    its qualified name, DB.SCHEMA.NAME
+     * @param rows         its rows as the refresh leaves them
+     * @param ids          their identities, in their order, or null when not known
+     */
+    public void trackDynamicTableRefresh(final String databaseName, final String tableName,
+                                         final List<List<Object>> rows, final List<String> ids) {
         for (final Stream stream : streamsOver(databaseName, StreamSourceType.DYNAMIC_TABLE, tableName)) {
-            final List<List<Object>> before = stream.getRefreshImage() == null
-                ? new ArrayList<List<Object>>() : stream.getRefreshImage();
+            addRefreshChanges(stream, tableName, rows, ids);
+        }
+    }
+
+    /** The changes from a stream's image to a refresh's rows, recorded in the stream, which takes them as its image. */
+    private void addRefreshChanges(final Stream stream, final String tableName, final List<List<Object>> rows,
+                                   final List<String> ids) {
+        final List<List<Object>> before = stream.getRefreshImage() == null
+            ? new ArrayList<List<Object>>() : stream.getRefreshImage();
+        final String rowIdKey = tableName.toUpperCase(Locale.ROOT) + "#" + stream.getName();
+        final List<String> beforeIds = stream.getRefreshImage() == null ? new ArrayList<String>()
+            : stream.getRefreshImageIds();
+        if (ids != null && beforeIds != null && ids.size() == rows.size()) {
+            addIdentifiedChanges(stream, before, beforeIds, rows, ids);
+        } else {
             final List<List<Object>> removed = new ArrayList<>();
             final List<List<Object>> added = new ArrayList<>();
             diff(before, rows, removed, added);
-            final String rowIdKey = tableName.toUpperCase(Locale.ROOT) + "#" + stream.getName();
             for (final List<Object> values : removed) {
                 stream.addRecord(new StreamRecord(values, ChangeType.DELETE, false, getNextRowId(rowIdKey)));
             }
             for (final List<Object> values : added) {
                 stream.addRecord(new StreamRecord(values, ChangeType.INSERT, false, getNextRowId(rowIdKey)));
             }
-            stream.setRefreshImage(new ArrayList<>(rows));
+        }
+        stream.setRefreshImage(new ArrayList<>(rows), ids);
+    }
+
+    /** The changes between two images whose rows are known by identity (see trackDynamicTableRefresh). */
+    private void addIdentifiedChanges(final Stream stream, final List<List<Object>> before,
+                                      final List<String> beforeIds, final List<List<Object>> after,
+                                      final List<String> afterIds) {
+        final Map<String, List<Integer>> was = new LinkedHashMap<>();
+        for (int i = 0; i < before.size(); i++) {
+            List<Integer> held = was.get(beforeIds.get(i));
+            if (held == null) {
+                held = new ArrayList<>();
+                was.put(beforeIds.get(i), held);
+            }
+            held.add(Integer.valueOf(i));
+        }
+        final List<StreamRecord> deleted = new ArrayList<>();
+        final List<StreamRecord> updated = new ArrayList<>();
+        final List<StreamRecord> inserted = new ArrayList<>();
+        for (int i = 0; i < after.size(); i++) {
+            final List<Integer> held = was.get(afterIds.get(i));
+            if (held == null || held.isEmpty()) {
+                inserted.add(new StreamRecord(after.get(i), ChangeType.INSERT, false,
+                    identityRowId(afterIds.get(i))));
+                continue;
+            }
+            final List<Object> old = before.get(held.remove(0).intValue());
+            if (!old.equals(after.get(i))) {
+                // An update's two halves stand together, where the stream's net changes pair them.
+                final long rowId = identityRowId(afterIds.get(i));
+                updated.add(new StreamRecord(old, ChangeType.DELETE, true, rowId));
+                updated.add(new StreamRecord(after.get(i), ChangeType.INSERT, true, rowId));
+            }
+        }
+        for (final Map.Entry<String, List<Integer>> left : was.entrySet()) {
+            for (final Integer index : left.getValue()) {
+                deleted.add(new StreamRecord(before.get(index.intValue()), ChangeType.DELETE, false,
+                    identityRowId(left.getKey())));
+            }
+        }
+        for (final StreamRecord record : deleted) {
+            stream.addRecord(record);
+        }
+        for (final StreamRecord record : updated) {
+            stream.addRecord(record);
+        }
+        for (final StreamRecord record : inserted) {
+            stream.addRecord(record);
         }
     }
 
@@ -332,19 +409,21 @@ public class StreamManager {
      */
     public void catchUpDynamicTableStream(final Stream stream, final String tableName,
                                           final List<List<Object>> rows) {
-        final List<List<Object>> before = stream.getRefreshImage() == null
-            ? new ArrayList<List<Object>>() : stream.getRefreshImage();
-        final List<List<Object>> removed = new ArrayList<>();
-        final List<List<Object>> added = new ArrayList<>();
-        diff(before, rows, removed, added);
-        final String rowIdKey = tableName.toUpperCase(Locale.ROOT) + "#" + stream.getName();
-        for (final List<Object> values : removed) {
-            stream.addRecord(new StreamRecord(values, ChangeType.DELETE, false, getNextRowId(rowIdKey)));
-        }
-        for (final List<Object> values : added) {
-            stream.addRecord(new StreamRecord(values, ChangeType.INSERT, false, getNextRowId(rowIdKey)));
-        }
-        stream.setRefreshImage(new ArrayList<>(rows));
+        catchUpDynamicTableStream(stream, tableName, rows, null);
+    }
+
+    /**
+     * {@link #catchUpDynamicTableStream(Stream, String, List)} with the last refresh's row identities, an updated
+     * row paired as {@link #trackDynamicTableRefresh(String, String, List, List)} pairs it.
+     *
+     * @param stream    the stream, its image the rows of the refresh it starts from
+     * @param tableName the dynamic table's qualified name, DB.SCHEMA.NAME
+     * @param rows      the rows of the table's last refresh
+     * @param ids       their identities, in their order, or null when not known
+     */
+    public void catchUpDynamicTableStream(final Stream stream, final String tableName,
+                                          final List<List<Object>> rows, final List<String> ids) {
+        addRefreshChanges(stream, tableName, rows, ids);
     }
 
     /**
@@ -475,6 +554,17 @@ public class StreamManager {
                 it.remove();
             }
         }
+    }
+
+    /**
+     * The row id of a dynamic table's row known by an identity: the same at every refresh, so a row that leaves and
+     * comes back unchanged nets to no change (live-verified).
+     *
+     * @param identity the row's identity, a digest's hex text
+     * @return its row id
+     */
+    private static long identityRowId(final String identity) {
+        return Long.parseLong(identity.substring(0, 15), 16);
     }
 
     /**

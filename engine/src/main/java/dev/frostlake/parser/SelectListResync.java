@@ -36,6 +36,8 @@ import org.antlr.v4.runtime.tree.ParseTree;
  *   SELECT 1 'x' FROM fz; SELECT 1 x y             ''x'', then the next statement's 'y'
  *   SELECT 1 AS 'x' (1, 2), 3 AS 3                 ''x'', then ')' at 21: the first comma, in brackets or not
  *   SELECT 1 x y, 2 AS 2; SELECT 1 x y             'y' alone: after an alias nothing more is reported
+ *   SELECT 1 $ 2 x y                               '$', then 'y': after a dollar sign the skip stops at a name
+ *   SELECT 1 $ 2 AS x y                            '$', then 'y': and at an AS
  *   SELECT 1 id AS k FROM fz                       'AS' alone
  *   SELECT a FROM (SELECT 1 x y FROM fz) WHERE a b                     'y', then 'b' at 45
  *   SELECT a FROM (SELECT 1 x y FROM fz WHERE id = 1) WHERE a b        'y', then ')' at 48
@@ -43,7 +45,8 @@ import org.antlr.v4.runtime.tree.ParseTree;
  * </pre>
  *
  * <p>Where an alias belongs — after AS, or after an item's value when the token there cannot be a name — live skips to
- * the next comma, FROM, clause word, semicolon or end of input and reads on from there. A name after a value is the
+ * the next comma, FROM, clause word, semicolon or end of input and reads on from there; after a value's dollar sign
+ * it stops at the first name or AS on the way too, which then reads as the item's alias. A name after a value is the
  * alias, a string after a name is read as a typed literal, and a keyword there may be one live reads as an alias
  * (JOIN): those are left to the parse. Right after an alias live reports nothing more of the input — except in two
  * places. In a derived table's query a name there leaves that query: the derived table reads as closed before the
@@ -122,14 +125,25 @@ final class SelectListResync {
             return lines;
         }
         int resume = fault;
-        while (!isEnd(spoken.get(resume).getType()) && !opensTheRest(spoken.get(resume).getType())) {
+        while (!isEnd(spoken.get(resume).getType()) && !opensTheRest(spoken.get(resume).getType())
+                && (resume == fault || afterAs || spoken.get(fault).getType() != FrostlakeParser.DOLLAR
+                    || !takesTheAlias(spoken.get(resume)))) {
             resume++;
         }
         final Token at = spoken.get(resume);
         if (at.getType() != Token.EOF) {
+            // The rest is read as a text of its own, its first fault judged as a script's first fault is:
+            // SELECT 1 AS 1, (2 x y) is '1', then the bracket's 'x' and 'y' (live-verified).
             final int from = spoken.get(itemEnd).getStartIndex();
-            lines.addAll(StarModifierResync.linesAfter(StarModifierResync.blanked(sql, from, at.getStartIndex()),
-                refused));
+            final int[] place = SyntaxErrorListener.sentenceCoordinates(SyntaxErrorListener.sentence(refused));
+            for (final String line : SyntaxErrorListener.linesReportedAfresh(
+                    StarModifierResync.blanked(sql, from, at.getStartIndex()))) {
+                final int[] where = SyntaxErrorListener.sentenceCoordinates(line);
+                if (where != null && place != null
+                        && (where[0] > place[0] || where[0] == place[0] && where[1] > place[1])) {
+                    lines.add(line);
+                }
+            }
         }
         return lines;
     }
@@ -266,6 +280,11 @@ final class SelectListResync {
     }
 
     /** Whether a token is one the list's recovery reads on from: a comma, FROM or a clause word. */
+    /** Whether a token after an item's value reads as its alias: a name, or the AS before one. */
+    private static boolean takesTheAlias(final Token token) {
+        return StarModifierResync.isName(token) || token.getType() == FrostlakeLexer.AS;
+    }
+
     private static boolean opensTheRest(final int type) {
         return type == FrostlakeLexer.COMMA || type == FrostlakeLexer.FROM || isClauseWord(type);
     }

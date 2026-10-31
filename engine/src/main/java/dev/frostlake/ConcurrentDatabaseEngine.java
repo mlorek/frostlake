@@ -17,20 +17,25 @@
 package dev.frostlake;
 
 import dev.frostlake.config.EngineConfig;
+import dev.frostlake.executor.ReadOnlyBodies;
 import dev.frostlake.executor.ReadOnlyRequest;
+import dev.frostlake.executor.RequestSessionAborts;
 import dev.frostlake.functions.scalar.file.NamedStage;
 import dev.frostlake.http.ExpiredSessionListener;
 import dev.frostlake.http.SessionContext;
 import dev.frostlake.http.SessionManager;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.security.SessionDirectory;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.transaction.EngineLockRelease;
 import dev.frostlake.transaction.TableLockGate;
+import dev.frostlake.transaction.Transaction;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
@@ -109,12 +114,20 @@ public class ConcurrentDatabaseEngine {
         if (session == null) {
             throw new IllegalArgumentException("Session context is required");
         }
+        // Refused before it is registered again: an aborted session that registered anew could be aborted anew.
+        requireLiveSession(session);
         registerForAbort(session);
         try {
-            return executeInSession(sql, session, clientAutoCommit);
+            return executeInSession(sql, session, clientAutoCommit, false);
         } finally {
             // A session this request aborted — its own included — ends now that the request holds no lock.
             engine.getSessionDirectory().endAborted();
+            if (session.getSettings().isAborted()) {
+                // The request of a session another one aborted is answered once the session has ended: its
+                // transaction rolled back and its locks released, as live answers it. Another request may be ending
+                // the session as this one returns; this waits for it, or ends the session itself.
+                endSession(session);
+            }
         }
     }
 
@@ -132,8 +145,32 @@ public class ConcurrentDatabaseEngine {
         }
     }
 
+    /**
+     * Refuses every request of a session SYSTEM$ABORT_SESSION ended, COMMIT and ROLLBACK included, as the account
+     * refuses the requests of a terminated session (error 390111): the session no longer exists, so nothing it sends
+     * runs. A client that keeps the session's context after the abort sent its writes and DDL on, and they ran and
+     * committed; its COMMIT answered success although the abort had rolled the transaction back.
+     *
+     * @param session the session a request runs in
+     */
+    private static void requireLiveSession(final SessionContext session) {
+        if (session.getSettings().isAborted()) {
+            throw new RuntimeException(SessionDirectory.SESSION_GONE);
+        }
+    }
+
+    /**
+     * Runs a request in a session.
+     *
+     * @param sql              the statement text
+     * @param session          the session to run in
+     * @param clientAutoCommit the request's autocommit mode, or null when it declares none
+     * @param ending           whether the request is the rollback that ends the session, which runs although the
+     *                         session was aborted
+     * @return the statement's result
+     */
     private ExecutionResult executeInSession(final String sql, final SessionContext session,
-                                             final Boolean clientAutoCommit) {
+                                             final Boolean clientAutoCommit, final boolean ending) {
         session.touch();
 
         // Synchronize on session to prevent concurrent modifications to same session
@@ -153,16 +190,39 @@ public class ConcurrentDatabaseEngine {
             // Under the session's lock, so the mode applied below is the one this request declared.
             session.followClientAutoCommit(clientAutoCommit);
             try {
-                // Read lock for read-only scripts, write lock for anything that mutates — decided
-                // ONCE per request from the parse tree (the unlock below must mirror the decision).
-                final boolean readOnly = isReadOnlyQuery(sql);
+                // Read lock for read-only scripts, write lock for anything that mutates — decided per request
+                // from the parse tree, and from the bodies its names reach before it runs (the unlock below must
+                // mirror the decision).
+                boolean readOnly = isReadOnlyQuery(sql);
+                if (!readOnly) {
+                    // An abort of another session is carried out as the request is read, before it waits for the
+                    // engine: that session ends what it runs now rather than running on to its end and committing.
+                    RequestSessionAborts.carryOut(sql, session.getSettings().getSessionNumber(),
+                        engine.getSessionDirectory());
+                }
                 if (readOnly) {
                     engineLock.readLock().lock();
+                    // Judged under the shared lock, which holds the catalog still: a body one of the request's names
+                    // stands for may write, and then the request runs alone, before anything of it has run.
+                    // So does a read of a stream inside an open transaction, which may wait for another session's
+                    // transaction that holds the stream (see TableLockGate#requireStreamFree).
+                    if (ReadOnlyBodies.reachWrite(engine.getCatalog(), sql, session.getSettings())
+                            || session.isInTransaction()
+                                && ReadOnlyBodies.namesStream(engine.getCatalog(), sql, session.getSettings())) {
+                        engineLock.readLock().unlock();
+                        engineLock.writeLock().lock();
+                        readOnly = false;
+                    }
                 } else {
                     engineLock.writeLock().lock();
                 }
 
                 try {
+                    if (!ending) {
+                        // Judged again under the engine's lock: an abort that another request carried out while this
+                        // one waited for the engine must still stop it before it runs.
+                        requireLiveSession(session);
+                    }
                     // Apply session context before execution (inside lock for thread safety)
                     applySessionContext(session);
                     if (!readOnly) {
@@ -178,6 +238,11 @@ public class ConcurrentDatabaseEngine {
                                 for (int i = 0; i < held; i++) {
                                     engineLock.writeLock().unlock();
                                 }
+                            }
+
+                            @Override
+                            public void pause(final long millis) throws InterruptedException {
+                                Thread.sleep(millis);
                             }
 
                             @Override
@@ -317,6 +382,23 @@ public class ConcurrentDatabaseEngine {
     }
 
     /**
+     * The zone a session's TIMEZONE names — its own, its user's or the account's — read from the session's own
+     * settings, which only its statements see.
+     *
+     * @param session the session
+     * @return the zone's name, or null where nothing names one
+     */
+    public String sessionTimezone(final SessionContext session) {
+        engine.getSecurityManager().getSessionContext().bindSettings(session.getSettings());
+        try {
+            final Object zone = engine.getSecurityManager().getSessionContext().getSessionParameter("TIMEZONE");
+            return zone == null ? null : zone.toString();
+        } finally {
+            engine.getSecurityManager().getSessionContext().unbindSettings();
+        }
+    }
+
+    /**
      * The user a session's statements run as, as CURRENT_USER() names it: the engine's own, which no session changes.
      *
      * @return the user's name
@@ -331,7 +413,7 @@ public class ConcurrentDatabaseEngine {
     private void captureSessionContext(final SessionContext session) {
         try {
             session.setCurrentDatabase(engine.getCurrentDatabase());
-            session.setCurrentSchema(engine.getCurrentSchema());
+            session.setCurrentSchema(engine.getCatalog().heldSchemaName());
             session.setCurrentWarehouse(engine.getCatalog().getCurrentWarehouse());
             session.setAutoCommit(engine.isAutoCommit());
             // An aborted transaction the session has not acknowledged is still the session's to end.
@@ -403,13 +485,36 @@ public class ConcurrentDatabaseEngine {
         }
     }
 
+    /**
+     * Rolls back every transaction still open under an ending session's number: one its requests left without the
+     * session holding it, or one whose ROLLBACK above failed, would otherwise keep its locks with nobody to end it.
+     * Called under the engine's write lock.
+     */
+    private void rollBackLeftTransactions(final long sessionNumber) {
+        final List<Transaction> left = new ArrayList<Transaction>();
+        for (final Transaction open : engine.getTransactionManager().getActiveTransactions()) {
+            if (open.getSessionNumber() != null && open.getSessionNumber().longValue() == sessionNumber
+                    && !open.isStatementScoped()) {
+                left.add(open);
+            }
+        }
+        for (final Transaction open : left) {
+            try {
+                engine.getTransactionManager().rollBackLeft(open);
+            } catch (final RuntimeException failed) {
+                logger.warn("Rolling back a transaction ended session {} left failed: {}", sessionNumber,
+                    failed.getMessage());
+            }
+        }
+    }
+
     /** {@link #endSession}'s work, once no request of the session is running. */
     private void endSessionNow(final SessionContext session) {
         if (session.isInTransaction()) {
             try {
-                // Through execute(), under the engine's lock like any request: the idle sweep's thread is not
-                // a request thread.
-                execute("ROLLBACK", session);
+                // Under the engine's lock like any request: the idle sweep's thread is not a request thread. It
+                // runs although the session was aborted, since it is what ends the session.
+                executeInSession("ROLLBACK", session, null, true);
             } catch (final RuntimeException failed) {
                 // The session goes regardless; its transaction's writes were never committed.
                 logger.warn("Rolling back ended session {} failed: {}", session.getSessionId(), failed.getMessage());
@@ -418,6 +523,7 @@ public class ConcurrentDatabaseEngine {
         // What the session created TEMPORARY ends with it: under the engine's write lock, like the DROP it is.
         engineLock.writeLock().lock();
         try {
+            rollBackLeftTransactions(session.getSettings().getSessionNumber());
             engine.dropTemporaryObjectsOf(session.getSettings().getSessionNumber());
         } catch (final RuntimeException failed) {
             logger.warn("Dropping the temporary objects of ended session {} failed: {}", session.getSessionId(),

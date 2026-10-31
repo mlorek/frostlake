@@ -142,6 +142,11 @@ final class TableFunctionSignatures {
             if (!(argument instanceof NumericType)) {
                 return false;
             }
+            // A DECFLOAT is taken by a DECFLOAT alone: TABLE(t(CAST(1.5 AS DECFLOAT))) over a NUMBER parameter is
+            // refused for its argument types (live-verified).
+            if (NumericType.isDecfloat(argument)) {
+                return NumericType.isDecfloat(parameter);
+            }
             if (NumericType.isApproximate(parameter) || NumericType.isApproximate(argument)) {
                 return NumericType.isApproximate(parameter) && NumericType.isApproximate(argument);
             }

@@ -73,8 +73,8 @@ public class SnowflakeDatabaseIsReadOnlyTest {
         assertEquals(READ_ONLY, refusal("DROP DATABASE SNOWFLAKE"));
         assertEquals(READ_ONLY, refusal("DROP DATABASE IF EXISTS SNOWFLAKE"));
         assertEquals(READ_ONLY, refusal("CREATE OR REPLACE DATABASE SNOWFLAKE"));
-        assertEquals("1", scalar("SELECT COUNT(*) FROM p.INFORMATION_SCHEMA.DATABASES WHERE DATABASE_NAME = 'SNOWFLAKE'"
-            + " AND COMMENT IS NULL"));
+        // INFORMATION_SCHEMA.DATABASES leaves the SNOWFLAKE database out; SHOW DATABASES lists it.
+        assertEquals("1", scalar("SHOW DATABASES LIKE 'SNOWFLAKE' ->> SELECT COUNT(*) FROM $1 WHERE \"comment\" = ''"));
         assertEquals("0", scalar("SELECT COUNT(*) FROM p.INFORMATION_SCHEMA.DATABASES"
             + " WHERE DATABASE_NAME IN ('SNOW_COPY', 'SNOW2')"));
         // Over the database it already is, IF NOT EXISTS changes nothing and says so.

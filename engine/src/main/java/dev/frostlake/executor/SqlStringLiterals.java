@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor;
 
+import java.util.Locale;
+
 /**
  * The single, canonical decode for a single-quoted SQL string literal — the one place that turns a
  * {@code STRING_LITERAL} token (or its already-stripped inner text) into the value it denotes.
@@ -160,7 +162,7 @@ public final class SqlStringLiterals {
 
     /** One code unit as live echoes it: a \\u escape with four UPPER-case hex digits. */
     private static String escapeOf(final char c) {
-        return String.format("\\u%04X", (int) c);
+        return String.format(Locale.ROOT, "\\u%04X", (int) c);
     }
 
     /**

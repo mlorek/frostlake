@@ -37,7 +37,8 @@ public final class UdfRuntimes {
         final ServiceLoader<UdfLanguageRuntime> providers =
             ServiceLoader.load(UdfLanguageRuntime.class, UdfRuntimes.class.getClassLoader());
         for (final UdfLanguageRuntime runtime : providers) {
-            byLanguage.put(runtime.language(), runtime);
+            // Each runtime counts the handlers it runs, so another can tell whose frames lie below its own.
+            byLanguage.put(runtime.language(), new TrackedRuntime(runtime));
         }
         return byLanguage;
     }

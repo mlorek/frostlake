@@ -77,7 +77,7 @@ public final class ScalaFunctionExecutor {
             // Inline bodies compile ONCE (cached); jar handlers load from IMPORTS. Avoids per-row recompiles.
             final String where = " in function " + function.getName() + " with handler " + handler;
             final Class<?> compiled = function.getImports().isEmpty()
-                ? ScalaCompiler.compileCached(function.getBody(), className, where)
+                ? ScalaCompiler.statementClass(function, function.getBody(), className, where)
                 : JarHandlerLoader.load(function.getImports(), className, catalog, s3Resolver);
             final Object answered = invokeHandler(compiled, methodName, arguments, parameters, where);
             // What the handler hands back becomes the declared RETURNS type's value as a Java handler's does:
@@ -116,10 +116,8 @@ public final class ScalaFunctionExecutor {
             // What the handler raised reaches SQL as its report, as a Java handler's does (live-verified): the
             // exception and its frames in the handler's source, an object's method under its forwarder.
             final Throwable cause = thrown.getCause() != null ? thrown.getCause() : thrown;
-            final String name = clazz.getName();
             throw new RuntimeException(JavaHandlerFailure.report(cause, clazz, where, ScalaCompiler.SOURCE_NAME,
-                name.endsWith("$") ? "function_handler_0//" + name.substring(0, name.length() - 1) + '.'
-                    + methodName + '(' + ScalaCompiler.SOURCE_NAME + ')' : null), cause);
+                ScalaCompiler.forwarderFrame(clazz, methodName)), cause);
         } finally {
             UdfConsoleCapture.exit();
         }

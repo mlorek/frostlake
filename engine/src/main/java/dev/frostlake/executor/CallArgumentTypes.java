@@ -34,6 +34,7 @@ import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
@@ -304,7 +305,7 @@ final class CallArgumentTypes {
         final NumericType declared = (NumericType) type;
         final BigDecimal written;
         try {
-            written = new BigDecimal(value.getText());
+            written = DecimalText.parse(value.getText());
         } catch (final NumberFormatException unread) {
             return type;
         }
@@ -328,19 +329,18 @@ final class CallArgumentTypes {
         final List<String> seen = new ArrayList<String>();
         final List<String> values = new ArrayList<String>();
         for (final FrostlakeParser.CallArgumentContext argument : arguments) {
-            if (argument.namedArgument() == null) {
+            if (!isNamed(argument)) {
                 return;
             }
-            final String name = SqlIdentifiers.canonical(argument.namedArgument().variableName());
+            final String name = SqlIdentifiers.canonical(nameOf(argument));
             if (seen.contains(name)) {
-                final Token at = argument.namedArgument().variableName().getStart();
+                final Token at = nameOf(argument).getStart();
                 throw new RuntimeException(SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
                     "duplicate named argument " + name + " for function " + procName));
             }
             seen.add(name);
-            values.add(argument.namedArgument().expression() == null
-                ? ParseTreeText.getOriginalText(argument.namedArgument())
-                : ParseTreeText.getOriginalText(argument.namedArgument().expression()));
+            final ParserRuleContext value = namedValueOf(argument);
+            values.add(ParseTreeText.getOriginalText(value != null ? value : argument));
         }
         if (arguments.size() > params.size()) {
             throw new RuntimeException(SqlCompilationError.at(0, -1, "too many arguments for function ["
@@ -363,10 +363,10 @@ final class CallArgumentTypes {
                                final List<FrostlakeParser.CallArgumentContext> arguments) {
         final List<String> written = new ArrayList<String>();
         for (final FrostlakeParser.CallArgumentContext argument : arguments) {
-            if (argument.namedArgument() == null) {
+            if (!isNamed(argument)) {
                 return;
             }
-            written.add(argument.namedArgument().variableName().getText());
+            written.add(nameOf(argument).getText());
         }
         if (written.isEmpty() || new HashSet<String>(written).size() != written.size()
                 || NamedArguments.fit(params, written)) {
@@ -390,10 +390,9 @@ final class CallArgumentTypes {
         final List<String> written = new ArrayList<String>();
         boolean row = false;
         for (final FrostlakeParser.CallArgumentContext argument : arguments) {
-            final FrostlakeParser.NamedArgumentContext named = argument.namedArgument();
-            if (named != null) {
-                written.add(named.variableName().getText());
-                row = row || named.argumentRow() != null;
+            if (isNamed(argument)) {
+                written.add(nameOf(argument).getText());
+                row = row || argument.namedArgument() != null && argument.namedArgument().argumentRow() != null;
             }
         }
         if (!row) {
@@ -412,14 +411,14 @@ final class CallArgumentTypes {
                                    final ExpressionEvaluator typer) {
         final List<String> written = new ArrayList<String>();
         for (final FrostlakeParser.CallArgumentContext argument : arguments) {
-            if (argument.namedArgument() != null) {
-                written.add(argument.namedArgument().variableName().getText());
+            if (isNamed(argument)) {
+                written.add(nameOf(argument).getText());
             }
         }
         boolean refused = false;
         String timeForTimestamp = null;
         for (final Parameter param : params) {
-            final FrostlakeParser.ExpressionContext value = namedValue(arguments, param.getName());
+            final ParserRuleContext value = namedValue(arguments, param.getName());
             if (value == null) {
                 continue;
             }
@@ -445,17 +444,41 @@ final class CallArgumentTypes {
         }
     }
 
-    /** The expression a named argument gives {@code name}, matched as the CALL binds it; null when none. */
-    private static FrostlakeParser.ExpressionContext namedValue(
-            final List<FrostlakeParser.CallArgumentContext> arguments, final String name) {
+    /**
+     * The value a named argument gives {@code name}, matched as the CALL binds it: an expression, or a NOT, AND or OR
+     * over values; null when none.
+     */
+    private static ParserRuleContext namedValue(final List<FrostlakeParser.CallArgumentContext> arguments,
+                                                final String name) {
         for (final FrostlakeParser.CallArgumentContext argument : arguments) {
-            final FrostlakeParser.NamedArgumentContext named = argument.namedArgument();
-            if (named != null && named.variableName() != null
-                    && named.variableName().getText().equalsIgnoreCase(name)) {
-                return named.expression();
+            final FrostlakeParser.VariableNameContext written = nameOf(argument);
+            if (written != null && written.getText().equalsIgnoreCase(name)) {
+                return namedValueOf(argument);
             }
         }
         return null;
+    }
+
+    /** Whether a CALL argument is written for a name, {@code name => value}, its value an expression or a predicate. */
+    static boolean isNamed(final FrostlakeParser.CallArgumentContext argument) {
+        return argument.namedArgument() != null;
+    }
+
+    /** The name a CALL argument is written for, or null for a positional one. */
+    static FrostlakeParser.VariableNameContext nameOf(final FrostlakeParser.CallArgumentContext argument) {
+        return argument.namedArgument() == null ? null : argument.namedArgument().variableName();
+    }
+
+    /**
+     * The value a named CALL argument gives its name: an expression, or a NOT, AND or OR over values; null for a
+     * positional argument and for a row or a bare subquery.
+     */
+    static ParserRuleContext namedValueOf(final FrostlakeParser.CallArgumentContext argument) {
+        if (argument.namedArgument() == null) {
+            return null;
+        }
+        return argument.namedArgument().booleanExpr() != null ? argument.namedArgument().booleanExpr()
+            : argument.namedArgument().expression();
     }
 
     /**
@@ -485,8 +508,8 @@ final class CallArgumentTypes {
                                     final ExpressionEvaluator typer) {
         final List<String> names = new ArrayList<String>();
         for (final FrostlakeParser.CallArgumentContext argument : arguments) {
-            if (argument.namedArgument() != null && argument.namedArgument().variableName() != null) {
-                names.add(argument.namedArgument().variableName().getText());
+            if (nameOf(argument) != null) {
+                names.add(nameOf(argument).getText());
             }
         }
         final List<String> argumentFamilies = new ArrayList<String>();
@@ -883,6 +906,23 @@ final class CallArgumentTypes {
                                         final ExpressionEvaluator typer) {
         final DataType type = staticType(written, typer);
         return type instanceof NumericType && !NumericType.isApproximate(type);
+    }
+
+    /**
+     * An exact number written for a VARIANT parameter, which the CALL evaluated as a double: the DECIMAL VARIANT the
+     * number is, so a handler's text reads {@code 1.5}, not a DOUBLE's {@code 1.500000000000000e+00}
+     * (live-verified).
+     *
+     * @param given the argument as evaluated
+     * @param type  the parameter's declared type
+     * @return the argument as the parameter takes it, or {@code given} where it is no such number
+     */
+    public static Object exactVariant(final Object given, final DataType type) {
+        if (!(type instanceof VariantType) || !(given instanceof Double) || !Double.isFinite((Double) given)) {
+            return given;
+        }
+        return VariantValue.ofNode(ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER,
+            BigDecimal.valueOf(((Double) given).doubleValue())));
     }
 
     public static boolean bindsAVariant(final FrostlakeParser.ExpressionContext written,

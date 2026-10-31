@@ -22,9 +22,11 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.ClientValueText;
+import dev.frostlake.values.VariantJsonFormat;
 import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.VectorValue;
@@ -131,7 +133,8 @@ public class DirectResultSet extends AbstractFrostlakeResultSet {
 
     @Override
     protected String text(final int column, final Object cell) {
-        return ClientValueText.render(cell, declaredType(column));
+        final String laidOut = engineResultSet.isScriptingAnswer() ? VariantJsonFormat.scriptingAnswerText(cell) : null;
+        return laidOut != null ? laidOut : ClientValueText.render(cell, declaredType(column));
     }
 
     @Override
@@ -173,8 +176,9 @@ public class DirectResultSet extends AbstractFrostlakeResultSet {
         }
         if (value instanceof VariantValue) {
             // Snowflake's JDBC driver surfaces VARIANT/OBJECT/ARRAY as their JSON text, a DOUBLE in the
-            // fifteen-decimal form: the text the HTTP transport carries for the same cell.
-            return VariantJsonText.clientTextOf((VariantValue) value);
+            // fifteen-decimal form: the text getString reads and the HTTP transport carries for the same cell, laid
+            // out at the session's JSON_INDENT (live-verified).
+            return text(column, value);
         }
         if (value instanceof VectorValue) {
             // The driver hands a VECTOR back as its text, the same getString reads (live-verified).
@@ -189,7 +193,7 @@ public class DirectResultSet extends AbstractFrostlakeResultSet {
         }
         if (value instanceof Number && !(value instanceof BigDecimal) && JdbcMarshaling.isClientDecimal(declared)) {
             // A file transfer's size is the client's own DECIMAL, read as the BigDecimal its metadata names.
-            return new BigDecimal(value.toString());
+            return DecimalText.parse(value.toString());
         }
         if (value instanceof Number && NumericType.isDecfloat(declared)) {
             return ClientValueText.decfloatObject((Number) value);

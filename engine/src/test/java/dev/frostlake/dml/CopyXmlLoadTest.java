@@ -34,10 +34,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * COPY INTO with FILE_FORMAT = (TYPE = 'XML'). XML files load as a semi-structured VARIANT (one row per
- * document, keyed by the root element — attributes become {@code @name} fields, repeated children become
- * arrays). This exercises the new {@code StageFileReader} seam that also carries JSON. Uses a
- * {@code file://} stage over a temp directory.
+ * COPY INTO with FILE_FORMAT = (TYPE = 'XML'). XML files load as VARIANT values in Snowflake's XML model, as PARSE_XML
+ * builds them: one row per top-level element, which prints as XML and which XMLGET reads, attributes and text turned
+ * into numbers where they read as numbers. This exercises the {@code StageFileReader} seam that also carries JSON.
+ * Uses a {@code file://} stage over a temp directory.
  */
 public class CopyXmlLoadTest {
 
@@ -88,20 +88,42 @@ public class CopyXmlLoadTest {
         engine.execute("COPY INTO docs FROM @data_stage FILE_FORMAT = (TYPE = 'XML')");
 
         assertEquals(1L, count("docs"));
-        final String v = variant();
-        assertTrue(v.contains("\"note\""), v);          // root element kept
-        assertTrue(v.contains("\"to\":\"Tove\""), v);   // nested leaf → scalar
-        assertTrue(v.contains("\"@id\":\"7\""), v);     // attribute → @name field
+        assertEquals("<note id=\"7\"><to>Tove</to><from>Jani</from><body>Reminder</body></note>", variant());
+        final ResultSet read = engine.executeQuery(
+            "SELECT XMLGET(doc, 'to'):\"$\"::VARCHAR, GET(doc, '@id'), TYPEOF(doc) FROM docs");
+        assertEquals("Tove", read.getRows().get(0).getValue(0));
+        assertEquals("7", String.valueOf(read.getRows().get(0).getValue(1)));
+        assertEquals("XML", read.getRows().get(0).getValue(2));
     }
 
     @Test
-    public void repeatedChildElementsBecomeAnArray() throws IOException {
+    public void repeatedChildElementsKeepTheirOrder() throws IOException {
         writeStageFile("catalog.xml", "<catalog><book>A</book><book>B</book><book>C</book></catalog>");
         engine.execute("CREATE TABLE docs (doc VARIANT)");
 
         engine.execute("COPY INTO docs FROM @data_stage FILE_FORMAT = (TYPE = 'XML')");
 
-        assertTrue(variant().contains("\"book\":[\"A\",\"B\",\"C\"]"), variant());
+        assertEquals("<catalog><book>A</book><book>B</book><book>C</book></catalog>", variant());
+        assertEquals("C", engine.executeQuery("SELECT XMLGET(doc, 'book', 2):\"$\"::VARCHAR FROM docs").getRows()
+            .get(0).getValue(0));
+    }
+
+    @Test
+    public void everyTopLevelElementIsARowAndStripOuterElementReadsWhatTheyHold() throws IOException {
+        writeStageFile("several.xml", "<a>1</a><a>2</a>");
+        writeStageFile("held.xml", "<r><b>x</b><c/></r>");
+        engine.execute("CREATE TABLE docs (doc VARIANT)");
+
+        engine.execute("COPY INTO docs FROM @data_stage FILES = ('several.xml') FILE_FORMAT = (TYPE = 'XML')");
+        engine.execute("COPY INTO docs FROM @data_stage FILES = ('held.xml') "
+            + "FILE_FORMAT = (TYPE = 'XML' STRIP_OUTER_ELEMENT = TRUE)");
+
+        final ResultSet rows = engine.executeQuery("SELECT doc::VARCHAR FROM docs ORDER BY 1");
+        assertEquals(4, rows.getRowCount());
+        assertEquals("<a>1</a>", rows.getRows().get(0).getValue(0));
+        assertEquals("<a>2</a>", rows.getRows().get(1).getValue(0));
+        assertEquals("<b>x</b>", rows.getRows().get(2).getValue(0));
+        assertEquals("<c></c>", rows.getRows().get(3).getValue(0));
     }
 
     @Test

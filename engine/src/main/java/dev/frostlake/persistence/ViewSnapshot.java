@@ -54,6 +54,15 @@ public class ViewSnapshot implements Serializable {
     // Attached row access policy (ALTER VIEW ... ADD ROW ACCESS POLICY p ON (cols)). Null on old snapshots.
     public String rowAccessPolicyName;
     public List<String> rowAccessPolicyColumns;
+    // The aggregation policy with its ENTITY KEY and the join policy the view is read under. Null on old snapshots.
+    public String aggregationPolicyName;
+    public List<String> aggregationEntityKey;
+    public String joinPolicyName;
+    // The contacts attached, purpose to the contact's full name. Null on old snapshots.
+    public Map<String, String> contacts;
+    // Attached data metric functions and their DATA_METRIC_SCHEDULE as written. Null on old snapshots.
+    public List<DataMetricSnapshot> dataMetrics;
+    public String dataMetricSchedule;
     // The view's resolved columns — name and declared type — as frozen when it was created, so
     // INFORMATION_SCHEMA.COLUMNS still reports them after a restore. Only the type-carrying fields are
     // written: a view's columns have no DEFAULT, IDENTITY or key of their own. Null on old snapshots

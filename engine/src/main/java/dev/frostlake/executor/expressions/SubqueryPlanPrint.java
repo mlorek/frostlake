@@ -20,6 +20,8 @@ import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SelectItemAccessors;
+import dev.frostlake.executor.SessionNullOrdering;
+import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
@@ -32,12 +34,14 @@ import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 
 import org.antlr.v4.runtime.BailErrorStrategy;
 import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
@@ -762,7 +766,7 @@ final class SubqueryPlanPrint {
     private static NumericType spelledNumber(final String text) {
         BigDecimal value;
         try {
-            value = new BigDecimal(text).stripTrailingZeros();
+            value = DecimalText.parse(text).stripTrailingZeros();
         } catch (final NumberFormatException notANumber) {
             return null;
         }
@@ -1105,12 +1109,13 @@ final class SubqueryPlanPrint {
     }
 
     /**
-     * A NATURAL or USING join of two tables on one column, as the plan inlines it: a derived relation
-     * {@code SYS_VW} projecting every column of the left table and then the right table's others — an outer
-     * join keeping the right key too, renamed {@code <KEY>_0} — over the join on the key's equality, which the
-     * query reads its columns through: {@code SELECT SYS_VW.G AS "G" FROM (SELECT RT.G AS "G", … FROM RT AS RT
-     * INNER JOIN ONE AS ONE ON (RT.G = ONE.G)) SYS_VW}. A reference qualified by the left table reads SYS_VW; one
-     * qualified by the right table, several keys, and every other join type are not modelled.
+     * A NATURAL or USING join of two tables, as the plan inlines it: a derived relation {@code SYS_VW}
+     * projecting every column of the left table and then the right table's others — an outer join keeping the
+     * right keys too — over the join on the keys' equalities, which the query reads its columns through:
+     * {@code SELECT SYS_VW.G AS "G" FROM (SELECT RT.G AS "G", … FROM RT AS RT INNER JOIN ONE AS ONE ON (RT.G =
+     * ONE.G)) SYS_VW}. Several keys are joined by an AND, {@code ON ((X.ID = Y.ID) AND (X.V = Y.V))}, and a right
+     * column whose name the left table took is renamed {@code <NAME>_0} (live-verified). A reference qualified by
+     * the left table reads SYS_VW; one qualified by the right table and every other join type are not modelled.
      */
     private boolean usingJoin(final FrostlakeParser.TableReferenceContext left, final FrostlakeParser.JoinClauseContext join,
                               final Catalog catalog, final List<String> segments,
@@ -1146,10 +1151,19 @@ final class SubqueryPlanPrint {
                 }
             }
         }
-        if (keys.size() != 1 || !leftTable.hasColumn(keys.get(0)) || !rightTable.hasColumn(keys.get(0))) {
+        if (keys.isEmpty()) {
             return false;
         }
-        final String key = keys.get(0);
+        Expression on = null;
+        for (final String key : keys) {
+            if (!leftTable.hasColumn(key) || !rightTable.hasColumn(key)) {
+                return false;
+            }
+            final Expression equal = new BinaryOperationExpression(
+                new ColumnReferenceExpression(keysByName.get(0), key, null), BinaryOperator.EQUAL,
+                new ColumnReferenceExpression(keysByName.get(1), key, null));
+            on = on == null ? equal : new BinaryOperationExpression(on, BinaryOperator.AND, equal);
+        }
         final List<String> projected = new ArrayList<>();
         final List<TableColumn> columns = new ArrayList<>();
         for (final TableColumn column : leftTable.getColumns()) {
@@ -1158,16 +1172,16 @@ final class SubqueryPlanPrint {
             }
         }
         for (final TableColumn column : rightTable.getColumns()) {
-            final boolean isKey = column.getName().equalsIgnoreCase(key);
+            boolean isKey = false;
+            for (final String key : keys) {
+                isKey = isKey || column.getName().equalsIgnoreCase(key);
+            }
             if (isKey && !leftOuter) {
                 continue;
             }
             String name = column.getName();
             for (final TableColumn taken : columns) {
                 if (taken.getName().equalsIgnoreCase(name)) {
-                    if (!isKey) {
-                        return false;
-                    }
                     name = name + "_0";
                 }
             }
@@ -1177,9 +1191,7 @@ final class SubqueryPlanPrint {
         }
         final StrictMessagePrinter printer =
             new StrictMessagePrinter(joined.scope(catalog, outer.getQueryExecutor()), mode);
-        final String on = printer.conditionText(new BinaryOperationExpression(
-            new ColumnReferenceExpression(keysByName.get(0), key, null), BinaryOperator.EQUAL,
-            new ColumnReferenceExpression(keysByName.get(1), key, null)), false);
+        final String condition = printer.conditionText(on, false);
         final Table view = new Table(JOIN_RELATION, columns, false);
         aliasToTable.put(JOIN_RELATION, view);
         tables.add(view);
@@ -1187,7 +1199,8 @@ final class SubqueryPlanPrint {
         qualifierRenames.put(keysByName.get(0).toUpperCase(Locale.ROOT), JOIN_RELATION);
         outerJoined = outerJoined || leftOuter;
         segments.add("(SELECT " + String.join(", ", projected) + " FROM " + leftText
-            + (leftOuter ? " LEFT OUTER JOIN " : " INNER JOIN ") + rightText + " ON (" + on + ")) " + JOIN_RELATION);
+            + (leftOuter ? " LEFT OUTER JOIN " : " INNER JOIN ") + rightText + " ON (" + condition + ")) "
+            + JOIN_RELATION);
         conditions.add(null);
         matches.add(null);
         return true;
@@ -1307,7 +1320,9 @@ final class SubqueryPlanPrint {
         items.add(new ExpressionAstBuilder().build(((FrostlakeParser.ExprItemContext) item).booleanExpr()));
         final String alias = SelectItemAccessors.getItemAlias(item);
         final String name = alias != null ? alias : derivedName(item);
-        if (name.indexOf('"') >= 0) {
+        // A name derived from the item's text keeps a double quote it holds as it is, unescaped:
+        // (SELECT '{"a": 1}') prints as SELECT '{"a": 1}' AS "'{"A": 1}'" (live-verified).
+        if (alias != null && name.indexOf('"') >= 0) {
             return false;
         }
         names.add(name);
@@ -1329,7 +1344,11 @@ final class SubqueryPlanPrint {
         return ParseTreeText.getOriginalText(value).toUpperCase(Locale.ROOT);
     }
 
-    /** The GROUP BY the plan prints, "" for none and null when not modelled. */
+    /**
+     * The GROUP BY the plan prints, "" for none and null when not modelled. A ROLLUP or a CUBE of one key is
+     * printed as the grouping sets it stands for, the empty set first: {@code GROUP BY GROUPING SETS ((), (G.V))}
+     * (live-verified); a ROLLUP of several keys as each leading run of them, in that order.
+     */
     private String groupText(final FrostlakeParser.GroupByClauseContext group, final List<Expression> items,
                              final List<String> names, final StrictMessagePrinter printer) {
         if (group == null) {
@@ -1337,33 +1356,69 @@ final class SubqueryPlanPrint {
         }
         final List<String> keys = new ArrayList<>();
         if (group.ALL() != null) {
-            // GROUP BY ALL groups by the projected columns, and names them as projected.
+            // GROUP BY ALL groups by the projected columns and constants, and names them as projected.
             for (int i = 0; i < items.size(); i++) {
-                if (!(items.get(i) instanceof ColumnReferenceExpression)) {
+                if (!(items.get(i) instanceof ColumnReferenceExpression) && !isWholeNumber(items.get(i))) {
                     return null;
                 }
                 keys.add(names.get(i));
             }
             return " GROUP BY " + String.join(", ", keys);
         }
-        for (final FrostlakeParser.GroupByElementContext element : group.groupByElement()) {
+        final List<FrostlakeParser.GroupByElementContext> elements = group.groupByElement();
+        if (elements.size() == 1 && (elements.get(0).ROLLUP() != null || elements.get(0).CUBE() != null)) {
+            return groupingSets(elements.get(0), names, printer);
+        }
+        for (final FrostlakeParser.GroupByElementContext element : elements) {
             if (KeyContexts.of(element) == null) {
                 return null;
             }
-            final Expression key = new ExpressionAstBuilder().visit(KeyContexts.of(element));
-            final Integer ordinal = ordinalOf(key, names.size());
-            if (ordinal != null) {
-                keys.add(names.get(ordinal.intValue() - 1));
-            } else if (key instanceof ColumnReferenceExpression && !((ColumnReferenceExpression) key).isQualified()
-                    && !readByARelation(((ColumnReferenceExpression) key).getColumnName())
-                    && names.contains(((ColumnReferenceExpression) key).getColumnName())) {
-                // A name no relation carries is the output column it names, and prints bare.
-                keys.add(((ColumnReferenceExpression) key).getColumnName());
-            } else {
-                keys.add(key.accept(printer));
-            }
+            keys.add(groupKey(KeyContexts.of(element), names, printer));
         }
         return " GROUP BY " + String.join(", ", keys);
+    }
+
+    /** A ROLLUP, or a CUBE of one key, as the grouping sets the plan prints; null when not modelled. */
+    private String groupingSets(final FrostlakeParser.GroupByElementContext element, final List<String> names,
+                                final StrictMessagePrinter printer) {
+        final List<String> keys = new ArrayList<>();
+        for (final List<ParserRuleContext> unit : KeyContexts.units(element.groupByColumnList())) {
+            if (unit.size() != 1) {
+                return null;
+            }
+            keys.add(groupKey(unit.get(0), names, printer));
+        }
+        if (element.CUBE() != null && keys.size() != 1) {
+            return null;
+        }
+        final StringBuilder sets = new StringBuilder(" GROUP BY GROUPING SETS (()");
+        for (int i = 1; i <= keys.size(); i++) {
+            sets.append(", (").append(String.join(", ", keys.subList(0, i))).append(')');
+        }
+        return sets.append(')').toString();
+    }
+
+    /** One grouping key as the plan prints it: an ordinal and a bare output name as the output column. */
+    private String groupKey(final ParserRuleContext written, final List<String> names,
+                            final StrictMessagePrinter printer) {
+        final Expression key = new ExpressionAstBuilder().visit(written);
+        final Integer ordinal = ordinalOf(key, names.size());
+        if (ordinal != null) {
+            return names.get(ordinal.intValue() - 1);
+        }
+        if (key instanceof ColumnReferenceExpression && !((ColumnReferenceExpression) key).isQualified()
+                && !readByARelation(((ColumnReferenceExpression) key).getColumnName())
+                && names.contains(((ColumnReferenceExpression) key).getColumnName())) {
+            // A name no relation carries is the output column it names, and prints bare.
+            return ((ColumnReferenceExpression) key).getColumnName();
+        }
+        return key.accept(printer);
+    }
+
+    /** A whole number written as a literal. */
+    private static boolean isWholeNumber(final Expression expression) {
+        return expression instanceof LiteralExpression
+            && ((LiteralExpression) expression).getType() == LiteralType.INTEGER;
     }
 
     /** The ORDER BY the plan prints, "" for none and null when not modelled. */
@@ -1384,7 +1439,8 @@ final class SubqueryPlanPrint {
                 final Expression key = new ExpressionAstBuilder().visit(KeyContexts.of(item));
                 final Integer ordinal = ordinalOf(key, names.size());
                 final boolean descending = item.DESC() != null;
-                final boolean nullsFirst = item.FIRST() != null || (item.LAST() == null && descending);
+                final boolean nullsFirst =
+                    SessionNullOrdering.nullsFirst(!descending, ValueComparisons.nullsFirstFlag(item));
                 keys.add((ordinal != null ? names.get(ordinal.intValue() - 1) : key.accept(printer))
                     + (descending ? " DESC" : " ASC") + " NULLS " + (nullsFirst ? "FIRST" : "LAST"));
             }

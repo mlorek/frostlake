@@ -22,6 +22,8 @@ import com.snowflake.snowpark_java.types.StructField;
 import com.snowflake.snowpark_java.types.StructType;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
+import dev.frostlake.types.GeoTypes;
+import dev.frostlake.types.GeometryType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.TypeCategory;
 
@@ -214,15 +216,26 @@ public class DataFrame {
         final ResultSet result = run();
         final List<ResultSetColumn> columns = result.getColumns();
         final boolean[] whole = new boolean[columns == null ? 0 : columns.size()];
+        final boolean[] local = new boolean[whole.length];
+        final boolean[] own = new boolean[whole.length];
         for (int i = 0; i < whole.length; i++) {
             whole[i] = isWholeNumber(columns.get(i));
+            local[i] = isTimestamp(columns.get(i), "TIMESTAMP_LTZ");
+            own[i] = isTimestamp(columns.get(i), "TIMESTAMP_TZ");
         }
         final List<dev.frostlake.storage.Row> source = result.getRows();
         final Row[] out = new Row[source.size()];
         for (int i = 0; i < source.size(); i++) {
-            out[i] = Row.ofEngineCells(source.get(i).getValues(), whole);
+            out[i] = Row.ofEngineCells(source.get(i).getValues(), whole, local, own);
         }
         return out;
+    }
+
+    /** Whether a column is a timestamp of the kind named. */
+    private static boolean isTimestamp(final ResultSetColumn column, final String kind) {
+        final dev.frostlake.types.DataType type =
+            column.getStaticType() != null ? column.getStaticType() : column.getDataType();
+        return type != null && kind.equals(type.getName().toUpperCase(Locale.ROOT));
     }
 
     /** Whether a column is a NUMBER of no scale, which Snowpark reads as a Long. */
@@ -281,11 +294,12 @@ public class DataFrame {
             }
             return DataTypes.TimestampType;
         }
+        // The geospatial types carry the semi-structured category, and each is a Snowpark type of its own.
+        if (GeoTypes.isGeo(type)) {
+            return type instanceof GeometryType ? DataTypes.GeometryType : DataTypes.GeographyType;
+        }
         if (category == TypeCategory.SEMI_STRUCTURED) {
             return DataTypes.VariantType;
-        }
-        if (category == TypeCategory.GEOSPATIAL) {
-            return DataTypes.GeographyType;
         }
         return DataTypes.StringType;
     }

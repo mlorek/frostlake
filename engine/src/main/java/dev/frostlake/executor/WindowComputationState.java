@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.operators.WhereAliasValues;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.Row;
@@ -41,6 +42,12 @@ final class WindowComputationState {
     /** The keys of the computation, each with the SELECT aliases it reads written out, per relation. */
     Map<Table, Map<String, String>> windowKeysReadThroughAliases = new IdentityHashMap<>();
 
+    /**
+     * The select aliases' values kept for the rows the computation was handed, by row identity: a window that reads
+     * an alias reads the value the projection shows. Null where the items are computed again.
+     */
+    WhereAliasValues aliasValues;
+
     /** The rows the computation was handed, each by its place among them, which a SEQ call reads. */
     Map<Row, Long> windowRowOrdinals = new IdentityHashMap<>();
 
@@ -53,6 +60,9 @@ final class WindowComputationState {
     /** How to compute an expression over a grouped output row's source group, or null. */
     GroupedExpressionValues groupedValues;
 
-    /** Each RATIO_TO_REPORT call's declared scale, so the width is inferred once and not once per row. */
+    /**
+     * Each RATIO_TO_REPORT call's declared scale, so the width is inferred once a window batch and not once per row:
+     * the same call reads a column of another type once its table is replaced, so no scale outlives its batch.
+     */
     final Map<FrostlakeParser.FunctionCallExprContext, Integer> ratioDeclaredScales = new IdentityHashMap<>();
 }

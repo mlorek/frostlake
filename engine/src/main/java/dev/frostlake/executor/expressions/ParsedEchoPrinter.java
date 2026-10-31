@@ -16,9 +16,12 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.SessionNullOrdering;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.StarArgument;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.GeoTypes;
 import dev.frostlake.types.SqlTypeNames;
 
 import java.math.BigDecimal;
@@ -72,18 +75,44 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
     private final boolean unresolved;
     /** How the calls it spells its own way are printed, or null for none. */
     private final CallEcho spelled;
+    /** The relation a bare name is read in, where a query is printed resolved; null for none. */
+    private final String relation;
 
     ParsedEchoPrinter(final boolean calls, final boolean inQuery, final ParsedQueryEcho queries) {
-        this(calls, inQuery, queries, false, null);
+        this(calls, inQuery, queries, false, null, null);
     }
 
     private ParsedEchoPrinter(final boolean calls, final boolean inQuery, final ParsedQueryEcho queries,
-                              final boolean unresolved, final CallEcho spelled) {
+                              final boolean unresolved, final CallEcho spelled, final String relation) {
         this.calls = calls;
         this.inQuery = inQuery;
         this.queries = queries;
         this.unresolved = unresolved;
         this.spelled = spelled;
+        this.relation = relation;
+    }
+
+    /**
+     * A printer for a query's own expressions where the query is printed resolved: the operators as written, and a
+     * bare name its relation's.
+     *
+     * @param queries  prints the queries the expressions hold
+     * @param relation the relation a bare name is read in, or null where the query reads more than one or none
+     * @return the printer
+     */
+    static ParsedEchoPrinter resolvedIn(final ParsedQueryEcho queries, final String relation) {
+        return new ParsedEchoPrinter(false, true, queries, false, null, relation);
+    }
+
+    /**
+     * An expression as the plan prints it resolved, as a routine parameter's default is echoed: the operators as
+     * written, and a query's bare names its relation's (see {@link ParsedQueryEcho}).
+     *
+     * @param expression the expression
+     * @return its text
+     */
+    public static String printResolved(final Expression expression) {
+        return expression.accept(new ParsedEchoPrinter(false, false, new ParsedQueryEcho(true), false, null, null));
     }
 
     /**
@@ -106,7 +135,8 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
     public static String print(final Expression expression, final CallEcho spelled) {
         final QueryOrWindowWalk walk = new QueryOrWindowWalk();
         expression.accept(walk);
-        return expression.accept(new ParsedEchoPrinter(walk.found(), false, new ParsedQueryEcho(), false, spelled));
+        return expression.accept(new ParsedEchoPrinter(walk.found(), false, new ParsedQueryEcho(), false, spelled,
+            null));
     }
 
     /**
@@ -134,7 +164,7 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
      * @return its text
      */
     public static String printUnresolved(final Expression expression) {
-        return expression.accept(new ParsedEchoPrinter(true, true, new ParsedQueryEcho(), true, null));
+        return expression.accept(new ParsedEchoPrinter(true, true, new ParsedQueryEcho(), true, null, null));
     }
 
     /** A call's name, told as unresolved where the list being printed has not found its functions yet. */
@@ -178,10 +208,16 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
 
     @Override
     public String visitColumnReference(final ColumnReferenceExpression expr) {
+        final StarArgument star = expr.getStarArgument();
+        if (star != null && star.getExcludes().isEmpty() && star.getIlike() == null) {
+            // A star among a call's arguments prints as written: NOSUCH(*, …), NOSUCH(RC_T.*, …) (live-verified).
+            return star.getQualifier() == null ? "*"
+                : SqlIdentifiers.spellAlreadyCanonicalPath(star.getQualifier()) + ".*";
+        }
         final String column = expr.getPositionalOrdinal() > 0
             ? "$" + expr.getPositionalOrdinal() : SqlIdentifiers.spellCanonical(expr.getColumnName());
         if (!expr.isQualified()) {
-            return column;
+            return relation != null && expr.getPositionalOrdinal() <= 0 ? relation + "." + column : column;
         }
         final String qualifier = SqlIdentifiers.spellAlreadyCanonicalPath(expr.getTableName());
         // Outside a query a qualified name is a variable and its field, and the variable alone is named.
@@ -203,7 +239,13 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
                 ? symbol : "\"" + symbol + "\"";
             return named(name) + "(" + expr.getLeft().accept(this) + ", " + expr.getRight().accept(this) + ")";
         }
-        return operand(expr.getLeft()) + " " + symbol + " " + operand(expr.getRight());
+        return operand(expr, expr.getLeft()) + " " + symbol + " " + operand(expr, expr.getRight());
+    }
+
+    /** An operand of an operation: as the echo spells it beside its operator, else as {@link #operand} prints it. */
+    private String operand(final BinaryOperationExpression operation, final Expression expr) {
+        final String own = spelled == null ? null : spelled.spellOperand(operation, expr, this);
+        return own != null ? own : operand(expr);
     }
 
     /** A LIKE or an ILIKE: its escape is one more operand of the same operator, a third argument of the call. */
@@ -484,7 +526,9 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
     public String visitCast(final CastExpression expr) {
         final String value = expr.getExpression().accept(this);
         if (expr.isTypedLiteral()) {
-            return "TO_" + expr.getTargetType() + "(" + value + ")";
+            // A DECFLOAT literal is echoed as written, its word in lower case: decfloat '1' (live-verified).
+            return "DECFLOAT".equalsIgnoreCase(expr.getTargetType()) ? "decfloat " + value
+                : "TO_" + expr.getTargetType() + "(" + value + ")";
         }
         if (expr.isTryMode()) {
             return "TRY_CAST(" + value + ")";
@@ -495,12 +539,12 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
     /**
      * A cast's target as the tree holds it: the type the written name stands for, every width spelled — a text
      * and a binary of no width at the widest a conversion reaches — and UNKNOWN for a type the parser gives no
-     * name of its own.
+     * name of its own, a geospatial one included.
      */
     private static String target(final CastExpression expr) {
         final DataType declared = expr.getDeclaredTarget() != null
             ? expr.getDeclaredTarget() : TypeInferencer.declaredCastTarget(expr.getTargetType());
-        if (declared == null) {
+        if (declared == null || GeoTypes.isGeo(declared)) {
             return "UNKNOWN";
         }
         return declared instanceof BinaryType
@@ -636,7 +680,8 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
         for (int i = 0; i < arguments.size(); i++) {
             text.append(i > 0 ? ", " : "");
             if (names != null && names.get(i) != null) {
-                text.append(names.get(i).toUpperCase(Locale.ROOT)).append(" => ");
+                // A name as written: TABLE (FLATTEN(input => …)) (live-verified).
+                text.append(names.get(i)).append(" => ");
             }
             text.append(arguments.get(i).accept(this));
         }
@@ -684,8 +729,11 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
         }
         final String name = name(expr.getNameParts(), expr.getFunctionName());
         final boolean average = "AVG".equals(name) && !expr.isDistinct();
-        // An aggregate over the whole partition reads the same rows in any order, and the AVG names none.
-        final String over = over(expr, !(average && expr.isWholeFramed()));
+        // An aggregate over the whole partition reads the same rows in any order, and names none: AVG, SUM and MAX
+        // over ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING are OVER (), where a navigation function
+        // keeps its order, LAST_VALUE's ORDER BY is printed (live-verified).
+        final boolean navigation = "FIRST_VALUE".equals(name) || "LAST_VALUE".equals(name) || "NTH_VALUE".equals(name);
+        final String over = over(expr, !(!navigation && expr.isWholeFramed()));
         final String arguments = (expr.isDistinct() ? "DISTINCT " : "") + list(expr.getArguments());
         if (average && expr.isOrdered() && !expr.isOwnFramed() && !expr.isWholeFramed()) {
             return "SUM(" + arguments + ")" + over + " / COUNT(" + arguments + ")" + over;
@@ -716,8 +764,8 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
     }
 
     /**
-     * A sort key's direction and where its nulls sort, both always spelled: nulls last ascending and first
-     * descending unless written otherwise.
+     * A sort key's direction and where its nulls sort, both always spelled: where the session's
+     * DEFAULT_NULL_ORDERING puts them for the direction unless written otherwise (see {@link SessionNullOrdering}).
      *
      * @param ascending  whether the key sorts ascending
      * @param nullsFirst the NULLS FIRST (TRUE) or NULLS LAST (FALSE) written, or null for neither
@@ -725,6 +773,6 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
      */
     static String sortSuffix(final boolean ascending, final Boolean nullsFirst) {
         return (ascending ? " ASC NULLS " : " DESC NULLS ")
-            + ((nullsFirst != null ? nullsFirst.booleanValue() : !ascending) ? "FIRST" : "LAST");
+            + (SessionNullOrdering.nullsFirst(ascending, nullsFirst) ? "FIRST" : "LAST");
     }
 }

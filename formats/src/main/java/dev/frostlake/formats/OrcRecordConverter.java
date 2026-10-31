@@ -16,6 +16,7 @@
 
 package dev.frostlake.formats;
 
+import dev.frostlake.executor.copy.StagedFileIo;
 import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DecimalColumnVector;
@@ -54,16 +55,32 @@ public final class OrcRecordConverter {
 
     /** The {@code row}-th row of {@code batch} as a JSON object (the root schema is a struct of columns). */
     public static ObjectNode rowToJson(final TypeDescription schema, final VectorizedRowBatch batch, final int row) {
+        return rowToJson(schema, batch, row, true);
+    }
+
+    /**
+     * {@link #rowToJson(TypeDescription, VectorizedRowBatch, int)}, a string that is no UTF-8 refused in the account's
+     * words (see {@link OrcUnreadableText}) unless each byte that is no part of it is read as U+FFFD.
+     *
+     * @param schema         the file's schema, a struct of columns
+     * @param batch          the batch read
+     * @param row            the row within it
+     * @param replaceInvalid whether a byte that is no UTF-8 is read as U+FFFD
+     * @return the row
+     */
+    public static ObjectNode rowToJson(final TypeDescription schema, final VectorizedRowBatch batch, final int row,
+                                       final boolean replaceInvalid) {
         final ObjectNode object = NODES.objectNode();
         final List<String> names = schema.getFieldNames();
         final List<TypeDescription> children = schema.getChildren();
         for (int i = 0; i < names.size(); i++) {
-            object.set(names.get(i), columnValue(batch.cols[i], row, children.get(i)));
+            object.set(names.get(i), columnValue(batch.cols[i], row, children.get(i), replaceInvalid));
         }
         return object;
     }
 
-    private static JsonNode columnValue(final ColumnVector vector, final int row, final TypeDescription type) {
+    private static JsonNode columnValue(final ColumnVector vector, final int row, final TypeDescription type,
+                                        final boolean replaceInvalid) {
         final int idx = vector.isRepeating ? 0 : row;
         if (!vector.noNulls && vector.isNull[idx]) {
             return NODES.nullNode();
@@ -82,7 +99,7 @@ public final class OrcRecordConverter {
             case STRING:
             case VARCHAR:
             case CHAR:
-                return NODES.textNode(utf8((BytesColumnVector) vector, idx));
+                return NODES.textNode(utf8((BytesColumnVector) vector, idx, replaceInvalid));
             case BINARY: {
                 final BytesColumnVector bytes = (BytesColumnVector) vector;
                 final byte[] slice = Arrays.copyOfRange(bytes.vector[idx], bytes.start[idx],
@@ -104,7 +121,7 @@ public final class OrcRecordConverter {
                 final List<String> names = type.getFieldNames();
                 final List<TypeDescription> children = type.getChildren();
                 for (int i = 0; i < names.size(); i++) {
-                    object.set(names.get(i), columnValue(struct.fields[i], idx, children.get(i)));
+                    object.set(names.get(i), columnValue(struct.fields[i], idx, children.get(i), replaceInvalid));
                 }
                 return object;
             }
@@ -115,7 +132,7 @@ public final class OrcRecordConverter {
                 final int offset = (int) list.offsets[idx];
                 final int length = (int) list.lengths[idx];
                 for (int e = 0; e < length; e++) {
-                    array.add(columnValue(list.child, offset + e, element));
+                    array.add(columnValue(list.child, offset + e, element, replaceInvalid));
                 }
                 return array;
             }
@@ -127,8 +144,8 @@ public final class OrcRecordConverter {
                 final int offset = (int) map.offsets[idx];
                 final int length = (int) map.lengths[idx];
                 for (int e = 0; e < length; e++) {
-                    final JsonNode key = columnValue(map.keys, offset + e, keyType);
-                    object.set(key.asString(), columnValue(map.values, offset + e, valueType));
+                    final JsonNode key = columnValue(map.keys, offset + e, keyType, replaceInvalid);
+                    object.set(key.asString(), columnValue(map.values, offset + e, valueType, replaceInvalid));
                 }
                 return object;
             }
@@ -137,7 +154,15 @@ public final class OrcRecordConverter {
         }
     }
 
-    private static String utf8(final BytesColumnVector bytes, final int idx) {
-        return new String(bytes.vector[idx], bytes.start[idx], bytes.length[idx], StandardCharsets.UTF_8);
+    private static String utf8(final BytesColumnVector bytes, final int idx, final boolean replaceInvalid) {
+        if (replaceInvalid) {
+            return new String(bytes.vector[idx], bytes.start[idx], bytes.length[idx], StandardCharsets.UTF_8);
+        }
+        final String marked = StagedFileIo.markedUtf8(Arrays.copyOfRange(bytes.vector[idx], bytes.start[idx],
+            bytes.start[idx] + bytes.length[idx]));
+        if (StagedFileIo.firstUnreadable(marked) >= 0) {
+            throw new OrcUnreadableText(StagedFileIo.unreadableShown(marked));
+        }
+        return marked;
     }
 }

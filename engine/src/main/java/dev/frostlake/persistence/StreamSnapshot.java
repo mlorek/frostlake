@@ -42,6 +42,11 @@ public class StreamSnapshot implements Serializable {
     public boolean stale;
     // Whether the stream is a table stream a clone made lost. False on older snapshots.
     public boolean lostInClone;
+    // Whether the stream was re-bound to tables that replaced the ones it read. False on older snapshots.
+    public boolean rebound;
+    // The tables a re-bind that kept the stream's changes lists it as reading, each as its database, schema and
+    // table (StreamSources#shownTablePlaces). Null when there was no such re-bind, and on older snapshots.
+    public List<List<String>> shownTables;
     public String comment;
     public String owner;
     public List<StreamRecordSnapshot> records = new ArrayList<>();
@@ -49,6 +54,8 @@ public class StreamSnapshot implements Serializable {
     // stream's image of the table at its last refresh. Null when the stream has none, and on older snapshots.
     public List<StreamRecordSnapshot> initialRecords;
     public List<List<Object>> refreshImage;
+    /** The identities of the image's rows, or null when not known or on snapshots that predate them. */
+    public List<String> refreshImageIds;
 
     // The object's tag associations, tag name -> value. Null in a snapshot written before tags were
     // recorded, which reads back as an object carrying none.
@@ -58,4 +65,7 @@ public class StreamSnapshot implements Serializable {
     // Where the stream's offset falls in the order table snapshots are taken in, which a join view's stream reads
     // its tables' rows at. Null on snapshots written before it was saved, which restore the offset as now.
     public Long offsetSequence;
+    // The versions its tables were written to past its offset, which SYSTEM$STREAM_BACKLOG lists. Null on snapshots
+    // written before they were saved, which restore a stream with none.
+    public List<StreamVersionSnapshot> versions;
 }

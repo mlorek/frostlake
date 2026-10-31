@@ -29,8 +29,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * held 1.555. The column's own type refuses or rounds all of these on an explicit cast.
  *
  * <p>Snowflake's documentation sets the rules. A semi-structured value is castable to a structured type but not
- * coercible to one, nor the reverse, so an INSERT casts it explicitly. A structured value of the column's family
- * converts as the cast converts it.
+ * coercible to one, nor the reverse, so an INSERT casts it explicitly; written uncast it is "incompatible types"
+ * (live-verified). A structured value converts as the cast converts it where its type coerces to the column's: a
+ * number to any number. A text element into a numeric one and an OBJECT of other keys are refused while compiling
+ * (see StructuredColumnCoercionTest).
  */
 public class StructuredColumnWriteTest extends BaseDatabaseTest {
 
@@ -60,28 +62,33 @@ public class StructuredColumnWriteTest extends BaseDatabaseTest {
             + " for column " + column;
     }
 
+    /** The sentence a semi-structured value written to a structured column gets (live-verified). */
+    private static String incompatible(final String got, final String expecting) {
+        return "incompatible types: [" + got + "] and [" + expecting + "]";
+    }
+
     @Test
     public void aSemiStructuredValueIsRefusedWhileCompiling() {
         assertTrue(refusal("INSERT INTO sw (o) SELECT OBJECT_CONSTRUCT('zzz', 'x')")
-            .contains(mismatch("OBJECT(a NUMBER(38,0))", "OBJECT", "O")));
+            .contains(incompatible("OBJECT", "OBJECT(a NUMBER(38,0))")));
         assertTrue(refusal("INSERT INTO sw (ar) SELECT ARRAY_CONSTRUCT('y')")
-            .contains(mismatch("ARRAY(NUMBER(38,0))", "ARRAY", "AR")));
+            .contains(incompatible("ARRAY", "ARRAY(NUMBER(38,0))")));
         assertTrue(refusal("INSERT INTO sw (m) SELECT PARSE_JSON('{\"k\": 1}')")
-            .contains(mismatch("MAP(VARCHAR(16777216), NUMBER(38,0))", "VARIANT", "M")));
+            .contains(incompatible("VARIANT", "MAP(VARCHAR(16777216), NUMBER(38,0))")));
         engine.execute("INSERT INTO sw (o) SELECT NULL");
         assertTrue(refusal("UPDATE sw SET o = OBJECT_CONSTRUCT('zzz', 'x')")
-            .contains(mismatch("OBJECT(a NUMBER(38,0))", "OBJECT", "O")), "UPDATE");
+            .contains(incompatible("OBJECT", "OBJECT(a NUMBER(38,0))")), "UPDATE");
         assertTrue(refusal("MERGE INTO sw USING (SELECT 1 k) s ON FALSE"
                 + " WHEN NOT MATCHED THEN INSERT (o) VALUES (OBJECT_CONSTRUCT('q', 'w'))")
-            .contains(mismatch("OBJECT(a NUMBER(38,0))", "OBJECT", "O")), "MERGE");
+            .contains(incompatible("OBJECT", "OBJECT(a NUMBER(38,0))")), "MERGE");
     }
 
     @Test
     public void aStructuredValueIsConvertedToTheColumnsType() {
         engine.execute("INSERT INTO sw (p) SELECT {'a': 1.555}::OBJECT(a NUMBER(10,3))");
-        engine.execute("INSERT INTO sw (o) SELECT {'a': '5'}::OBJECT(a VARCHAR)");
+        engine.execute("INSERT INTO sw (o) SELECT {'a': 5.4}::OBJECT(a NUMBER(5,1))");
         engine.execute("INSERT INTO sw (ar) SELECT ARRAY_CONSTRUCT(1, 2.6)::ARRAY(NUMBER(10,2))");
-        engine.execute("INSERT INTO sw (m) SELECT {'k': '7'}::MAP(VARCHAR, VARCHAR)");
+        engine.execute("INSERT INTO sw (m) SELECT {'k': 7.4}::MAP(VARCHAR, NUMBER(5,1))");
         assertEquals("{\"a\":1.56}", first("SELECT p FROM sw WHERE p IS NOT NULL"),
             "as {'a': 1.555}::OBJECT(a NUMBER(10,3))::OBJECT(a NUMBER(5,2)) rounds it");
         assertEquals("{\"a\":5}", first("SELECT o FROM sw WHERE o IS NOT NULL"));
@@ -92,12 +99,15 @@ public class StructuredColumnWriteTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void aStructuredValueThatDoesNotFitIsRefusedAsTheCastRefusesIt() {
+    public void aStructuredValueThatDoesNotCoerceIsRefusedWhileCompiling() {
         assertTrue(refusal("SELECT {'k': 'x'}::MAP(VARCHAR, VARCHAR)::MAP(VARCHAR, INT)").contains(SCHEMA_MISMATCH),
             "the cast's own refusal");
-        assertTrue(refusal("INSERT INTO sw (m) SELECT {'k': 'x'}::MAP(VARCHAR, VARCHAR)").contains(SCHEMA_MISMATCH));
-        assertTrue(refusal("INSERT INTO sw (o) SELECT {'b': 5}::OBJECT(b INT)").contains(SCHEMA_MISMATCH),
-            "a field the column does not declare");
+        assertTrue(refusal("INSERT INTO sw (m) SELECT {'k': 'x'}::MAP(VARCHAR, VARCHAR)").contains(
+            mismatch("MAP(VARCHAR(16777216), NUMBER(38,0))", "MAP(VARCHAR(134217728), VARCHAR(134217728))", "M")));
+        assertTrue(refusal("INSERT INTO sw (o) SELECT {'a': '5'}::OBJECT(a VARCHAR)").contains(
+            mismatch("OBJECT(a NUMBER(38,0))", "OBJECT(a VARCHAR(134217728))", "O")));
+        assertTrue(refusal("INSERT INTO sw (o) SELECT {'b': 5}::OBJECT(b INT)").contains(
+            mismatch("OBJECT(a NUMBER(38,0))", "OBJECT(b NUMBER(38,0))", "O")), "a field the column does not declare");
         assertEquals("0", first("SELECT COUNT(*) FROM sw"), "nothing was written");
     }
 

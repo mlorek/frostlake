@@ -82,13 +82,7 @@ public final class RowAccessPolicyAttachment {
                 throw MaskedArguments.cannotBeMasked(column);
             }
             MaskedArguments.requireReadable(catalog, column);
-            if (column.hasProjectionPolicy()) {
-                // The same rule for the other column-level policy kind — and this one's sentence
-                // carries NO compilation-error prefix, where the masked one's does (measured).
-                throw new RuntimeException("Column '" + column.getName().toUpperCase(Locale.ROOT)
-                    + "' cannot be used as policy argument because it has a projection policy"
-                    + " attached.");
-            }
+            MaskedArguments.requireUnprojected(column);
             final DataType parameterType = policy.getParameters().get(i).getDataType();
             if (!SqlTypeNames.sameFamily(column.getDataType(), parameterType)) {
                 throw new RuntimeException(SqlCompilationError.PREFIX + " Column '"

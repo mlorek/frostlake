@@ -45,6 +45,8 @@ public class CatalogSnapshot implements Serializable {
     public List<AccountSnapshot> accounts = new ArrayList<>();
     /** The parameters set on the account, by name. */
     public HashMap<String, String> accountParameters = new HashMap<>();
+    /** The tags set on the account itself, by tag; null on an older snapshot or where none is set. */
+    public HashMap<String, String> accountTags;
     public List<ManagedAccountSnapshot> managedAccounts = new ArrayList<>();
     /** The last account locator number handed out, so a restored engine does not reuse one. */
     public int accountLocatorSequence;
@@ -62,4 +64,10 @@ public class CatalogSnapshot implements Serializable {
     public long nextRowId;
     /** The files each permanent table has loaded, by the table's storage key; null on an older snapshot. */
     public Map<String, List<String>> copyLoadedFiles;
+    /** The files each COPY loaded, as LOAD_HISTORY and COPY_HISTORY list them, oldest first; null on an older one. */
+    public List<LoadRecordSnapshot> loadHistory;
+    /** The statements a time-travel point may name by query ID, oldest first; null on an older snapshot. */
+    public List<QueryPointSnapshot> queryPoints;
+    /** The refreshes DYNAMIC_TABLE_REFRESH_HISTORY lists, oldest first; null on an older snapshot. */
+    public List<DynamicTableRefreshRecordSnapshot> dynamicTableRefreshes;
 }

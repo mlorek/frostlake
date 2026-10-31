@@ -45,19 +45,7 @@ public class DescribeSignatureEveryKindTest extends MeasuredCellsTestSupport {
             "DESCRIBE SECRET nosuch_sec (1)");
         assertAnswer(
             "REFUSED SQL compilation error: | Network rule 'TEST_DB.TEST_SCHEMA.NOSUCH_NR' does not exist or not "
-                + "authorized. Your primary role <ROLE> must have APPLY AGGREGATION POLICY granted on ACCOUNT "
-                + "<ACCOUNT>. Your primary role <ROLE> must have APPLY DATA MOVEMENT POLICY granted on ACCOUNT "
-                + "<ACCOUNT>. Your primary role <ROLE> must have APPLY PRIVACY POLICY granted on ACCOUNT <ACCOUNT>. "
-                + "Your primary role <ROLE> must have APPLY JOIN POLICY granted on ACCOUNT <ACCOUNT>. Your primary "
-                + "role <ROLE> must have APPLY MASKING POLICY granted on ACCOUNT <ACCOUNT>. Your primary role <ROLE> "
-                + "must have APPLY MULTI PARTY APPROVAL POLICY granted on ACCOUNT <ACCOUNT>. Your primary role "
-                + "<ROLE> must have APPLY FEATURE POLICY granted on ACCOUNT <ACCOUNT>. Your primary role <ROLE> must "
-                + "have APPLY PROJECTION POLICY granted on ACCOUNT <ACCOUNT>. Your primary role <ROLE> must have "
-                + "APPLY ROW ACCESS POLICY granted on ACCOUNT <ACCOUNT>. Your primary role <ROLE> must have APPLY "
-                + "STORAGE LIFECYCLE POLICY granted on ACCOUNT <ACCOUNT>. Your primary role <ROLE> must have APPLY "
-                + "TOKENIZATION POLICY granted on ACCOUNT <ACCOUNT>. Your primary role <ROLE> must have MONITOR "
-                + "granted on ACCOUNT <ACCOUNT>. Your primary role <ROLE> must have RESOLVE ALL granted on ACCOUNT "
-                + "<ACCOUNT>.",
+                + "authorized. Your primary role <ROLE> must have APPLY MASKING POLICY granted on ACCOUNT <ACCOUNT>.",
             "DESCRIBE NETWORK RULE nosuch_nr (a)");
         assertAnswer(
             "REFUSED SQL compilation error: | Password policy 'TEST_DB.TEST_SCHEMA.NOSUCH_PP' does not exist or "
@@ -251,19 +239,8 @@ public class DescribeSignatureEveryKindTest extends MeasuredCellsTestSupport {
             "DESCRIBE NETWORK RULE nosuch_sig_zq_7f3a91 (a) x = 1");
         assertAnswer(
             "REFUSED SQL compilation error: | Network rule 'TEST_DB.TEST_SCHEMA.NOSUCH_SIG_ZQ_7F3A91' does not "
-                + "exist or not authorized. Your primary role <ROLE> must have APPLY AGGREGATION POLICY granted on "
-                + "ACCOUNT <ACCOUNT>. Your primary role <ROLE> must have APPLY DATA MOVEMENT POLICY granted on "
-                + "ACCOUNT <ACCOUNT>. Your primary role <ROLE> must have APPLY PRIVACY POLICY granted on ACCOUNT "
-                + "<ACCOUNT>. Your primary role <ROLE> must have APPLY JOIN POLICY granted on ACCOUNT <ACCOUNT>. "
-                + "Your primary role <ROLE> must have APPLY MASKING POLICY granted on ACCOUNT <ACCOUNT>. Your "
-                + "primary role <ROLE> must have APPLY MULTI PARTY APPROVAL POLICY granted on ACCOUNT <ACCOUNT>. "
-                + "Your primary role <ROLE> must have APPLY FEATURE POLICY granted on ACCOUNT <ACCOUNT>. Your "
-                + "primary role <ROLE> must have APPLY PROJECTION POLICY granted on ACCOUNT <ACCOUNT>. Your primary "
-                + "role <ROLE> must have APPLY ROW ACCESS POLICY granted on ACCOUNT <ACCOUNT>. Your primary role "
-                + "<ROLE> must have APPLY STORAGE LIFECYCLE POLICY granted on ACCOUNT <ACCOUNT>. Your primary role "
-                + "<ROLE> must have APPLY TOKENIZATION POLICY granted on ACCOUNT <ACCOUNT>. Your primary role <ROLE> "
-                + "must have MONITOR granted on ACCOUNT <ACCOUNT>. Your primary role <ROLE> must have RESOLVE ALL "
-                + "granted on ACCOUNT <ACCOUNT>.",
+                + "exist or not authorized. Your primary role <ROLE> must have APPLY MASKING POLICY granted on "
+                + "ACCOUNT <ACCOUNT>.",
             "DESCRIBE NETWORK RULE nosuch_sig_zq_7f3a91 (a) TYPE = COLUMNS");
         assertAnswer(
             "REFUSED SQL compilation error: | invalid parameter 'x'",

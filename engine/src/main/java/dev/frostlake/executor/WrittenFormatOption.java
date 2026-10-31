@@ -27,6 +27,9 @@ final class WrittenFormatOption {
 
     final String name;
 
+    /** The name as written. */
+    final String spelled;
+
     /** The scalar value as written, quotes and all; null for a list. */
     final String written;
 
@@ -39,9 +42,10 @@ final class WrittenFormatOption {
     /** The list's decoded values; null for a scalar. */
     final List<String> listed;
 
-    WrittenFormatOption(final String name, final String written, final String value, final boolean string,
-                        final List<String> listed) {
+    WrittenFormatOption(final String name, final String spelled, final String written, final String value,
+                        final boolean string, final List<String> listed) {
         this.name = name;
+        this.spelled = spelled;
         this.written = written;
         this.value = value;
         this.string = string;

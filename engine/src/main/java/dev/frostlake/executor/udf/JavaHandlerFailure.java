@@ -16,8 +16,10 @@
 
 package dev.frostlake.executor.udf;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * How an exception a Java handler raises reaches SQL (live-verified): {@code User Error Report: }, a line
@@ -25,14 +27,26 @@ import java.util.List;
  * of the handler's source reads {@code function_handler_0//H.f(InlineCode.java:1)}, its line the source's own —
  * then {@code  in function F with handler H.f}. Frames below the handler's, the engine's, are not shown, and an
  * exception that arose with no frame of the handler above the engine has none. A cause follows as Java prints
- * one, {@code Caused by: }, with the frames it shares with what it caused counted: {@code ... 1 more}.
+ * one, {@code Caused by: }, with the frames it shares with what it caused counted: {@code ... 1 more}. A report of
+ * more than 4096 bytes of UTF-8 is cut to its first 4093 and ended by {@code ...} before the sentence's end; a
+ * character the cut splits is kept as one U+FFFD (live-verified, for functions, procedures and table functions, in
+ * Java and in Scala).
  */
 public final class JavaHandlerFailure {
 
     private static final String HEAD = "User Error Report: \nJava Stack Trace:\n";
 
+    /** The most bytes of UTF-8 a report keeps whole. */
+    private static final int REPORT_BYTES = 4096;
+
+    /** What ends a report the account cut short. */
+    private static final String CUT = "...";
+
     /** The name the report places a frame of an inline Java body in. */
     private static final String JAVA_SOURCE = "InlineCode.java";
+
+    /** The major version of a class file compiled for Java 17. */
+    private static final int JAVA_17_CLASS_FILE = 61;
 
     private JavaHandlerFailure() {
     }
@@ -61,7 +75,7 @@ public final class JavaHandlerFailure {
      */
     public static String report(final Throwable thrown, final Class<?> handled, final String where,
                                 final String source, final String forwarder) {
-        final StringBuilder text = new StringBuilder(HEAD).append(named(thrown));
+        final StringBuilder text = new StringBuilder(HEAD).append(named(thrown, handled));
         List<String> enclosing = frames(thrown, handled, source, forwarder);
         for (final String frame : enclosing) {
             text.append("\n\tat ").append(frame);
@@ -75,7 +89,7 @@ public final class JavaHandlerFailure {
                     && own.get(own.size() - 1 - common).equals(enclosing.get(enclosing.size() - 1 - common))) {
                 common++;
             }
-            text.append("\nCaused by: ").append(named(cause));
+            text.append("\nCaused by: ").append(named(cause, handled));
             for (int i = 0; i < own.size() - common; i++) {
                 text.append("\n\tat ").append(own.get(i));
             }
@@ -86,7 +100,7 @@ public final class JavaHandlerFailure {
             cause = cause.getCause();
             depth++;
         }
-        return text.append('\n').append(where).toString();
+        return kept(text.append('\n').toString()) + where;
     }
 
     /**
@@ -103,12 +117,27 @@ public final class JavaHandlerFailure {
         final int found = level >= 17 ? 445 : 476;
         final int loaded = level >= 21 ? 593 : level >= 17 ? 592 : 589;
         final int delegated = level >= 21 ? 526 : level >= 17 ? 525 : 522;
-        return report("""
+        return report(String.format(Locale.ROOT, """
             java.lang.ClassNotFoundException: %s
             \tat java.base/java.net.URLClassLoader.findClass(URLClassLoader.java:%d)
             \tat java.base/java.lang.ClassLoader.loadClass(ClassLoader.java:%d)
-            \tat java.base/java.lang.ClassLoader.loadClass(ClassLoader.java:%d)""".formatted(className, found, loaded,
+            \tat java.base/java.lang.ClassLoader.loadClass(ClassLoader.java:%d)""", className, found, loaded,
             delegated), where);
+    }
+
+    /**
+     * The report of a handler method the account calls in a form the handler does not give it: the error its
+     * runtime raised, then the rule the method breaks - a table function's getOutputClass that is no static method
+     * is {@code java.lang.NoSuchMethodError: getOutputClass}, then {@code The getOutputClass() method must be static
+     * and return a java.lang.Class} (live-verified).
+     *
+     * @param method the method's name
+     * @param rule   the sentence naming what the method must be
+     * @param where  the sentence's end
+     * @return the report
+     */
+    public static String missingMethod(final String method, final String rule, final String where) {
+        return HEAD + "java.lang.NoSuchMethodError: " + method + "\n\n" + rule + where;
     }
 
     /**
@@ -119,19 +148,50 @@ public final class JavaHandlerFailure {
      * @return the report
      */
     public static String report(final String named, final String where) {
-        return HEAD + named + '\n' + where;
+        return kept(HEAD + named + '\n') + where;
+    }
+
+    /** A report as the account keeps it, before the sentence's end. */
+    private static String kept(final String report) {
+        if (report.getBytes(StandardCharsets.UTF_8).length <= REPORT_BYTES) {
+            return report;
+        }
+        final int room = REPORT_BYTES - CUT.length();
+        int used = 0;
+        int end = 0;
+        while (end < report.length()) {
+            final int point = report.codePointAt(end);
+            final int size = point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4;
+            if (used + size > room) {
+                break;
+            }
+            used += size;
+            end += Character.charCount(point);
+        }
+        // The bytes of the character the cut runs through read as one replacement character.
+        return report.substring(0, end) + (used < room ? "\uFFFD" : "") + CUT;
     }
 
     /**
      * An exception as the report names it: as Java prints it, except that a NullPointerException the virtual
-     * machine raised is named without the sentence newer machines compose for it, which the account's does not.
+     * machine raised is named without the sentence newer machines compose for it when the handler runs on Java 11,
+     * whose machine composes none; a handler of a routine whose RUNTIME_VERSION is 17 or later keeps it
+     * (live-verified). The level is that of the class file the handler's source compiled to.
      */
-    private static String named(final Throwable thrown) {
+    private static String named(final Throwable thrown, final Class<?> handled) {
         final String message = thrown.getMessage();
-        if (thrown.getClass() == NullPointerException.class && message != null && message.contains(" because \"")) {
+        if (thrown.getClass() == NullPointerException.class && message != null && message.contains(" because \"")
+                && classFileVersion(handled) < JAVA_17_CLASS_FILE) {
             return thrown.getClass().getName();
         }
         return thrown.toString();
+    }
+
+    /** The major version of the class file a handler's inline source compiled to, 0 for a class of a JAR. */
+    private static int classFileVersion(final Class<?> handled) {
+        final ClassLoader loader = handled.getClassLoader();
+        return loader instanceof InMemoryClassLoader
+            ? ((InMemoryClassLoader) loader).classFileVersion(handled.getName()) : 0;
     }
 
     /** A throwable's frames from where it arose down to the handler's last own frame, as the report spells them. */
@@ -147,10 +207,15 @@ public final class JavaHandlerFailure {
         final List<String> frames = new ArrayList<>();
         for (int i = 0; i <= last; i++) {
             final StackTraceElement frame = trace[i];
-            frames.add(own(frame, handled)
-                ? "function_handler_0//" + frame.getClassName() + '.' + frame.getMethodName() + '(' + source + ':'
-                    + frame.getLineNumber() + ')'
-                : frame.toString());
+            if (own(frame, handled)) {
+                frames.add("function_handler_0//" + frame.getClassName() + '.' + frame.getMethodName() + '('
+                    + source + ':' + frame.getLineNumber() + ')');
+            } else if (frame.getClassName().startsWith(SnowparkStatementFailure.SNOWPARK_PACKAGE)) {
+                // Snowpark's classes are loaded beside the handler's, and their frames are named as its are.
+                frames.add("function_handler_0//" + frame);
+            } else {
+                frames.add(frame.toString());
+            }
         }
         if (forwarder != null && last >= 0) {
             frames.add(forwarder);

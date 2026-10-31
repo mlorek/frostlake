@@ -39,6 +39,8 @@ final class JavaScriptFaultWording {
     private static final Pattern TEXT = Pattern.compile("'[^'\\\\]*'|\"[^\"\\\\]*\"");
     private static final Pattern NOT_ITERABLE = Pattern.compile("TypeError: (.*) is not iterable", Pattern.DOTALL);
     private static final Pattern KEYED_BY_TEXT = Pattern.compile("\\[\"([A-Za-z_$][A-Za-z0-9_$]*)\"\\]");
+    private static final Pattern INCOMPATIBLE_RECEIVER =
+        Pattern.compile("TypeError: incompatible receiver: (.*)", Pattern.DOTALL);
 
     /** Sentences that differ by a fixed text only: this engine's, then the account's. */
     private static final String[] FIXED = {
@@ -126,6 +128,17 @@ final class JavaScriptFaultWording {
         }
         final String argument = scan.soleArgument();
         final boolean number = argument != null && PLAIN_NUMBER.matcher(argument).matches();
+        if (message.startsWith("SyntaxError: ") && !message.startsWith("SyntaxError: Invalid regular expression")
+                && section.matches("(?s)(new\\s+)?RegExp\\(.*") && argument != null
+                && TEXT.matcher(argument).matches() && argument.indexOf('/') < 0) {
+            // A pattern the constructor refuses is quoted before the reason.
+            return "SyntaxError: Invalid regular expression: /" + argument.substring(1, argument.length() - 1)
+                + "/: " + message.substring("SyntaxError: ".length());
+        }
+        final Matcher receiver = INCOMPATIBLE_RECEIVER.matcher(message);
+        if (receiver.matches() && section.matches("(?s)Promise\\..*\\.then\\.call\\(.*")) {
+            return "TypeError: Method Promise.prototype.then called on incompatible receiver " + receiver.group(1);
+        }
         if ("RangeError: illegal repeat count".equals(message) && number) {
             return "RangeError: Invalid count value: " + argument;
         }
@@ -160,6 +173,12 @@ final class JavaScriptFaultWording {
                 + "' in " + searched.group(1);
         }
         final Matcher called = NOT_A_FUNCTION.matcher(message);
+        final String printed = called.matches() && "".equals(scan.soleArgument())
+            ? JavaScriptCallPrinter.printed(scan.callee()) : null;
+        if (printed != null) {
+            // A callee called with nothing is named as the account's engine prints it from its source.
+            return "TypeError: " + printed + " is not a function";
+        }
         if (called.matches() && scan.calledName() != null && called.group(1).startsWith("(intermediate value)")) {
             return "TypeError: " + scan.calledName() + " is not a function";
         }

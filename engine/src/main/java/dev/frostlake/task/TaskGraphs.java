@@ -17,12 +17,15 @@
 package dev.frostlake.task;
 
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.model.ScheduleType;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskExecution;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -35,6 +38,28 @@ import java.util.Set;
 public final class TaskGraphs {
 
     /** Static helpers only. */
+    /**
+     * The fire a task's schedule names after one it is scheduled for, as NEXT_SCHEDULED_TIME tells it for a
+     * scheduled run: an interval later in elapsed time, across a change of the clock's offset too (live-verified),
+     * or the CRON expression's next instant.
+     *
+     * @param task      the task
+     * @param scheduled the instant the run is scheduled for
+     * @return the next fire, or null for a task without a schedule
+     */
+    public static Instant fireAfter(final Task task, final Instant scheduled) {
+        if (task.getSchedule() == null || scheduled == null) {
+            return null;
+        }
+        if (task.getScheduleType() == ScheduleType.CRON) {
+            final ZonedDateTime next = CronSchedule.parse(task.getSchedule())
+                .nextFireAfter(scheduled.atZone(ZoneId.systemDefault()));
+            return next == null ? null : next.toInstant();
+        }
+        final long seconds = IntervalSchedule.seconds(task.getSchedule());
+        return scheduled.plusSeconds(seconds > 0L ? seconds : 3600L);
+    }
+
     private TaskGraphs() {
     }
 
@@ -83,6 +108,40 @@ public final class TaskGraphs {
         return out;
     }
 
+    /**
+     * The root tasks a task's graph hangs from: following its predecessors up to the tasks that have none, or a
+     * finalizer's root. A root is its own. A predecessor that is gone is passed over, and a loop is walked once.
+     */
+    public static List<Task> rootsOf(final Schema schema, final Task task) {
+        final List<Task> roots = new ArrayList<>();
+        final Set<String> seen = new HashSet<>();
+        final List<Task> frontier = new ArrayList<>();
+        frontier.add(task);
+        seen.add(task.getName());
+        for (int i = 0; i < frontier.size(); i++) {
+            final Task member = frontier.get(i);
+            final List<String> above = new ArrayList<>(member.getPredecessors());
+            if (member.isFinalizer() && member.getFinalizedRootTask() != null) {
+                above.add(member.getFinalizedRootTask());
+            }
+            if (above.isEmpty() && !roots.contains(member)) {
+                roots.add(member);
+            }
+            for (final String name : above) {
+                final Task parent = taskNamed(schema, QualifiedName.parse(name).last());
+                if (parent != null && seen.add(parent.getName())) {
+                    frontier.add(parent);
+                }
+            }
+        }
+        return roots;
+    }
+
+    /** The task of exactly that name in the schema, or null. */
+    private static Task taskNamed(final Schema schema, final String name) {
+        return schema.hasTaskExact(name) ? schema.getTaskExact(name) : null;
+    }
+
     /** The finalizer task attached to a root task, or null. */
     public static Task finalizerOf(final Schema schema, final Task root) {
         for (final Task candidate : schema.getTasks()) {
@@ -91,6 +150,11 @@ public final class TaskGraphs {
             }
         }
         return null;
+    }
+
+    /** The RUN_ID of a graph run scheduled at that instant: its epoch milliseconds, or null. */
+    public static Long runId(final Instant scheduled) {
+        return scheduled == null ? null : Long.valueOf(scheduled.toEpochMilli());
     }
 
     /** The RUN_ID of a graph run scheduled at that time: its epoch milliseconds, or null. */

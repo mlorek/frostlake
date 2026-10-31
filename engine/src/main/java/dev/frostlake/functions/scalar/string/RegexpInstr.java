@@ -37,23 +37,17 @@ public class RegexpInstr extends TextArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        // Snowflake: NULL in, NULL out — a NULL haystack or needle yields NULL, not 0/false
-        for (int i = 0; i < args.size(); i++) {
-            if (i < args.size() && args.get(i) == null) {
-                return null;
-            }
-        }
-        if (args.get(0) == null || args.get(1) == null) {
-            return 0L;
+        // A NULL in any argument answers NULL (live-verified).
+        if (anyNull(args)) {
+            return null;
         }
         final String subject = SharedFunctionHelpers.textOf(args.get(0));
         final String pattern = SharedFunctionHelpers.textOf(args.get(1));
-        final int position = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) : 1;
-        final int occurrence = args.size() > 3 && args.get(3) != null ? wholeNumber(args.get(3)) : 1;
-        final int option = args.size() > 4 && args.get(4) != null ? wholeNumber(args.get(4)) : 0;
-        final String parameters = args.size() > 5 && args.get(5) != null
-            ? SharedFunctionHelpers.textOf(args.get(5)) : null;
-        final Integer groupNum = args.size() > 6 && args.get(6) != null ? Integer.valueOf(wholeNumber(args.get(6))) : null;
+        final int position = RegexpHelper.wholeArgument(args, 2, 1);
+        final int occurrence = RegexpHelper.wholeArgument(args, 3, 1);
+        final int option = RegexpHelper.wholeArgument(args, 4, 0);
+        final String parameters = RegexpHelper.textArgument(args, 5);
+        final Integer groupNum = RegexpHelper.groupArgument(args, 6);
         RegexpHelper.requirePosition(position);
         RegexpHelper.requireOccurrence(occurrence);
         RegexpHelper.requireReturnOption(option);
@@ -62,21 +56,13 @@ public class RegexpInstr extends TextArgumentFunction {
             return 0L;
         }
 
-        // The position counts characters, a supplementary one included (live-verified).
-        final int start = Math.max(0, position - 1);
-        if (start > CodePointText.length(subject)) {
+        final int start = RegexpHelper.searchStart(subject, position);
+        if (start < 0) {
             return 0L;
         }
         final Matcher matcher = RegexpHelper.compile(pattern, parameters).matcher(subject);
-        if (!matcher.find(CodePointText.offset(subject, start))) {
+        if (!RegexpHelper.findOccurrence(matcher, start, occurrence)) {
             return 0L;
-        }
-        int found = 1;
-        while (found < occurrence) {
-            if (!matcher.find()) {
-                return 0L;
-            }
-            found++;
         }
         int spanStart = matcher.start();
         int spanEnd = matcher.end();

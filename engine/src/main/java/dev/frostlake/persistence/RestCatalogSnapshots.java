@@ -28,11 +28,11 @@ import dev.frostlake.metastore.model.AppObject;
 import dev.frostlake.metastore.model.AppObjectKind;
 import dev.frostlake.metastore.model.AppObjectVersion;
 import dev.frostlake.metastore.model.ArtifactRepository;
+import dev.frostlake.metastore.model.CallerGrant;
 import dev.frostlake.metastore.model.ComputePool;
 import dev.frostlake.metastore.model.ComputePoolState;
 import dev.frostlake.metastore.model.ContainerObjects;
 import dev.frostlake.metastore.model.ContainerService;
-import dev.frostlake.metastore.model.DataMetricAttachment;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DatabaseRole;
 import dev.frostlake.metastore.model.ExternalVolume;
@@ -86,6 +86,8 @@ final class RestCatalogSnapshots {
     /** Records the account-level objects: accounts, integrations, external volumes and compute pools. */
     static void saveCatalog(final Catalog catalog, final CatalogSnapshot snapshot) {
         snapshot.accountParameters = new HashMap<>(catalog.getAccountParameters().entries());
+        final Map<String, String> accountTags = SnapshotTags.of(catalog.getAccountTags());
+        snapshot.accountTags = accountTags == null ? null : new HashMap<>(accountTags);
         for (final Integration integration : catalog.getIntegrations().all()) {
             final IntegrationSnapshot saved = new IntegrationSnapshot();
             saved.name = integration.getName();
@@ -158,6 +160,8 @@ final class RestCatalogSnapshots {
     /** Puts the account-level objects of a snapshot back. */
     static void restoreCatalog(final CatalogSnapshot snapshot, final Catalog catalog) {
         restoreParameters(snapshot.accountParameters, catalog.getAccountParameters());
+        // ALTER ACCOUNT SET TAG holds for the account's life, as a tag on any object does.
+        SnapshotTags.restore(catalog.getAccountTags(), snapshot.accountTags);
         if (snapshot.integrations != null) {
             for (final IntegrationSnapshot saved : snapshot.integrations) {
                 final Integration integration = new Integration(saved.name, IntegrationKind.valueOf(saved.kind),
@@ -327,6 +331,7 @@ final class RestCatalogSnapshots {
             saved.config = alert.getConfig();
             saved.runbook = alert.getRunbook();
             saved.suspendAfterNumFailures = alert.getSuspendAfterNumFailures();
+            saved.parameters = new LinkedHashMap<>(alert.getParameters());
             saved.state = alert.getState() == null ? null : alert.getState().name();
             saved.wasAutoSuspended = alert.getWasAutoSuspended();
             saved.tags = new HashMap<>(alert.getTagValues());
@@ -408,6 +413,9 @@ final class RestCatalogSnapshots {
                 alert.setConfig(saved.config);
                 alert.setRunbook(saved.runbook);
                 alert.setSuspendAfterNumFailures(saved.suspendAfterNumFailures);
+                if (saved.parameters != null) {
+                    alert.getParameters().putAll(saved.parameters);
+                }
                 if (saved.state != null) {
                     alert.setState(AlertState.valueOf(saved.state));
                 }
@@ -454,15 +462,7 @@ final class RestCatalogSnapshots {
             saved.metadataFilePath = iceberg.getMetadataFilePath();
             snapshot.icebergMetadata = saved;
         }
-        final List<DataMetricSnapshot> metrics = new ArrayList<>();
-        for (final DataMetricAttachment attachment : table.getDataMetrics()) {
-            final DataMetricSnapshot saved = new DataMetricSnapshot();
-            saved.metricName = attachment.getMetricName();
-            saved.columns = new ArrayList<>(attachment.getColumns());
-            saved.suspended = attachment.isSuspended();
-            metrics.add(saved);
-        }
-        snapshot.dataMetrics = metrics;
+        snapshot.dataMetrics = DataMetricSnapshots.of(table.dataMetricAttachments());
         snapshot.dataMetricSchedule = table.getDataMetricSchedule();
         snapshot.stageFileFormat = new HashMap<>(table.getStageFileFormat());
         snapshot.stageCopyOptions = new HashMap<>(table.getStageCopyOptions());
@@ -501,16 +501,7 @@ final class RestCatalogSnapshots {
             iceberg.setMetadataFilePath(saved.metadataFilePath);
             table.setIcebergMetadata(iceberg);
         }
-        if (snapshot.dataMetrics != null) {
-            for (final DataMetricSnapshot metric : snapshot.dataMetrics) {
-                final DataMetricAttachment attachment = new DataMetricAttachment(metric.metricName, metric.columns);
-                attachment.setSuspended(metric.suspended);
-                table.addDataMetric(attachment);
-            }
-        }
-        if (snapshot.dataMetricSchedule != null) {
-            table.setDataMetricSchedule(snapshot.dataMetricSchedule);
-        }
+        DataMetricSnapshots.restore(snapshot.dataMetrics, snapshot.dataMetricSchedule, table.dataMetricAttachments());
         if (snapshot.stageFileFormat != null) {
             table.getStageFileFormat().putAll(snapshot.stageFileFormat);
         }
@@ -666,6 +657,17 @@ final class RestCatalogSnapshots {
             future.createdOn = grant.getCreatedOn();
             saved.futureGrants.add(future);
         }
+        saved.callerGrants = new ArrayList<>();
+        for (final CallerGrant grant : role.getCallerGrants()) {
+            final CallerGrantSnapshot caller = new CallerGrantSnapshot();
+            caller.privilege = grant.getPrivilege();
+            caller.objectKind = grant.getObjectKind();
+            caller.objectName = grant.getObjectName();
+            caller.inheritedFrom = grant.getInheritedFrom();
+            caller.scopeName = grant.getScopeName();
+            caller.createdOn = grant.getCreatedOn();
+            saved.callerGrants.add(caller);
+        }
         saved.databaseRoleGrants = new HashMap<>(role.getDatabaseRoleGrants());
         saved.databaseRoleGrantTimes = new HashMap<>();
         for (final String held : role.getDatabaseRoleGrants().keySet()) {
@@ -782,6 +784,12 @@ final class RestCatalogSnapshots {
             for (final FutureGrantSnapshot future : saved.futureGrants) {
                 role.addFutureGrant(future.objectKind, future.scopeKind, future.scopeName, future.privilege,
                     future.grantOption, orNow(future.createdOn));
+            }
+        }
+        if (saved.callerGrants != null) {
+            for (final CallerGrantSnapshot caller : saved.callerGrants) {
+                role.addCallerGrant(caller.privilege, caller.objectKind, caller.objectName, caller.inheritedFrom,
+                    caller.scopeName, orNow(caller.createdOn));
             }
         }
         if (saved.databaseRoleGrants != null) {
@@ -981,6 +989,7 @@ final class RestCatalogSnapshots {
         saved.materializedAsOf = view.getMaterializedAsOf();
         saved.materializedRows = Long.valueOf(view.getMaterializedRows());
         saved.clusterKeys = new ArrayList<>(view.getClusterKeys());
+        saved.clusterByText = view.getClusterByText();
         saved.reclusterSuspended = view.isReclusterSuspended();
         saved.tags = new HashMap<>(view.getTagValues());
         saved.createdOn = view.getCreatedTime();
@@ -1011,7 +1020,7 @@ final class RestCatalogSnapshots {
         if (saved.materializedRows != null) {
             view.setMaterializedRows(saved.materializedRows.longValue());
         }
-        view.setClusterKeys(saved.clusterKeys);
+        view.setClusterKeys(saved.clusterKeys, saved.clusterByText);
         view.setReclusterSuspended(saved.reclusterSuspended);
         restoreOwnership(view, saved.owner, saved.comment, saved.tags);
         view.restoreLastDdlTime(saved.lastDdlAt);

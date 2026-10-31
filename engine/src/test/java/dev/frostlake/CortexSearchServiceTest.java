@@ -49,14 +49,11 @@ public class CortexSearchServiceTest extends BaseDatabaseTest {
         """;
 
     /**
-     * The warehouse a service names must EXIST — live rejects an unknown one, where the embedded
-     * engine accepts any name. So the class makes its own and takes it away again: warehouses are
-     * account-level and would otherwise outlive the run, the way the compute pools did.
-     */
-    /**
      * A trial account carries no Cortex AI functions, so every service here would fail with the
-     * account's own refusal. Probe once and SKIP with that sentence rather than reporting nineteen
-     * errors that say nothing about fidelity. Embedded runs never probe.
+     * account's own refusal. Probe once and SKIP with that sentence rather than reporting thirty
+     * errors that say nothing about fidelity. The probe is AI_EMBED, as a service's embedding is: the
+     * legacy SNOWFLAKE.CORTEX functions are refused on every new account, trial or not, in words of
+     * their own. Embedded runs never probe.
      */
     @BeforeEach
     public void requireCortexOnLiveAccount() {
@@ -64,13 +61,17 @@ public class CortexSearchServiceTest extends BaseDatabaseTest {
             return;
         }
         try {
-            engine.executeQuery(
-                "SELECT SNOWFLAKE.CORTEX.EMBED_TEXT_768('snowflake-arctic-embed-m', 'probe')");
+            engine.executeQuery("SELECT AI_EMBED('snowflake-arctic-embed-m-v1.5', 'probe')");
         } catch (final RuntimeException refused) {
             LiveFeatureGate.skipIfAccountTierBlocks(refused);
         }
     }
 
+    /**
+     * The warehouse a service names must EXIST — live rejects an unknown one, where the embedded
+     * engine accepts any name. So the class makes its own and takes it away again: warehouses are
+     * account-level and would otherwise outlive the run, the way the compute pools did.
+     */
     @BeforeEach
     public void createSourceTable() {
         for (final String warehouse : List.of("fl_cortex_wh", "fl_cortex_wh2")) {

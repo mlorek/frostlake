@@ -75,6 +75,9 @@ public final class RestSql {
     /** A statement that needs a current database the session does not have. */
     public static final String CODE_NO_CURRENT_DATABASE = "090105";
 
+    /** The account's code for a shared database's roles listed by page. */
+    public static final String CODE_SHARED_ROLES_PAGE = "000004";
+
     public static final String COMPILATION_ERROR = "SQL compilation error:";
 
     private final ConcurrentDatabaseEngine engine;
@@ -209,6 +212,9 @@ public final class RestSql {
         }
         if (message.contains("Insufficient privileges")) {
             return new RestException(403, relayed, CODE_INSUFFICIENT_PRIVILEGES);
+        }
+        if (message.startsWith("Unsupported feature 'SHOW DATABASE ROLES IN DATABASE <shared database>")) {
+            return new RestException(400, relayed, CODE_SHARED_ROLES_PAGE);
         }
         if (message.contains("did not exist or was purged")) {
             return new RestException(400, relayed, CODE_NOT_RESTORABLE);

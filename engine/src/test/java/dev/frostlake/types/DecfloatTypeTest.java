@@ -224,6 +224,65 @@ public class DecfloatTypeTest extends MeasuredCellsTestSupport {
         });
     }
 
+    /**
+     * CEIL, FLOOR, ROUND and TRUNC round a DECFLOAT to any scale in -38..38 whatever its exponent: NUMBER's "Scale too
+     * large" is a rule of a declared width, which a DECFLOAT has none of. A scale argument past that range
+     * keeps NUMBER's rule, the account's answer there being unmeasured.
+     */
+    @Test
+    public void theRoundingFunctionsRoundAnyExponentOfADecfloat() {
+        engine.execute("CREATE OR REPLACE TABLE dr (d DECFLOAT)");
+        engine.execute("INSERT INTO dr VALUES (DECFLOAT '1e-50'), (DECFLOAT '-1e-50'), (DECFLOAT '1.25e-45')");
+        assertCells(new String[][] {
+            {"SELECT ROUND(DECFLOAT '1e-50')::VARCHAR, SYSTEM$TYPEOF(ROUND(DECFLOAT '1e-50'))",
+                "0|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT FLOOR(DECFLOAT '1e-50')::VARCHAR", "0"},
+            {"SELECT FLOOR(DECFLOAT '-1e-50')::VARCHAR, CEIL(DECFLOAT '-1e-50')::VARCHAR", "-1|0"},
+            {"SELECT TRUNC(DECFLOAT '-4.2e-5432')::VARCHAR, TRUNCATE(DECFLOAT '4.2e-5432', 3)::VARCHAR", "0|0"},
+            {"SELECT ROUND(DECFLOAT '1e-50', 2)::VARCHAR, ROUND(DECFLOAT '1.5e-40', 38)::VARCHAR", "0|0"},
+            {"SELECT ROUND(DECFLOAT '2.5e-38', 38)::VARCHAR, ROUND(DECFLOAT '2.5e-38', 38, 'HALF_TO_EVEN')::VARCHAR",
+                "3e-38|2e-38"},
+            {"SELECT ROUND(DECFLOAT '1.255', 2)::VARCHAR, ROUND(DECFLOAT '1.23e7002')::VARCHAR",
+                "1.26|1.23e7002"},
+            {"SELECT ROUND(DECFLOAT '123.456', -1)::VARCHAR", "120"},
+            {"SELECT ROUND(DECFLOAT '1.5e-40', 40)::VARCHAR, ROUND(DECFLOAT '1e-50', 100)::VARCHAR", "2e-40|1e-50"},
+            {"SELECT ROUND(d)::VARCHAR, SYSTEM$TYPEOF(FLOOR(d)) FROM dr ORDER BY d",
+                "0|DECFLOAT(38)[DECFLOAT18] ;; 0|DECFLOAT(38)[DECFLOAT18] ;; 0|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT ROUND(DECFLOAT '1e-100', 50)::VARCHAR, ROUND(DECFLOAT '1e6000', -5999)::VARCHAR", "0|1e6000"},
+            {"SELECT ROUND(1e-50::NUMBER(38,37)), CEIL(1.5::NUMBER(10,2), -37)",
+                "REFUSED Invalid parameter value: -37. Reason: Scale too large"},
+        });
+        if (!isLiveSnowflake()) {
+            // The account's CEIL of a tiny positive DECFLOAT answers 0, below the value, and so does its FLOOR with a
+            // scale of a tiny negative one: a defect of its own, recorded and not imitated.
+            assertCells(new String[][] {
+                {"SELECT CEIL(DECFLOAT '1e-50')::VARCHAR, CEIL(DECFLOAT '1e-50', -38)::VARCHAR", "1|1e38"},
+                {"SELECT CEIL(d, 1)::VARCHAR FROM dr ORDER BY d", "0 ;; 0.1 ;; 0.1"},
+            });
+        }
+    }
+
+    /**
+     * A BOOLEAN cast to a DECFLOAT is the DECFLOAT 1 or 0, as TO_DECFLOAT reads it (live: CAST(TRUE AS DECFLOAT) is
+     * 1), so arithmetic over it is DECFLOAT arithmetic, as a cast to a NUMBER is the NUMBER the cast spells.
+     */
+    @Test
+    public void aBooleanCastToADecfloatIsADecfloat() {
+        engine.execute("CREATE OR REPLACE TABLE db (x BOOLEAN)");
+        engine.execute("INSERT INTO db VALUES (TRUE), (FALSE), (NULL)");
+        assertCells(new String[][] {
+            {"SELECT TRUE::DECFLOAT, SYSTEM$TYPEOF(TRUE::DECFLOAT), CAST(FALSE AS DECFLOAT), "
+                + "SYSTEM$TYPEOF(CAST(FALSE AS DECFLOAT))",
+                "1|DECFLOAT(38)[DECFLOAT18]|0|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT TO_DECFLOAT(TRUE), SYSTEM$TYPEOF(TO_DECFLOAT(TRUE))", "1|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT (x::DECFLOAT / 3)::VARCHAR, SYSTEM$TYPEOF(x::DECFLOAT) FROM db ORDER BY x DESC NULLS LAST",
+                "3.3333333333333333333333333333333333333e-1|DECFLOAT(38)[DECFLOAT18] ;; "
+                    + "0|DECFLOAT(38)[DECFLOAT18] ;; null|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT TYPEOF(TO_VARIANT(TRUE::DECFLOAT)), (TRUE::DECFLOAT + 0.5)::VARCHAR", "DECFLOAT|1.5"},
+            {"SELECT TRUE::NUMBER(5,1), SYSTEM$TYPEOF(TRUE::NUMBER(5,1))", "1.0|NUMBER(5,1)[SB4]"},
+        });
+    }
+
     @Test
     public void scriptingAndRoutinesKeepItExact() {
         engine.execute("CREATE OR REPLACE PROCEDURE df_p(x DECFLOAT) RETURNS DECFLOAT LANGUAGE SQL AS 'BEGIN RETURN "
@@ -313,6 +372,47 @@ public class DecfloatTypeTest extends MeasuredCellsTestSupport {
             {"SELECT RANK() OVER (ORDER BY x), x::VARCHAR FROM (SELECT 1.5::DECFLOAT AS x UNION ALL SELECT "
                 + "1::DECFLOAT / 3) ORDER BY 1",
                 "1|3.3333333333333333333333333333333333333e-1 ;; 2|1.5"},
+        });
+    }
+
+    /**
+     * MEDIAN and PERCENTILE_CONT over a DECFLOAT interpolate in DECFLOAT arithmetic with double weights (see
+     * DecfloatPercentileWeightTest), no NUMBER scale applying: the input scale plus three refused a middle value of 1
+     * beside 1e-50 as FIXED(38,53), refused 5e99 and a sixth past 38 digits, and cut an interpolation to 3 decimals. A
+     * group or a partition that has to interpolate is refused.
+     */
+    @Test
+    public void theInterpolatingPercentilesKeep38Digits() {
+        engine.execute("CREATE OR REPLACE TABLE df_pc (g INT, x DECFLOAT)");
+        engine.execute("INSERT INTO df_pc VALUES (1, DECFLOAT '0'), (1, DECFLOAT '1'), (2, DECFLOAT '1e100'), "
+            + "(2, DECFLOAT '2'), (2, NULL)");
+        assertCells(new String[][] {
+            {"SELECT MEDIAN(x)::VARCHAR FROM (SELECT DECFLOAT '1' x UNION ALL SELECT DECFLOAT '2' UNION ALL "
+                + "SELECT DECFLOAT '1e-50')", "1"},
+            {"SELECT MEDIAN(x)::VARCHAR FROM (SELECT DECFLOAT '1e100' x UNION ALL SELECT DECFLOAT '2')", "5e99"},
+            {"SELECT MEDIAN(x)::VARCHAR FROM (SELECT DECFLOAT '0' x UNION ALL SELECT DECFLOAT '1' / 3)",
+                "1.6666666666666666666666666666666666667e-1"},
+            {"SELECT PERCENTILE_CONT(0.123456) WITHIN GROUP (ORDER BY x)::VARCHAR, "
+                + "SYSTEM$TYPEOF(PERCENTILE_CONT(0.123456) WITHIN GROUP (ORDER BY x)) FROM "
+                + "(SELECT DECFLOAT '0' x UNION ALL SELECT DECFLOAT '1')",
+                "0.12345600000000001|DECFLOAT(38)[DECFLOAT18]"},
+            {"SELECT PERCENTILE_CONT(0.1) WITHIN GROUP (ORDER BY x)::VARCHAR FROM (SELECT DECFLOAT '0' x UNION ALL "
+                + "SELECT DECFLOAT '1' UNION ALL SELECT DECFLOAT '2' UNION ALL SELECT DECFLOAT '3')",
+                "0.300000000000000044"},
+            {"SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x) OVER ()::VARCHAR FROM "
+                + "(SELECT DECFLOAT '1e100' x UNION ALL SELECT DECFLOAT '2')", "5e99 ;; 5e99"},
+            {"SELECT MEDIAN(x)::VARCHAR, PERCENTILE_CONT(0) WITHIN GROUP (ORDER BY x)::VARCHAR, "
+                + "PERCENTILE_CONT(1) WITHIN GROUP (ORDER BY x)::VARCHAR FROM "
+                + "(SELECT DECFLOAT '1e-16383' x UNION ALL SELECT DECFLOAT '1e16384')",
+                "5e16383|1e-16383|1e16384"},
+            // A group that has to interpolate is no group a DECFLOAT percentile is computed for.
+            {"SELECT g, MEDIAN(x)::VARCHAR, PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY x DESC)::VARCHAR, "
+                + "SYSTEM$TYPEOF(MEDIAN(x)) FROM df_pc GROUP BY g ORDER BY g", "REFUSED DecFloat not supported"},
+            {"SELECT DISTINCT g, MEDIAN(x) OVER (PARTITION BY g)::VARCHAR, "
+                + "PERCENTILE_CONT(0.1) WITHIN GROUP (ORDER BY x) OVER (PARTITION BY g)::VARCHAR FROM df_pc ORDER BY g",
+                "REFUSED DecFloat not supported"},
+            {"SELECT MEDIAN(x)::VARCHAR FROM (SELECT NULL::DECFLOAT x)", "null"},
+            {"SELECT MEDIAN(x)::VARCHAR FROM (SELECT 1.5 x UNION ALL SELECT 2.25)", "1.87500"},
         });
     }
 }

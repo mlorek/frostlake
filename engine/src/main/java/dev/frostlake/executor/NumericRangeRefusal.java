@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.types.DecimalText;
+
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
@@ -106,16 +108,14 @@ public final class NumericRangeRefusal {
     }
 
     /**
-     * A double in live's overflow-value spelling: six significant digits, trailing zeros dropped,
-     * lowercase {@code e} with a signed exponent — {@code 3e+38}, {@code 1.5e+39}, {@code 1.70141e+38}.
+     * A double in live's overflow-value spelling, C's {@code %g}: six significant digits, trailing zeros dropped,
+     * lowercase {@code e} with a signed exponent — {@code 3e+38}, {@code 1.5e+39}, {@code 1.70141e+38} — and plain
+     * between them, {@code 1000} and {@code 123457} (live-verified). Java's {@code %g} keeps the zeros C drops.
      */
     public static String gText(final double value) {
         final String formatted = String.format(Locale.US, "%.6g", value);
         final int e = formatted.indexOf('e');
-        if (e < 0) {
-            return formatted;
-        }
-        String mantissa = formatted.substring(0, e);
+        String mantissa = e < 0 ? formatted : formatted.substring(0, e);
         if (mantissa.indexOf('.') >= 0) {
             int end = mantissa.length();
             while (end > 0 && mantissa.charAt(end - 1) == '0') {
@@ -126,12 +126,66 @@ public final class NumericRangeRefusal {
             }
             mantissa = mantissa.substring(0, end);
         }
-        return mantissa + formatted.substring(e);
+        return e < 0 ? mantissa : mantissa + formatted.substring(e);
+    }
+
+    /**
+     * A non-finite FLOAT as the sentence prints it, every word lower case: {@code nan}, {@code inf},
+     * {@code -inf} (live-verified for the cast; see NonFiniteCastRefusal).
+     *
+     * @param value a NaN or an infinity
+     * @return its word
+     */
+    public static String nonFiniteWord(final double value) {
+        if (Double.isNaN(value)) {
+            return "nan";
+        }
+        return value > 0 ? "inf" : "-inf";
     }
 
     /** The sentence a VARIANT source gets: the family alone, with neither class nor width. */
     public static String untyped(final BigDecimal value) {
         return LEAD + ", value " + valueText(value);
+    }
+
+    /**
+     * The untyped sentence a VARIANT source gets with the value's text supplied: a double the VARIANT holds is
+     * printed as the VARIANT prints it (see {@link #variantDoubleText}).
+     *
+     * @param valueText the value as the sentence prints it
+     * @return the sentence
+     */
+    public static String untypedText(final String valueText) {
+        return LEAD + ", value " + valueText;
+    }
+
+    /**
+     * A double a VARIANT holds, as an out-of-range sentence prints it: its shortest digits, in exponent form with a
+     * signed exponent of at least two digits from 10^16 up and under 10^-4, plainly otherwise -
+     * {@code PARSE_JSON('1.2345678e39')::NUMBER} is refused with {@code value 1.2345678e+39} (live-verified), where a
+     * FLOAT source keeps six digits (see {@link #gText}).
+     *
+     * @param value the double
+     * @return its text
+     */
+    public static String variantDoubleText(final double value) {
+        final BigDecimal shortest = DecimalText.parse(Double.toString(value)).stripTrailingZeros();
+        final int exponent = shortest.precision() - shortest.scale() - 1;
+        if (exponent >= -4 && exponent < 16) {
+            return shortest.toPlainString();
+        }
+        final String digits = shortest.unscaledValue().abs().toString();
+        final StringBuilder out = new StringBuilder();
+        if (shortest.signum() < 0) {
+            out.append('-');
+        }
+        out.append(digits.charAt(0));
+        if (digits.length() > 1) {
+            out.append('.').append(digits, 1, digits.length());
+        }
+        final int magnitude = Math.abs(exponent);
+        return out.append('e').append(exponent < 0 ? '-' : '+').append(magnitude < 10 ? "0" : "").append(magnitude)
+            .toString();
     }
 
     /** The digits the widest NUMBER holds; past this a text is not a number at all. */

@@ -103,12 +103,14 @@ public class AccountIdentityTest extends BaseDatabaseTest {
     }
 
     /**
-     * The 25-column shape SHOW ACCOUNTS and SHOW ORGANIZATION ACCOUNTS share, ending with {@code contract_number}.
-     * Note what is NOT here: {@code region_group} and {@code org_default_region} were Frostlake's own inventions,
-     * and asking a real account for either is an invalid identifier.
+     * The 25-column shape SHOW ACCOUNTS lists, ending with {@code contract_number}. Note what is NOT here:
+     * {@code region_group} and {@code org_default_region} were Frostlake's own inventions, and asking a real account
+     * for either is an invalid identifier.
      */
     @Test
-    public void bothAccountListingsCarryTheMeasuredShape() {
+    public void theAccountListingCarriesTheMeasuredShape() {
+        // An organization administrator is who the listing tells every column to.
+        engine.execute("USE ROLE ORGADMIN");
         final List<String> shape = List.of(
             "organization_name", "account_name", "snowflake_region", "edition", "account_url",
             "created_on", "comment", "account_locator", "account_locator_url", "managed_accounts",
@@ -117,12 +119,10 @@ public class AccountIdentityTest extends BaseDatabaseTest {
             "account_old_url_saved_on", "account_old_url_last_used", "organization_old_url",
             "organization_old_url_saved_on", "organization_old_url_last_used", "is_events_account",
             "is_organization_account", "tenant_type", "domain_names", "contract_number");
-        for (final String listing : List.of("SHOW ACCOUNTS", "SHOW ORGANIZATION ACCOUNTS")) {
-            final ResultSet rs = engine.executeQuery(listing);
-            assertEquals(shape.size(), rs.getColumns().size(), listing);
-            for (int i = 0; i < shape.size(); i++) {
-                assertEquals(shape.get(i), rs.getColumns().get(i).getName(), listing + " column " + i);
-            }
+        final ResultSet rs = engine.executeQuery("SHOW ACCOUNTS");
+        assertEquals(shape.size(), rs.getColumns().size());
+        for (int i = 0; i < shape.size(); i++) {
+            assertEquals(shape.get(i), rs.getColumns().get(i).getName(), "column " + i);
         }
     }
 

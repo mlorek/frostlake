@@ -64,6 +64,7 @@ public class CortexSearchService implements Named, Taggable {
     private boolean requestLogging;
     private Integer autoSuspend;
     private final Map<String, String> tags = new LinkedHashMap<String, String>();
+    private final Map<String, String> scoringProfiles = new LinkedHashMap<String, String>();
 
     public CortexSearchService(final String name, final String searchColumn,
                                final List<String> attributeColumns, final List<String> columns,
@@ -259,5 +260,30 @@ public class CortexSearchService implements Named, Taggable {
     @Override
     public Map<String, String> getTagValues() {
         return new LinkedHashMap<String, String>(tags);
+    }
+
+    /** The named scoring profiles ALTER … ADD SCORING PROFILE added, each its JSON text, in the order added. */
+    public Map<String, String> getScoringProfiles() {
+        return new LinkedHashMap<String, String>(scoringProfiles);
+    }
+
+    /**
+     * Add a named scoring profile.
+     *
+     * @param profileName the profile's name
+     * @param body        its JSON text
+     */
+    public void addScoringProfile(final String profileName, final String body) {
+        scoringProfiles.put(profileName, body);
+    }
+
+    /**
+     * Drop a named scoring profile.
+     *
+     * @param profileName the profile's name
+     * @return whether the service had it
+     */
+    public boolean dropScoringProfile(final String profileName) {
+        return scoringProfiles.remove(profileName) != null;
     }
 }

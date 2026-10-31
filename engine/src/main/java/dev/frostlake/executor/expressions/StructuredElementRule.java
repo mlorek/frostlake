@@ -42,6 +42,11 @@ import java.util.List;
  *       {@code 1000} into {@code ARRAY(NUMBER(3,0))} stays 1000. {@code '2.5'} into {@code ARRAY(DOUBLE)} is 2.5,
  *       {@code 5} into {@code ARRAY(VARCHAR)} is {@code '5'}, and a text that reads as no number is refused as the
  *       cast refuses it ({@code Numeric value 'zz' is not recognized}).</li>
+ *   <li>A text is held to the element's declared length, refused as the cast to the array's type refuses it:
+ *       {@code 'toolong'} into {@code ARRAY(VARCHAR(2))} is {@code String 'toolong' is too long and would be
+ *       truncated}. This one is not measured; it is the conservative reading, since a structured value that kept
+ *       the text could not be written to a column of its own type.</li>
+ *   <li>A DECFLOAT element is cast to DECFLOAT and kept as the member that remembers its type.</li>
  *   <li>A NULL is added as it is added to any array, as {@code undefined}.</li>
  *   <li>An element type that is itself structured, an {@code ARRAY(ARRAY(INT))}'s or an {@code ARRAY(OBJECT(a INT))}'s,
  *       takes only a structured value of its own kind, converted as a cast converts it: {@code [2.6]::ARRAY(DOUBLE)}
@@ -107,6 +112,10 @@ final class StructuredElementRule {
     static String castTarget(final DataType element) {
         if (element == null || StructuredTypes.isStructured(element)) {
             return null;
+        }
+        if (NumericType.isDecfloat(element)) {
+            // A DECFLOAT is no NUMBER of scale 0: 2.5 into an ARRAY(DECFLOAT) stays 2.5.
+            return "DECFLOAT";
         }
         if (element instanceof NumericType) {
             return NumericType.isApproximate(element) ? "FLOAT"

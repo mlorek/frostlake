@@ -21,6 +21,7 @@ import dev.frostlake.executor.FormatProperty;
 import dev.frostlake.executor.SessionParameterCatalog;
 import dev.frostlake.executor.SessionParameterRow;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.commands.AuthenticationPolicyLists;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
 import dev.frostlake.metastore.StreamSources;
@@ -68,15 +69,6 @@ final class ObjectDdl {
     private static final String[] TASK_PARAMETERS = {
         "USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE", "SUSPEND_TASK_AFTER_NUM_FAILURES", "USER_TASK_TIMEOUT_MS",
         "TASK_AUTO_RETRY_ATTEMPTS"};
-
-    /** The MFA, PAT and workload identity settings an authentication policy's DDL spells, at their defaults. */
-    private static final String AUTHENTICATION_POLICY_SETTINGS = """
-        MFA_POLICY=(ENFORCE_MFA_ON_EXTERNAL_AUTHENTICATION='NONE',ALLOWED_METHODS=('ALL')) \
-        PAT_POLICY=(DEFAULT_EXPIRY_IN_DAYS=15,REQUIRE_ROLE_RESTRICTION_FOR_PERSON_USERS=false,\
-        NETWORK_POLICY_EVALUATION=ENFORCED_REQUIRED,REQUIRE_ROLE_RESTRICTION_FOR_SERVICE_USERS=true,\
-        MAX_EXPIRY_IN_DAYS=365,BLOCKED_ROLES_LIST=()) \
-        WORKLOAD_IDENTITY_POLICY=(ALLOWED_AWS_PARTITIONS=('ALL'),ALLOWED_OIDC_ISSUERS=('ALL'),\
-        ALLOWED_PROVIDERS=('ALL'),ALLOWED_AZURE_ISSUERS=('ALL'),ALLOWED_AWS_ACCOUNTS=('ALL'))""";
 
     private ObjectDdl() {
     }
@@ -321,8 +313,9 @@ final class ObjectDdl {
         if (!task.getContacts().isEmpty()) {
             final StringBuilder contacts = new StringBuilder();
             for (final Map.Entry<String, String> contact : task.getContacts().entrySet()) {
+                // A contact's quoted name is spelled quoted: STEWARD=TEST_DB.TEST_SCHEMA."cct9" (live-verified).
                 contacts.append(contacts.length() > 0 ? ", " : "").append(contact.getKey()).append('=')
-                    .append(contact.getValue());
+                    .append(SqlIdentifiers.spellAlreadyCanonicalPath(contact.getValue()));
             }
             sb.append(" WITH CONTACT (").append(contacts).append(")\n");
         }
@@ -502,8 +495,9 @@ final class ObjectDdl {
     }
 
     /**
-     * {@code create or replace password policy P PASSWORD_MIN_LENGTH=14 … PASSWORD_HISTORY=5 ;} — every property,
-     * each followed by a space, its default where the policy set none.
+     * {@code create or replace password policy P PASSWORD_MIN_LENGTH=14 … PASSWORD_HISTORY=5 COMMENT='c' ;} — every
+     * property, each followed by a space, its default where the policy set none, and the comment last, where it has
+     * one (live-verified).
      */
     static String passwordPolicy(final SecurityObject policy, final String name) {
         final StringBuilder sb = new StringBuilder("create or replace password policy ").append(name).append(' ');
@@ -514,14 +508,20 @@ final class ObjectDdl {
             final Object value = policy.getProperty(spec.getName());
             sb.append(spec.getName()).append('=').append(value == null ? spec.getDefaultValue() : value).append(' ');
         }
-        return sb.append(';').toString();
+        return sb.append(commentOf(policy)).append(';').toString();
+    }
+
+    /** A policy's comment as its DDL ends with it, or nothing where it has none or an empty one. */
+    private static String commentOf(final SecurityObject policy) {
+        final String comment = policy.getComment();
+        return comment == null || comment.isEmpty() ? "" : "COMMENT=" + quoted(comment) + " ";
     }
 
     /**
      * {@code create or replace session policy P SESSION_IDLE_TIMEOUT_MINS=240 … ALLOWED_SECONDARY_ROLES=('ALL')
-     * BLOCKED_SECONDARY_ROLES=() AGENT_RESTRICTED_SESSION_SCOPE=NULL ;} — every property but the comment, each
-     * followed by a space, its default where the policy set none, a role list in parentheses and the agent scope
-     * quoted (live-verified).
+     * BLOCKED_SECONDARY_ROLES=() AGENT_RESTRICTED_SESSION_SCOPE=NULL COMMENT='c' ;} — every property, each followed
+     * by a space, its default where the policy set none, a role list in parentheses, the agent scope quoted and the
+     * comment last, where it has one (live-verified).
      */
     static String sessionPolicy(final SecurityObject policy, final String name) {
         final StringBuilder sb = new StringBuilder("create or replace session policy ").append(name).append(' ');
@@ -546,7 +546,7 @@ final class ObjectDdl {
             }
             sb.append(' ');
         }
-        return sb.append(';').toString();
+        return sb.append(commentOf(policy)).append(';').toString();
     }
 
     /**
@@ -575,14 +575,22 @@ final class ObjectDdl {
             }
             sb.append(' ');
             if ("CLIENT_TYPES".equals(spec.getName())) {
-                sb.append("CLIENT_POLICY=() ");
+                sb.append(listSetting(policy, AuthenticationPolicyLists.CLIENT_POLICY));
             }
         }
-        sb.append(AUTHENTICATION_POLICY_SETTINGS).append(' ');
+        for (final String setting : AuthenticationPolicyLists.SETTINGS) {
+            sb.append(listSetting(policy, setting));
+        }
         if (policy.getComment() != null) {
             sb.append("COMMENT=").append(quoted(policy.getComment())).append(' ');
         }
         return sb.append(';').toString();
+    }
+
+    /** One of an authentication policy's list settings as its DDL spells it, {@code PAT_POLICY=(…) }. */
+    private static String listSetting(final SecurityObject policy, final String setting) {
+        return setting + "=" + AuthenticationPolicyLists.ddl(setting, AuthenticationPolicyLists.held(policy, setting))
+            + " ";
     }
 
     // ─────────────────────────── CONTACT / STREAMLIT ───────────────────────────

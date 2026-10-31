@@ -63,6 +63,13 @@ public class ShowSchemaObjectListingsTest extends MeasuredCellsTestSupport {
             + "schema_name:VARCHAR(16777216), owner:VARCHAR(16777216), status:VARCHAR(16777216), "
             + "status_info:VARCHAR(16777216), owner_role_type:VARCHAR(16777216)";
 
+    private static final String TABLE_INDEXES_COLUMNS =
+        "created_on:TIMESTAMP_LTZ, name:VARCHAR(16777216), is_unique:VARCHAR(16777216), table:VARCHAR(16777216), "
+            + "key_expressions:VARCHAR(16777216), included_expressions:VARCHAR(16777216), "
+            + "database_name:VARCHAR(16777216), schema_name:VARCHAR(16777216), owner:VARCHAR(16777216), "
+            + "status:VARCHAR(16777216), status_info:VARCHAR(16777216), owner_role_type:VARCHAR(16777216), "
+            + "kind:VARCHAR(16777216), progress_percentage:NUMBER(9,0), storage_bytes:NUMBER(38,0)";
+
     private static final String SEMANTIC_VIEWS_COLUMNS =
         "created_on:TIMESTAMP_LTZ, name:VARCHAR(16777216), database_name:VARCHAR(16777216), "
             + "schema_name:VARCHAR(16777216), comment:VARCHAR(16777216), owner:VARCHAR(16777216), "
@@ -101,12 +108,13 @@ public class ShowSchemaObjectListingsTest extends MeasuredCellsTestSupport {
             "SHOW INDEXES IN DATABASE test_db",
             "SHOW INDEXES IN SCHEMA test_db.test_schema",
             "SHOW INDEXES IN test_db.test_schema",
-            "SHOW INDEXES IN TABLE ab",
             "SHOW INDEXES STARTS WITH 'zz'",
             "SHOW INDEXES LIMIT 1",
             "SHOW INDEXES LIMIT 1 FROM 'zz'");
         assertShapes(TERSE_COLUMNS,
-            "SHOW TERSE INDEXES");
+            "SHOW TERSE INDEXES",
+            "SHOW TERSE INDEXES IN TABLE",
+            "SHOW TERSE INDEXES IN TABLE ab");
         assertShapes(INDEXES_COLUMNS,
             "SHOW INDEXES HISTORY",
             "SHOW INDEXES LIKE 'zz%' IN ACCOUNT STARTS WITH 'zz' LIMIT 1");
@@ -135,7 +143,7 @@ public class ShowSchemaObjectListingsTest extends MeasuredCellsTestSupport {
         assertShape(
             "REFUSED SQL compilation error: | syntax error line 1 at position 17 unexpected '<EOF>'.",
             "SHOW INDEXES LIKE");
-        assertShapes(INDEXES_COLUMNS,
+        assertShapes(TABLE_INDEXES_COLUMNS,
             "SHOW INDEXES IN TABLE ab");
         assertShape(
             "REFUSED Unsupported feature 'SHOW KEY_VALUE_TABLE_INDEXS ... WITH PRIVILEGES <>'.",
@@ -183,7 +191,7 @@ public class ShowSchemaObjectListingsTest extends MeasuredCellsTestSupport {
         assertShape(
             "REFUSED SQL compilation error: | Object does not exist, or operation cannot be performed.",
             "SHOW INDEXES IN nosuch_db_x9.nosuch_s");
-        assertShapes(INDEXES_COLUMNS,
+        assertShapes(TABLE_INDEXES_COLUMNS,
             "SHOW INDEXES IN TABLE abv");
         assertShape(
             "REFUSED SQL compilation error: | Schema 'TEST_DB.NOSUCH_S' does not exist or not authorized. Your "

@@ -20,7 +20,6 @@ import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
-import dev.frostlake.values.CodePointText;
 
 import java.util.List;
 import java.util.regex.Matcher;
@@ -41,45 +40,27 @@ public class RegexpSubstr extends TextArgumentFunction {
         if (anyNull(args)) {
             return null;
         }
-        if (args.get(0) == null || args.get(1) == null) {
-            return null;
-        }
         final String subject = SharedFunctionHelpers.textOf(args.get(0));
         final String pattern = SharedFunctionHelpers.textOf(args.get(1));
-        final int position = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) : 1;
-        final int occurrence = args.size() > 3 && args.get(3) != null ? wholeNumber(args.get(3)) : 1;
-        final String parameters = args.size() > 4 && args.get(4) != null
-            ? SharedFunctionHelpers.textOf(args.get(4)) : null;
-        final Integer groupNum = args.size() > 5 && args.get(5) != null ? wholeNumber(args.get(5)) : null;
+        final int position = RegexpHelper.wholeArgument(args, 2, 1);
+        final int occurrence = RegexpHelper.wholeArgument(args, 3, 1);
+        final String parameters = RegexpHelper.textArgument(args, 4);
+        final Integer groupNum = RegexpHelper.groupArgument(args, 5);
         RegexpHelper.requirePosition(position);
         RegexpHelper.requireOccurrence(occurrence);
         RegexpHelper.requireGroup(groupNum);
         if (RegexpHelper.matchesNothing(pattern, parameters)) {
             return null;
         }
-
-        // The position counts characters, a supplementary one included (live-verified).
-        final int start = Math.max(0, position - 1);
-        if (start > CodePointText.length(subject)) {
+        final int start = RegexpHelper.searchStart(subject, position);
+        if (start < 0) {
             return null;
         }
         final Matcher matcher = RegexpHelper.compile(pattern, parameters).matcher(subject);
-        if (!matcher.find(CodePointText.offset(subject, start))) {
+        if (!RegexpHelper.findOccurrence(matcher, start, occurrence)) {
             return null;
         }
-        int found = 1;
-        while (found < occurrence) {
-            if (!matcher.find()) {
-                return null;
-            }
-            found++;
-        }
-        final boolean extract = groupNum != null || RegexpHelper.hasExtract(parameters);
-        if (extract && matcher.groupCount() >= 1) {
-            final int group = groupNum != null ? groupNum : 1;
-            return group <= matcher.groupCount() ? matcher.group(group) : null;
-        }
-        return matcher.group();
+        return RegexpHelper.matchedText(matcher, groupNum != null || RegexpHelper.hasExtract(parameters), groupNum);
     }
 
     @Override

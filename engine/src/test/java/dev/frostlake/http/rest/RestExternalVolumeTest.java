@@ -26,7 +26,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 public class RestExternalVolumeTest extends BaseRestTest {
 
     private static final String BODY = "{\"name\":\"%s\",\"storage_locations\":[{\"name\":\"l1\","
-        + "\"storage_provider\":\"S3\",\"storage_base_url\":\"s3://b/p/\",\"storage_aws_role_arn\":\"arn:r\","
+        + "\"storage_provider\":\"S3\",\"storage_base_url\":\"s3://b/p/\","
+        + "\"storage_aws_role_arn\":\"arn:aws:iam::1:role/r\","
         + "\"encryption\":{\"type\":\"AWS_SSE_KMS\",\"kms_key_id\":\"k\"}},{\"name\":\"l2\","
         + "\"storage_provider\":\"GCS\",\"storage_base_url\":\"gcs://b/\"}],\"allow_writes\":false,"
         + "\"comment\":\"%s\"}";
@@ -42,7 +43,7 @@ public class RestExternalVolumeTest extends BaseRestTest {
         final JsonNode first = fetched.path("storage_locations").get(0);
         assertEquals("l1", first.path("name").asString());
         assertEquals("S3", first.path("storage_provider").asString());
-        assertEquals("arn:r", first.path("storage_aws_role_arn").asString());
+        assertEquals("arn:aws:iam::1:role/r", first.path("storage_aws_role_arn").asString());
         assertEquals("AWS_SSE_KMS", first.path("encryption").path("type").asString());
         assertEquals("k", first.path("encryption").path("kms_key_id").asString());
         assertEquals("GCS", fetched.path("storage_locations").get(1).path("storage_provider").asString());

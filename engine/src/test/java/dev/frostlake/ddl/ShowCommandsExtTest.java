@@ -18,7 +18,6 @@ package dev.frostlake.ddl;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -31,10 +30,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ShowCommandsExtTest extends BaseDatabaseTest {
-
-    /** SHOW ORGANIZATION ACCOUNTS returns nothing without the ORGADMIN role, which the test account lacks. */
-    private static final String NEEDS_ORGADMIN =
-        "SHOW ORGANIZATION ACCOUNTS needs the ORGADMIN role to return any row";
 
     // ── SHOW PARAMETERS ───────────────────────────────────────────────────────
 
@@ -215,8 +210,6 @@ public class ShowCommandsExtTest extends BaseDatabaseTest {
         assertTrue(found, "SHOW OBJECTS IN SCHEMA should show objects in that schema");
     }
 
-    // ── SHOW ORGANIZATION ACCOUNTS ────────────────────────────────────────────
-
     // ── SHOW LOCKS ────────────────────────────────────────────────────────────
 
     @Test
@@ -237,7 +230,7 @@ public class ShowCommandsExtTest extends BaseDatabaseTest {
     public void testShowLocksWithActiveTransaction() {
         // Live-verified: partition-rewriting DML — UPDATE, DELETE (even matching no rows), MERGE —
         // holds one PARTITIONS lock per (transaction, table), however many statements rewrite the
-        // table; an append-only INSERT holds NO lock; COMMIT releases them.
+        // table; an INSERT into an empty table holds NO lock; COMMIT releases them.
         engine.execute("CREATE TABLE lock_test (id INTEGER)");
         engine.execute("CREATE TABLE lock_test2 (id INTEGER)");
         engine.execute("INSERT INTO lock_test2 VALUES (0)");
@@ -245,7 +238,7 @@ public class ShowCommandsExtTest extends BaseDatabaseTest {
         engine.execute("BEGIN");
         engine.execute("INSERT INTO lock_test VALUES (1)");
         assertEquals(0, engine.executeQuery("SHOW LOCKS").getRowCount(),
-            "an append-only INSERT holds no lock");
+            "an INSERT into an empty table holds no lock");
 
         engine.execute("UPDATE lock_test2 SET id = 1");
         final ResultSet rs = engine.executeQuery("SHOW LOCKS");
@@ -331,10 +324,12 @@ public class ShowCommandsExtTest extends BaseDatabaseTest {
         assertNotNull(rs.getColumnIndex("value"));
     }
 
-    // ── SHOW ACCOUNTS / SHOW ORGANIZATION ACCOUNTS ───────────────────────────
+    // ── SHOW ACCOUNTS ─────────────────────────────────────────────────────────
 
     @Test
     public void testShowAccounts() {
+        // An organization administrator is who the listing tells every column to.
+        engine.execute("USE ROLE ORGADMIN");
         final ResultSet rs = engine.executeQuery("SHOW ACCOUNTS");
         assertNotNull(rs);
         assertTrue(rs.getRowCount() >= 1, "Should return at least one account");
@@ -346,21 +341,5 @@ public class ShowCommandsExtTest extends BaseDatabaseTest {
         assertNotNull(rs.getRows().get(0).getValue(accIdx));
         assertNotNull(rs.getRows().get(0).getValue(editionIdx));
         assertNotNull(rs.getRows().get(0).getValue(regionIdx));
-    }
-
-    @Test
-    public void testShowOrganizationAccounts() {
-        Assumptions.assumeFalse(isLiveSnowflake(), NEEDS_ORGADMIN);
-        final ResultSet rs = engine.executeQuery("SHOW ORGANIZATION ACCOUNTS");
-        assertNotNull(rs);
-        assertTrue(rs.getRowCount() >= 1, "Should return at least one account");
-        final int orgIdx = rs.getColumnIndex("organization_name");
-        final int accIdx = rs.getColumnIndex("account_name");
-        final int editionIdx = rs.getColumnIndex("edition");
-        final int isOrgAdminIdx = rs.getColumnIndex("is_org_admin");
-        assertNotNull(rs.getRows().get(0).getValue(orgIdx), "organization_name must be non-null");
-        assertNotNull(rs.getRows().get(0).getValue(accIdx), "account_name must be non-null");
-        assertNotNull(rs.getRows().get(0).getValue(editionIdx), "edition must be non-null");
-        assertNotNull(rs.getRows().get(0).getValue(isOrgAdminIdx), "is_org_admin must be non-null");
     }
 }

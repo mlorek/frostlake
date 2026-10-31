@@ -21,9 +21,9 @@ import tools.jackson.databind.JsonNode;
 import dev.frostlake.executor.SetOperations;
 import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.functions.IncomparableArgumentsException;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.VariantValue;
 
-import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -218,7 +218,7 @@ public final class OrderingCoercion {
             return (Boolean) value;
         }
         if (value instanceof Number) {
-            return Boolean.valueOf(new BigDecimal(value.toString()).signum() != 0);
+            return Boolean.valueOf(DecimalText.parse(value.toString()).signum() != 0);
         }
         if (value instanceof CharSequence) {
             final Object converted = SetOperations.coerceStringToLeadingType(
@@ -242,7 +242,7 @@ public final class OrderingCoercion {
             return value;
         }
         if (node.isNumber()) {
-            return ValueComparisons.canonicalGroupKeyValue(new BigDecimal(node.asText()));
+            return ValueComparisons.canonicalGroupKeyValue(DecimalText.parse(node.asText()));
         }
         if (node.isTextual()) {
             return node.asText();

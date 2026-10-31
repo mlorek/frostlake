@@ -190,7 +190,9 @@ final class JoinConditionCompilation {
             }
             return null;
         } catch (final RuntimeException refused) {
-            return SqlCompilationError.isCompilationError(refused.getMessage()) ? refused : null;
+            // A function the role may not use is refused as the statement compiles too.
+            return SqlCompilationError.isCompilationError(refused.getMessage()) || refused instanceof PrivilegeRefusal
+                ? refused : null;
         }
     }
 

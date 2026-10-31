@@ -19,10 +19,12 @@ import dev.frostlake.executor.expressions.BinaryOperationExpression;
 import dev.frostlake.executor.expressions.CaseExpression;
 import dev.frostlake.executor.expressions.CastExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.LateConstantRefusal;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.PlannedCorrelations;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SqlFunctionArgument;
 import dev.frostlake.executor.expressions.SubqueryAnchor;
 import dev.frostlake.executor.expressions.SubqueryExpression;
@@ -411,20 +413,29 @@ public final class CorrelationPlanJudgement {
      *       last clause that holds one ({@code SELECT ABS((SELECT …)), ABS((SELECT …))} is placed at the second,
      *       {@code WHERE … ORDER BY …} at the ORDER BY's);</li>
      *   <li>of the other shapes — a LIMIT, a query inside the subquery reading the outer row, an aggregate of the
-     *       outer row alone — the FIRST is reported, in the order the plan reads them: the WHERE's, then the select
-     *       list's, then the HAVING's, the QUALIFY's and the ORDER BY's.</li>
+     *       outer row alone — the FIRST is reported, in the order the plan reads them: the WHERE's, then the
+     *       HAVING's and the QUALIFY's, then the ORDER BY's, and the select list's last — a QUALIFY's LIMIT subquery
+     *       beside an ORDER BY's depth-two one is placed at the QUALIFY's, a select list's beside it at the ORDER
+     *       BY's.</li>
      * </ul>
      *
      * <p>Every refused subquery is recorded in {@link #refusedKeys()}.
      */
     public RuntimeException refusal() {
+        final RuntimeException bound = outerBoundRefusal();
+        if (bound != null) {
+            return bound;
+        }
         final boolean spared = pruned() || readRowByRow();
         final Set<String> outerNames = outerNames();
         RuntimeException earlyInSelectList = null;
         RuntimeException earlyElsewhere = null;
         RuntimeException lateInWhere = null;
+        Token lateInWhereUnplaced = null;
         RuntimeException lateInSelectList = null;
+        RuntimeException lateInOrderBy = null;
         RuntimeException lateElsewhere = null;
+        int subqueryCount = 0;
         for (final ParseTree judged : judgedClauses()) {
             final boolean selectItem = judged instanceof FrostlakeParser.SelectItemContext;
             final boolean where = !selectItem && !(judged instanceof FrostlakeParser.HavingClauseContext)
@@ -435,9 +446,13 @@ public final class CorrelationPlanJudgement {
                 if (spared && !kept) {
                     continue;
                 }
+                subqueryCount++;
                 final RuntimeException refused = judge(subquery, outerNames, kept);
                 if (refused == null) {
                     continue;
+                }
+                if (!judgedForItsAggregate && where && lateInWhere == null) {
+                    lateInWhereUnplaced = unplacedAt;
                 }
                 if (judgedForItsAggregate) {
                     if (selectItem) {
@@ -449,6 +464,8 @@ public final class CorrelationPlanJudgement {
                     lateInWhere = lateInWhere == null ? refused : lateInWhere;
                 } else if (selectItem) {
                     lateInSelectList = lateInSelectList == null ? refused : lateInSelectList;
+                } else if (judged instanceof FrostlakeParser.OrderByClauseContext) {
+                    lateInOrderBy = lateInOrderBy == null ? refused : lateInOrderBy;
                 } else {
                     lateElsewhere = lateElsewhere == null ? refused : lateElsewhere;
                 }
@@ -460,8 +477,13 @@ public final class CorrelationPlanJudgement {
         if (earlyElsewhere != null) {
             return earlyElsewhere;
         }
-        final RuntimeException late =
-            lateInWhere != null ? lateInWhere : lateInSelectList != null ? lateInSelectList : lateElsewhere;
+        if (lateInWhere != null && lateInWhereUnplaced != null && subqueryCount > 1) {
+            // Beside another subquery of the statement, refused or not, a WHERE's depth-two one is placed
+            // (live-verified).
+            return placedRefusal(lateInWhereUnplaced);
+        }
+        final RuntimeException late = lateInWhere != null ? lateInWhere : lateElsewhere != null ? lateElsewhere
+            : lateInOrderBy != null ? lateInOrderBy : lateInSelectList;
         return late != null || spared ? late : conditionalNotInRefusal(outerNames);
     }
 
@@ -476,9 +498,7 @@ public final class CorrelationPlanJudgement {
             if (refusesNullableNotIn(in, in.selectStatement(), rule)) {
                 final FrostlakeParser.SelectStatementContext subquery = in.selectStatement();
                 refusedKeys.add(PlannedCorrelations.membershipKey(ParseTreeText.getOriginalText(subquery)));
-                return new UnsupportedSubqueryException(SqlCompilationError.of(
-                    "Unsupported subquery type cannot be evaluated at line " + subquery.getStart().getLine()
-                        + ", position " + subquery.getStart().getCharPositionInLine()));
+                return placedRefusal(subquery.getStart());
             }
         }
         return null;
@@ -544,6 +564,29 @@ public final class CorrelationPlanJudgement {
         return false;
     }
 
+    /**
+     * The refusal of the first subquery holding a GENERATOR whose bound reads the outer row (see
+     * {@link GeneratorBounds#outerBoundRefusal}), judged as the call is bound, before any subquery is planned; null
+     * for none.
+     */
+    private RuntimeException outerBoundRefusal() {
+        for (final ParseTree judged : judgedClauses()) {
+            for (final ParseTree subquery : subqueries(judged)) {
+                final FrostlakeParser.SelectStatementContext query = selectOf(subquery);
+                final RuntimeException refused = GeneratorBounds.outerBoundRefusal(executor, query, relations);
+                if (refused != null) {
+                    final String text = ParseTreeText.getOriginalText(query);
+                    final boolean scalar = subquery instanceof FrostlakeParser.ScalarSubqueryExprContext
+                        || subquery instanceof FrostlakeParser.FunctionArgContext;
+                    refusedKeys.add(scalar ? PlannedCorrelations.valueKey(text)
+                        : PlannedCorrelations.membershipKey(text));
+                    return refused;
+                }
+            }
+        }
+        return null;
+    }
+
     /** The select a judged subquery node runs. */
     private static FrostlakeParser.SelectStatementContext selectOf(final ParseTree node) {
         if (node instanceof FrostlakeParser.ScalarSubqueryExprContext) {
@@ -563,6 +606,9 @@ public final class CorrelationPlanJudgement {
 
     /** Whether the subquery {@link #judge} refused last is of the shape the account refuses in its earlier pass. */
     private boolean judgedForItsAggregate;
+
+    /** Where the subquery the last judgement refused with no place stands, or null when it gave one. */
+    private Token unplacedAt;
 
     /** The subqueries {@link #refusal()} refused, keyed as {@link PlannedCorrelations} records them. */
     public Set<String> refusedKeys() {
@@ -588,6 +634,7 @@ public final class CorrelationPlanJudgement {
      *                 refused over a one-row table too, whose every column holds one value
      */
     private RuntimeException judge(final ParseTree node, final Set<String> outerNames, final boolean unpinned) {
+        unplacedAt = null;
         final FrostlakeParser.SelectStatementContext subquery;
         final boolean scalar;
         final Token at;
@@ -634,9 +681,7 @@ public final class CorrelationPlanJudgement {
             if (nested != null) {
                 refusedKeys.add(PlannedCorrelations.valueKey(ParseTreeText.getOriginalText(subquery)));
                 judgedForItsAggregate = false;
-                return nested.isEmpty() ? new UnsupportedSubqueryException(SqlCompilationError.of("Unsupported subquery"
-                    + " type cannot be evaluated at line " + at.getLine() + ", position " + at.getCharPositionInLine()))
-                    : new RuntimeException(nested);
+                return nested.isEmpty() ? placedRefusal(at) : new RuntimeException(nested);
             }
             if (HavingAggregateSubqueries.answered(executor, relations, havingAggregate,
                     (FrostlakeParser.ScalarSubqueryExprContext) node)) {
@@ -644,14 +689,44 @@ public final class CorrelationPlanJudgement {
                 return null;
             }
         }
+        final FrostlakeParser.FunctionCallExprContext listAggregate =
+            havingAggregate == null && node instanceof FrostlakeParser.ScalarSubqueryExprContext
+                ? HavingAggregateSubqueries.enclosingListAggregate(node, executor) : null;
+        if (listAggregate != null && !rule.readsNoOuterName(subquery)) {
+            // A grouped select list computes it group by group under a test, as a HAVING does
+            // (HavingAggregateSubqueries).
+            final FrostlakeParser.ScalarSubqueryExprContext value = (FrostlakeParser.ScalarSubqueryExprContext) node;
+            if (HavingAggregateSubqueries.answered(executor, relations, listAggregate, value)) {
+                final RuntimeException ungrouped =
+                    HavingAggregateSubqueries.ungroupedReference(executor, relations, listAggregate, value);
+                if (ungrouped != null) {
+                    refusedKeys.add(PlannedCorrelations.valueKey(ParseTreeText.getOriginalText(subquery)));
+                    judgedForItsAggregate = false;
+                }
+                return ungrouped;
+            }
+            final String nested = HavingAggregateSubqueries.refusal(executor, relations, listAggregate, value);
+            if (nested != null && !nested.isEmpty()) {
+                refusedKeys.add(PlannedCorrelations.valueKey(ParseTreeText.getOriginalText(subquery)));
+                judgedForItsAggregate = false;
+                return new RuntimeException(nested);
+            }
+        }
         if (scalar && orderedInQualifyWindow(node) && !rule.readsNoOuterName(subquery)) {
             // A subquery reading the outer row as the ordering key of a window the QUALIFY reads is no join the plan
             // can make, whatever its shape, where the same key in a select list's window is answered (live-verified).
             refusedKeys.add(PlannedCorrelations.valueKey(ParseTreeText.getOriginalText(subquery)));
             judgedForItsAggregate = false;
-            return new UnsupportedSubqueryException(SqlCompilationError.of("Unsupported subquery type cannot be"
-                + " evaluated at line " + subquery.getStart().getLine() + ", position "
-                + subquery.getStart().getCharPositionInLine()));
+            return placedRefusal(subquery.getStart());
+        }
+        final RuntimeException partitioned = scalar && !rule.readsNoOuterName(subquery)
+            ? QualifyPartitionKey.refusal(node, relations) : null;
+        if (partitioned != null) {
+            // As the one partition key of an aggregate window the QUALIFY reads, it groups the window's argument,
+            // which the plan refuses (see QualifyPartitionKey).
+            refusedKeys.add(PlannedCorrelations.valueKey(ParseTreeText.getOriginalText(subquery)));
+            judgedForItsAggregate = false;
+            return partitioned;
         }
         final FrostlakeParser.InSubqueryExprContext in = node instanceof FrostlakeParser.InSubqueryExprContext
             ? (FrostlakeParser.InSubqueryExprContext) node : null;
@@ -682,12 +757,24 @@ public final class CorrelationPlanJudgement {
         }
         if (rule.outerReadDepth() == 2 && standsInWhere(node)) {
             // A WHERE's subquery whose own subquery reads the outer row is refused with no place given, where one
-            // read from three levels in, and any of a select list or a HAVING, is placed (live-verified).
+            // read from three levels in, and any of a select list or a HAVING, is placed (live-verified) — unless
+            // the statement holds another subquery, see refusal().
+            unplacedAt = at;
             return new UnsupportedSubqueryException(
                 SqlCompilationError.of("Unsupported subquery type cannot be evaluated"));
         }
+        return placedRefusal(at);
+    }
+
+    /**
+     * The refusal of a subquery the account cannot evaluate, placed at a token of the text being compiled: where
+     * that text stands in its statement, as a query an EXPLAIN compiles stands after the EXPLAIN's words (see
+     * {@link ExpressionSource#place}).
+     */
+    private static UnsupportedSubqueryException placedRefusal(final Token at) {
+        final SourcePosition place = ExpressionSource.place(at.getLine(), at.getCharPositionInLine());
         return new UnsupportedSubqueryException(SqlCompilationError.of("Unsupported subquery type cannot be evaluated"
-            + " at line " + at.getLine() + ", position " + at.getCharPositionInLine()));
+            + " at line " + place.getLine() + ", position " + place.getCharPositionInLine()));
     }
 
     /** Whether a subquery stands in the ORDER BY of a window call the QUALIFY clause holds. */
@@ -849,6 +936,19 @@ public final class CorrelationPlanJudgement {
      * The scalar, IN, quantified and EXISTS subqueries {@code node} holds outside any nested select, in the order
      * written; a scalar one written without parentheses as a call's argument is its argument node.
      */
+    /**
+     * Whether a node is a {@code SYSTEM$TYPEOF} call, which types its argument and never runs it: a correlated
+     * subquery inside it is no subquery the plan evaluates, so {@code SYSTEM$TYPEOF((SELECT x + t.n FROM o WHERE x =
+     * 1.25))} answers {@code NUMBER(11,2)[SB2]} where the subquery alone is refused, in a select list or a WHERE
+     * (live-verified).
+     */
+    private static boolean isTypeOfCall(final ParseTree node) {
+        return node instanceof FrostlakeParser.SystemFuncExprContext && "SYSTEM$TYPEOF".equalsIgnoreCase(
+                ((FrostlakeParser.SystemFuncExprContext) node).SYSTEM_FUNC().getText())
+            || node instanceof FrostlakeParser.FunctionCallExprContext && "SYSTEM$TYPEOF".equalsIgnoreCase(
+                ((FrostlakeParser.FunctionCallExprContext) node).functionName().getText());
+    }
+
     private List<ParseTree> subqueries(final ParseTree node) {
         final List<ParseTree> found = new ArrayList<>();
         collectSubqueries(node, found);
@@ -865,7 +965,8 @@ public final class CorrelationPlanJudgement {
             into.add(node);
             return;
         }
-        if (node instanceof FrostlakeParser.SelectStatementContext || node instanceof FrostlakeParser.LambdaFunctionContext) {
+        if (node instanceof FrostlakeParser.SelectStatementContext
+                || node instanceof FrostlakeParser.LambdaFunctionContext || isTypeOfCall(node)) {
             return;
         }
         if (isConditional(node)) {

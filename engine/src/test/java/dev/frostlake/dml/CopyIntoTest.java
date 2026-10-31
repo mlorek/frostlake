@@ -223,6 +223,21 @@ public class CopyIntoTest extends BaseDatabaseTest {
             tooManyColumns.getMessage());
     }
 
+    /** MATCH_BY_COLUMN_NAME reads no XML, so an XML load is pointed at a transformation alone. */
+    @Test
+    public void anXmlLoadIntoSeveralColumnsNamesTransformationAlone() {
+        engine.execute("CREATE TABLE xml_pair (id INTEGER, data VARIANT)");
+        engine.execute("CREATE STAGE xml_stage");
+        assertEquals("SQL compilation error:\nXML file format can produce one and only one column of type variant,"
+            + " object, or array. Load data into separate columns using copy with transformation.",
+            assertThrows(RuntimeException.class, new Executable() {
+                @Override
+                public void execute() {
+                    engine.execute("COPY INTO xml_pair FROM @xml_stage FILE_FORMAT = (TYPE = XML)");
+                }
+            }).getMessage());
+    }
+
     // Without the optional frostlake-formats module on the classpath, the engine ships only the JSON/XML
     // readers — so COPY of Avro/Parquet/ORC is rejected loudly with a pointer to the module, rather than
     // silently "succeeding" while loading nothing. (The formats module's own tests cover a real PARQUET load.)

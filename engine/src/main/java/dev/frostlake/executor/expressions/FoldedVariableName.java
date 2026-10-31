@@ -16,7 +16,8 @@
 
 package dev.frostlake.executor.expressions;
 
-import java.math.BigDecimal;
+import dev.frostlake.types.DecimalText;
+
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -269,7 +270,7 @@ final class FoldedVariableName {
         final Object left = subject.getValue();
         final Object right = search.getValue();
         if (left instanceof Number && right instanceof Number) {
-            return new BigDecimal(left.toString()).compareTo(new BigDecimal(right.toString())) == 0;
+            return DecimalText.parse(left.toString()).compareTo(DecimalText.parse(right.toString())) == 0;
         }
         return Objects.equals(left, right);
     }
@@ -293,7 +294,7 @@ final class FoldedVariableName {
             return false;
         }
         try {
-            new BigDecimal(String.valueOf(((LiteralExpression) source).getValue()).trim());
+            DecimalText.parse(String.valueOf(((LiteralExpression) source).getValue()).trim());
             return false;
         } catch (final NumberFormatException noNumber) {
             return true;

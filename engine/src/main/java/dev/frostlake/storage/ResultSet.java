@@ -36,6 +36,10 @@ public class ResultSet {
     // The statistics this result still carries of the catalog table beneath it, when it is a projection
     // of one filtered at most by a WHERE; null otherwise. See RelationStatistics.
     private RelationStatistics relationStatistics;
+    /** Whether these are one step's rows of a recursive CTE, which its term reads with no interval known. */
+    private boolean recursiveStep;
+    /** Whether this is the answer a Snowflake Scripting RETURN handed its CALL or block. */
+    private boolean scriptingAnswer;
 
     public ResultSet(final List<ResultSetColumn> columns, final List<Row> rows) {
         this.columns = new ArrayList<>(columns);
@@ -62,6 +66,7 @@ public class ResultSet {
         copy.updateCount = updateCount;
         copy.jdbcUpdateCount = jdbcUpdateCount;
         copy.relationStatistics = relationStatistics;
+        copy.scriptingAnswer = scriptingAnswer;
         return copy;
     }
 
@@ -168,5 +173,38 @@ public class ResultSet {
 
     public void setRelationStatistics(final RelationStatistics relationStatistics) {
         this.relationStatistics = relationStatistics;
+    }
+
+    /** Whether these are one step's rows of a recursive CTE (see {@link #markRecursiveStep}). */
+    public boolean isRecursiveStep() {
+        return recursiveStep;
+    }
+
+    /**
+     * Mark these as one step's rows of a recursive CTE: its term reads them as a relation the plan knows no interval
+     * of.
+     *
+     * @return this result
+     */
+    public ResultSet markRecursiveStep() {
+        this.recursiveStep = true;
+        return this;
+    }
+
+    /** Whether this is a Snowflake Scripting RETURN's answer (see {@link #markScriptingAnswer}). */
+    public boolean isScriptingAnswer() {
+        return scriptingAnswer;
+    }
+
+    /**
+     * Mark this as the answer a Snowflake Scripting RETURN handed its CALL or block: read by a client, a
+     * semi-structured value in it is laid out across lines whatever the session's JSON_INDENT (see
+     * VariantJsonFormat#scriptingAnswerText).
+     *
+     * @return this result
+     */
+    public ResultSet markScriptingAnswer() {
+        this.scriptingAnswer = true;
+        return this;
     }
 }

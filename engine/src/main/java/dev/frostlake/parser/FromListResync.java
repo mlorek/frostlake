@@ -95,6 +95,11 @@ final class FromListResync {
             // A fault inside a call's parentheses — IDENTIFIER(…), TABLE(…), a table function — is that call's.
             return null;
         }
+        if (faultDepth == 0 && faultType == FrostlakeLexer.DOT
+                && spoken.get(slotStart).getType() == FrostlakeLexer.LATERAL) {
+            // So is a dot in the name a LATERAL call is called by: the parser names that call's lines itself.
+            return null;
+        }
         final boolean firstSlot = slotStart == from + 1;
         if (!firstSlot && faultDepth == 0 && slotStart == fault) {
             fault = faultAsFirstReference(sql, spoken, from, slotStart);
@@ -114,6 +119,7 @@ final class FromListResync {
         }
         depth = faultDepth;
         boolean strayClose = false;
+        boolean secondFrom = false;
         for (int i = fault + 1; i < spoken.size(); i++) {
             final Token token = spoken.get(i);
             final int type = token.getType();
@@ -158,6 +164,17 @@ final class FromListResync {
                 lines.add(SyntaxErrorListener.sentence(spoken.get(i + 1)));
                 return lines;
             }
+            if (type == FrostlakeLexer.FROM && faultDepth > 0 && !secondFrom) {
+                // A second FROM after a bracketed reference nothing of which was read is refused itself, and its
+                // relation is passed over to the next clause: SELECT a FROM t, (2) FROM FZ) WHERE a b is '2', 'FROM',
+                // 'b', where SELECT 1 FROM FZ, 2 FROM FZ) WHERE a b is '2', 'b' (live-verified).
+                lines.add(SyntaxErrorListener.sentence(token));
+                secondFrom = true;
+                continue;
+            }
+            if (secondFrom && !isClauseWord(type)) {
+                continue;
+            }
             final boolean comma = type == FrostlakeLexer.COMMA;
             if (comma && strayClose) {
                 continue;
@@ -193,6 +210,9 @@ final class FromListResync {
      */
     private static int[] owningFrom(final List<Token> spoken, final int fault) {
         int depth = 0;
+        // The depth the list stands at: the fault's own, or lower once a bracket around the fault is left, so that a
+        // bracket closed before it — an earlier derived table — is read past whatever it holds.
+        int level = 0;
         int from = -1;
         for (int i = fault - 1; i >= 0 && from < 0; i--) {
             final int type = spoken.get(i).getType();
@@ -200,9 +220,10 @@ final class FromListResync {
                 depth++;
             } else if (type == FrostlakeLexer.LPAREN) {
                 depth--;
-            } else if (depth <= 0 && type == FrostlakeLexer.FROM) {
+                level = Math.min(level, depth);
+            } else if (depth == level && type == FrostlakeLexer.FROM) {
                 from = i;
-            } else if (depth <= 0 && (type == FrostlakeLexer.SELECT || type == FrostlakeLexer.ON
+            } else if (depth == level && (type == FrostlakeLexer.SELECT || type == FrostlakeLexer.ON
                     || type == FrostlakeLexer.USING || isEnd(type) || isClauseWord(type) || isJoinWord(type))) {
                 return null;
             }

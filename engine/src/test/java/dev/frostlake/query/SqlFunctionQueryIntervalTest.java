@@ -22,7 +22,8 @@ import org.junit.jupiter.api.Test;
  * A SQL function whose body is a query over a table and a parameter is tagged by the interval its query reaches,
  * the argument's own read in for the parameter: {@code SELECT MAX(x) + a FROM other} over a NUMBER(10,2) column is
  * NUMBER(11,2)[SB2] for a 1 and [SB4] for a 1000000, a column argument brings its statistics and a NULL the empty
- * interval. A correlated scalar subquery reads the enclosing query's column the same way: {@code (SELECT MAX(x) + t.n
+ * interval, and a body that is no aggregate, {@code SELECT x + a FROM other WHERE x = 1.25}, is typed from its query
+ * too. A correlated scalar subquery reads the enclosing query's column the same way: {@code (SELECT MAX(x) + t.n
  * FROM other)} is [SB2] over a NUMBER(5,2) column holding 1.5 and 2.5 (live-verified).
  */
 public class SqlFunctionQueryIntervalTest extends MeasuredCellsTestSupport {
@@ -54,6 +55,7 @@ public class SqlFunctionQueryIntervalTest extends MeasuredCellsTestSupport {
             {"SELECT SYSTEM$TYPEOF(sq_where(1))", "NUMBER(10,2)[SB2]"},
             {"SELECT SYSTEM$TYPEOF(sq_two(2, 3))", "NUMBER(11,2)[SB2]"},
             {"SELECT SYSTEM$TYPEOF(sq_two(n, big)) FROM t LIMIT 1", "NUMBER(38,2)[SB8]"},
+            {"SELECT SYSTEM$TYPEOF(sq_row(7))", "NUMBER(11,2)[SB2]"},
             {"SELECT SYSTEM$TYPEOF((SELECT MAX(x) + t.n FROM other)) FROM t LIMIT 1", "NUMBER(11,2)[SB2]"},
             {"SELECT SYSTEM$TYPEOF((SELECT MAX(x) + t.big FROM other)) FROM t LIMIT 1", "NUMBER(38,2)[SB8]"},
             {"SELECT SYSTEM$TYPEOF((SELECT MAX(x) FROM other WHERE x > t.n)) FROM t LIMIT 1", "NUMBER(10,2)[SB2]"},

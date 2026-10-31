@@ -14,67 +14,10 @@
  * limitations under the License.
  */
 
+
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.executor.expressions.CollationSpec;
-import dev.frostlake.functions.CollationMatching;
-import dev.frostlake.functions.SemiStructuredRejection;
-import dev.frostlake.functions.TextArgumentFunction;
-import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.IntegerResultWidths;
-import dev.frostlake.values.BinaryValue;
-import dev.frostlake.values.CodePointText;
-
-import java.util.List;
-
-/** CHARINDEX(needle, haystack [, start]) — POSITION's argument order; BINARY pairs search by BYTE. */
-public class CharIndex extends TextArgumentFunction {
-    public CharIndex() { super("CHARINDEX", IntegerResultWidths.POSITION); }
-
-    @Override
-    public Object evaluate(final List<Object> args) {
-        // Snowflake: NULL in, NULL out — a NULL haystack or needle yields NULL, not 0/false
-        for (int i = 0; i < args.size(); i++) {
-            if (i < args.size() && args.get(i) == null) {
-                return null;
-            }
-        }
-        if (args.get(0) == null || args.get(1) == null) return 0L;
-        int startPos = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) - 1 : 0;
-        startPos = Math.max(0, startPos);
-        if (args.get(0) instanceof BinaryValue && args.get(1) instanceof BinaryValue) {
-            return SharedFunctionHelpers.indexOfBytes(((BinaryValue) args.get(1)).bytes(),
-                ((BinaryValue) args.get(0)).bytes(), startPos);
-        }
-        final String needle = SharedFunctionHelpers.textOf(args.get(0));
-        final String haystack = SharedFunctionHelpers.textOf(args.get(1));
-        final int idx = CodePointText.indexOf(haystack, needle, startPos);
-        return idx < 0 ? 0L : (long) (idx + 1);
-    }
-
-    /** Under a collation the needle is found where the collation matches it, not byte for byte. */
-    @Override
-    public Object evaluate(final List<Object> args, final CollationSpec collation) {
-        if (collation == null || args.get(0) == null || args.get(1) == null
-                || args.get(0) instanceof BinaryValue || args.get(1) instanceof BinaryValue) {
-            return evaluate(args);
-        }
-        int startPos = args.size() > 2 && args.get(2) != null ? wholeNumber(args.get(2)) - 1 : 0;
-        startPos = Math.max(0, startPos);
-        final String haystack = SharedFunctionHelpers.textOf(args.get(1));
-        final int[] found = CollationMatching.findUnder(collation, haystack,
-            SharedFunctionHelpers.textOf(args.get(0)), CodePointText.offset(haystack, startPos));
-        return found == null ? 0L : (long) (CodePointText.characterIndex(haystack, found[0]) + 1);
-    }
-
-    @Override
-    public int getMinArgCount() { return 2; }
-    @Override
-    public int getMaxArgCount() { return 3; }
-
-    /** A BOOLEAN start position is refused by the argument types as the call compiles (live-verified). */
-    @Override
-    public SemiStructuredRejection booleanRejection(final int position) {
-        return position == 2 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
-    }
+/** CHARINDEX(needle, haystack [, start]) — POSITION under another name; BINARY pairs search by BYTE. */
+public class CharIndex extends Position {
+    public CharIndex() { super("CHARINDEX"); }
 }

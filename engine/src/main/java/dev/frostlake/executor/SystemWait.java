@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.types.DecimalText;
+
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
@@ -124,7 +126,7 @@ public final class SystemWait {
             exact = BigDecimal.valueOf(((Number) amount).longValue());
         } else if (amount instanceof String) {
             try {
-                exact = new BigDecimal(((String) amount).trim());
+                exact = DecimalText.parse(((String) amount).trim());
             } catch (final NumberFormatException notANumber) {
                 throw new RuntimeException(SqlCompilationError.of(String.format(NOT_CONSTANT, amount)));
             }

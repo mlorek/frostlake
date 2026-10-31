@@ -111,6 +111,23 @@ public final class SubqueryAhead {
      */
     static void computeAhead(final QueryExecutor executor, final FrostlakeParser.SelectListContext selectList,
                              final ExpressionEvaluator evaluator, final Row row) {
+        computeAhead(executor, selectList, evaluator, row, false);
+    }
+
+    /**
+     * As {@link #computeAhead(QueryExecutor, FrostlakeParser.SelectListContext, ExpressionEvaluator, Row)}, the
+     * subqueries of a CASE's branches and of a choosing call's arguments computed too where {@code everyBranch}: an
+     * ungrouped projection that receives no row computes them (live-verified), where one over groups a HAVING left
+     * none of does not.
+     *
+     * @param executor    the executor the subqueries' texts are read with
+     * @param selectList  the select list
+     * @param evaluator   an evaluator over the query's relation
+     * @param row         a row of that relation
+     * @param everyBranch whether branches no row chooses among are computed too
+     */
+    static void computeAhead(final QueryExecutor executor, final FrostlakeParser.SelectListContext selectList,
+                             final ExpressionEvaluator evaluator, final Row row, final boolean everyBranch) {
         for (final FrostlakeParser.SelectItemContext item : selectList.selectItem()) {
             final ParserRuleContext expression = SelectItemAccessors.getItemExpression(item);
             if (expression == null) {
@@ -120,7 +137,7 @@ public final class SubqueryAhead {
             final SourcePosition displaced = ExpressionSource.beginNested(new SourcePosition(
                 expression.getStart().getLine(), expression.getStart().getCharPositionInLine()));
             try {
-                computeAheadIn(executor, ParseTreeText.getOriginalText(expression), evaluator, row);
+                computeAheadIn(executor, ParseTreeText.getOriginalText(expression), evaluator, row, everyBranch);
             } finally {
                 ExpressionSource.end(displaced);
             }
@@ -139,13 +156,22 @@ public final class SubqueryAhead {
      */
     static void computeAheadIn(final QueryExecutor executor, final String text, final ExpressionEvaluator evaluator,
                                final Row row) {
+        computeAheadIn(executor, text, evaluator, row, false);
+    }
+
+    /**
+     * As {@link #computeAheadIn(QueryExecutor, String, ExpressionEvaluator, Row)}, a projection that receives no row
+     * computing the subqueries of a CASE's branches and a choosing call's arguments too (see AheadSubqueryWalk).
+     */
+    private static void computeAheadIn(final QueryExecutor executor, final String text,
+                                       final ExpressionEvaluator evaluator, final Row row, final boolean noRows) {
         final Expression parsed;
         try {
             parsed = ExpressionEvaluator.parse(text);
         } catch (final RuntimeException unparsed) {
             return;
         }
-        final AheadSubqueryWalk walk = new AheadSubqueryWalk();
+        final AheadSubqueryWalk walk = new AheadSubqueryWalk(noRows);
         parsed.accept(walk);
         for (final SubqueryExpression subquery : walk.subqueries()) {
             if (!readsARelation(executor.subqueryStatement(subquery.getSubquery()))) {

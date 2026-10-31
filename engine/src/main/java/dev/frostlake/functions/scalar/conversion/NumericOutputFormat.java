@@ -16,6 +16,8 @@
 
 package dev.frostlake.functions.scalar.conversion;
 
+import dev.frostlake.types.DecimalText;
+
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
@@ -412,8 +414,8 @@ public final class NumericOutputFormat {
         }
         if (number instanceof Double || number instanceof Float) {
             final double d = number.doubleValue();
-            return Double.isNaN(d) || Double.isInfinite(d) ? null : new BigDecimal(Double.toString(d));
+            return Double.isNaN(d) || Double.isInfinite(d) ? null : DecimalText.parse(Double.toString(d));
         }
-        return new BigDecimal(number.toString());
+        return DecimalText.parse(number.toString());
     }
 }

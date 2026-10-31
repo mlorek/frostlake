@@ -42,7 +42,10 @@ import java.util.List;
  * refusal for it would be inventing behaviour nothing can observe.
  */
 public class ValidateUtf8 extends TextArgumentFunction {
-    public ValidateUtf8() { super("VALIDATE_UTF8", StringType.VARCHAR); }
+    public ValidateUtf8() { this("VALIDATE_UTF8"); }
+
+    /** VALIDATE_UTF8 under another name, TRY_VALIDATE_UTF8's. */
+    protected ValidateUtf8(final String name) { super(name, StringType.VARCHAR); }
 
     @Override
     public SemiStructuredRejection binaryRejection(final int position) {

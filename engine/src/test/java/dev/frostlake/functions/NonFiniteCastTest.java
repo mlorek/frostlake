@@ -108,4 +108,31 @@ public class NonFiniteCastTest extends BaseDatabaseTest {
             "a column built from one is an ordinary FLOAT column");
         assertEquals("Infinity", answer("SELECT f FROM nf"));
     }
+
+    /**
+     * TO_NUMBER, TO_DECIMAL and TO_NUMERIC are the conversion the cast performs (documented), so a non-finite source
+     * is refused in the cast's own words, the FLOAT's and the VARIANT's alike, the FLOAT's naming the width the call
+     * declares as the cast's names its target's (live-verified): a NumberFormatException with BigDecimal's text is no
+     * refusal of the engine's.
+     */
+    @Test
+    public void toNumberRefusesANonFiniteAsTheCastDoes() {
+        final String fixed = "Number out of representable range: type FIXED[SB16](38,0){not null}, value ";
+        assertEquals(fixed + "nan", answer("SELECT TO_NUMBER('NaN'::FLOAT) x"));
+        assertEquals(fixed + "inf", answer("SELECT TO_NUMBER('inf'::FLOAT) x"));
+        assertEquals(fixed + "-inf", answer("SELECT TO_NUMBER('-inf'::FLOAT) x"));
+        final String declared = "Number out of representable range: type FIXED[SB8](10,2){not null}, value ";
+        assertEquals(declared + "nan", answer("SELECT TO_DECIMAL('NaN'::FLOAT, 10, 2) x"),
+            "the declared width is echoed, as the cast's target is");
+        assertEquals("Number out of representable range: type FIXED[SB8](10,0){not null}, value -inf",
+            answer("SELECT TO_NUMERIC('-inf'::FLOAT, 10) x"));
+        assertEquals(declared + "inf", answer("SELECT CAST('inf'::FLOAT AS NUMBER(10,2)) x"),
+            "the cast it mirrors");
+        assertEquals("Number out of representable range: type FIXED, value NaN",
+            answer("SELECT TO_NUMBER(PARSE_JSON('NaN'))"), "a VARIANT source keeps the VARIANT's sentence");
+        assertEquals("Number out of representable range: type FIXED, value -inf",
+            answer("SELECT TO_DECIMAL(TO_VARIANT('-inf'::FLOAT), 5, 1)"));
+        assertEquals("2", answer("SELECT TO_NUMBER(1.5::FLOAT)"), "a finite FLOAT still converts");
+        assertEquals("null", answer("SELECT TO_NUMBER(NULL::FLOAT)"));
+    }
 }

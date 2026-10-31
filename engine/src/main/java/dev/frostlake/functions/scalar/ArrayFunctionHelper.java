@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar;
 
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.DecimalOriginNode;
@@ -404,7 +405,7 @@ public final class ArrayFunctionHelper {
             if (node.isDouble() || node.isFloat()) {
                 return MAPPER.getNodeFactory().numberNode(node.doubleValue());
             }
-            final BigDecimal stripped = new BigDecimal(node.asText()).stripTrailingZeros();
+            final BigDecimal stripped = DecimalText.parse(node.asText()).stripTrailingZeros();
             if (stripped.scale() <= 0) {
                 return MAPPER.getNodeFactory().numberNode(stripped.toBigInteger());
             }

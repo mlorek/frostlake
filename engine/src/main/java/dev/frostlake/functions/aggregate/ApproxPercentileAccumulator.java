@@ -17,8 +17,8 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.types.DecimalText;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -43,7 +43,7 @@ public class ApproxPercentileAccumulator implements AggregateFunction.Accumulato
     @Override
     public void accumulate(final Object value) {
         if (value != null) {
-            values.add(new BigDecimal(value.toString()).doubleValue());
+            values.add(DecimalText.parse(value.toString()).doubleValue());
         }
     }
 

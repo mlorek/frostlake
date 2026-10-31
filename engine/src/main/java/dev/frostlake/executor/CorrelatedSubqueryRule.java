@@ -16,6 +16,12 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.AstPrinterVisitor;
+import dev.frostlake.executor.expressions.BinaryOperationExpression;
+import dev.frostlake.executor.expressions.BinaryOperator;
+import dev.frostlake.executor.expressions.ColumnReferenceExpression;
+import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionEvaluatorVisitor;
+import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.metastore.Catalog;
@@ -25,10 +31,12 @@ import dev.frostlake.metastore.model.View;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.KeyContexts;
+import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.IntervalDayTimeType;
 import dev.frostlake.types.IntervalYearMonthType;
 import dev.frostlake.types.NumericType;
@@ -147,6 +155,9 @@ public final class CorrelatedSubqueryRule {
     private final OuterNameConstancy constancy;
     /** Names bound to one value for the whole statement (see {@link #withFixedNames}). */
     private Set<String> fixedNames = Collections.emptySet();
+
+    /** Whether the outer and the fixed names are a SQL function's parameters, which win over a body's own columns. */
+    private boolean parametersWin;
     private CorrelatedFilterFold filterFold;
     private boolean sawOuter;
     /** The subquery being judged, and the deepest level it reads the outer row from (see {@link #outerReadDepth}). */
@@ -232,6 +243,19 @@ public final class CorrelatedSubqueryRule {
      */
     public CorrelatedSubqueryRule withFixedNames(final Set<String> names) {
         this.fixedNames = names;
+        return this;
+    }
+
+    /**
+     * Judge a SQL function's body, whose outer and fixed names are its parameters: a bare name a parameter carries
+     * reads the parameter, never a same-named column of the body's own relations, as the call binds it. So
+     * {@code SUM(value)} over a FLATTEN reads the parameter {@code value}, and {@code MAX(id)} over a table with a
+     * column ID reads the parameter {@code id} (live-verified).
+     *
+     * @return this rule
+     */
+    public CorrelatedSubqueryRule withParametersWinning() {
+        this.parametersWin = true;
         return this;
     }
 
@@ -334,11 +358,11 @@ public final class CorrelatedSubqueryRule {
      * FROM-less select does: {@code (SELECT x FROM (SELECT fz.id + 1 AS x))} is answered, and so is a SQL function's
      * {@code WITH d AS (SELECT p AS v) SELECT v FROM d} called over a column (live-verified).
      */
-    private static boolean readsOneRowRelationsOnly(final FrostlakeParser.SelectClauseContext clause) {
+    private boolean readsOneRowRelationsOnly(final FrostlakeParser.SelectClauseContext clause) {
         return readsOneRowRelationsOnly(clause, new HashSet<FrostlakeParser.CteDefinitionContext>());
     }
 
-    private static boolean readsOneRowRelationsOnly(final FrostlakeParser.SelectClauseContext clause,
+    private boolean readsOneRowRelationsOnly(final FrostlakeParser.SelectClauseContext clause,
                                                     final Set<FrostlakeParser.CteDefinitionContext> entered) {
         final FrostlakeParser.TableExpressionContext from = clause.tableExpression();
         if (from == null || !from.joinClause().isEmpty()) {
@@ -369,9 +393,11 @@ public final class CorrelatedSubqueryRule {
 
     /**
      * The query a FROM relation reads: a derived table's, or the body of the common table expression its name reads —
-     * once, so a definition that reads itself is no query of one row. Null for a table, a view or any other source.
+     * once, so a definition that reads itself is no query of one row. A subquery read from its own text finds the
+     * statement's CTE of the name in the scope it runs in (see CteDefinitions). Null for a table, a view or any other
+     * source.
      */
-    private static FrostlakeParser.SelectStatementContext relationQuery(
+    private FrostlakeParser.SelectStatementContext relationQuery(
             final FrostlakeParser.TableReferenceContext relation,
             final Set<FrostlakeParser.CteDefinitionContext> entered) {
         final FrostlakeParser.TableSourceContext source = relation.tableSource();
@@ -381,7 +407,12 @@ public final class CorrelatedSubqueryRule {
         if (source.selectStatement() != null) {
             return source.selectStatement();
         }
-        final FrostlakeParser.CteDefinitionContext cte = CommonTableExpressions.named(source);
+        FrostlakeParser.CteDefinitionContext cte = CommonTableExpressions.named(source);
+        if (cte == null && source.tableQualifiedName() != null && source.timeTravelClause() == null) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(source.tableQualifiedName());
+            final Map<String, ResultSet> inScope = executor.getCurrentCteContext();
+            cte = parts.length != 1 || inScope == null ? null : CteDefinitions.of(inScope.get(parts[0]));
+        }
         return cte == null || !entered.add(cte) ? null : cte.selectStatement();
     }
 
@@ -511,6 +542,9 @@ public final class CorrelatedSubqueryRule {
                                      final boolean semiJoin, final String subject, final boolean negated) {
         final boolean judgingBefore = judging;
         final boolean negatedBefore = negatedMembership;
+        final boolean foldingBefore = foldingInAggregates;
+        // An IN's subquery folds a settled condition of an aggregate's argument as a value's does (live-verified).
+        foldingInAggregates = in;
         negatedMembership = in && negated;
         final boolean semiJoinBefore = this.semiJoin;
         final String subjectBefore = inSubject;
@@ -532,6 +566,7 @@ public final class CorrelatedSubqueryRule {
                 && (deepestOuterRead > 1 || refusesMembershipStatement(subquery, in));
         } finally {
             judging = judgingBefore;
+            foldingInAggregates = foldingBefore;
             negatedMembership = negatedBefore;
             this.semiJoin = semiJoinBefore;
             inSubject = subjectBefore;
@@ -635,6 +670,34 @@ public final class CorrelatedSubqueryRule {
     }
 
     /**
+     * An IN's subquery as it is run: each condition the statistics settle inside an aggregate's argument written as
+     * its value, as a value's subquery writes it (see {@link #statisticsBodyText}); the aggregate computes over the
+     * subquery's own rows, which do not carry the outer row.
+     *
+     * @param subquery the IN's subquery
+     * @return the text to run, or null where nothing in it is settled
+     */
+    public String settledBodyText(final FrostlakeParser.SelectStatementContext subquery) {
+        final boolean judgingBefore = judging;
+        final boolean foldingBefore = foldingInAggregates;
+        judging = true;
+        foldingInAggregates = true;
+        final Map<ParserRuleContext, String> written = new LinkedHashMap<>();
+        try {
+            judgeableWithDepth(subquery);
+            filterFold = null;
+            collectSettledInAggregates(subquery, false, new HashSet<ParserRuleContext>(), written);
+        } finally {
+            judging = judgingBefore;
+            foldingInAggregates = foldingBefore;
+        }
+        if (written.isEmpty() || subquery.getStart() == null || subquery.getStart().getInputStream() == null) {
+            return null;
+        }
+        return rewritten(subquery, written);
+    }
+
+    /**
      * Collects what a value's subquery writes in place of each condition the statistics settle inside an
      * aggregate's argument: an IFF it decides is the branch it takes, and any other condition its value. An
      * aggregate the statistics answer whole is written elsewhere, and a nested query is left as it is.
@@ -660,10 +723,45 @@ public final class CorrelatedSubqueryRule {
                 return;
             }
         }
+        if (inAggregate && node instanceof FrostlakeParser.InListExprContext) {
+            final String kept = keptList((FrostlakeParser.InListExprContext) node);
+            if (kept != null) {
+                into.put((ParserRuleContext) node, kept);
+                return;
+            }
+        }
         final boolean within = inAggregate || isAggregateCall(node);
         for (int i = 0; i < node.getChildCount(); i++) {
             collectSettledInAggregates(node.getChild(i), within, answered, into);
         }
+    }
+
+    /**
+     * An IN list as the body runs it once the elements its subject never equals are dropped, in parentheses: the
+     * rest of the list, or the membership's value where nothing is left; null where none is dropped.
+     */
+    private String keptList(final FrostlakeParser.InListExprContext list) {
+        if (list.expression() == null || list.expressionList() == null) {
+            return null;
+        }
+        final List<String> kept = new ArrayList<>();
+        boolean dropped = false;
+        for (final FrostlakeParser.ExpressionContext element : list.expressionList().expression()) {
+            if (neverListed(list, element)) {
+                dropped = true;
+            } else {
+                kept.add(ParseTreeText.getOriginalText(element));
+            }
+        }
+        if (!dropped) {
+            return null;
+        }
+        final boolean negated = list.NOT() != null;
+        if (kept.isEmpty()) {
+            return negated ? "(TRUE)" : "(FALSE)";
+        }
+        return "(" + ParseTreeText.getOriginalText(list.expression()) + (negated ? " NOT IN (" : " IN (")
+            + String.join(", ", kept) + "))";
     }
 
     /** The branch an IFF takes when the statistics settle its condition, in parentheses; null for any other call. */
@@ -684,7 +782,8 @@ public final class CorrelatedSubqueryRule {
 
     /**
      * The value of one outer aggregate as the outer table's statistics give it, written as SQL of the call's own
-     * type; null where the call is no MIN, MAX or COUNT of one bare column of a stored outer table.
+     * type; null where the call is no MIN, MAX or COUNT of one bare column of a stored outer table. A view or a derived
+     * table over one gives no statistic here: the subquery is refused (live-verified).
      */
     private String statisticOf(final ParserRuleContext call) {
         if (!(call instanceof FrostlakeParser.FunctionCallExprContext)) {
@@ -692,21 +791,28 @@ public final class CorrelatedSubqueryRule {
         }
         final FrostlakeParser.FunctionCallExprContext written = (FrostlakeParser.FunctionCallExprContext) call;
         final String name = written.functionName().getText().toUpperCase(Locale.ROOT);
-        if (!"MIN".equals(name) && !"MAX".equals(name) && !"COUNT".equals(name)) {
+        if (!"MIN".equals(name) && !"MAX".equals(name) && !"COUNT".equals(name) || !readsStoredTable(written)) {
             return null;
         }
-        final Table stored = statisticsTable(written);
-        if (stored == null) {
+        final DerivedColumnLineage lineage = statisticsColumn(written);
+        if (lineage == null) {
             return null;
         }
-        final FrostlakeParser.QualifiedNameExprContext argument = statisticsArgument(written);
         if ("COUNT".equals(name)) {
             // A COUNT is not read from the statistics: it counts the subquery's own rows, once each where the
             // outer value is there, so over a three-row table of its own it is 3 (live-verified).
-            return "IFF(" + ParseTreeText.getOriginalText(argument) + " IS NULL, 0, COUNT(*))";
+            return "IFF(" + ParseTreeText.getOriginalText(statisticsArgument(written)) + " IS NULL, 0, COUNT(*))";
         }
-        final List<String> parts = partsOf(argument.qualifiedName());
-        final TableColumn declared = stored.getColumn(parts.get(parts.size() - 1));
+        return extremeOf(name, lineage);
+    }
+
+    /**
+     * The whole-table MIN or MAX of a stored column, as the statistics give it, written as SQL of the column's type;
+     * null for a type they give no extreme of.
+     */
+    private String extremeOf(final String name, final DerivedColumnLineage lineage) {
+        final Table stored = lineage.storedTable();
+        final TableColumn declared = stored.getColumn(lineage.storedColumn());
         final DataType type = declared.getDataType();
         if (!(type instanceof NumericType || type instanceof StringType || type instanceof DateTimeType
                 || type instanceof BooleanType)) {
@@ -756,33 +862,67 @@ public final class CorrelatedSubqueryRule {
             ? (FrostlakeParser.QualifiedNameExprContext) argument : null;
     }
 
-    /** The stored outer table whose column a call's one bare-column argument reads, or null where it reads none. */
-    private Table statisticsTable(final FrostlakeParser.FunctionCallExprContext written) {
+    /** The one bare-column argument of a DISTINCT call with no WITHIN GROUP, or null. */
+    private static FrostlakeParser.QualifiedNameExprContext distinctColumnArgument(
+            final FrostlakeParser.FunctionCallExprContext written) {
+        if (written.DISTINCT() == null || written.withinGroupClause() != null || written.functionArgList() == null
+                || written.functionArgList().functionArg().size() != 1) {
+            return null;
+        }
+        ParseTree argument = written.functionArgList().functionArg(0);
+        while (!(argument instanceof FrostlakeParser.QualifiedNameExprContext) && argument.getChildCount() == 1) {
+            argument = argument.getChild(0);
+        }
+        return argument instanceof FrostlakeParser.QualifiedNameExprContext
+            ? (FrostlakeParser.QualifiedNameExprContext) argument : null;
+    }
+
+    /**
+     * The stored column a call's one bare-column argument reads: a stored outer table's own, or the one a view or a
+     * derived table of the outer query passes through unchanged, whatever a WHERE on the way keeps (see
+     * {@link DerivedColumnLineage}) — a view's whole MAX is its table's (live-verified). Null where it reads none.
+     */
+    private DerivedColumnLineage statisticsColumn(final FrostlakeParser.FunctionCallExprContext written) {
         final FrostlakeParser.QualifiedNameExprContext argument = statisticsArgument(written);
-        if (argument == null) {
+        final Table owner = argument == null ? null : argumentOwner(argument);
+        if (owner == null || owner.residentSource() != null && owner.residentSource() != owner) {
             return null;
         }
         final List<String> parts = partsOf(argument.qualifiedName());
-        final String column = parts.get(parts.size() - 1);
-        Table owner = null;
-        if (parts.size() > 1) {
-            owner = outerRelations.get(parts.get(parts.size() - 2));
-        } else {
-            for (final Table relation : outerRelations.values()) {
-                if (relation != null && relation.hasColumn(column)) {
-                    if (owner != null && owner != relation) {
-                        return null;
-                    }
-                    owner = relation;
-                }
-            }
-        }
-        final Table stored = owner == null ? null : owner.residentSource();
-        if (stored == null || stored != owner || !stored.hasColumn(column) || stored.getQualifiedName() == null
-                || !executor.getStorageEngine().hasTable(stored.getQualifiedName())) {
+        final DerivedColumnLineage lineage = DerivedColumnLineage.stored(owner, parts.get(parts.size() - 1));
+        if (lineage == null || lineage.isLiteral()) {
             return null;
         }
-        return stored;
+        final Table stored = lineage.storedTable();
+        return stored.getQualifiedName() != null && executor.getStorageEngine().hasTable(stored.getQualifiedName())
+            && stored.hasColumn(lineage.storedColumn()) ? lineage : null;
+    }
+
+    /** The outer relation a bare-column argument reads: the one its qualifier names, else the one carrying it. */
+    private Table argumentOwner(final FrostlakeParser.QualifiedNameExprContext argument) {
+        final List<String> parts = partsOf(argument.qualifiedName());
+        final String column = parts.get(parts.size() - 1);
+        if (parts.size() > 1) {
+            final Table named = outerRelations.get(parts.get(parts.size() - 2));
+            return named != null && named.hasColumn(column) ? named : null;
+        }
+        Table owner = null;
+        for (final Table relation : outerRelations.values()) {
+            if (relation != null && relation.hasColumn(column)) {
+                if (owner != null && owner != relation) {
+                    return null;
+                }
+                owner = relation;
+            }
+        }
+        return owner;
+    }
+
+    /** Whether a call's argument reads a stored outer table itself, no view or derived table over one. */
+    private boolean readsStoredTable(final FrostlakeParser.FunctionCallExprContext written) {
+        final FrostlakeParser.QualifiedNameExprContext argument = statisticsArgument(written);
+        final Table owner = argument == null ? null : argumentOwner(argument);
+        return owner != null && owner.residentSource() == owner;
     }
 
     /** Whether a reference is written inside an aggregate the statistics answer. */
@@ -1227,8 +1367,9 @@ public final class CorrelatedSubqueryRule {
 
     /**
      * An outer aggregate of a derived table read as the outer table's value, written as SQL of its type: a MIN or a
-     * MAX of a number or a date column of a stored outer table its extreme over the whole table, a COUNT of one its
-     * count there; null for any other call.
+     * MAX of a number or a date column of a stored outer table its extreme over the whole table, a COUNT of one the
+     * derived count (see {@link #derivedCount}); null for any other call, and for a COUNT where the derived table
+     * filters its rows or reads a join, which the account refuses as nested (live-verified).
      */
     private String derivedStatistic(final ParserRuleContext call) {
         if (!(call instanceof FrostlakeParser.FunctionCallExprContext)) {
@@ -1236,61 +1377,531 @@ public final class CorrelatedSubqueryRule {
         }
         final FrostlakeParser.FunctionCallExprContext written = (FrostlakeParser.FunctionCallExprContext) call;
         final String name = written.functionName().getText().toUpperCase(Locale.ROOT);
-        final Table stored = statisticsTable(written);
-        if (stored == null) {
+        final DerivedColumnLineage lineage = statisticsColumn(written);
+        if (lineage == null) {
             return null;
         }
-        final List<String> parts = partsOf(statisticsArgument(written).qualifiedName());
-        final TableColumn column = stored.getColumn(parts.get(parts.size() - 1));
+        final Table stored = lineage.storedTable();
+        final TableColumn column = stored.getColumn(lineage.storedColumn());
         if ("COUNT".equals(name)) {
-            final int index = stored.getColumnIndex(column.getName());
-            long count = 0;
-            for (final Row row : executor.statisticsRowsFor(stored.getQualifiedName())) {
-                if (index < row.size() && row.getValue(index) != null) {
-                    count++;
-                }
-            }
-            return "CAST(" + count + " AS NUMBER(18,0))";
+            final Long counted = derivedCount(call, lineage);
+            return counted == null ? null : "CAST(" + counted + " AS NUMBER(18,0))";
         }
         final DataType type = column.getDataType();
-        if (!(type instanceof NumericType || type instanceof DateTimeType)) {
+        if (!"MIN".equals(name) && !"MAX".equals(name)
+                || !(type instanceof NumericType || type instanceof DateTimeType)) {
             return null;
         }
-        return statisticOf(call);
+        return extremeOf(name, lineage);
     }
 
     /**
      * The refusal of an outer aggregate of a derived table read where it is no statistic: the call and the aggregate
-     * reading it, as the account's plan prints them, the call cast to its number type where it is a number.
+     * reading it, as the account's plan prints them — the call cast to its number type where it is a number, a column
+     * a view passes through printed as its table's, and an AVG as the sum it divides (see {@link #averageRead}). The
+     * MIN, MAX or COUNT of a view's column that stands for an expression over its table reads that expression, as
+     * the plan prints it: {@code MAX(FZ3.ID + 1)} for {@code vz3e AS SELECT id + 1 AS id FROM fz3}, and its SUM and
+     * AVG as {@link #mergedSumRead} gives them (live-verified).
      */
     private String nestedRefusal(final ParserRuleContext call, final String reader) {
         String printed = ParseTreeText.getOriginalText(call).toUpperCase(Locale.ROOT);
-        String type = null;
+        String correlated = null;
         if (call instanceof FrostlakeParser.FunctionCallExprContext) {
             final FrostlakeParser.FunctionCallExprContext written = (FrostlakeParser.FunctionCallExprContext) call;
             final String name = written.functionName().getText().toUpperCase(Locale.ROOT);
-            final Table stored = statisticsTable(written);
-            final FrostlakeParser.QualifiedNameExprContext column = statisticsArgument(written);
+            // A SUM(DISTINCT) of a bare column is read as its merged expression too (see distinctShiftedSum).
+            final FrostlakeParser.QualifiedNameExprContext column = statisticsArgument(written) != null
+                ? statisticsArgument(written) : "SUM".equals(name) ? distinctColumnArgument(written) : null;
             if (column != null) {
                 final List<String> parts = partsOf(column.qualifiedName());
-                final String argument = String.join(".", parts);
-                final DataType columnType = stored == null ? null
-                    : stored.getColumn(parts.get(parts.size() - 1)).getDataType();
+                final Table owner = argumentOwner(column);
+                final DerivedColumnLineage lineage = statisticsColumn(written);
+                final boolean extremeOrCount = "MIN".equals(name) || "MAX".equals(name) || "COUNT".equals(name);
+                final boolean sums = ("SUM".equals(name) || "AVG".equals(name)) && written.DISTINCT() == null;
+                final boolean distinctSum = "SUM".equals(name) && written.DISTINCT() != null;
+                Table mergedSource = lineage == null && owner != null && (extremeOrCount || sums || distinctSum)
+                    ? mergedExpressionSource(owner, parts.get(parts.size() - 1)) : null;
+                Expression merged = mergedSource == null ? null
+                    : mergedExpression(owner, parts.get(parts.size() - 1));
+                final String[] mergedSum = merged == null ? null
+                    : sums ? mergedSumRead(call, name, merged, mergedSource, reader)
+                    : distinctSum ? distinctShiftedSum(merged, mergedSource) : null;
+                if ((sums || distinctSum) && mergedSum == null) {
+                    // A sum of a type the reading is not modelled for reads the column as written.
+                    mergedSource = null;
+                    merged = null;
+                }
+                // A relation the plan merges into the query is printed as the stored table it reads.
+                final String argument = merged != null ? mergedText(merged, mergedSource)
+                    : lineage != null && owner.residentSource() == null
+                    ? (lineage.storedTable().getName() + "." + lineage.storedColumn()).toUpperCase(Locale.ROOT)
+                    : String.join(".", parts);
+                final DataType columnType = merged != null ? mergedType(merged, mergedSource)
+                    : lineage != null ? lineage.storedTable().getColumn(lineage.storedColumn()).getDataType()
+                    : owner != null ? owner.getColumn(parts.get(parts.size() - 1)).getDataType() : null;
                 final boolean whole = columnType instanceof NumericType && !NumericType.isApproximate(columnType)
                     && ((NumericType) columnType).getScale() == 0;
-                if ("SUM".equals(name) && whole) {
+                final String average = mergedSum == null && "AVG".equals(name) && written.DISTINCT() == null
+                    ? averageRead(call, argument, columnType, lineage, reader) : null;
+                if (mergedSum != null) {
+                    printed = mergedSum[0];
+                    correlated = mergedSum[1];
+                } else if (average != null) {
+                    printed = averageSum(argument, (NumericType) columnType);
+                    correlated = average;
+                } else if ("SUM".equals(name) && whole) {
                     printed = "SUM(CAST(" + argument + " AS NUMBER(38,0)))";
-                    type = "NUMBER(38,0)";
+                    correlated = "CAST(" + printed + " AS NUMBER(38,0))";
                 } else {
                     printed = name + "(" + argument + ")";
                     if (("MIN".equals(name) || "MAX".equals(name)) && columnType instanceof NumericType) {
-                        type = SqlTypeNames.canonical(columnType);
+                        correlated = "CAST(" + printed + " AS " + SqlTypeNames.canonical(columnType) + ")";
+                    } else if ("COUNT".equals(name)) {
+                        correlated = "CAST(" + printed + " AS NUMBER(18,0))";
                     }
                 }
             }
         }
         return SqlCompilationError.withoutPosition("Aggregate functions cannot be nested: [" + printed + "] nested in ["
-            + reader + "(CORRELATION(" + (type == null ? printed : "CAST(" + printed + " AS " + type + ")") + "))]");
+            + reader + "(CORRELATION(" + (correlated == null ? printed : correlated) + "))]");
+    }
+
+    /**
+     * What a derived table's AVG of an outer number column reads as in the plan: the sum it divides (see
+     * {@link #averageSum}) over the count the plan gives it — the derived count (see {@link #derivedCount}) where the
+     * derived table reads one stored table with no filter, the column's COUNT under a filter or over a join
+     * (live-verified):
+     *
+     * <pre>
+     *   whole number   SCALED_ROUND_INT_DIVIDE(SUM(CAST(FZ.ID AS NUMBER(38,0))), 2), cast to NUMBER(38,6) under a SUM
+     *                  SCALED_ROUND_INT_DIVIDE(CAST(SUM(…) AS NUMBER(38,0)), CAST(COUNT(FZ.ID) AS NUMBER(18,0)))
+     *   FLOAT          (SUM(FZ.F)) / (CAST(2 AS FLOAT)), (SUM(FZ.F)) / (CAST(COUNT(FZ.F) AS FLOAT))
+     *   NUMBER(p,s)    (CAST(SUM(CAST(FZ.D AS NUMBER(p,s))) AS NUMBER(p + 18,s + 6))) / 2, the precision at most 38,
+     *                  … / (CAST(COUNT(FZ.D) AS NUMBER(18,0))) under a filter
+     * </pre>
+     *
+     * Null for every other shape.
+     */
+    private String averageRead(final ParserRuleContext call, final String argument, final DataType type,
+                               final DerivedColumnLineage lineage, final String reader) {
+        if (!(type instanceof NumericType) || NumericType.isDecfloat(type)) {
+            return null;
+        }
+        final NumericType number = (NumericType) type;
+        final boolean approximate = NumericType.isApproximate(type);
+        final boolean whole = !approximate && number.getScale() == 0;
+        final FrostlakeParser.SelectClauseContext arm = enclosingClause(call);
+        if (arm == null || arm.groupByClause() != null || arm.havingClause() != null
+                || arm.qualifyClause() != null || !whole && !approximate && number.getScale() + 6 > 38) {
+            return null;
+        }
+        final String sum = averageSum(argument, number);
+        final Long count = arm.whereClause() != null || lineage == null ? null : derivedCount(call, lineage);
+        if (count == null && (arm.whereClause() != null || lineage != null)) {
+            if (whole) {
+                return "SCALED_ROUND_INT_DIVIDE(CAST(" + sum + " AS NUMBER(38,0)), CAST(COUNT(" + argument
+                    + ") AS NUMBER(18,0)))";
+            }
+            return approximate ? "(" + sum + ") / (CAST(COUNT(" + argument + ") AS FLOAT))"
+                : "(CAST(" + sum + " AS NUMBER(" + Math.min(38, number.getPrecision() + 18) + ","
+                    + (number.getScale() + 6) + "))) / (CAST(COUNT(" + argument + ") AS NUMBER(18,0)))";
+        }
+        if (count == null) {
+            return null;
+        }
+        if (approximate) {
+            return "(" + sum + ") / (CAST(" + count + " AS FLOAT))";
+        }
+        if (!whole) {
+            return "(CAST(" + sum + " AS NUMBER(" + Math.min(38, number.getPrecision() + 18) + ","
+                + (number.getScale() + 6) + "))) / " + count;
+        }
+        final String divided = "SCALED_ROUND_INT_DIVIDE(" + sum + ", " + count + ")";
+        return "SUM".equals(reader) ? "CAST(" + divided + " AS NUMBER(38,6))" : divided;
+    }
+
+    /**
+     * The sum an AVG of an outer number column divides, as the plan prints it: a whole number's cast to NUMBER(38,0),
+     * a fixed-point one's to its own type, a FLOAT's bare.
+     */
+    private static String averageSum(final String argument, final NumericType type) {
+        if (NumericType.isApproximate(type)) {
+            return "SUM(" + argument + ")";
+        }
+        return "SUM(CAST(" + argument + " AS " + (type.getScale() == 0 ? "NUMBER(38,0)"
+            : "NUMBER(" + type.getPrecision() + "," + type.getScale() + ")") + "))";
+    }
+
+    /**
+     * The count a derived table's COUNT of an outer column is planned as: the rows of the one stored table the
+     * derived table reads with no filter, less the NULLs the outer column holds, both as the statistics give them —
+     * over a four-row table, of a column holding one NULL, 3 (live-verified). Null where the derived table reads no
+     * such table.
+     */
+    private Long derivedCount(final ParserRuleContext call, final DerivedColumnLineage lineage) {
+        return derivedCount(call, lineage.storedTable(), lineage.storedColumn());
+    }
+
+    /**
+     * {@link #derivedCount} of the outer column {@code column} of the stored table {@code stored}. A WHERE the
+     * statistics prove true of every row of the table is no filter to the plan: {@code WHERE g3.v > 0} over 10 and 20
+     * keeps the derived count (live-verified).
+     */
+    private Long derivedCount(final ParserRuleContext call, final Table stored, final String column) {
+        final FrostlakeParser.SelectClauseContext arm = enclosingClause(call);
+        final Table source = arm == null || arm.groupByClause() != null || arm.havingClause() != null
+            || arm.qualifyClause() != null ? null : soleStoredSource(arm);
+        if (source == null || arm.whereClause() != null && !provenTrue(arm, source)) {
+            return null;
+        }
+        final int index = stored.getColumnIndex(column);
+        long nulls = 0;
+        for (final Row row : executor.statisticsRowsFor(stored.getQualifiedName())) {
+            if (index >= row.size() || row.getValue(index) == null) {
+                nulls++;
+            }
+        }
+        return Long.valueOf(Math.max(0L, executor.statisticsRowsFor(source.getQualifiedName()).size() - nulls));
+    }
+
+    /** Whether the statistics prove a select's WHERE true of every row of the one table it reads. */
+    private boolean provenTrue(final FrostlakeParser.SelectClauseContext arm, final Table source) {
+        final FrostlakeParser.TableReferenceContext reference = arm.tableExpression().tableReference(0);
+        final Map<String, Table> aliases = new HashMap<>();
+        aliases.put(reference.aliasName() != null ? reference.aliasName().getText()
+            : reference.nonJoinKeywordIdentifier() != null ? reference.nonJoinKeywordIdentifier().getText()
+            : source.getName(), source);
+        try {
+            final String where = ParseTreeText.getOriginalText(arm.whereClause().booleanExpr());
+            return Boolean.TRUE.equals(new CountStatisticsBound(executor, arm, source, aliases, null, false, null)
+                .verdictOver(ExpressionEvaluator.parse(where)));
+        } catch (final RuntimeException unprovable) {
+            return false;
+        }
+    }
+
+    /** The select a node stands in, or null. */
+    private static FrostlakeParser.SelectClauseContext enclosingClause(final ParseTree node) {
+        ParseTree at = node.getParent();
+        while (at != null && !(at instanceof FrostlakeParser.SelectClauseContext)) {
+            at = at.getParent();
+        }
+        return (FrostlakeParser.SelectClauseContext) at;
+    }
+
+    /**
+     * The one stored table a select reads, with no join beside it, or null. A view or a derived table that passes
+     * every row and column of one stored table through, {@code SELECT * FROM t}, reads that table (live-verified).
+     */
+    private Table soleStoredSource(final FrostlakeParser.SelectClauseContext clause) {
+        return soleStoredSource(clause, 0);
+    }
+
+    private Table soleStoredSource(final FrostlakeParser.SelectClauseContext clause, final int depth) {
+        final FrostlakeParser.TableExpressionContext from = clause.tableExpression();
+        if (from == null || from.tableReference().size() != 1 || !from.joinClause().isEmpty() || depth > 8) {
+            return null;
+        }
+        final FrostlakeParser.TableSourceContext source = from.tableReference(0).tableSource();
+        if (source != null && source.selectStatement() != null) {
+            return passedThrough(source.selectStatement(), depth);
+        }
+        final Table table = source == null || source.tableQualifiedName() == null ? null
+            : storedTable(source.tableQualifiedName());
+        if (table != null && table.getQualifiedName() != null
+                && executor.getStorageEngine().hasTable(table.getQualifiedName())) {
+            return table;
+        }
+        final View view = source == null || source.tableQualifiedName() == null ? null
+            : viewNamed(source.tableQualifiedName());
+        if (view == null || view.getDefinition() == null) {
+            return null;
+        }
+        try {
+            return passedThrough(executor.parseSelectStatement(view.getDefinition()), depth);
+        } catch (final RuntimeException unreadable) {
+            return null;
+        }
+    }
+
+    /** The stored table a query passes whole through, {@code SELECT * FROM t} and nothing more, or null. */
+    private Table passedThrough(final FrostlakeParser.SelectStatementContext query, final int depth) {
+        if (query.withClause() != null || query.selectOperand().size() != 1 || query.orderByClause() != null
+                || query.limitClause() != null || query.fetchClause() != null) {
+            return null;
+        }
+        final FrostlakeParser.SelectClauseContext body = query.selectOperand(0).selectClause();
+        if (body == null || body.DISTINCT() != null || body.topClause() != null || body.whereClause() != null
+                || body.groupByClause() != null || body.havingClause() != null || body.qualifyClause() != null
+                || body.connectByClause() != null || body.selectList().selectItem().size() != 1
+                || !(body.selectList().selectItem(0) instanceof FrostlakeParser.StarItemContext)
+                || !((FrostlakeParser.StarItemContext) body.selectList().selectItem(0)).starModifier().isEmpty()) {
+            return null;
+        }
+        return soleStoredSource(body, depth + 1);
+    }
+
+    /** The view a FROM name reads, or null. */
+    private View viewNamed(final FrostlakeParser.TableQualifiedNameContext name) {
+        try {
+            return catalog.resolveView(SqlIdentifiers.canonicalText(name.getText()));
+        } catch (final RuntimeException notAView) {
+            return null;
+        }
+    }
+
+    /**
+     * The stored table beneath a merged relation's column that stands for an expression over it — no column passed
+     * through, read under no alias of the relation's own — or null.
+     */
+    private Table mergedExpressionSource(final Table owner, final String column) {
+        if (!(owner.getRelationStatistics() instanceof MergedRelationStatistics) || !owner.hasColumn(column)) {
+            return null;
+        }
+        final MergedRelationStatistics statistics = (MergedRelationStatistics) owner.getRelationStatistics();
+        final Table source = statistics.sourceRelation();
+        final String item = statistics.columnSource(owner.getColumnIndex(column));
+        if (source == null || item == null || statistics.sourceAlias() != null || source.getQualifiedName() == null
+                || !executor.getStorageEngine().hasTable(source.getQualifiedName())) {
+            return null;
+        }
+        final Expression parsed = mergedExpression(owner, column);
+        return parsed == null || parsed instanceof ColumnReferenceExpression
+            || parsed instanceof LiteralExpression ? null : source;
+    }
+
+    /**
+     * The SUM or the AVG of a merged relation's column that stands for an expression over its stored table, as the
+     * plan reads it, the aggregate refused as nested and what the reader reads (live-verified):
+     *
+     * <pre>
+     *   x + c, x - c, c + x, c - x   x a whole-number column, c a whole number: the column's sum and the constant
+     *                                times the derived count (see {@link #derivedCount}), cast to the product's type
+     *                                unless the two are past eighteen digits between them
+     *       SUM   [SUM(CAST(FZ3.ID AS NUMBER(38,0)))] read as
+     *             CAST((SUM(CAST(FZ3.ID AS NUMBER(38,0)))) + (CAST(1 * 2 AS NUMBER(19,0))) AS NUMBER(38,0)),
+     *             uncast under any reader but a SUM; with no derived count, as over a join,
+     *             (CAST(SUM(…) AS NUMBER(38,0))) + (1 * (CAST(COUNT(FZ3.ID) AS NUMBER(18,0))))
+     *       AVG   SCALED_ROUND_INT_DIVIDE(CAST(that sum AS NUMBER(38,0)), CAST(COUNT(FZ3.ID + 1) AS NUMBER(18,0))),
+     *             the sum with no derived count uncast
+     *   another whole number          SUM(CAST(FZ3.ID * 2 AS NUMBER(38,0))), cast to NUMBER(38,0); the AVG that sum
+     *                                 over COUNT(FZ3.ID * 2) as above
+     *   NUMBER(38,s)                  the same, cast to NUMBER(38,s)
+     *   FLOAT                         SUM(FZF.F + 1.0), uncast; the AVG (SUM(…)) / (CAST(COUNT(…) AS FLOAT))
+     * </pre>
+     *
+     * @return the refused aggregate and the read, or null for a type this does not read
+     */
+    private String[] mergedSumRead(final ParserRuleContext call, final String name, final Expression merged,
+                                   final Table source, final String reader) {
+        final DataType type = mergedType(merged, source);
+        if (!(type instanceof NumericType) || NumericType.isDecfloat(type)) {
+            return null;
+        }
+        final boolean approximate = NumericType.isApproximate(type);
+        final String argument = approximate ? floatText(merged, source) : mergedText(merged, source);
+        final String count = "CAST(COUNT(" + argument + ") AS NUMBER(18,0))";
+        final boolean average = "AVG".equals(name);
+        if (approximate) {
+            final String sum = "SUM(" + argument + ")";
+            return new String[] {sum, average ? "(" + sum + ") / (CAST(COUNT(" + argument + ") AS FLOAT))" : sum};
+        }
+        final NumericType number = (NumericType) type;
+        if (number.getScale() > 0 && number.getPrecision() != 38) {
+            return null;
+        }
+        final String exact = "NUMBER(38," + number.getScale() + ")";
+        final String[] shifted = number.getScale() == 0 ? shiftedSum(call, merged, source, reader, average) : null;
+        if (shifted != null) {
+            // Past eighteen digits between the constant and the count, the count's argument casts the column too.
+            final String counted = shifted[2] == null ? count : "CAST(COUNT(" + shifted[2] + ") AS NUMBER(18,0))";
+            return new String[] {shifted[0], average
+                ? "SCALED_ROUND_INT_DIVIDE(" + shifted[1] + ", " + counted + ")" : shifted[1]};
+        }
+        final String sum = "SUM(CAST(" + argument + " AS " + exact + "))";
+        return new String[] {sum, average ? "SCALED_ROUND_INT_DIVIDE(CAST(" + sum + " AS " + exact + "), " + count + ")"
+            : "CAST(" + sum + " AS " + exact + ")"};
+    }
+
+    /**
+     * The sum of a whole-number column moved by a whole-number constant, {@code x + c} or {@code c - x} and the
+     * like, as the plan rewrites it (see {@link #mergedSumRead}): the column's sum, what is read for it — as an
+     * AVG's dividend when {@code average} holds — and the argument an AVG's count reads where the constant and the
+     * derived count are past eighteen digits between them, the column cast beside the constant, {@code
+     * (CAST(FZ3.ID AS NUMBER(38,0))) + 123456789012345678} (live-verified), else null; null for any other expression.
+     */
+    private String[] shiftedSum(final ParserRuleContext call, final Expression merged, final Table source,
+                                final String reader, final boolean average) {
+        if (!(merged instanceof BinaryOperationExpression)) {
+            return null;
+        }
+        final BinaryOperationExpression operation = (BinaryOperationExpression) merged;
+        final BinaryOperator operator = operation.getOperator();
+        if (operator != BinaryOperator.ADD && operator != BinaryOperator.SUBTRACT) {
+            return null;
+        }
+        final boolean constantFirst = operation.getLeft() instanceof LiteralExpression;
+        final Expression columnSide = constantFirst ? operation.getRight() : operation.getLeft();
+        final Expression constantSide = constantFirst ? operation.getLeft() : operation.getRight();
+        final BigInteger constant = wholeLiteral(constantSide);
+        if (!(columnSide instanceof ColumnReferenceExpression) || constant == null) {
+            return null;
+        }
+        final String column = ((ColumnReferenceExpression) columnSide).getColumnName();
+        final DataType columnType = source.hasColumn(column) ? source.getColumn(column).getDataType() : null;
+        if (!(columnType instanceof NumericType) || NumericType.isApproximate(columnType)
+                || NumericType.isDecfloat(columnType) || ((NumericType) columnType).getScale() != 0) {
+            return null;
+        }
+        final String printedColumn = mergedText(columnSide, source);
+        final String sum = "SUM(CAST(" + printedColumn + " AS NUMBER(38,0)))";
+        final String sign = operator == BinaryOperator.ADD ? " + " : " - ";
+        final Long derived = derivedCount(call, source, source.getColumn(column).getName());
+        final String read;
+        String countedArgument = null;
+        if (derived != null) {
+            final int digits = constant.abs().toString().length();
+            final String product = constant + " * " + derived;
+            final boolean fits = digits + derived.toString().length() <= 18;
+            final String shift = fits
+                ? "CAST(" + product + " AS NUMBER(" + Math.min(38, digits + 18) + ",0))" : product;
+            if (!fits) {
+                final String castColumn = "(CAST(" + printedColumn + " AS NUMBER(38,0)))";
+                countedArgument = constantFirst ? constant + sign + castColumn : castColumn + sign + constant;
+            }
+            final String moved = constantFirst ? "(" + shift + ")" + sign + "(" + sum + ")"
+                : "(" + sum + ")" + sign + "(" + shift + ")";
+            read = average || "SUM".equals(reader) ? "CAST(" + moved + " AS NUMBER(38,0))" : moved;
+        } else {
+            final String shift = constant + " * (CAST(COUNT(" + printedColumn + ") AS NUMBER(18,0)))";
+            final String whole = "CAST(" + sum + " AS NUMBER(38,0))";
+            read = constantFirst ? "(" + shift + ")" + sign + "(" + whole + ")" : "(" + whole + ")" + sign + "(" + shift
+                + ")";
+        }
+        return new String[] {sum, read, countedArgument};
+    }
+
+    /**
+     * The SUM(DISTINCT) of a whole-number column moved by a whole-number constant, as the plan rewrites it: the
+     * column's distinct sum, DISTINCT printed inside its cast too, and the constant times the column's distinct count
+     * read beside it — {@code [SUM(DISTINCT CAST(DISTINCT FZ3.ID AS NUMBER(38,0)))]} read as {@code (CAST(SUM(DISTINCT
+     * CAST(DISTINCT FZ3.ID AS NUMBER(38,0))) AS NUMBER(38,0))) + (1 * (CAST(COUNT(DISTINCT FZ3.ID) AS NUMBER(18,0))))}
+     * (live-verified); null for any other expression.
+     */
+    private String[] distinctShiftedSum(final Expression merged, final Table source) {
+        if (!(merged instanceof BinaryOperationExpression)) {
+            return null;
+        }
+        final BinaryOperationExpression operation = (BinaryOperationExpression) merged;
+        final BinaryOperator operator = operation.getOperator();
+        if (operator != BinaryOperator.ADD && operator != BinaryOperator.SUBTRACT) {
+            return null;
+        }
+        final boolean constantFirst = operation.getLeft() instanceof LiteralExpression;
+        final Expression columnSide = constantFirst ? operation.getRight() : operation.getLeft();
+        final BigInteger constant = wholeLiteral(constantFirst ? operation.getLeft() : operation.getRight());
+        if (!(columnSide instanceof ColumnReferenceExpression) || constant == null) {
+            return null;
+        }
+        final String column = ((ColumnReferenceExpression) columnSide).getColumnName();
+        final DataType columnType = source.hasColumn(column) ? source.getColumn(column).getDataType() : null;
+        if (!(columnType instanceof NumericType) || NumericType.isApproximate(columnType)
+                || NumericType.isDecfloat(columnType) || ((NumericType) columnType).getScale() != 0) {
+            return null;
+        }
+        final String printedColumn = mergedText(columnSide, source);
+        final String sum = "SUM(DISTINCT CAST(DISTINCT " + printedColumn + " AS NUMBER(38,0)))";
+        final String sign = operator == BinaryOperator.ADD ? " + " : " - ";
+        final String shift = constant + " * (CAST(COUNT(DISTINCT " + printedColumn + ") AS NUMBER(18,0)))";
+        final String whole = "CAST(" + sum + " AS NUMBER(38,0))";
+        return new String[] {sum, constantFirst ? "(" + shift + ")" + sign + "(" + whole + ")"
+            : "(" + whole + ")" + sign + "(" + shift + ")"};
+    }
+
+    /** The whole number a literal holds, or null for any other expression. */
+    private static BigInteger wholeLiteral(final Expression expression) {
+        if (!(expression instanceof LiteralExpression) || ((LiteralExpression) expression).getValue() == null) {
+            return null;
+        }
+        try {
+            final BigDecimal value = DecimalText.parse(String.valueOf(((LiteralExpression) expression).getValue()));
+            return value.scale() > 0 ? null : value.toBigIntegerExact();
+        } catch (final NumberFormatException | ArithmeticException notWhole) {
+            return null;
+        }
+    }
+
+    /** The expression a merged relation's column stands for, or null. */
+    private static Expression mergedExpression(final Table owner,
+                                                                                 final String column) {
+        final MergedRelationStatistics statistics = (MergedRelationStatistics) owner.getRelationStatistics();
+        try {
+            return ExpressionEvaluator.parse(statistics.columnSource(owner.getColumnIndex(column)));
+        } catch (final RuntimeException unreadable) {
+            return null;
+        }
+    }
+
+    /** A merged expression as the plan prints it over its stored table, each column named by that table. */
+    private String mergedText(final Expression merged, final Table source) {
+        return new ExpressionEvaluatorVisitor(source, null, executor.getFunctionRegistry(), catalog)
+            .strictPlanText(merged);
+    }
+
+    /**
+     * A FLOAT merged expression as the plan prints it: a number written out beside the FLOAT column folded into a FLOAT
+     * literal, {@code FZF.F + 1.0} and {@code FZF.F + 2.5} (live-verified); as {@link #mergedText} prints it otherwise.
+     */
+    private String floatText(final Expression merged, final Table source) {
+        if (merged instanceof BinaryOperationExpression) {
+            final BinaryOperationExpression binary = (BinaryOperationExpression) merged;
+            final String op = arithmeticSymbol(binary.getOperator());
+            final String right = floatLiteral(binary.getRight());
+            final String left = floatLiteral(binary.getLeft());
+            if (op != null && right != null && binary.getLeft() instanceof ColumnReferenceExpression) {
+                return mergedText(binary.getLeft(), source) + " " + op + " " + right;
+            }
+            if (op != null && left != null && binary.getRight() instanceof ColumnReferenceExpression) {
+                return left + " " + op + " " + mergedText(binary.getRight(), source);
+            }
+        }
+        return mergedText(merged, source);
+    }
+
+    /** A number written out as a FLOAT literal prints, {@code 1.0}, {@code 2.5}; null for anything else. */
+    private static String floatLiteral(final Expression expression) {
+        if (!(expression instanceof LiteralExpression)
+                || !(((LiteralExpression) expression).getValue() instanceof Number)) {
+            return null;
+        }
+        final BigDecimal value = DecimalText.parse(((LiteralExpression) expression).getValue().toString())
+            .stripTrailingZeros();
+        return value.scale() <= 0 ? value.setScale(1).toPlainString() : value.toPlainString();
+    }
+
+    private static String arithmeticSymbol(final BinaryOperator operator) {
+        switch (operator) {
+            case ADD:
+                return "+";
+            case SUBTRACT:
+                return "-";
+            case MULTIPLY:
+                return "*";
+            case DIVIDE:
+                return "/";
+            default:
+                return null;
+        }
+    }
+
+    /** A merged expression's type over its stored table, or null. */
+    private DataType mergedType(final Expression merged, final Table source) {
+        try {
+            return new ExpressionEvaluator(source, executor.getFunctionRegistry(), catalog, executor)
+                .inferStaticType(merged);
+        } catch (final RuntimeException untyped) {
+            return null;
+        }
     }
 
     /** The name of the first aggregate of a select reading a derived item, upper-cased; ANY_VALUE where none does. */
@@ -1421,8 +2032,9 @@ public final class CorrelatedSubqueryRule {
             if (innerKeys.isEmpty()) {
                 return null;
             }
+            final boolean rowPerKeptRow = !anyItemAggregates(body);
             return new EqualityCorrelation(innerKeys, outerKeys, ParseTreeText.getOriginalText(body.tableExpression()),
-                others, aggregateItemOf(body), !anyItemAggregates(body));
+                others, aggregateItemOf(body), rowPerKeptRow, rowPerKeptRow ? memberItemOf(body) : null);
         } catch (final RuntimeException unplaced) {
             return null;
         }
@@ -1441,6 +2053,17 @@ public final class CorrelatedSubqueryRule {
             return null;
         }
         return ParseTreeText.getOriginalText(SelectItemAccessors.getItemExpression(item));
+    }
+
+    /** The select list's one expression item, as written, or null for a star or a list of more than one. */
+    private static String memberItemOf(final FrostlakeParser.SelectClauseContext body) {
+        if (body.selectList().selectItem().size() != 1
+                || !(body.selectList().selectItem(0) instanceof FrostlakeParser.ExprItemContext)) {
+            return null;
+        }
+        final FrostlakeParser.SelectItemContext item = body.selectList().selectItem(0);
+        return SelectItemAccessors.getItemValueExpr(item) == null ? null
+            : ParseTreeText.getOriginalText(SelectItemAccessors.getItemExpression(item));
     }
 
     /** Whether a select item aggregates or computes a window, either of which shapes the rows the select answers. */
@@ -2795,8 +3418,9 @@ public final class CorrelatedSubqueryRule {
                     && child == ((FrostlakeParser.InListExprContext) at).expressionList()
                     && below instanceof ParserRuleContext
                     && neverListed((FrostlakeParser.InListExprContext) at, (ParserRuleContext) below)
-                    && foldsWhereItStands(at) && !insideAggregateCall(at)) {
-                // An element dropped from a list inside an aggregate's argument is not written out of the body.
+                    && foldsWhereItStands(at) && (foldingInAggregates || !insideAggregateCall(at))) {
+                // An element dropped from a list inside an aggregate's argument is written out of the body the
+                // subquery runs (see collectSettledInAggregates).
                 return true;
             }
             if (at instanceof FrostlakeParser.FunctionArgContext) {
@@ -2932,10 +3556,46 @@ public final class CorrelatedSubqueryRule {
         }
     }
 
-    /** Whether the statistics prove an expression never answers NULL. */
+    /**
+     * Whether the statistics prove an expression never answers NULL: its interval, or for a column of a family the
+     * interval channel does not model, a stored column none of whose rows is NULL.
+     */
     private boolean holdsNoNull(final ParserRuleContext expression) {
         final ValueRange range = fold().rangeOf(ParseTreeText.getOriginalText(expression));
-        return range != null && !range.isNullable();
+        if (range != null) {
+            return !range.isNullable();
+        }
+        ParseTree bare = expression;
+        while (!(bare instanceof FrostlakeParser.QualifiedNameExprContext) && bare.getChildCount() == 1) {
+            bare = bare.getChild(0);
+        }
+        if (!(bare instanceof FrostlakeParser.QualifiedNameExprContext)) {
+            return false;
+        }
+        final List<String> parts = partsOf(((FrostlakeParser.QualifiedNameExprContext) bare).qualifiedName());
+        final String column = parts.get(parts.size() - 1);
+        final Table owner = parts.size() == 2 ? relationNamed(parts.get(0)) : relationCarrying(column);
+        return owner != null && Boolean.FALSE.equals(new StoredColumnValues(executor).holdsNull(owner, column));
+    }
+
+    /** The relation of the subquery's own or of the outer query a qualifier names, or null. */
+    private Table relationNamed(final String qualifier) {
+        final String key = qualifier.toUpperCase(Locale.ROOT);
+        return innerRelations.containsKey(key) ? innerRelations.get(key) : outerRelations.get(key);
+    }
+
+    /** The one relation of the subquery's own, else of the outer query, carrying a column; null where none or two. */
+    private Table relationCarrying(final String column) {
+        Table owner = null;
+        for (final Table relation : innerRelations.values()) {
+            if (relation.hasColumn(column) && relation != owner) {
+                if (owner != null) {
+                    return null;
+                }
+                owner = relation;
+            }
+        }
+        return owner;
     }
 
     /**
@@ -2947,10 +3607,38 @@ public final class CorrelatedSubqueryRule {
                                    final List<CorrelationScope> scopes) {
         final CorrelationSide side = placedSideOf(reference, scopes);
         // The outer query's own aggregate in an EXISTS's select list is a value its rows are not counted by, and
-        // one the outer table's statistics answer is a value whatever row is read.
+        // one the outer table's statistics answer is a value whatever row is read; so is a number converted to the
+        // BOOLEAN they settle.
         return side == CorrelationSide.OUTER
-            && (insideCountedAggregate(reference, scopes) || insideStatisticsCall(reference))
+            && (insideCountedAggregate(reference, scopes) || insideStatisticsCall(reference)
+                || convertedToSettledBoolean(reference, scopes))
             ? CorrelationSide.CONSTANT : side;
+    }
+
+    /**
+     * Whether an outer number stands converted to a BOOLEAN its relation's statistics settle (see
+     * {@link OuterNameConstancy#settledBoolean}): {@code fz.id::BOOLEAN} over a column holding no zero and no NULL is
+     * TRUE in the plan, and reads nothing of the outer row, where over one holding a zero or a NULL it stays
+     * {@code CAST(CORRELATION(FZ.ID) <> 0 AS BOOLEAN)} (live-verified). Inside an aggregate over the outer row alone
+     * it is no correlation at all: the aggregate is the outer query's, and its nesting is refused, settled or not.
+     */
+    private boolean convertedToSettledBoolean(final FrostlakeParser.QualifiedNameExprContext reference,
+                                              final List<CorrelationScope> scopes) {
+        if (!judging || constancy == null || !BooleanConversions.convertsToBoolean(reference)) {
+            return false;
+        }
+        for (ParserRuleContext at = reference.getParent(); at != null
+                && !(at instanceof FrostlakeParser.SelectStatementContext); at = at.getParent()) {
+            if (isAggregateCall(at)) {
+                if (readsOuterRowAlone(at, scopes)) {
+                    return false;
+                }
+                break;
+            }
+        }
+        final List<String> parts = partsOf(reference.qualifiedName());
+        return constancy.settledBoolean(parts.size() > 1 ? parts.get(parts.size() - 2) : null,
+            parts.get(parts.size() - 1)) != null;
     }
 
     private CorrelationSide placedSideOf(final FrostlakeParser.QualifiedNameExprContext reference,
@@ -2958,6 +3646,13 @@ public final class CorrelatedSubqueryRule {
         final List<String> parts = partsOf(reference.qualifiedName());
         final String column = parts.get(parts.size() - 1);
         if (parts.size() == 1) {
+            if (parametersWin && fixedNames.contains(column)) {
+                return CorrelationSide.CONSTANT;
+            }
+            if (parametersWin && outerNames.contains(column)) {
+                return constant(null, column) || neverReached(reference)
+                    ? CorrelationSide.CONSTANT : CorrelationSide.OUTER;
+            }
             for (int i = scopes.size() - 1; i >= 0; i--) {
                 if (scopes.get(i).resolvesBare(column)) {
                     if (certainOnly && !scopes.get(i).holdsBare(column)) {
@@ -3189,6 +3884,14 @@ public final class CorrelatedSubqueryRule {
             }
             return;
         }
+        if (source != null && source.VALUES() != null && source.valueTupleList() != null) {
+            addValuesColumns(scope, relation, source, alias);
+            return;
+        }
+        if (source != null && isFlattenCall(source)) {
+            addFlattenColumns(scope, relation, alias);
+            return;
+        }
         if (source == null || source.tableQualifiedName() == null) {
             if (alias != null) {
                 scope.addQualifier(alias);
@@ -3224,6 +3927,84 @@ public final class CorrelatedSubqueryRule {
             // A CTE's column computed from the outer row reads the outer row wherever it is named, as a derived
             // table's does, its column list naming it or its query (live-verified).
             markOperandColumns(scope, alias != null ? alias : lastPart, named, cte.selectStatement());
+        }
+    }
+
+    /** FLATTEN's columns, in the order an alias's column list renames them. */
+    private static final List<String> FLATTEN_COLUMNS = List.of("SEQ", "KEY", "PATH", "INDEX", "VALUE", "THIS");
+
+    /** Whether a FROM item is a FLATTEN call, bare or inside TABLE( … ). */
+    private static boolean isFlattenCall(final FrostlakeParser.TableSourceContext source) {
+        if (source.FLATTEN() != null) {
+            return true;
+        }
+        if (source.TABLE() == null || source.expression() == null) {
+            return false;
+        }
+        ParseTree node = source.expression();
+        while (node.getChildCount() == 1 && node.getChild(0) instanceof ParserRuleContext) {
+            node = node.getChild(0);
+        }
+        final FrostlakeParser.FunctionNameContext name = node instanceof FrostlakeParser.FunctionCallExprContext
+            ? ((FrostlakeParser.FunctionCallExprContext) node).functionName()
+            : node instanceof FrostlakeParser.FunctionCallNamedArgsExprContext
+                ? ((FrostlakeParser.FunctionCallNamedArgsExprContext) node).functionName()
+                : node instanceof FrostlakeParser.FunctionCallMixedArgsExprContext
+                    ? ((FrostlakeParser.FunctionCallMixedArgsExprContext) node).functionName() : null;
+        return name != null && "FLATTEN".equals(canonical(name.getText()));
+    }
+
+    /**
+     * FLATTEN's columns, SEQ, KEY, PATH, INDEX, VALUE and THIS, the first of them renamed by its alias's column list.
+     * A name of none of them is no column of FLATTEN's, so {@code (SELECT MAX(v) FROM TABLE(FLATTEN(INPUT => [5,7])))}
+     * reads the outer row's {@code v} (live-verified: the grouped query refuses it as an unsupported subquery).
+     */
+    private static void addFlattenColumns(final CorrelationScope scope,
+                                          final FrostlakeParser.TableReferenceContext relation, final String alias) {
+        if (alias != null) {
+            scope.addQualifier(alias);
+        }
+        final List<String> renamed = new ArrayList<>();
+        if (relation.identifierList() != null) {
+            for (final FrostlakeParser.IdentifierContext name : relation.identifierList().identifier()) {
+                renamed.add(ParseTreeText.getIdentifier(name).toUpperCase(Locale.ROOT));
+            }
+        }
+        for (int i = 0; i < FLATTEN_COLUMNS.size(); i++) {
+            scope.addColumn(i < renamed.size() ? renamed.get(i) : FLATTEN_COLUMNS.get(i));
+        }
+    }
+
+    /**
+     * The columns a VALUES list gives its rows: the column list its alias names, inside or after the parentheses, or
+     * COLUMN1 … COLUMNn, one for each value of its first row. A name of none of them is no column of the list's, so
+     * {@code (SELECT MAX(v) FROM (VALUES (5), (7)) x)} reads the outer row's {@code v} (live-verified: the grouped
+     * query refuses it as an unsupported subquery).
+     */
+    private static void addValuesColumns(final CorrelationScope scope,
+                                         final FrostlakeParser.TableReferenceContext relation,
+                                         final FrostlakeParser.TableSourceContext source, final String alias) {
+        if (alias != null) {
+            scope.addQualifier(alias);
+        }
+        if (source.identifier() != null) {
+            scope.addQualifier(ParseTreeText.getIdentifier(source.identifier()).toUpperCase(Locale.ROOT));
+        }
+        if (relation.identifierList() != null) {
+            for (final FrostlakeParser.IdentifierContext name : relation.identifierList().identifier()) {
+                scope.addColumn(ParseTreeText.getIdentifier(name).toUpperCase(Locale.ROOT));
+            }
+            return;
+        }
+        if (source.columnListOptional() != null) {
+            for (final FrostlakeParser.NamePartContext part : source.columnListOptional().namePart()) {
+                scope.addColumn(canonical(part.getText()));
+            }
+            return;
+        }
+        final int width = source.valueTupleList().valueTuple(0).valueList().booleanExpr().size();
+        for (int i = 1; i <= width; i++) {
+            scope.addColumn("COLUMN" + i);
         }
     }
 
@@ -3669,7 +4450,7 @@ public final class CorrelatedSubqueryRule {
     private boolean isAggregateCall(final ParseTree node) {
         if (node instanceof FrostlakeParser.FunctionCallExprContext) {
             final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) node;
-            return call.overClause() == null && isAggregateName(call.functionName());
+            return call.overClause() == null && isAggregateName(call.functionName()) && choosesAggregate(call);
         }
         if (node instanceof FrostlakeParser.FunctionCallStarExprContext) {
             return isAggregateName(((FrostlakeParser.FunctionCallStarExprContext) node).functionName());
@@ -3689,6 +4470,38 @@ public final class CorrelatedSubqueryRule {
 
     private boolean isAggregateName(final FrostlakeParser.FunctionNameContext name) {
         return functions.hasAggregateFunction(name.getText().toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * Whether a call of a name that holds scalar overloads beside aggregate ones calls the aggregate: its arguments,
+     * typed over the subquery's own relations and then the outer row's, choose as the call does (see
+     * QueryExecutor#callChoosesAggregate). Over {@code mix(x INT)} and an aggregate {@code mix(x VARCHAR)},
+     * {@code (SELECT mix(t2.v) FROM t t2 WHERE t2.v = t.v)} computes a scalar for each row, so it promises no one
+     * row and is refused, while {@code (SELECT mix(t.v))} is the outer row's own scalar and is answered
+     * (live-verified). Any other name finds no choice and calls its aggregate.
+     */
+    private boolean choosesAggregate(final FrostlakeParser.FunctionCallExprContext call) {
+        if (!functions.namesScalarBesideAggregate(SqlIdentifiers.canonicalText(call.functionName().getText()))) {
+            return true;
+        }
+        ParseTree up = call.getParent();
+        while (up != null && !(up instanceof FrostlakeParser.SelectClauseContext)) {
+            up = up.getParent();
+        }
+        if (up != null) {
+            rememberRelations((FrostlakeParser.SelectClauseContext) up);
+        }
+        final Map<String, Table> relations = new HashMap<>(outerRelations);
+        relations.putAll(innerRelations);
+        final Map<String, Table> named = innerRelations.isEmpty() ? outerRelations : innerRelations;
+        final Set<Table> distinct = new HashSet<>(named.values());
+        final CallTypingScope enclosing = executor.beginCallTyping(
+            distinct.size() == 1 ? distinct.iterator().next() : null, relations);
+        try {
+            return executor.callChoosesAggregate(call);
+        } finally {
+            executor.endCallTyping(enclosing);
+        }
     }
 
     /** Whether an aggregate in the select list, the HAVING or an ORDER BY reads the outer row in its argument. */

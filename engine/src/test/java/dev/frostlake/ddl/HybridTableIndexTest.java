@@ -17,6 +17,7 @@
 package dev.frostlake.ddl;
 
 import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.LiveFeatureGate;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 
@@ -48,9 +49,21 @@ public class HybridTableIndexTest extends BaseDatabaseTest {
     }
 
     /** GET_DDL's spelling of a hybrid table — lower-case keywords, no space before the index's columns. */
+    /** Creates a test's first hybrid table; a trial account's refusal skips the test with the account's sentence. */
+    private void createHybrid(final String sql) {
+        try {
+            engine.execute(sql);
+        } catch (final RuntimeException refused) {
+            if (!isLiveSnowflake()) {
+                throw refused;
+            }
+            LiveFeatureGate.skipIfAccountTierBlocks(refused);
+        }
+    }
+
     @Test
     public void getDdlShapeOfAHybridTableWithIndexesCreatesIt() {
-        engine.execute("create or replace HYBRID TABLE MANAGEMENT_LAYER (\n"
+        createHybrid("create or replace HYBRID TABLE MANAGEMENT_LAYER (\n"
             + "\tTENANT VARCHAR(255) NOT NULL COMMENT 'tenant',\n"
             + "\tUUID VARCHAR(50) NOT NULL,\n"
             + "\tTYPE VARCHAR(255) NOT NULL,\n"
@@ -71,7 +84,7 @@ public class HybridTableIndexTest extends BaseDatabaseTest {
     /** A column named INDEX parses beside the clause, whatever its type takes in parentheses. */
     @Test
     public void aColumnNamedIndexStaysAColumn() {
-        engine.execute("CREATE HYBRID TABLE h_cols (id INT PRIMARY KEY, index NUMBER(38, 0), "
+        createHybrid("CREATE HYBRID TABLE h_cols (id INT PRIMARY KEY, index NUMBER(38, 0), "
             + "INDEX idx_index (index))");
         engine.execute("CREATE HYBRID TABLE h_text (id INT PRIMARY KEY, index VARCHAR(10))");
         engine.execute("CREATE HYBRID TABLE h_plain (id INT PRIMARY KEY, \"INDEX\" INT, index idx_q (\"INDEX\"))");

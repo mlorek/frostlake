@@ -21,6 +21,7 @@ import dev.frostlake.executor.expressions.RowOrdinal;
 import dev.frostlake.executor.expressions.VariantNumbers;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.VariantValue;
 
@@ -38,8 +39,8 @@ import java.util.Locale;
  * call with that seed in one row agrees, and a relation that numbers its rows from the first draws the
  * same sequence again — two UNION ALL arms over one table repeat each other's values (live-verified, as
  * documented: "RANDOM returns a different value for each row, even though the seed is the same"). The
- * values are this engine's own; the account's generator promises none. java.util.Random is fully
- * qualified because this class shadows that name.
+ * values are the account's: the seed starts a 64-bit Mersenne Twister, and a row takes the output of its
+ * place (see {@link MersenneTwister64}).
  *
  * <p>The seedless path is genuinely random, as Snowflake's is. It once returned a SplitMix64 scramble
  * of a monotonic counter for test reproducibility; that was removed because nothing depended on it —
@@ -54,14 +55,11 @@ public class Random extends BuiltInFunction {
     // and a refusal listing it as an argument spells the same pair.
     public Random() { super("RANDOM", new NumericType("NUMBER", 19, 0)); }
 
-    /** How far a seed moves from one row to the next: odd, so the rows of a statement never share a seed. */
-    private static final long ROW_STEP = 0x9E3779B97F4A7C15L;
-
     @Override
     public Object evaluate(final List<Object> args) {
         if (!args.isEmpty()) {
-            // The row's place (see RowOrdinal) moves the seed by an odd step, so no two rows share one.
-            return new java.util.Random(seedOf(args.get(0)) + RowOrdinal.current() * ROW_STEP).nextLong();
+            // The row's place (see RowOrdinal) is the engine's output it takes (see MersenneTwister64).
+            return Long.valueOf(MersenneTwister64.outputAt(seedOf(args.get(0)), RowOrdinal.current()));
         }
         // Drawn from the statement's own stream, so the write-ahead log's replay draws the same one.
         return StatementTokens.nextLong();
@@ -99,7 +97,7 @@ public class Random extends BuiltInFunction {
      *       VARIANT text that is no seed is {@code Failed to cast variant value}.</li>
      * </ul>
      */
-    static long seedOf(final Object seed) {
+    public static long seedOf(final Object seed) {
         if (seed == null) {
             throw new RuntimeException(NULL_SEED);
         }
@@ -132,7 +130,7 @@ public class Random extends BuiltInFunction {
     private static BigDecimal wholeNumberIn(final String text) {
         final BigDecimal number;
         try {
-            number = new BigDecimal(text.trim());
+            number = DecimalText.parse(text.trim());
         } catch (final NumberFormatException notANumber) {
             return null;
         }
@@ -143,7 +141,7 @@ public class Random extends BuiltInFunction {
         return rounded.compareTo(LONG_MAX) > 0 || rounded.compareTo(LONG_MIN) < 0 ? null : rounded;
     }
 
-    private static long floatSeed(final double value, final String type) {
+    static long floatSeed(final double value, final String type) {
         if (Double.isFinite(value)) {
             final BigDecimal rounded = new BigDecimal(value).setScale(0, RoundingMode.HALF_UP);
             if (rounded.abs().compareTo(EIGHTEEN_NINES) <= 0) {
@@ -184,7 +182,7 @@ public class Random extends BuiltInFunction {
      * A double as the range refusal spells it: six significant digits with no trailing zeros, an exponent from
      * 1e+06 up and below 1e-04, and {@code nan} and {@code inf} for the values that are no number.
      */
-    private static String generalText(final double value) {
+    static String generalText(final double value) {
         if (Double.isNaN(value)) {
             return "nan";
         }

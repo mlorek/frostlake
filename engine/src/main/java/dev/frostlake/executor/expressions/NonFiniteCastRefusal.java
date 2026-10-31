@@ -15,6 +15,8 @@
  */
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.NumericRangeRefusal;
+import dev.frostlake.executor.SignedStorageWidth;
 import dev.frostlake.values.NonFiniteDoubles;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
@@ -30,31 +32,53 @@ import tools.jackson.databind.JsonNode;
  * <ul>
  *   <li>from a VARIANT the type is the bare word {@code FIXED}, and a NaN is spelled
  *       {@code NaN};</li>
- *   <li>from a FLOAT the type is the full internal form {@code FIXED[SB16](38,0){not null}} — the
- *       same shape every other out-of-range numeric refusal carries — and the same NaN is spelled
- *       {@code nan}, in lower case.</li>
+ *   <li>from a FLOAT the type is the full internal form of the TARGET, {@code FIXED[SB16](38,0)} for a bare
+ *       NUMBER or an INT and {@code FIXED[SB8](10,2)} for a NUMBER(10,2) — the same shape every other
+ *       out-of-range numeric refusal carries, its nullability the source's: {@code {nullable}} from a nullable
+ *       column, {@code {not null}} from a literal — and the same NaN is spelled {@code nan}, in lower case.</li>
  * </ul>
  *
  * <p>Both spell an infinity {@code inf} / {@code -inf} rather than echoing the word as written or as
  * it renders. None of this is derivable from any one cell, which is why each is measured.
  */
-final class NonFiniteCastRefusal {
+public final class NonFiniteCastRefusal {
 
     /** The sentence both spellings open with — the same lead every out-of-range numeric refusal uses. */
     private static final String LEAD = "Number out of representable range: type FIXED";
+
+    /** The precision of a bare NUMBER, an INT and every other spelling of NUMBER(38,0). */
+    private static final int BARE_PRECISION = 38;
 
     private NonFiniteCastRefusal() {
     }
 
     /**
-     * The refusal for a non-finite source, or null when this cast is not one.
+     * The refusal for a non-finite source cast to a bare NUMBER from a value that is never NULL, or null when this
+     * cast is not one.
      *
      * @param value the cast's source
      * @param family the numeric family being cast to — only the exact one refuses, since a FLOAT
      *               target holds a non-finite perfectly well
      * @return the refusal, or null
      */
-    static RuntimeException refusalFor(final Object value, final String family) {
+    public static RuntimeException refusalFor(final Object value, final String family) {
+        return refusalFor(value, family, BARE_PRECISION, 0, false);
+    }
+
+    /**
+     * The refusal for a non-finite source, or null when this cast is not one: {@code TO_DECIMAL('NaN'::FLOAT, 10,
+     * 2)} is "Number out of representable range: type FIXED[SB8](10,2){not null}, value nan", and the same cast of a
+     * nullable FLOAT column {@code FIXED[SB8](10,2){nullable}} (live-verified).
+     *
+     * @param value     the cast's source
+     * @param family    the numeric family being cast to
+     * @param precision the target's precision
+     * @param scale     the target's scale
+     * @param nullable  whether the source can be NULL
+     * @return the refusal, or null
+     */
+    public static RuntimeException refusalFor(final Object value, final String family, final int precision,
+                                              final int scale, final boolean nullable) {
         if (!"FIXED".equals(family)) {
             return null;
         }
@@ -69,8 +93,8 @@ final class NonFiniteCastRefusal {
         if (!(value instanceof Number) || !NonFiniteDoubles.isNonFinite((Number) value)) {
             return null;
         }
-        return new RuntimeException(LEAD + "[SB16](38,0){not null}, value "
-            + floatWord(((Number) value).doubleValue()));
+        return new RuntimeException(NumericRangeRefusal.typedText(SignedStorageWidth.tagOfPrecision(precision),
+            precision, scale, nullable, NumericRangeRefusal.nonFiniteWord(((Number) value).doubleValue())));
     }
 
     /** A VARIANT source's spelling: NaN keeps its camel case here, unlike the FLOAT one. */
@@ -79,13 +103,5 @@ final class NonFiniteCastRefusal {
             return "NaN";
         }
         return Double.isInfinite(value) ? (value > 0 ? "inf" : "-inf") : null;
-    }
-
-    /** A FLOAT source's spelling: every word lower case. */
-    private static String floatWord(final double value) {
-        if (Double.isNaN(value)) {
-            return "nan";
-        }
-        return value > 0 ? "inf" : "-inf";
     }
 }

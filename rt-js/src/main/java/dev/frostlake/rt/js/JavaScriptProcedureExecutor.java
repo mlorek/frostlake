@@ -74,7 +74,16 @@ public final class JavaScriptProcedureExecutor {
         if (scriptEngine == null) {
             throw new RuntimeException("No JavaScript engine available. Please ensure GraalVM JavaScript or a compatible engine is installed.");
         }
+        try {
+            return call(procedure, arguments, engine, scriptEngine);
+        } finally {
+            close(scriptEngine);
+        }
+    }
 
+    /** Run the procedure's body on its script engine, its answer converted while the engine is open. */
+    private static Object call(final Procedure procedure, final List<Object> arguments, final DatabaseEngine engine,
+                               final ScriptEngine scriptEngine) {
         final List<Parameter> parameters = procedure.getParameters();
         if (parameters.size() != arguments.size()) {
             throw new RuntimeException("Procedure " + procedure.getName() + " expects " +
@@ -109,5 +118,16 @@ public final class JavaScriptProcedureExecutor {
                 + e.getMessage(), e);
         }
         return JavaScriptReturn.toSql(result, returns, true);
+    }
+
+    /** A CALL's script engine is its own, closed as the CALL ends, as a statement's world is with its statement. */
+    private static void close(final ScriptEngine scriptEngine) {
+        if (scriptEngine instanceof AutoCloseable) {
+            try {
+                ((AutoCloseable) scriptEngine).close();
+            } catch (final Exception alreadyClosed) {
+                // An engine that will not close is left to the collector.
+            }
+        }
     }
 }

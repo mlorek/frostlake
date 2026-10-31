@@ -187,6 +187,9 @@ final class SignatureRecovery {
     /** Whether a DESCRIBE's signature was given up after a TIMESTAMP's literal, its properties read from there. */
     private boolean signatureGivenUp;
     private int lastErrorIndex = -1;
+    /** The lines once worked out: the statement is read once, each further call answers what that read found. */
+    private List<String> readLines;
+    private boolean read;
 
     private SignatureRecovery(final SignatureTokens read, final List<Token> written, final boolean describe,
                               final boolean identifierName) {
@@ -316,6 +319,18 @@ final class SignatureRecovery {
      * @param sql    the script's source text
      * @return the readings, each with the statement it reads
      */
+    /** Whether the token a statement opens with follows an opening bracket. */
+    private static boolean afterOpenBracket(final List<Token> spoken, final Token start) {
+        Token before = null;
+        for (final Token token : spoken) {
+            if (token.getStartIndex() >= start.getStartIndex()) {
+                break;
+            }
+            before = token;
+        }
+        return before != null && before.getType() == FrostlakeLexer.LPAREN;
+    }
+
     static List<SignatureRecovery> ofStatements(final FrostlakeParser.SqlScriptContext script, final String sql) {
         final List<SignatureRecovery> readings = new ArrayList<>();
         if (script == null || sql == null) {
@@ -352,6 +367,11 @@ final class SignatureRecovery {
             }
             if (spoken.isEmpty()) {
                 return new ArrayList<>();
+            }
+            if (afterOpenBracket(spoken, statement.getStart())) {
+                // A statement the parse took out of a bracket - an alert's EXISTS (DROP …) - stands in no statement's
+                // place: the bracket's own lines tell it (see AlertConditionLines).
+                continue;
             }
             Token open = null;
             Token ends = null;
@@ -391,7 +411,12 @@ final class SignatureRecovery {
                 }
             }
             final Token last = region.get(region.size() - 1);
-            if (stage || ends == null || (last.getType() == FrostlakeLexer.SEMI) != (ends.getType() == FrostlakeLexer.SEMI)
+            // Both readings end at the same ';', or both run on to the end of the text.
+            final boolean sameEnd = ends != null && (last.getType() == FrostlakeLexer.SEMI
+                && ends.getType() == FrostlakeLexer.SEMI && last.getStartIndex() == ends.getStartIndex()
+                || last.getType() != FrostlakeLexer.SEMI && ends.getType() == Token.EOF);
+            if (stage && !sameEnd || ends == null
+                    || (last.getType() == FrostlakeLexer.SEMI) != (ends.getType() == FrostlakeLexer.SEMI)
                     || last.getType() == FrostlakeLexer.SEMI && last.getStartIndex() != ends.getStartIndex()) {
                 // A stage reference, whose ';' the account reads otherwise, or a statement the account ends elsewhere
                 // than this parse does: left to the parse.
@@ -418,6 +443,11 @@ final class SignatureRecovery {
                 }
                 nearest = nearest && !(up instanceof FrostlakeParser.BeginEndBlockContext)
                     && !(up instanceof FrostlakeParser.ExceptionHandlerContext) && !reading.inBody;
+            }
+            if (stage && (reading.lines() == null || !reading.lines().isEmpty())) {
+                // A stage reference ending where this parse ends the statement is kept only where the account reads
+                // the statement whole (see SignatureTailLine).
+                continue;
             }
             readings.add(reading);
         }
@@ -639,6 +669,18 @@ final class SignatureRecovery {
      * @return the lines, or null
      */
     List<String> lines() {
+        if (!read) {
+            read = true;
+            readLines = readStatement();
+        }
+        return readLines;
+    }
+
+    private List<String> readStatement() {
+        final List<String> nested = nestedTimestampLines();
+        if (nested != null) {
+            return nested;
+        }
         if (!modelled(tokens, describe)) {
             return null;
         }
@@ -652,6 +694,85 @@ final class SignatureRecovery {
             return new ArrayList<>();
         }
         return reported;
+    }
+
+    /**
+     * A DESCRIBE's signature whose first fault is a literal or a '.' after a TIMESTAMP inside a type's parentheses:
+     * the literal is named once, and then the token that ends the signature's item, the ',' or the ')' at the list's
+     * own depth, a name before it passed over (live-verified: {@code (ARRAY(TIMESTAMP 1), INT)} is the 1 and the
+     * ',', {@code (ARRAY(TIMESTAMP 1) x)} the 1 and the ')'). Null for any other text, a signature the statement's
+     * end does not follow included.
+     */
+    private List<String> nestedTimestampLines() {
+        if (!describe || bare) {
+            return null;
+        }
+        int depth = 0;
+        int fault = -1;
+        for (int i = 0; i + 1 < tokens.size() && fault < 0; i++) {
+            final Token token = tokens.get(i);
+            final int type = token.getType();
+            if (type == FrostlakeLexer.LPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.RPAREN) {
+                depth--;
+            } else if (type == FrostlakeLexer.TIMESTAMP) {
+                final int next = tokens.get(i + 1).getType();
+                if (depth < 2 || !isLiteral(next) && next != FrostlakeLexer.DOT) {
+                    return null;
+                }
+                fault = i + 1;
+            } else if (type != FrostlakeLexer.COMMA && !isWordText(token)) {
+                return null;
+            }
+            if (depth <= 0) {
+                return null;
+            }
+        }
+        if (fault < 0) {
+            return null;
+        }
+        for (int i = fault + 1; i < tokens.size(); i++) {
+            final int type = tokens.get(i).getType();
+            if (type == FrostlakeLexer.LPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.RPAREN && depth > 1) {
+                depth--;
+            } else if (depth == 1 && (type == FrostlakeLexer.COMMA || type == FrostlakeLexer.RPAREN)) {
+                if (!endsAfterSignature(i)) {
+                    return null;
+                }
+                final List<String> lines = new ArrayList<>();
+                lines.add(SyntaxErrorListener.sentence(tokens.get(fault)));
+                lines.add(SyntaxErrorListener.sentence(tokens.get(i)));
+                return lines;
+            } else if (type == Token.EOF || type == FrostlakeLexer.SEMI) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /** Whether the statement ends after the signature the token at {@code from} stands in, at a ';' or the end. */
+    private boolean endsAfterSignature(final int from) {
+        int depth = 1;
+        for (int i = from; i < tokens.size(); i++) {
+            final int type = tokens.get(i).getType();
+            if (type == FrostlakeLexer.LPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.RPAREN && --depth == 0) {
+                final int next = i + 1 < tokens.size() ? tokens.get(i + 1).getType() : Token.EOF;
+                return next == Token.EOF || next == FrostlakeLexer.SEMI;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a token is written as a word: a name, a quoted name or a keyword. */
+    private static boolean isWordText(final Token token) {
+        final String text = token.getText();
+        return !text.isEmpty() && (Character.isLetter(text.charAt(0)) || text.charAt(0) == '_'
+            || text.charAt(0) == '"');
     }
 
     /** Whether the first line reported names a token after the parenthesis that closes the signature. */
@@ -1581,9 +1702,17 @@ final class SignatureRecovery {
 
     /**
      * One name = value property of such a list: a value where the '=' is due is read as the value, the '=' named as
-     * missing — {@code (a b)} names the b — and any other token there refused.
+     * missing — {@code (a b)} names the b — and any other token there refused. A ')' right after a comma is refused
+     * where the name is due and taken for it, so the next ')' closes the list: {@code x = ((a = 1,))} names the ')'
+     * and then the end of the text where the outer list's ')' is due, {@code x = ((a = 1,), (b = 2))} the ')' and the
+     * '(' after the comma (live-verified).
      */
     private void nestedProperty() {
+        if (la(1) == RPAREN && la(0) == COMMA) {
+            report(lt(1));
+            consume();
+            return;
+        }
         following.add(bit(COMMA) | bit(RPAREN) | NESTED_NAME);
         try {
             if (!in(la(1), NESTED_NAME)) {

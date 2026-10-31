@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.transaction.TransactionManager;
+import dev.frostlake.types.DecimalText;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -74,7 +75,7 @@ public final class TransactionAbort {
      */
     public static Object text(final String value) {
         try {
-            return rounded(new BigDecimal(value.trim()));
+            return rounded(DecimalText.parse(value.trim()));
         } catch (final NumberFormatException noNumber) {
             return BAD;
         }
@@ -117,7 +118,7 @@ public final class TransactionAbort {
             return (BigDecimal) value;
         }
         try {
-            return new BigDecimal(value.toString());
+            return DecimalText.parse(value.toString());
         } catch (final NumberFormatException notFinite) {
             return null;
         }

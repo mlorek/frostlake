@@ -18,10 +18,10 @@ package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.executor.expressions.ExpressionArithmetic;
 import dev.frostlake.functions.NumericArgumentFunction;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.ApproximateValues;
 
-import java.math.BigDecimal;
 import java.util.List;
 
 public class Mod extends NumericArgumentFunction {
@@ -40,8 +40,8 @@ public class Mod extends NumericArgumentFunction {
         }
         // The operator's own step, rescale check included: MOD(a, 0.5) over 38 nines is refused at the
         // aligned NUMBER(38,1) exactly as a % 0.5 is (live-verified).
-        return ExpressionArithmetic.checkedRemainder(new BigDecimal(args.get(0).toString()),
-            new BigDecimal(args.get(1).toString()));
+        return ExpressionArithmetic.checkedRemainder(DecimalText.parse(args.get(0).toString()),
+            DecimalText.parse(args.get(1).toString()));
     }
 
     @Override

@@ -18,13 +18,18 @@ package dev.frostlake.executor;
 
 import dev.frostlake.parser.FrostlakeParser;
 
+import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.tree.ParseTree;
+
 /**
  * Which DDL statements end the transaction they are issued in (live-verified). Creating a table or a view does —
- * whatever kind of table, from a query, LIKE another or as its clone — and so do ALTER, DROP and COMMENT of any
- * kind of object, a DROP … IF EXISTS that finds nothing included. Creating a sequence, a function, a procedure, a
- * schema, a stage, a file format, a stream, a tag, a masking or a row access policy, a task or a pipe does not:
- * the transaction is still open afterwards, as it is after ALTER STAGE, ALTER FILE FORMAT, ALTER SESSION, a
- * rename of a table, of a table's column or of a view, TRUNCATE and USE.
+ * whatever kind of table, from a query, LIKE another or as its clone — and so does creating a contact; ALTER, DROP
+ * and COMMENT of any kind of object do too, a DROP … IF EXISTS that finds nothing included. Creating a sequence, a
+ * function, a procedure, a schema, a stage, a file format, a stream, a tag, a policy of any kind, a task, a pipe, an
+ * alert, a notebook or a Streamlit does not: the transaction is still open afterwards, as it is after ALTER STAGE,
+ * ALTER FILE FORMAT, ALTER SESSION, an ALTER or a COMMENT of a contact, a rename of any kind — of an object, of a
+ * table's column or of a constraint, renamed or refused — TRUNCATE and USE. A session with AUTOCOMMIT off ends the
+ * transaction it is in by the same statements.
  *
  * <p>A statement that ends the transaction commits it where the transaction was begun, and is refused in a block
  * or a procedure called while its caller's transaction is open; one that does not runs in both places.
@@ -46,31 +51,43 @@ final class ImplicitCommit {
         }
         final FrostlakeParser.AlterStatementContext alter = ctx.alterStatement();
         if (alter != null) {
-            return alter.SESSION() == null && alter.STAGE() == null && alter.FORMAT() == null && !renames(alter);
+            return alter.SESSION() == null && alter.STAGE() == null && alter.FORMAT() == null
+                && alter.CONTACT() == null && !renames(alter);
+        }
+        if (ctx.commentStatement() != null) {
+            return ctx.commentStatement().CONTACT() == null;
+        }
+        if (ctx.notebookStatement() != null) {
+            return ctx.notebookStatement().CREATE() == null && ctx.notebookStatement().RENAME() == null;
+        }
+        if (ctx.streamlitStatement() != null) {
+            return ctx.streamlitStatement().CREATE() == null && ctx.streamlitStatement().RENAME() == null;
         }
         final FrostlakeParser.CreateStatementContext create = ctx.createStatement();
         return create == null || !leavesTheTransactionOpen(create);
     }
 
     /**
-     * A rename of a table, of a table's column or of a view, which leaves the transaction open whether it renames or
-     * is refused.
+     * A rename, which leaves the transaction open whether it renames or is refused: the action the statement ends
+     * with, whatever the kind of object, holds the word RENAME among its own — RENAME TO, a table's RENAME COLUMN
+     * and RENAME CONSTRAINT.
      */
     private static boolean renames(final FrostlakeParser.AlterStatementContext alter) {
-        final FrostlakeParser.TableActionContext table = alter.TABLE() == null ? null : alter.tableAction();
-        if (table != null) {
-            return table.RENAME() != null && table.CONSTRAINT() == null;
+        ParserRuleContext action = null;
+        for (final ParseTree child : alter.children) {
+            if (child instanceof ParserRuleContext) {
+                action = (ParserRuleContext) child;
+            }
         }
-        final FrostlakeParser.ViewActionContext view = alter.VIEW() == null || alter.MATERIALIZED() != null ? null
-            : alter.viewAction();
-        return view != null && view.RENAME() != null;
+        return action != null && !(action instanceof FrostlakeParser.IdentifierContext)
+            && action.getToken(FrostlakeParser.RENAME, 0) != null;
     }
 
     /** A CREATE of one of the kinds that leave the transaction as it was. */
     private static boolean leavesTheTransactionOpen(final FrostlakeParser.CreateStatementContext create) {
         return create.SEQUENCE() != null || create.FUNCTION() != null || create.PROCEDURE() != null
             || create.SCHEMA() != null || create.STAGE() != null || create.FORMAT() != null
-            || create.STREAM() != null || create.TAG() != null || create.MASKING() != null
-            || create.ACCESS() != null || create.TASK() != null || create.PIPE() != null;
+            || create.STREAM() != null || create.TAG() != null || create.POLICY() != null
+            || create.TASK() != null || create.PIPE() != null || create.ALERT() != null;
     }
 }

@@ -47,7 +47,8 @@ public class AccountAndUserPrivilegesTest {
         systemRole = engine.getSessionContext().getCurrentRole();
         account = engine.getCatalog().getAccountLocator();
         engine.execute("CREATE ROLE r1");
-        engine.execute("CREATE USER u");
+        // The user puts no secondary role in use, so a refusal names the primary role alone.
+        engine.execute("CREATE USER u DEFAULT_SECONDARY_ROLES = ()");
         engine.execute("CREATE USER other");
         engine.execute("GRANT ROLE r1 TO USER u");
     }

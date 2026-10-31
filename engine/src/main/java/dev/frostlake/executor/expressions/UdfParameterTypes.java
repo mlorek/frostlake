@@ -19,6 +19,7 @@ package dev.frostlake.executor.expressions;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DeclaredTypeFold;
+import dev.frostlake.types.LengthlessStringType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 
@@ -34,13 +35,34 @@ import dev.frostlake.types.StringType;
  *   <li>a BINARY parameter takes a binary argument's width, and the declared one otherwise;</li>
  *   <li>an exact NUMBER parameter takes an exact number argument's precision and scale only when that
  *       scale is at least the parameter's — {@code 1.25} into NUMBER(10,2) stays NUMBER(3,2) while a
- *       bare {@code 1} becomes NUMBER(10,2) — and the declared type for a FLOAT, a text or NULL;</li>
+ *       bare {@code 1} becomes NUMBER(10,2) — and the declared type for a FLOAT, a DECFLOAT, a text or NULL:
+ *       {@code SYSTEM$TYPEOF} over {@code f(1.5::DECFLOAT)} whose body is {@code x + 1} over a NUMBER parameter
+ *       reads NUMBER(38,0)[SB1];</li>
+ *   <li>a DECFLOAT parameter keeps its declared type whatever reaches it;</li>
  *   <li>every other family, FLOAT among them, keeps the declared type.</li>
  * </ul>
  */
 public final class UdfParameterTypes {
 
     private UdfParameterTypes() {
+    }
+
+    /**
+     * The type the body reads this parameter at when the call passes it the bare word NULL: a text or a binary
+     * declared with no length keeps none, so a body that hands the parameter back is a bare VARCHAR or BINARY,
+     * while a sized text reads the unbounded width and a sized binary its own (live-verified:
+     * {@code wv(x VARCHAR)} over NULL is VARCHAR, {@code wv5(x VARCHAR(5))} VARCHAR(134217728),
+     * {@code wb4(x BINARY(4))} BINARY(4)). Any other parameter reads its declared type, as {@link #effective} does.
+     *
+     * @param declared the parameter's declared type
+     * @param unsized  whether the parameter was declared with no length
+     * @return the type to compile the body with
+     */
+    public static DataType ofNullArgument(final DataType declared, final boolean unsized) {
+        if (declared instanceof StringType) {
+            return unsized ? new LengthlessStringType() : effective(declared, null);
+        }
+        return declared instanceof BinaryType && unsized ? BinaryType.UNSIZED : declared;
     }
 
     /**
@@ -61,8 +83,9 @@ public final class UdfParameterTypes {
         if (declared instanceof BinaryType) {
             return argument instanceof BinaryType ? argument : declared;
         }
-        if (declared instanceof NumericType && !NumericType.isApproximate(declared)
+        if (declared instanceof NumericType && !NumericType.isApproximate(declared) && !NumericType.isDecfloat(declared)
                 && argument instanceof NumericType && !NumericType.isApproximate(argument)
+                && !NumericType.isDecfloat(argument)
                 && ((NumericType) argument).getScale() >= ((NumericType) declared).getScale()) {
             return argument;
         }

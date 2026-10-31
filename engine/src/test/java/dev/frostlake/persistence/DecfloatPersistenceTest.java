@@ -35,7 +35,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * A DECFLOAT column keeps its type and every digit of its values across an engine clone, a checkpoint and a restart
  * from the write-ahead log: a 38-digit integer, a third held to 38 digits, a FLOAT's binary value and a value whose
- * exponent no NUMBER reaches all read back as they were written.
+ * exponent no NUMBER reaches all read back as they were written. A DECFLOAT inside a VARIANT, an ARRAY or an OBJECT
+ * keeps its type there too, whichever way the state is carried.
  */
 public class DecfloatPersistenceTest {
 
@@ -140,6 +141,73 @@ public class DecfloatPersistenceTest {
             assertEquals(EXPECTED, answer(recovered, CHECK));
         } finally {
             recovered.shutdown();
+        }
+    }
+
+    /** The semi-structured table's check: each member's type, its text, and its equality with a fresh one. */
+    private static final String MEMBERS = "SELECT TYPEOF(v), TYPEOF(a[0]), TYPEOF(a[1]:k), TYPEOF(o:k), TYPEOF(o:n[0]),"
+        + " TO_JSON(v), TO_JSON(a), TO_JSON(o), v = TO_VARIANT(DECFLOAT '1.5'),"
+        + " ARRAY_CONTAINS(DECFLOAT '2.5'::VARIANT, a), o:k::VARCHAR FROM d.PUBLIC.s";
+
+    private static final String MEMBERS_EXPECTED = "DECFLOAT, DECFLOAT, DECFLOAT, DECFLOAT, VARCHAR,"
+        + " \"1.5\", [\"2.5\",{\"k\":\"3.3333333333333333333333333333333333333e-1\"}],"
+        + " {\"k\":\"1e100\",\"n\":[\"1e100\"]}, true, true, 1e100";
+
+    /** Fill a table of VARIANT, ARRAY and OBJECT values holding DECFLOATs, beside a text that spells one. */
+    private static void fillMembers(final DatabaseEngine engine) {
+        engine.execute("CREATE DATABASE IF NOT EXISTS d");
+        engine.execute("CREATE TABLE d.PUBLIC.s (v VARIANT, a ARRAY, o OBJECT)");
+        engine.execute("INSERT INTO d.PUBLIC.s SELECT TO_VARIANT(DECFLOAT '1.5'),"
+            + " ARRAY_CONSTRUCT(DECFLOAT '2.5', OBJECT_CONSTRUCT('k', DECFLOAT '1' / 3)),"
+            + " OBJECT_CONSTRUCT('k', DECFLOAT '1e100', 'n', ARRAY_CONSTRUCT('1e100'))");
+    }
+
+    @Test
+    public void aDecfloatInsideAVariantKeepsItsTypeAcrossACloneAndASnapshot() throws Exception {
+        final DatabaseEngine original = new DatabaseEngine();
+        try {
+            fillMembers(original);
+            assertEquals(MEMBERS_EXPECTED, answer(original, MEMBERS));
+            original.checkpointStateTo(dir.resolve("snapshot"));
+            final DatabaseEngine clone = original.cloneInstance();
+            try {
+                assertEquals(MEMBERS_EXPECTED, answer(clone, MEMBERS));
+            } finally {
+                clone.shutdown();
+            }
+        } finally {
+            original.shutdown();
+        }
+        final DatabaseEngine restored = new DatabaseEngine();
+        try {
+            restored.restoreStateFrom(dir.resolve("snapshot"));
+            assertEquals(MEMBERS_EXPECTED, answer(restored, MEMBERS));
+        } finally {
+            restored.shutdown();
+        }
+    }
+
+    @Test
+    public void aDecfloatInsideAVariantKeepsItsTypeAcrossACheckpointAndARestart() {
+        final DatabaseEngine engine = new DatabaseEngine(walConfig());
+        try {
+            fillMembers(engine);
+            engine.checkpoint();
+        } finally {
+            engine.shutdown();
+        }
+        final DatabaseEngine recovered = new DatabaseEngine(walConfig());
+        try {
+            assertTrue(recovered.getWalReplayFailures().isEmpty(), String.valueOf(recovered.getWalReplayFailures()));
+            assertEquals(MEMBERS_EXPECTED, answer(recovered, MEMBERS));
+        } finally {
+            recovered.shutdown();
+        }
+        final DatabaseEngine walOnly = new DatabaseEngine(walConfig());
+        try {
+            assertEquals(MEMBERS_EXPECTED, answer(walOnly, MEMBERS));
+        } finally {
+            walOnly.shutdown();
         }
     }
 }

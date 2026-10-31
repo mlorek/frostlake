@@ -110,6 +110,13 @@ final class StatementKindText {
             if ("DESC".equals(verb)) {
                 return "DESCRIBE";
             }
+            // The stage file statements are named for the operation they run: Cannot perform STAGE LS (live-verified).
+            if ("LIST".equals(verb) || "LS".equals(verb)) {
+                return "STAGE LS";
+            }
+            if ("REMOVE".equals(verb) || "RM".equals(verb)) {
+                return "STAGE RM";
+            }
             return "UPDATE".equals(verb) || "DELETE".equals(verb) || "MERGE".equals(verb) ? "SELECT" : verb;
         }
         if (ddl.createStatement() != null) {

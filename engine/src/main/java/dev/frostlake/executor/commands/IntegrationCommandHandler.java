@@ -22,14 +22,21 @@ import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.IntegrationRegistry;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.TagAssignments;
 import dev.frostlake.metastore.model.Integration;
 import dev.frostlake.metastore.model.IntegrationKind;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.PropertyValue;
 import dev.frostlake.metastore.model.PropertyValueKind;
+import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.SecurityObject;
+import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -43,10 +50,17 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * CREATE, ALTER, DROP, SHOW and DESCRIBE of integrations — API, catalog and notification integrations, which
- * Frostlake keeps as configuration without ever calling the service they describe. Every kind shares one
- * namespace, the ENABLED flag and the comment; the rest of an integration's properties are kept as written and
- * checked against its kind's property set ({@link IntegrationRules}). Secrets are write-only: DESCRIBE masks them.
+ * CREATE, ALTER, DROP, SHOW and DESCRIBE of integrations — API, catalog, notification, storage, security and
+ * external access integrations, which Frostlake keeps as configuration without ever calling the service they
+ * describe. Every kind
+ * shares one namespace, the ENABLED flag and the comment; the rest of an integration's properties are kept as written
+ * and checked against its kind's property set ({@link IntegrationRules}). Secrets are write-only: DESCRIBE masks them.
+ *
+ * <p>An integration is an account object with an owner: CREATE takes CREATE INTEGRATION on the account, ALTER, DROP
+ * and a CREATE OR REPLACE over one take its OWNERSHIP, and SHOW and DESCRIBE answer for an integration only to a role
+ * that holds some privilege on it, or MANAGE GRANTS; to any other it is not there (documented: each statement's access
+ * control table, and SHOW lists "only objects for which the current role has been granted at least one access
+ * privilege"). Every role could create, widen, disable and drop every integration.
  */
 public final class IntegrationCommandHandler {
 
@@ -81,8 +95,11 @@ public final class IntegrationCommandHandler {
                 }
                 throw missing(name);
             }
+            requireOwnership(integration);
             refuseWhileReferenced(integration);
             registry().remove(name);
+            // Its privileges go with it: an integration created later under the name starts with none.
+            GrantNames.created(catalog, "INTEGRATION", integration.getName());
             return StatusResults.dropped(name);
         }
         if (integration == null) {
@@ -91,6 +108,7 @@ public final class IntegrationCommandHandler {
             }
             throw missing(name);
         }
+        requireOwnership(integration);
         alter(integration, ctx.integrationAction());
         return StatusResults.of(StatusResults.EXECUTED);
     }
@@ -101,8 +119,15 @@ public final class IntegrationCommandHandler {
         }
         final IntegrationKind kind = createdKind(ctx.createdIntegrationKind());
         final Map<String, PropertyValue> properties = ObjectProperties.read(ctx.objectProperty());
-        IntegrationRules.checkCreate(kind, properties);
+        IntegrationRules.checkCreate(kind, properties, cloudRegion());
+        if (kind == IntegrationKind.EXTERNAL_ACCESS) {
+            resolveExternalAccess(properties);
+        }
+        AccountPrivileges.requireOnAccount(queryExecutor, catalog, Privilege.CREATE_INTEGRATION);
         final Integration standing = registry().find(name);
+        if (standing != null && ctx.or_replace() != null) {
+            requireOwnership(standing);
+        }
         if (standing != null && ctx.or_replace() == null) {
             if (ctx.if_not_exists() != null) {
                 return StatusResults.alreadyExists(name);
@@ -112,8 +137,12 @@ public final class IntegrationCommandHandler {
         }
         final Integration integration = new Integration(name, kind);
         integration.setOwner(catalog.currentRoleForOwner());
+        // ENABLED defaults to TRUE where a kind lets it be left out.
+        integration.setEnabled(true);
         apply(integration, properties);
         registry().put(integration);
+        // A replaced integration's privileges are not the new one's.
+        GrantNames.created(catalog, "INTEGRATION", integration.getName());
         return StatusResults.created("Integration", name);
     }
 
@@ -131,7 +160,10 @@ public final class IntegrationCommandHandler {
             }
         } else if (action.SET() != null) {
             final Map<String, PropertyValue> properties = ObjectProperties.read(action.objectProperty());
-            IntegrationRules.checkSet(integration, properties);
+            IntegrationRules.checkSet(integration, properties, cloudRegion());
+            if (integration.getKind() == IntegrationKind.EXTERNAL_ACCESS) {
+                resolveExternalAccess(properties);
+            }
             if (properties.containsKey("ENABLED") && !ObjectProperties.flag("ENABLED", properties.get("ENABLED"))) {
                 refuseWhileReferenced(integration);
             }
@@ -168,6 +200,69 @@ public final class IntegrationCommandHandler {
         }
     }
 
+    /**
+     * Resolves the names an external access integration's lists hold to the objects' full names: every network rule
+     * has to exist and be an egress rule, every secret has to exist, and every allowed integration has to be a
+     * security integration for external API authentication (documented).
+     */
+    private void resolveExternalAccess(final Map<String, PropertyValue> properties) {
+        resolveSchemaObjects(properties, "ALLOWED_NETWORK_RULES", SecurityObjectKind.NETWORK_RULE);
+        resolveSchemaObjects(properties, "ALLOWED_AUTHENTICATION_SECRETS", SecurityObjectKind.SECRET);
+        final PropertyValue allowed = properties.get("ALLOWED_API_AUTHENTICATION_INTEGRATIONS");
+        if (allowed == null || allowed.getKind() != PropertyValueKind.LIST) {
+            return;
+        }
+        for (final PropertyValue item : allowed.getItems()) {
+            final Integration named = registry().find(item.getText());
+            if (named == null) {
+                throw new RuntimeException(SqlCompilationError.of("Integration '" + item.getText()
+                    + "' does not exist or not authorized."));
+            }
+            if (named.getKind() != IntegrationKind.SECURITY || !"API_AUTHENTICATION".equals(named.text("TYPE"))) {
+                throw new RuntimeException(SqlCompilationError.of("Integration '" + item.getText()
+                    + "' is not a security integration of type API_AUTHENTICATION."));
+            }
+        }
+    }
+
+    /** Resolves a list of schema objects of one kind, each to its full name; one that is not there is refused. */
+    private void resolveSchemaObjects(final Map<String, PropertyValue> properties, final String key,
+                                      final SecurityObjectKind kind) {
+        final PropertyValue value = properties.get(key);
+        if (value == null || value.getKind() != PropertyValueKind.LIST) {
+            return;
+        }
+        final List<PropertyValue> resolved = new ArrayList<>();
+        for (final PropertyValue item : value.getItems()) {
+            final String[] parts = QualifiedName.parse(item.getText()).parts();
+            final String last = parts[parts.length - 1];
+            final Schema owner = owningSchema(parts);
+            final SecurityObject object = owner == null ? null : owner.getSecurityObjects().get(kind, last);
+            if (object == null) {
+                throw new RuntimeException(kind == SecurityObjectKind.SECRET
+                    ? SqlCompilationError.of("Secret '" + last + "' does not exist or operation not authorized.")
+                    : SqlCompilationError.doesNotExist("Network rule", owner == null ? item.getText()
+                        : owner.qualifiedName(last)));
+            }
+            if (kind == SecurityObjectKind.NETWORK_RULE && !"EGRESS".equals(object.text("MODE"))) {
+                throw new RuntimeException(SqlCompilationError.of("Network rule '"
+                    + SqlIdentifiers.spellAlreadyCanonicalPath(owner.qualifiedName(last))
+                    + "' is not an egress rule; an external access integration allows egress rules only."));
+            }
+            resolved.add(PropertyValue.word(owner.qualifiedName(last)));
+        }
+        properties.put(key, PropertyValue.list(resolved).writtenAs(value.getWritten()));
+    }
+
+    /** The schema a written name belongs to, or null when its database or schema is not there. */
+    private Schema owningSchema(final String[] parts) {
+        try {
+            return catalog.requireOwningSchema(QualifiedName.of(parts));
+        } catch (final RuntimeException missing) {
+            return null;
+        }
+    }
+
     /** A security integration a secret authenticates through can be neither dropped nor disabled (live-verified). */
     private void refuseWhileReferenced(final Integration integration) {
         if (integration.getKind() != IntegrationKind.SECURITY) {
@@ -201,10 +296,25 @@ public final class IntegrationCommandHandler {
      */
     private Integration find(final String name, final IntegrationKind kind) {
         final Integration integration = registry().find(name);
-        if (integration != null && kind != null && integration.getKind() != kind) {
+        if (integration == null || !sees(integration)) {
+            // One the role holds no privilege on is not there for it, of whatever kind.
+            return null;
+        }
+        if (kind != null && integration.getKind() != kind) {
             throw new RuntimeException("Integration " + name + " is not a " + kind.getWords() + " integration.");
         }
         return integration;
+    }
+
+    /** Whether the session holds some privilege on an integration, or MANAGE GRANTS, so that it is told about it. */
+    private boolean sees(final Integration integration) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        return security == null || security.sees("INTEGRATION", integration.getName(), integration.getOwner());
+    }
+
+    /** Refuses changing or dropping an integration the session does not own. */
+    private void requireOwnership(final Integration integration) {
+        queryExecutor.requireOwnership("INTEGRATION", new String[] {integration.getName()}, null);
     }
 
     private static RuntimeException missing(final String name) {
@@ -227,7 +337,7 @@ public final class IntegrationCommandHandler {
         }
         final List<Row> rows = new ArrayList<>();
         for (final Integration integration : registry().all()) {
-            if (kind != null && integration.getKind() != kind) {
+            if (kind != null && integration.getKind() != kind || !sees(integration)) {
                 continue;
             }
             final List<Object> values = new ArrayList<>(Arrays.asList((Object) integration.getName(),
@@ -268,6 +378,11 @@ public final class IntegrationCommandHandler {
             // An inbound Pub/Sub queue lists its subscription and its service account, not its provider.
             shown.add("NOTIFICATION_PROVIDER");
         }
+        if (azureQueue(integration)) {
+            // An Azure storage queue lists the application its tenant consents to, not its provider or its tenant.
+            shown.add("NOTIFICATION_PROVIDER");
+            shown.add("AZURE_TENANT_ID");
+        }
         for (final String[] row : layout(integration)) {
             shown.add(row[0]);
             rows.add(new Row(Arrays.asList((Object) row[0], row[1], value(integration, row[0]), row[2])));
@@ -292,6 +407,10 @@ public final class IntegrationCommandHandler {
         switch (integration.getKind()) {
             case SECURITY:
                 return securityLayout(integration, enabled);
+            case EXTERNAL_ACCESS:
+                return new String[][] {enabled, {"ALLOWED_NETWORK_RULES", "List", "[]"},
+                    {"ALLOWED_API_AUTHENTICATION_INTEGRATIONS", "List", "[]"},
+                    {"ALLOWED_AUTHENTICATION_SECRETS", "List", "[]"}};
             case API:
                 final String provider = String.valueOf(integration.text("API_PROVIDER"));
                 if ("PYPI".equals(provider)) {
@@ -311,6 +430,8 @@ public final class IntegrationCommandHandler {
                         {"API_AWS_EXTERNAL_ID", "String", ""}};
                 return concat(concat(head, own), new String[][] {{"API_ALLOWED_PREFIXES", "List", "[]"},
                     {"API_BLOCKED_PREFIXES", "List", "[]"}});
+            case STORAGE:
+                return storageLayout(integration, enabled);
             case CATALOG:
                 final String source = String.valueOf(integration.text("CATALOG_SOURCE"));
                 final String[] refresh = {"REFRESH_INTERVAL_SECONDS", "Integer", "30"};
@@ -332,8 +453,36 @@ public final class IntegrationCommandHandler {
         }
     }
 
-    /** A security integration's rows: an AWS role's, or an OAuth client's. */
+    /**
+     * A storage integration's rows: the provider, the locations, and how the provider is reached — an S3 bucket
+     * through an AWS role the account assumes as its IAM user (live-verified), a GCS bucket as the account's service
+     * account, an Azure container through the account's application in the tenant (documented).
+     */
+    private static String[][] storageLayout(final Integration integration, final String[] enabled) {
+        final String[][] head = {enabled, {"STORAGE_PROVIDER", "String", ""},
+            {"STORAGE_ALLOWED_LOCATIONS", "List", "[]"}, {"STORAGE_BLOCKED_LOCATIONS", "List", "[]"}};
+        final String provider = String.valueOf(integration.text("STORAGE_PROVIDER"));
+        final String[] privateLink = {"USE_PRIVATELINK_ENDPOINT", "Boolean", "false"};
+        if ("GCS".equals(provider)) {
+            return concat(head, new String[][] {{"STORAGE_GCP_SERVICE_ACCOUNT", "String", ""}});
+        }
+        if ("AZURE".equals(provider)) {
+            return concat(head, new String[][] {{"AZURE_TENANT_ID", "String", ""}, {"AZURE_CONSENT_URL", "String", ""},
+                {"AZURE_MULTI_TENANT_APP_NAME", "String", ""}, privateLink});
+        }
+        return concat(head, new String[][] {{"STORAGE_AWS_IAM_USER_ARN", "String", ""},
+            {"STORAGE_AWS_ROLE_ARN", "String", ""}, {"STORAGE_AWS_EXTERNAL_ID", "String", ""}, privateLink});
+    }
+
+    /**
+     * A security integration's rows: an AWS role's, or an OAuth client's. A Snowflake OAuth, External OAuth, SAML2 or
+     * SCIM integration shows ENABLED, then what it was written with.
+     */
     private static String[][] securityLayout(final Integration integration, final String[] enabled) {
+        final String type = String.valueOf(integration.text("TYPE"));
+        if ("OAUTH".equals(type) || "EXTERNAL_OAUTH".equals(type) || "SAML2".equals(type) || "SCIM".equals(type)) {
+            return new String[][] {enabled};
+        }
         if ("AWS_IAM".equals(integration.text("AUTH_TYPE"))) {
             return new String[][] {enabled, {"PARENT_INTEGRATION", "String", ""},
                 {"API_AWS_IAM_USER_ARN", "String", ""}, {"API_AWS_EXTERNAL_ID", "String", ""},
@@ -371,15 +520,22 @@ public final class IntegrationCommandHandler {
             return concat(head, new String[][] {{"AZURE_EVENT_GRID_TOPIC_ENDPOINT", "String", ""},
                 {"AZURE_TENANT_ID", "String", ""}});
         }
-        if ("AZURE_STORAGE_QUEUE".equals(provider)) {
-            return concat(head, new String[][] {{"AZURE_STORAGE_QUEUE_PRIMARY_URI", "String", ""},
-                {"AZURE_TENANT_ID", "String", ""}});
+        if (azureQueue(integration)) {
+            return new String[][] {enabled, {"USE_PRIVATELINK_ENDPOINT", "Boolean", "false"},
+                {"AZURE_STORAGE_QUEUE_PRIMARY_URI", "String", ""}, {"AZURE_CONSENT_URL", "String", ""},
+                {"AZURE_MULTI_TENANT_APP_NAME", "String", ""}, direction};
         }
         if (inboundPubSub(integration)) {
             return new String[][] {enabled, direction, {"GCP_PUBSUB_SUBSCRIPTION_NAME", "String", ""},
                 {"GCP_PUBSUB_SERVICE_ACCOUNT", "String", ""}};
         }
         return concat(head, new String[][] {{"GCP_PUBSUB_TOPIC_NAME", "String", ""}});
+    }
+
+    /** Whether the integration is an Azure storage queue read into the account (live-verified DESCRIBE layout). */
+    private static boolean azureQueue(final Integration integration) {
+        return integration.getKind() == IntegrationKind.NOTIFICATION
+            && "AZURE_STORAGE_QUEUE".equals(integration.text("NOTIFICATION_PROVIDER"));
     }
 
     /** Whether the integration is a Pub/Sub queue read into the account (live-verified DESCRIBE layout). */
@@ -421,8 +577,15 @@ public final class IntegrationCommandHandler {
             if (key.endsWith("_AWS_EXTERNAL_ID")) {
                 return externalId(integration);
             }
-            if ("API_GCP_SERVICE_ACCOUNT".equals(key) || "GCP_PUBSUB_SERVICE_ACCOUNT".equals(key)) {
+            if ("API_GCP_SERVICE_ACCOUNT".equals(key) || "GCP_PUBSUB_SERVICE_ACCOUNT".equals(key)
+                    || "STORAGE_GCP_SERVICE_ACCOUNT".equals(key)) {
                 return GeneratedCloudIdentity.SERVICE_ACCOUNT;
+            }
+            if ("AZURE_CONSENT_URL".equals(key)) {
+                return GeneratedCloudIdentity.consentUrl(integration.text("AZURE_TENANT_ID"));
+            }
+            if ("AZURE_MULTI_TENANT_APP_NAME".equals(key)) {
+                return GeneratedCloudIdentity.APPLICATION_NAME;
             }
             if ("GLUE_REGION".equals(key)) {
                 return accountRegion();
@@ -494,6 +657,12 @@ public final class IntegrationCommandHandler {
             : "";
     }
 
+    /** The account's region as a refusal names it: {@code aws-eu-west-1} for an account in AWS_EU_WEST_1. */
+    private String cloudRegion() {
+        final String region = queryExecutor.getEngineConfig().getRegion();
+        return region.substring(region.lastIndexOf('.') + 1).toLowerCase(Locale.ROOT).replace('_', '-');
+    }
+
     /** The value with every secret it holds, at any depth, masked. */
     private static PropertyValue masked(final String key, final PropertyValue value) {
         if (IntegrationRules.isSecret(key) && value.getText() != null) {
@@ -532,6 +701,12 @@ public final class IntegrationCommandHandler {
         }
         if (ctx.SECURITY() != null) {
             return IntegrationKind.SECURITY;
+        }
+        if (ctx.EXTERNAL() != null) {
+            return IntegrationKind.EXTERNAL_ACCESS;
+        }
+        if (ctx.STORAGE() != null) {
+            return IntegrationKind.STORAGE;
         }
         return ctx.CATALOG() != null ? IntegrationKind.CATALOG : IntegrationKind.NOTIFICATION;
     }

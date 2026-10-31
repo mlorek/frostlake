@@ -30,7 +30,7 @@ import java.time.ZonedDateTime;
 import java.util.Arrays;
 import java.util.List;
 
-public class Trunc extends NumericArgumentFunction {
+public class Trunc extends NumericArgumentFunction implements DecfloatRounding, FloatScaleRounding {
 
     private static final DateTrunc DATE_TRUNC = new DateTrunc();
 
@@ -72,6 +72,18 @@ public class Trunc extends NumericArgumentFunction {
             return DATE_TRUNC.evaluate(Arrays.asList(part, first), "TRUNC");
         }
         return RoundedValue.of(args, RoundingMode.DOWN);
+    }
+
+    /** A DECFLOAT is rounded to any scale its exponent reaches (see RoundedValue#ofDecfloat). */
+    @Override
+    public Object evaluateDecfloat(final List<Object> args) {
+        return RoundedValue.ofDecfloat(args, RoundingMode.DOWN);
+    }
+
+    /** A FLOAT scale truncates in FLOAT arithmetic (see RoundedValue#ofFloatScale). */
+    @Override
+    public Object evaluateFloatScale(final List<Object> args) {
+        return RoundedValue.ofFloatScale(args, RoundingMode.DOWN);
     }
 
     @Override

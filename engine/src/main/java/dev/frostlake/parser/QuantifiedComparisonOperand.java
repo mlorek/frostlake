@@ -88,12 +88,26 @@ public final class QuantifiedComparisonOperand {
             value = comparisonLevelLeft(value);
         }
         if (value instanceof FrostlakeParser.ExistsExprContext) {
-            final Token exists = ((FrostlakeParser.ExistsExprContext) value).EXISTS().getSymbol();
-            final int[] shown = LeadingCommentOffset.rebase(exists.getLine(), exists.getCharPositionInLine());
-            return "syntax error line " + shown[0] + " at position " + shown[1] + " unexpected '" + exists.getText()
-                + "'.";
+            // The EXISTS, then the parenthesis after it read on: its first token, and the parenthesis closing it
+            // after a query that reads a FROM - EXISTS (SELECT 1) is 'EXISTS' and 'SELECT', EXISTS (SELECT 1 FROM t)
+            // the ')' too, EXISTS ((SELECT 1)) the inner '(' (live-verified).
+            final FrostlakeParser.ExistsExprContext exists = (FrostlakeParser.ExistsExprContext) value;
+            final FrostlakeParser.SelectStatementContext query = exists.selectStatement();
+            final StringBuilder lines = new StringBuilder(syntaxLine(exists.EXISTS().getSymbol()));
+            lines.append('\n').append(syntaxLine(query.getStart()));
+            if (query.selectOperand(0).selectClause() != null && query.selectOperand(0).selectClause().FROM() != null
+                    && exists.RPAREN() != null) {
+                lines.append('\n').append(syntaxLine(exists.RPAREN().getSymbol()));
+            }
+            return lines.toString();
         }
         return "Invalid query block: " + root(value) + ".";
+    }
+
+    /** A syntax error's line naming a token where it was written. */
+    private static String syntaxLine(final Token token) {
+        final int[] shown = LeadingCommentOffset.rebase(token.getLine(), token.getCharPositionInLine());
+        return "syntax error line " + shown[0] + " at position " + shown[1] + " unexpected '" + token.getText() + "'.";
     }
 
     /** The operand a comparison-level operator applies to, or null when a node is none. */

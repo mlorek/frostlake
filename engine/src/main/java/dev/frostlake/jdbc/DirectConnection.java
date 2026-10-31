@@ -18,31 +18,24 @@ package dev.frostlake.jdbc;
 
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.ExecutionResult;
+import dev.frostlake.executor.SessionZone;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.security.AbortableSession;
 import dev.frostlake.security.SessionContext;
+import dev.frostlake.security.SessionDirectory;
 import dev.frostlake.security.SessionSettings;
+import dev.frostlake.transaction.EngineLockRelease;
+import dev.frostlake.transaction.TableLockGate;
 import dev.frostlake.transaction.TransactionManager;
 
-import java.sql.Array;
-import java.sql.Blob;
 import java.sql.CallableStatement;
-import java.sql.Clob;
-import java.sql.Connection;
-import java.sql.NClob;
 import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLClientInfoException;
 import java.sql.SQLException;
-import java.sql.SQLFeatureNotSupportedException;
-import java.sql.SQLWarning;
-import java.sql.SQLXML;
-import java.sql.Savepoint;
 import java.sql.Statement;
 import java.sql.Struct;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.Collections;
-import java.util.Map;
-import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
@@ -51,11 +44,11 @@ import java.util.concurrent.Executor;
  * Direct JDBC connection that wraps a DatabaseEngine instance without HTTP.
  * Used for testing and embedded usage.
  */
-public class DirectConnection implements Connection, AbortableSession {
+public class DirectConnection extends AbstractFrostlakeConnection
+        implements AbortableSession, ResultColumnCase, SessionZoneSource {
 
     private final DatabaseEngine engine;
     private boolean closed = false;
-    private int savepointIdCounter = 0;
     // This connection's own session context over the SHARED per-name engine, mirroring what a real
     // Snowflake connection carries. Every statement runs inside a per-thread scope built from these,
     // so a USE on one connection (possibly on another thread — the test harness runs bulk checks on
@@ -96,10 +89,15 @@ public class DirectConnection implements Connection, AbortableSession {
     private final SessionSettings sessionSettings;
 
     /** What a statement gets once SYSTEM$ABORT_SESSION ended this connection's session, as the account words it. */
-    static final String SESSION_GONE = "Session no longer exists.  New login required to access the service.";
+    static final String SESSION_GONE = SessionDirectory.SESSION_GONE;
 
     /** Set once another statement aborted this connection's session; every later statement is refused. */
     private volatile boolean aborted;
+    // Whether a column label is matched ignoring case: once the session set CLIENT_RESULT_COLUMN_CASE_INSENSITIVE to
+    // TRUE, for the rest of the connection (see ResultColumnCase).
+    private volatile boolean labelsIgnoreCase;
+    /** The TIMEZONE the session named when its last statement ran, its own or inherited; null before any ran. */
+    private volatile String sessionTimezone;
     /** Whether the aborted session held an open transaction, for the refusal's report. */
     private volatile boolean abortedInTransaction;
 
@@ -170,6 +168,26 @@ public class DirectConnection implements Connection, AbortableSession {
      * shared engine) and the post-statement context — a USE, an ALTER of autocommit, an opened or
      * closed transaction — is captured back into the connection.
      */
+    /** How a statement waiting for a table lock gives up the engine's monitor: each pause waits on it. */
+    private EngineLockRelease monitorRelease() {
+        return new EngineLockRelease() {
+            @Override
+            public void release() {
+                // The monitor is given up by each pause.
+            }
+
+            @Override
+            public void pause(final long millis) throws InterruptedException {
+                engine.wait(millis);
+            }
+
+            @Override
+            public void reacquire() {
+                // Each pause takes the monitor back as it returns.
+            }
+        };
+    }
+
     ExecutionResult executeScoped(final String sql) {
         if (aborted) {
             throw new IllegalStateException(SESSION_GONE);
@@ -191,21 +209,36 @@ public class DirectConnection implements Connection, AbortableSession {
             // let this connection inherit whatever the previous one on this thread left open, and read
             // its uncommitted writes.
             bindOwnTransaction(transactions);
+            // A statement that waits for another connection's table lock waits on the engine's monitor, which it
+            // gives up meanwhile, so the holder's own statements can end its transaction (see TableLockGate). The
+            // session's context is bound to this thread, so nothing of it moves.
+            final boolean mayWait = sessionSettings != null;
+            final EngineLockRelease displaced = mayWait ? TableLockGate.register(monitorRelease()) : null;
             try {
                 return engine.execute(sql);
             } finally {
+                if (mayWait) {
+                    TableLockGate.restore(displaced);
+                }
+                // A statement that waits for a lock this one may have let go looks again at once.
+                engine.notifyAll();
                 // Captured when the request fails too: a request of several statements that fails part-way
                 // keeps what its earlier statements did — a transaction a BEGIN opened stays open in the
                 // session (live-verified) — so the connection must take it as its own. Left on the thread
                 // uncaptured, it was adopted by whichever connection ran next there, or orphaned.
                 sessionDatabase = catalog.getCurrentDatabase();
-                sessionSchema = catalog.getCurrentSchema();
+                sessionSchema = catalog.heldSchemaName();
                 sessionWarehouse = catalog.getCurrentWarehouse();
                 sessionAutoCommit = transactions.isAutoCommit();
                 sessionTransactionId = transactions.getCurrentTransactionId();
                 if (sessionTransactionId != null) {
                     CONNECTION_OWNED_TRANSACTIONS.add(sessionTransactionId);
                 }
+                if (session.resultColumnsCaseInsensitive()) {
+                    labelsIgnoreCase = true;
+                }
+                final Object timezone = session.getSessionParameter("TIMEZONE");
+                sessionTimezone = timezone == null ? null : timezone.toString();
                 catalog.clearSessionScope();
                 transactions.clearSessionAutoCommit();
                 if (sessionSettings != null) {
@@ -310,12 +343,41 @@ public class DirectConnection implements Connection, AbortableSession {
     }
 
     @Override
+    public boolean labelsIgnoreCase() {
+        return labelsIgnoreCase;
+    }
+
+    @Override
+    public ZoneId sessionZone() {
+        final ZoneId zone = sessionTimezone == null ? null : SessionZone.named(sessionTimezone);
+        return zone != null ? zone : ZoneOffset.UTC;
+    }
+
+    /** Whether the connection wraps a type: the embedded engine behind it too. */
+    @Override
+    public boolean isWrapperFor(final Class<?> iface) throws SQLException {
+        return iface == DatabaseEngine.class || super.isWrapperFor(iface);
+    }
+
+    @Override
+    public <T> T unwrap(final Class<T> iface) throws SQLException {
+        // The embedded engine behind this connection — how in-process harnesses reach engine-level
+        // APIs (checkpointStateTo/restoreStateFrom) that have no SQL surface.
+        if (iface == DatabaseEngine.class) {
+            return iface.cast(engine);
+        }
+        return super.unwrap(iface);
+    }
+
+    @Override
     public boolean isValid(final int timeout) throws SQLException {
+        requireValidTimeout(timeout);
         return !closed && !aborted;
     }
 
     @Override
     public void setAutoCommit(final boolean autoCommit) throws SQLException {
+        checkClosed();
         // The connection's session context supplies the mode to every statement via executeScoped —
         // writing the engine's global flag here would leak the mode into other connections.
         this.sessionAutoCommit = autoCommit;
@@ -323,6 +385,7 @@ public class DirectConnection implements Connection, AbortableSession {
 
     @Override
     public boolean getAutoCommit() throws SQLException {
+        checkClosed();
         // The session's EFFECTIVE mode: an ALTER SESSION SET AUTOCOMMIT executed over this
         // connection moves it too, not just setAutoCommit.
         return sessionAutoCommit;
@@ -351,12 +414,6 @@ public class DirectConnection implements Connection, AbortableSession {
         }
     }
 
-    private void checkClosed() throws SQLException {
-        if (closed) {
-            throw new SQLException("Connection is closed");
-        }
-    }
-
     // Unimplemented methods required by Connection interface
 
     @Override
@@ -366,125 +423,22 @@ public class DirectConnection implements Connection, AbortableSession {
     }
 
     @Override
-    public String nativeSQL(final String sql) throws SQLException {
-        return sql;
-    }
-
-    @Override
     public java.sql.DatabaseMetaData getMetaData() throws SQLException {
         checkClosed();
         return new DirectDatabaseMetaData(this);
     }
 
     @Override
-    public void setReadOnly(final boolean readOnly) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public boolean isReadOnly() throws SQLException {
-        return false;
-    }
-
-    @Override
     public void setCatalog(final String catalog) throws SQLException {
+        checkClosed();
         requireSession();
         executeScoped("USE DATABASE " + catalog);
     }
 
     @Override
     public String getCatalog() throws SQLException {
+        checkClosed();
         return sessionDatabase;
-    }
-
-    @Override
-    public void setTransactionIsolation(final int level) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public int getTransactionIsolation() throws SQLException {
-        return Connection.TRANSACTION_READ_COMMITTED;
-    }
-
-    @Override
-    public SQLWarning getWarnings() throws SQLException {
-        return null;
-    }
-
-    @Override
-    public void clearWarnings() throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public Statement createStatement(final int resultSetType, final int resultSetConcurrency) throws SQLException {
-        return createStatement();
-    }
-
-    @Override
-    public PreparedStatement prepareStatement(final String sql, final int resultSetType, final int resultSetConcurrency) throws SQLException {
-        return prepareStatement(sql);
-    }
-
-    @Override
-    public CallableStatement prepareCall(final String sql, final int resultSetType, final int resultSetConcurrency) throws SQLException {
-        return prepareCall(sql);
-    }
-
-    @Override
-    public Map<String, Class<?>> getTypeMap() throws SQLException {
-        throw new SQLFeatureNotSupportedException("getTypeMap not supported");
-    }
-
-    @Override
-    public void setTypeMap(final Map<String, Class<?>> map) throws SQLException {
-        throw new SQLFeatureNotSupportedException("setTypeMap not supported");
-    }
-
-    @Override
-    public void setHoldability(final int holdability) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public int getHoldability() throws SQLException {
-        return ResultSet.HOLD_CURSORS_OVER_COMMIT;
-    }
-
-    @Override
-    public Savepoint setSavepoint() throws SQLException {
-        throw new SQLException("Savepoints are not supported by Snowflake");
-    }
-
-    @Override
-    public Savepoint setSavepoint(final String name) throws SQLException {
-        throw new SQLException("Savepoints are not supported by Snowflake");
-    }
-
-    @Override
-    public void rollback(final Savepoint savepoint) throws SQLException {
-        throw new SQLException("Savepoints are not supported by Snowflake");
-    }
-
-    @Override
-    public void releaseSavepoint(final Savepoint savepoint) throws SQLException {
-        throw new SQLException("Savepoints are not supported by Snowflake");
-    }
-
-    @Override
-    public Statement createStatement(final int resultSetType, final int resultSetConcurrency, final int resultSetHoldability) throws SQLException {
-        return createStatement();
-    }
-
-    @Override
-    public PreparedStatement prepareStatement(final String sql, final int resultSetType, final int resultSetConcurrency, final int resultSetHoldability) throws SQLException {
-        return prepareStatement(sql);
-    }
-
-    @Override
-    public CallableStatement prepareCall(final String sql, final int resultSetType, final int resultSetConcurrency, final int resultSetHoldability) throws SQLException {
-        return prepareCall(sql);
     }
 
     @Override
@@ -508,50 +462,6 @@ public class DirectConnection implements Connection, AbortableSession {
     }
 
     @Override
-    public Clob createClob() throws SQLException {
-        throw new SQLFeatureNotSupportedException("CLOB is not supported by Snowflake");
-    }
-
-    @Override
-    public Blob createBlob() throws SQLException {
-        throw new SQLFeatureNotSupportedException("BLOB is not supported by Snowflake");
-    }
-
-    @Override
-    public NClob createNClob() throws SQLException {
-        throw new SQLFeatureNotSupportedException("createNClob not supported");
-    }
-
-    @Override
-    public SQLXML createSQLXML() throws SQLException {
-        throw new SQLFeatureNotSupportedException("createSQLXML not supported");
-    }
-
-    @Override
-    public boolean isWrapperFor(final Class<?> iface) throws SQLException {
-        return iface == DatabaseEngine.class || iface.isInstance(this);
-    }
-
-    @Override
-    public <T> T unwrap(final Class<T> iface) throws SQLException {
-        // The embedded engine behind this connection — how in-process harnesses reach engine-level
-        // APIs (checkpointStateTo/restoreStateFrom) that have no SQL surface.
-        if (iface == DatabaseEngine.class) {
-            return iface.cast(engine);
-        }
-        if (iface.isInstance(this)) {
-            return iface.cast(this);
-        }
-        throw new SQLException("Not a wrapper for " + iface.getName());
-    }
-
-    @Override
-    public Array createArrayOf(final String typeName, final Object[] elements) throws SQLException {
-        checkClosed();
-        return new DirectArray(typeName, elements);
-    }
-
-    @Override
     public Struct createStruct(final String typeName, final Object[] attributes) throws SQLException {
         checkClosed();
         // For Struct, we need attribute names, but JDBC createStruct doesn't provide them
@@ -565,12 +475,14 @@ public class DirectConnection implements Connection, AbortableSession {
 
     @Override
     public void setSchema(final String schema) throws SQLException {
+        checkClosed();
         requireSession();
         executeScoped("USE SCHEMA " + schema);
     }
 
     @Override
     public String getSchema() throws SQLException {
+        checkClosed();
         return sessionSchema;
     }
 
@@ -588,33 +500,4 @@ public class DirectConnection implements Connection, AbortableSession {
         close();
     }
 
-    @Override
-    public void setNetworkTimeout(final Executor executor, final int milliseconds) throws SQLException {
-        // No-op
-    }
-
-    @Override
-    public int getNetworkTimeout() throws SQLException {
-        return 0;
-    }
-
-    @Override
-    public String getClientInfo(final String name) throws SQLException {
-        return null;
-    }
-
-    @Override
-    public Properties getClientInfo() throws SQLException {
-        return new Properties();
-    }
-
-    @Override
-    public void setClientInfo(final String name, final String value) throws SQLClientInfoException {
-        // No-op
-    }
-
-    @Override
-    public void setClientInfo(final Properties properties) throws SQLClientInfoException {
-        // No-op
-    }
 }

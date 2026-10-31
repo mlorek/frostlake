@@ -125,8 +125,25 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
             prop("REPLACE_INVALID_CHARACTERS", "Boolean", "false")));
     }
 
-    private static final Set<String> COMPRESSION_VALUES = Set.of(
-        "AUTO", "GZIP", "BZ2", "BROTLI", "ZSTD", "DEFLATE", "RAW_DEFLATE", "NONE");
+    /**
+     * The COMPRESSION values each TYPE takes, as docs.snowflake.com CREATE FILE FORMAT lists them: CSV, JSON and XML
+     * the eight codecs, AVRO the same but BZ2, PARQUET its own AUTO, LZO, SNAPPY and NONE (SNAPPY is the account's
+     * Parquet default). ORC has no COMPRESSION option at all; that refusal is the option's, not the value's.
+     */
+    private static final Map<String, Set<String>> COMPRESSION_VALUES = new LinkedHashMap<>();
+
+    /** Every codec there is: a word outside them is no codec, whatever the type. */
+    private static final Set<String> CODECS = Set.of("AUTO", "GZIP", "BZ2", "BROTLI", "ZSTD", "DEFLATE", "RAW_DEFLATE",
+        "NONE", "LZO", "SNAPPY");
+
+    static {
+        final Set<String> codecs = Set.of("AUTO", "GZIP", "BZ2", "BROTLI", "ZSTD", "DEFLATE", "RAW_DEFLATE", "NONE");
+        COMPRESSION_VALUES.put("CSV", codecs);
+        COMPRESSION_VALUES.put("JSON", codecs);
+        COMPRESSION_VALUES.put("XML", codecs);
+        COMPRESSION_VALUES.put("AVRO", codecs);
+        COMPRESSION_VALUES.put("PARQUET", Set.of("AUTO", "LZO", "SNAPPY", "NONE"));
+    }
 
     private FileFormatSurfaces() {
     }
@@ -150,6 +167,24 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
             }
         }
         return false;
+    }
+
+    /**
+     * The kind of value an option takes as the first type's tree that carries it declares it: String, Boolean,
+     * Integer or List.
+     *
+     * @param name the option
+     * @return its kind, or null for an option no type's tree carries
+     */
+    public static String optionType(final String name) {
+        for (final List<FormatProperty> tree : TREES.values()) {
+            for (final FormatProperty property : tree) {
+                if (property.name.equalsIgnoreCase(name)) {
+                    return property.type;
+                }
+            }
+        }
+        return null;
     }
 
     /** Whether any type's tree declares the option Boolean. */
@@ -197,6 +232,31 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
     }
 
     /**
+     * Judge a COMPRESSION value in the account's words (live-verified): a word that is no codec is an invalid value
+     * as written, and a codec the format TYPE does not take is an invalid compression format, named in upper case. A
+     * type this cannot name — a list that only names a format, or ORC, which has no COMPRESSION — and the lists a
+     * stage or a table keeps, which the account judges no further than that, take every codec.
+     *
+     * @param type    the effective format type, or null when it is not known
+     * @param value   the value, decoded
+     * @param written the value as the statement spells it
+     */
+    public static void requireLegalCompression(final String type, final String value, final String written) {
+        if (value == null) {
+            return;
+        }
+        final String codec = value.toUpperCase(Locale.ROOT);
+        if (!CODECS.contains(codec)) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "invalid value [" + written + "] for parameter 'COMPRESSION'"));
+        }
+        final Set<String> legal = type == null ? null : COMPRESSION_VALUES.get(type.toUpperCase(Locale.ROOT));
+        if (legal != null && !legal.contains(codec)) {
+            throw new RuntimeException(SqlCompilationError.of("Invalid compression format " + codec));
+        }
+    }
+
+    /**
      * Judge a parameter's value and refuse it in the account's own words. The value is judged DECODED,
      * as the reader will see it - a doubled quote is ONE quote and an escaped backslash ONE backslash -
      * while the refusal echoes the text AS WRITTEN: a bare word bare, a string literal with its quotes.
@@ -224,9 +284,8 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
                 // A non-numeric SKIP_HEADER never parses this far.
             }
         }
-        if ("COMPRESSION".equals(upper) && !COMPRESSION_VALUES.contains(value.toUpperCase(Locale.ROOT))) {
-            throw new RuntimeException(SqlCompilationError.of(
-                "invalid value [" + written + "] for parameter 'COMPRESSION'"));
+        if ("COMPRESSION".equals(upper)) {
+            requireLegalCompression(null, value, written);
         }
         if (DELIMITERS.contains(upper) && !isDelimiter(value)) {
             throw new RuntimeException(SqlCompilationError.of(
@@ -404,7 +463,7 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
                     break;
                 default:
                     if (c < ' ') {
-                        out.append(String.format("\\u%04x", Integer.valueOf(c)));
+                        out.append(String.format(Locale.ROOT, "\\u%04x", Integer.valueOf(c)));
                     } else {
                         out.append(c);
                     }

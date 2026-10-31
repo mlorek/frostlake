@@ -18,6 +18,7 @@ package dev.frostlake.executor;
 
 import dev.frostlake.functions.scalar.context.LastQueryId;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.types.DecimalText;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
@@ -72,7 +73,7 @@ final class ResultScanArgument {
      * @return the index
      */
     static int indexOf(final Number value, final FrostlakeParser.FunctionArgContext argument) {
-        final BigDecimal number = new BigDecimal(value.toString());
+        final BigDecimal number = DecimalText.parse(value.toString());
         if (number.stripTrailingZeros().scale() > 0) {
             throw notAString(argument.getStart());
         }
@@ -99,7 +100,7 @@ final class ResultScanArgument {
             if (literal.INTEGER_LITERAL() == null && literal.FLOAT_LITERAL() == null) {
                 throw notAString(argument.getStart());
             }
-            return wholeIndex(new BigDecimal(literal.getText()), argument.getStart());
+            return wholeIndex(DecimalText.parse(literal.getText()), argument.getStart());
         }
         if (argument instanceof FrostlakeParser.UnaryExprContext) {
             final FrostlakeParser.UnaryExprContext unary = (FrostlakeParser.UnaryExprContext) argument;
@@ -150,7 +151,7 @@ final class ResultScanArgument {
         if (inner instanceof FrostlakeParser.LiteralExprContext) {
             final FrostlakeParser.LiteralContext literal = ((FrostlakeParser.LiteralExprContext) inner).literal();
             if (literal.INTEGER_LITERAL() != null || literal.FLOAT_LITERAL() != null) {
-                return new BigDecimal(literal.getText()).negate();
+                return DecimalText.parse(literal.getText()).negate();
             }
             return null;
         }

@@ -150,6 +150,12 @@ final class CallShapeRules {
         if (!refusedQuantifier && !refusedWithinGroup && kind == null && !orderRequired) {
             return;
         }
+        if (kind != null && window.getStarCall() != null && !refusedQuantifier) {
+            // A star names no column of its own: the call is refused for its kind before it is read, HASH(*) OVER ()
+            // (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("Invalid function type [" + echoedName(kind)
+                + "] for window function."));
+        }
         walkArguments(builtin, arguments, walk);
         if (refusedQuantifier) {
             // Under OVER the account plans CONDITIONAL_CHANGE_EVENT as LAG, and echoes the call by that name.
@@ -212,7 +218,7 @@ final class CallShapeRules {
             final String unit = i == unitSlot ? DateTimeUnitSlot.unitTextOf(arguments.get(i)) : null;
             // The plan holds a date/time unit as the text it names.
             echo.append(unit != null ? "'" + unit.toUpperCase(Locale.ROOT) + "'"
-                : context.strictPlanText(arguments.get(i)));
+                : context.strictQuantifierText(arguments.get(i)));
         }
         echo.append(')');
         return new RuntimeException(SqlCompilationError.of("invalid use of '"

@@ -28,6 +28,7 @@ public final class DynamicTableRefresh {
     private final long sequence;
     private final long millis;
     private final List<List<Object>> rows;
+    private final List<String> rowIds;
 
     /**
      * @param sequence where the refresh falls in the order table snapshots are taken in
@@ -35,12 +36,34 @@ public final class DynamicTableRefresh {
      * @param rows     the rows it left, each as its values
      */
     public DynamicTableRefresh(final long sequence, final long millis, final List<List<Object>> rows) {
+        this(sequence, millis, rows, null);
+    }
+
+    /**
+     * @param sequence where the refresh falls in the order table snapshots are taken in
+     * @param millis   when it ran, in epoch milliseconds
+     * @param rows     the rows it left, each as its values
+     * @param rowIds   each row's identity, the table rows it reads, in the rows' order; null when not known
+     */
+    public DynamicTableRefresh(final long sequence, final long millis, final List<List<Object>> rows,
+                               final List<String> rowIds) {
         this.sequence = sequence;
         this.millis = millis;
         this.rows = new ArrayList<>();
         for (final List<Object> row : rows) {
             this.rows.add(new ArrayList<>(row));
         }
+        this.rowIds = rowIds == null || rowIds.size() != rows.size() ? null : new ArrayList<>(rowIds);
+    }
+
+    /**
+     * Each row's identity, in the order of {@link #getRows()}: a digest of the identities of the table rows it reads,
+     * which outlives an UPDATE of them; null when the refresh's rows are not known by identity.
+     *
+     * @return the identities, or null
+     */
+    public List<String> getRowIds() {
+        return rowIds == null ? null : new ArrayList<>(rowIds);
     }
 
     /** Where the refresh falls in the order table snapshots are taken in. */

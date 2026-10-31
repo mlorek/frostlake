@@ -31,16 +31,20 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.TransientRetentionLimit;
+import dev.frostlake.executor.VirtualColumns;
 import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.CloneReferences;
+import dev.frostlake.metastore.CreationGrants;
+import dev.frostlake.metastore.DroppedObject;
 import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.HybridKeys;
 import dev.frostlake.metastore.MaterializedViewValidity;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.RetentionChain;
 import dev.frostlake.metastore.TableShadows;
 import dev.frostlake.metastore.model.CheckConstraint;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
@@ -93,6 +97,8 @@ public class CreateTableHandler implements CommandHandler {
 
     /** The keys every USING TEMPLATE column description must carry, in the order a missing one is named. */
     private static final List<String> TEMPLATE_FIELDS = Arrays.asList("COLUMN_NAME", "TYPE", "NULLABLE");
+
+    private static final String COMMENT = "COMMENT";
 
     private final DDLCommandHandler ddl;
     private final Catalog catalog;
@@ -183,6 +189,15 @@ public class CreateTableHandler implements CommandHandler {
             // A name another kind of relation holds is refused before anything is asked of the session, with OR
             // REPLACE and IF NOT EXISTS alike (live-verified).
             schema.rejectNameHeldByOtherKind(tableName, RelationKind.TABLE, isTemporary);
+            // An Iceberg table and any other table are kinds of their own: neither replaces the other, and an IF NOT
+            // EXISTS takes neither for the other (live-verified).
+            final Table sameName = isTemporary ? null : schema.tableExact(tableName);
+            if (sameName != null && !sameName.isEventTable()
+                    && (sameName.getIcebergMetadata() != null) != (ctx.ICEBERG() != null)) {
+                throw new RuntimeException(SqlCompilationError.of("Object '"
+                    + SqlIdentifiers.spellCanonical(sameName.getName()) + "' already exists as "
+                    + (sameName.getIcebergMetadata() != null ? "ICEBERG_TABLE" : "TABLE")));
+            }
             // Replacing a table needs OWNERSHIP of it, asked ahead of the privilege to create one; a temporary
             // table takes a permanent one's name without replacing it.
             if (orReplace && !isTemporary) {
@@ -194,6 +209,14 @@ public class CreateTableHandler implements CommandHandler {
                 schema.requireCreatable(Privilege.CREATE_TABLE);
             } else {
                 ddl.checkCreatePrivilege(isHybrid ? Privilege.CREATE_HYBRID_TABLE : Privilege.CREATE_TABLE, schema);
+            }
+            final FrostlakeParser.TagListContext orAlterTags = ctx.or_alter() == null ? null
+                : InlineTags.ownTagList(ctx.tableTailOption());
+            if (orAlterTags != null) {
+                InlineTags.refuseOnOrAlter(orAlterTags, queryExecutor);
+            }
+            if (ctx.or_alter() != null) {
+                OrAlterPolicies.refuseTable(ctx, queryExecutor);
             }
             // Every table in a transient schema or database is transient (documented), TRANSIENT written or not
             // (a schema in a transient database is itself transient). A temporary table stays temporary and a
@@ -280,7 +303,6 @@ public class CreateTableHandler implements CommandHandler {
                     if (!alteredKeys.isEmpty()) {
                         standing.setClusterKeys(alteredKeys, clusterByText(ctx));
                     }
-                    InlineTags.applyFrom(standing, ctx.tableTailOption(), queryExecutor);
                     ConditionalDdlOutcome.alteredInPlace();
                     return null;
                 }
@@ -313,16 +335,30 @@ public class CreateTableHandler implements CommandHandler {
                             grantsSetAside = schema.qualifiedName(existingTable.getName());
                             GrantNames.setAside(catalog, "TABLE", grantsSetAside);
                         }
+                        final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
+                        // The replaced table is kept as a dropped version: SHOW TABLES HISTORY lists it, and an
+                        // UNDROP brings it back once the name is free, the most recently replaced first
+                        // (live-verified).
+                        final DroppedObject replaced = replacedVersion(catalog, databaseName, schema, existingTable,
+                            fullyQualifiedName);
+                        catalog.recordDropped("TABLE:" + fullyQualifiedName, replaced);
                         schema.dropTable(tableName);
                         if (!existingTable.isTemporary()) {
                             MaterializedViewValidity.baseTableDropped(catalog, databaseName, schema.getName(),
                                 existingTable.getName());
                         }
-                        final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
                         // Another session's open transaction that wrote the replaced table commits into it, never
-                        // into the new one, which stays as the CREATE left it (live-verified).
-                        if (queryExecutor.getTransactionManager().setAsideIfWritten(fullyQualifiedName) == null) {
-                            queryExecutor.getStorageEngine().dropTable(fullyQualifiedName);
+                        // into the new one, which stays as the CREATE left it, and the version comes back with
+                        // what it committed (live-verified).
+                        final String setAside =
+                            queryExecutor.getTransactionManager().setAsideIfWritten(fullyQualifiedName);
+                        if (setAside != null) {
+                            replaced.setStorageSetAside(setAside);
+                        } else {
+                            final String kept = queryExecutor.getStorageEngine().keepDropped(fullyQualifiedName);
+                            if (kept != null) {
+                                replaced.keepStorage(fullyQualifiedName, kept);
+                            }
                         }
                         // Discard buffered writes for the replaced table so pre-replace rows from this same
                         // transaction aren't flushed to (or resurrected in) the new table's storage at commit.
@@ -403,18 +439,22 @@ public class CreateTableHandler implements CommandHandler {
                 if (!table.getClusterKeys().isEmpty()) {
                     table.setReclusterSuspended(true);
                 }
-                table.setOwner(FutureGrants.ownerOfNew(catalog, "TABLE", schema, table.getName()));
+                final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "TABLE", schema,
+                    table.getName());
+                table.setOwner(grantsOfNew.owner());
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
                 TableStageOptions.applyFrom(table, ctx.tableTailOption());
                 IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
+                HybridKeys.requireSupportedTypes(table);
                 HybridKeys.requirePrimaryKey(table);
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
                 schema.addTable(table);
+                grantsOfNew.apply();
 
                 final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
                 queryExecutor.getStorageEngine().createTable(fullyQualifiedName, table);
@@ -451,18 +491,22 @@ public class CreateTableHandler implements CommandHandler {
                     table.setComment(comment);
                 }
 
-                table.setOwner(FutureGrants.ownerOfNew(catalog, "TABLE", schema, table.getName()));
+                final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "TABLE", schema,
+                    table.getName());
+                table.setOwner(grantsOfNew.owner());
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
                 TableStageOptions.applyFrom(table, ctx.tableTailOption());
                 IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
+                HybridKeys.requireSupportedTypes(table);
                 HybridKeys.requirePrimaryKey(table);
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
                 schema.addTable(table);
+                grantsOfNew.apply();
 
                 final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
                 queryExecutor.getStorageEngine().createTable(fullyQualifiedName, table);
@@ -536,18 +580,22 @@ public class CreateTableHandler implements CommandHandler {
                     table.setClusterKeys(clusterKeys, clusterByText(ctx));
                 }
 
-                table.setOwner(FutureGrants.ownerOfNew(catalog, "TABLE", schema, table.getName()));
+                final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "TABLE", schema,
+                    table.getName());
+                table.setOwner(grantsOfNew.owner());
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
                 TableStageOptions.applyFrom(table, ctx.tableTailOption());
                 IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
+                HybridKeys.requireSupportedTypes(table);
                 HybridKeys.requirePrimaryKey(table);
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
                 schema.addTable(table);
+                grantsOfNew.apply();
 
                 final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
                 queryExecutor.getStorageEngine().createTable(fullyQualifiedName, table);
@@ -564,10 +612,23 @@ public class CreateTableHandler implements CommandHandler {
                 final String envelopeName = ((parts.length == 3
                         ? queryExecutor.getEngineConfig().getAccountId() + "." : "")
                     + databaseName + "." + schema.getName() + "." + tableName).toUpperCase(Locale.ROOT);
+                // The query fills the columns that are not virtual, in order (see VirtualColumns).
+                final boolean virtual = VirtualColumns.any(table);
+                final List<Object> sourceNullability = new ArrayList<>();
+                for (final ResultSetColumn sourceColumn : resultSet.getColumns()) {
+                    sourceNullability.add(Boolean.valueOf(sourceColumn.canBeNull()));
+                }
+                final List<Object> nullability = virtual ? VirtualColumns.spread(table, sourceNullability)
+                    : sourceNullability;
+                final boolean[] nullableSources = new boolean[nullability.size()];
+                for (int i = 0; i < nullableSources.length; i++) {
+                    nullableSources[i] = Boolean.TRUE.equals(nullability.get(i));
+                }
                 for (final Row resultRow : resultSet.getRows()) {
-                    final Row typedRow = new Row(new ArrayList<>(resultRow.getValues()));
+                    final Row typedRow = new Row(virtual ? VirtualColumns.spread(table, resultRow.getValues())
+                        : new ArrayList<>(resultRow.getValues()));
                     if (ctx.columnList() != null) {
-                        queryExecutor.writeCtasRow(table, typedRow, envelopeName);
+                        queryExecutor.writeCtasRow(table, typedRow, envelopeName, nullableSources);
                     } else {
                         queryExecutor.coerceRowTypesLenient(table, typedRow);
                     }
@@ -627,7 +688,9 @@ public class CreateTableHandler implements CommandHandler {
                     table.setClusterKeys(clusterKeys, clusterByText(ctx));
                 }
 
-                table.setOwner(FutureGrants.ownerOfNew(catalog, "TABLE", schema, table.getName()));
+                final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "TABLE", schema,
+                    table.getName());
+                table.setOwner(grantsOfNew.owner());
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
                 TableStageOptions.applyFrom(table, ctx.tableTailOption());
@@ -636,11 +699,13 @@ public class CreateTableHandler implements CommandHandler {
                 DefaultDdlCollation.apply(table, table.getColumns(), schema, catalog);
                 MaskedArguments.requireNotMaskedAndConditional(catalog, table);
                 table.setHybrid(isHybrid);
+                HybridKeys.requireSupportedTypes(table);
                 HybridKeys.requirePrimaryKey(table);
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
                 schema.addTable(table);
+                grantsOfNew.apply();
 
                 final String fullyQualifiedName = QualifiedName.key(databaseName, schema.getName(), tableName);
                 queryExecutor.getStorageEngine().createTable(fullyQualifiedName, table);
@@ -664,6 +729,15 @@ public class CreateTableHandler implements CommandHandler {
             }
         }
         return null;
+    }
+
+    /** The dropped version a replaced table leaves: its rows, and the retention its database and schema give it. */
+    private DroppedObject replacedVersion(final Catalog catalog, final String databaseName, final Schema schema,
+                                          final Table table, final String fullyQualifiedName) {
+        final TableStorage storage = queryExecutor.getStorageEngine().getTableStorage(fullyQualifiedName);
+        final List<Row> rows = storage == null ? new ArrayList<Row>() : new ArrayList<Row>(storage.scan());
+        return new DroppedObject(table, rows,
+            RetentionChain.effectiveDays(catalog.getDatabase(databaseName), schema, table));
     }
 
     /**
@@ -799,7 +873,8 @@ public class CreateTableHandler implements CommandHandler {
             return ctx.columnListOptional().namePart(slot).getText();
         }
         if (ctx.columnList() != null) {
-            final List<TableColumn> declared = columnParser.parseColumnList(ctx.columnList(), ctx.ICEBERG() != null);
+            final List<TableColumn> declared = VirtualColumns.writtenColumns(
+                columnParser.parseColumnList(ctx.columnList(), ctx.ICEBERG() != null));
             return slot < declared.size() ? declared.get(slot).getName() : null;
         }
         if (ctx.selectStatement() == null || ctx.selectStatement().selectOperand().size() != 1) {
@@ -824,7 +899,8 @@ public class CreateTableHandler implements CommandHandler {
         if (snapshot == null) {
             return;
         }
-        final List<TableColumn> declared = columnParser.parseColumnList(ctx.columnList(), ctx.ICEBERG() != null);
+        final List<TableColumn> declared = VirtualColumns.writtenColumns(
+            columnParser.parseColumnList(ctx.columnList(), ctx.ICEBERG() != null));
         for (int i = 0; i < declared.size() && i < snapshot.getColumns().size(); i++) {
             ColumnTypeFamilies.rejectIncompatible(declared.get(i).getDataType(),
                 snapshot.getColumns().get(i).getStaticType());
@@ -840,7 +916,9 @@ public class CreateTableHandler implements CommandHandler {
         if (ctx.columnListOptional() != null) {
             declared = ctx.columnListOptional().namePart().size();
         } else if (ctx.columnList() != null) {
-            declared = columnParser.parseColumnList(ctx.columnList(), ctx.ICEBERG() != null).size();
+            // A virtual column takes no value of the query's (see VirtualColumns).
+            declared = VirtualColumns.writtenColumns(
+                columnParser.parseColumnList(ctx.columnList(), ctx.ICEBERG() != null)).size();
         } else {
             return;
         }
@@ -1048,8 +1126,28 @@ public class CreateTableHandler implements CommandHandler {
             } else if ("ENABLE_SCHEMA_EVOLUTION".equalsIgnoreCase(key)) {
                 // Recorded at CREATE too, so SHOW TABLES answers Y without an ALTER first.
                 table.setSchemaEvolution("TRUE".equalsIgnoreCase(valueText));
+            } else if (writesComment(tail) && commentWord(tail.copyOptionValue()) != null) {
+                // A comment written as a word is the word as a name reads it: COMMENT = abc comments ABC
+                // (live-verified).
+                table.setComment(commentWord(tail.copyOptionValue()));
             }
         }
+    }
+
+    /** Whether a property written name = value names the table's COMMENT. */
+    private static boolean writesComment(final FrostlakeParser.TableTailOptionContext tail) {
+        return tail.optionKey() != null && COMMENT.equals(ParameterRegistry.canonical(tail.optionKey().getText()));
+    }
+
+    /** A comment written as a word, read as a name is ({@code abc} is ABC), or null when the value is no word. */
+    private static String commentWord(final FrostlakeParser.CopyOptionValueContext value) {
+        if (value.qualifiedName() != null) {
+            return String.join(".", ParseTreeText.qualifiedNameParts(value.qualifiedName()));
+        }
+        if (value.CONTINUE() != null || value.AUTO() != null || value.DEFAULT() != null) {
+            return value.getText().toUpperCase(Locale.ROOT);
+        }
+        return null;
     }
 
     /** CREATE TABLE ... WITH JOIN POLICY p: the ALTER form's twin. */
@@ -1059,11 +1157,12 @@ public class CreateTableHandler implements CommandHandler {
                 continue;
             }
             final String written = getText(tail.joinPolicyClause().qualifiedName());
+            // Named exactly, and recorded so (live-verified).
             if (catalog.findJoinPolicy(written) == null) {
                 throw new RuntimeException(SqlCompilationError.doesNotExist("Join policy",
-                    catalog.qualifiedObjectName(written)));
+                    catalog.qualifiedExactName(written)));
             }
-            table.setJoinPolicyName(catalog.qualifiedObjectName(written));
+            table.setJoinPolicyName(catalog.qualifiedExactName(written));
         }
     }
 
@@ -1124,12 +1223,16 @@ public class CreateTableHandler implements CommandHandler {
      */
     private static List<FrostlakeParser.CommentClauseContext> tailComments(final FrostlakeParser.CreateStatementContext ctx) {
         final List<FrostlakeParser.CommentClauseContext> comments = new ArrayList<>(ctx.commentClause());
+        int written = 0;
         for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
             if (tail.commentClause() != null) {
                 comments.add(tail.commentClause());
+            } else if (writesComment(tail)) {
+                // A comment written as a word or NULL is the same property.
+                written++;
             }
         }
-        if (comments.size() > 1) {
+        if (comments.size() + written > 1) {
             throw new RuntimeException(SqlCompilationError.of("duplicate property 'COMMENT';"));
         }
         return comments;
@@ -1189,10 +1292,8 @@ public class CreateTableHandler implements CommandHandler {
             throw new RuntimeException(SqlCompilationError.of("syntax error line " + shown[0] + " at position "
                 + shown[1] + " unexpected '" + first.getText() + "'."));
         }
+        requireTemplateTableFunction(ctx);
         final FrostlakeParser.TableSourceContext source = firstSource(query);
-        if (source == null || !isTableFunction(source)) {
-            throw new RuntimeException("Unsupported feature 'Table function must be used in the TEMPLATE sub-query'.");
-        }
         if (!readsInferSchema(source)) {
             throw new RuntimeException(
                 "Unsupported feature 'INFER_SCHEMA function must be used in the TEMPLATE sub-query'.");
@@ -1261,6 +1362,25 @@ public class CreateTableHandler implements CommandHandler {
     }
 
     /** The query a parenthesized statement holds — one operand in parentheses and nothing beside it — or null. */
+    /**
+     * Refuses a bracketed template query that reads no table function — before anything else of the statement is
+     * judged, the kind of statement a SQL function's block body refuses included (live-verified: {@code BEGIN CREATE
+     * TABLE z USING TEMPLATE (SELECT 1); …} is refused for the template, not as a CREATE_TABLE). A query that is no
+     * bracketed SELECT is left to the statement's own reading.
+     *
+     * @param ctx the CREATE … USING TEMPLATE statement
+     */
+    static void requireTemplateTableFunction(final FrostlakeParser.CreateStatementContext ctx) {
+        final FrostlakeParser.SelectStatementContext query = ctx.selectStatement();
+        if (ctx.TEMPLATE() == null || query == null || parenthesized(query) == null) {
+            return;
+        }
+        final FrostlakeParser.TableSourceContext source = firstSource(query);
+        if (source == null || !isTableFunction(source)) {
+            throw new RuntimeException("Unsupported feature 'Table function must be used in the TEMPLATE sub-query'.");
+        }
+    }
+
     private static FrostlakeParser.SelectStatementContext parenthesized(
             final FrostlakeParser.SelectStatementContext statement) {
         if (statement.withClause() != null || statement.selectOperand().size() != 1

@@ -52,12 +52,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * thread — the JDBC norm — and BEGIN/COMMIT/ROLLBACK stay per-client; uncommitted writes ride the
  * transaction's write-set and are invisible to the other clients until COMMIT (READ COMMITTED).
  *
- * <p>The one measured divergence from a real account sits in
- * {@link #overlappingTransactionsLoseTheFirstIncrement}: Frostlake has no lock enforcement, so two
- * overlapping transactions incrementing the same row both read the same committed value and the
- * first commit's increment is overwritten — a real account's row lock would block the second
- * UPDATE until the first commit and land both. Pinned as-is; row locking is the known remaining
- * ACID work.
+ * <p>A statement that meets a table another client's open transaction has written waits for that
+ * transaction, giving the monitor up meanwhile, and runs over what it committed: two overlapping
+ * transactions incrementing the same row land both increments, as on a real account
+ * ({@link #overlappingTransactionsLandBothIncrements}).
  */
 public class ConcurrentClientsDmlTest {
 
@@ -310,69 +308,65 @@ public class ConcurrentClientsDmlTest {
     }
 
     /**
-     * The measured DIVERGENCE: two overlapping transactions increment the same row, and the first
-     * commit's increment is lost — both read the same committed value, so the final value is +1,
-     * not +2. A real account's row lock blocks the second UPDATE until the first COMMIT and lands
-     * both. Frostlake has no lock enforcement (the remaining ACID work); this pins today's
-     * behavior so a future locking implementation shows up as this test CHANGING, deliberately.
+     * Two overlapping transactions increment the same row: the second's UPDATE waits for the first's
+     * lock, runs over the row the first committed and lands its increment on top, so the row ends at
+     * +2 (live-verified).
      */
     @Test
-    public void overlappingTransactionsLoseTheFirstIncrement() throws Exception {
+    public void overlappingTransactionsLandBothIncrements() throws Exception {
         createTable("CREATE TABLE t (id INTEGER, v INTEGER)");
         try (final Statement s = setup.createStatement()) {
             s.execute("USE SCHEMA cdb.cs");
             s.execute("INSERT INTO t VALUES (1, 0)");
         }
-        final CountDownLatch firstUpdated = new CountDownLatch(1);
-        final CountDownLatch secondUpdated = new CountDownLatch(1);
-        final CountDownLatch firstCommitted = new CountDownLatch(1);
+        final CountDownLatch secondDone = new CountDownLatch(1);
         final List<Throwable> failures = Collections.synchronizedList(new ArrayList<Throwable>());
-
-        final Thread first = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try (final Statement s = clients.get(0).createStatement()) {
-                    s.execute("BEGIN");
-                    s.execute("UPDATE t SET v = v + 1 WHERE id = 1");
-                    firstUpdated.countDown();
-                    // The second transaction updates the SAME row before this one commits.
-                    assertTrue(secondUpdated.await(30, TimeUnit.SECONDS), "second txn never updated");
-                    s.execute("COMMIT");
-                    firstCommitted.countDown();
-                } catch (final Throwable t) {
-                    failures.add(t);
-                    firstUpdated.countDown();
-                    firstCommitted.countDown();
-                }
-            }
-        }, "txn-first");
         final Thread second = new Thread(new Runnable() {
             @Override
             public void run() {
                 try (final Statement s = clients.get(1).createStatement()) {
-                    assertTrue(firstUpdated.await(30, TimeUnit.SECONDS), "first txn never updated");
                     s.execute("BEGIN");
-                    // Reads COMMITTED state (v = 0): the first transaction's +1 is still pending.
+                    // Waits for the first transaction's lock, then reads the row it committed (v = 1).
                     s.execute("UPDATE t SET v = v + 1 WHERE id = 1");
-                    secondUpdated.countDown();
-                    assertTrue(firstCommitted.await(30, TimeUnit.SECONDS), "first txn never committed");
                     s.execute("COMMIT");
                 } catch (final Throwable t) {
                     failures.add(t);
-                    secondUpdated.countDown();
+                } finally {
+                    secondDone.countDown();
                 }
             }
         }, "txn-second");
-        first.start();
-        second.start();
-        first.join(TimeUnit.SECONDS.toMillis(60));
-        second.join(TimeUnit.SECONDS.toMillis(60));
+
+        try (final Statement s = clients.get(0).createStatement()) {
+            s.execute("BEGIN");
+            s.execute("UPDATE t SET v = v + 1 WHERE id = 1");
+            second.start();
+            // The first commits only once the second's UPDATE waits for its lock.
+            assertTrue(waitingLockListed(), "the second UPDATE never waited for the first's lock");
+            s.execute("COMMIT");
+        }
+        assertTrue(secondDone.await(60, TimeUnit.SECONDS), "second txn never finished");
         assertTrue(failures.isEmpty(), "transaction clients failed: " + failures);
 
         final long finalValue = scalarLong("SELECT v FROM t WHERE id = 1");
         logger.info("overlapping increments settled at v = {}", finalValue);
-        assertEquals(1L, finalValue,
-            "both transactions read committed v=0, so the second commit overwrites the first"
-                + " increment; a locking implementation would land 2 and should update this pin");
+        assertEquals(2L, finalValue, "the waiting UPDATE must run over the first commit's increment");
+    }
+
+    /** Whether SHOW LOCKS lists a WAITING lock, polled for up to 30 seconds. */
+    private boolean waitingLockListed() throws SQLException, InterruptedException {
+        final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        while (System.nanoTime() < deadline) {
+            try (final Statement s = setup.createStatement();
+                 final ResultSet rs = s.executeQuery("SHOW LOCKS")) {
+                while (rs.next()) {
+                    if ("WAITING".equals(rs.getString("status"))) {
+                        return true;
+                    }
+                }
+            }
+            Thread.sleep(20L);
+        }
+        return false;
     }
 }

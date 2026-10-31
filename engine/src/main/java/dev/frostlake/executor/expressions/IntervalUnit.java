@@ -100,4 +100,23 @@ public enum IntervalUnit {
     public boolean isWholeDay() {
         return this == YEAR || this == QUARTER || this == MONTH || this == WEEK || this == DAY;
     }
+
+    /**
+     * This unit as a planned shift names it: in the plural, and MILLIS, MICROS and NANOS for the three smallest —
+     * where a difference spells all three out in full.
+     *
+     * @return its name inside {@code DATE_ADD…TO…}
+     */
+    public String shiftName() {
+        switch (this) {
+            case MILLISECOND:
+                return "MILLIS";
+            case MICROSECOND:
+                return "MICROS";
+            case NANOSECOND:
+                return "NANOS";
+            default:
+                return name() + "S";
+        }
+    }
 }

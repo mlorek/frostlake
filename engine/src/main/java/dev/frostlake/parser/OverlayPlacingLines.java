@@ -27,19 +27,27 @@ import java.util.Locale;
 
 /**
  * An OVERLAY written in the ANSI PLACING form under brackets of a select item: no name reads that form, so the PLACING
- * is refused, and live's recovery then names what the brackets around the call decide (all live-verified):
+ * is refused, and live's recovery then names what the brackets around the call decide. The brackets are read from the
+ * call outwards, C a cast's or a TRY_CAST's, F a call's, P a plain parenthesis (all live-verified):
  *
  * <pre>
- *   SELECT CAST(OVERLAY(b PLACING 'x' FROM 2) AS INT) FROM t          'PLACING', then the 'x', then the 2
- *   SELECT UPPER(CAST(OVERLAY(b PLACING 'x' FROM 2) AS INT)) FROM t   'PLACING', then the 'x', then the 2
- *   SELECT UPPER(OVERLAY(b PLACING 'x' FROM 2)) FROM t                'PLACING', then the 2
- *   SELECT UPPER(UPPER(OVERLAY(b PLACING 'x' FROM 2))) FROM t         'PLACING', then the inner call's ')'
- *   SELECT CAST(UPPER(OVERLAY(b PLACING 'x' FROM 2)) AS INT) FROM t   'PLACING', then the cast's ')'
- *   SELECT (OVERLAY(b PLACING 'x' FROM 2)) FROM t                     'PLACING', then the 'x'
+ *   C, then anything around it   'PLACING', then the PLACING's value, then the FROM's
+ *   F, F P                       'PLACING', then the FROM's value
+ *   F F, F C F                   'PLACING', then the ')' of the bracket around the call
+ *   F F F, F C                   'PLACING', then the ')' of the bracket around that one
+ *   P                            'PLACING', then the PLACING's value
+ *   P P, P F, P C                'PLACING', then the FROM's value
+ *   CASE WHEN … THEN the call    'PLACING', then the PLACING's value
  * </pre>
  *
- * The call's operand is one name, the PLACING's value one literal and the FROM's one number, and each bracket holds
- * the one beneath it alone; any other stack keeps the parse's own lines.
+ * A FOR tail adds its value's line, after a call's or a cast's. The call's operand is one name, the PLACING's value
+ * one literal and the FROM's one number, except under a call alone, where each may be an expression and its first
+ * token is named. The item stands first in the select list, or second after an item of one token, and ends at the
+ * FROM, or at an AS alias or a + of a number before it; any other shape keeps the parse's own lines.
+ *
+ * <p>In a block's statement the statement's own lines are the same, and the block's recovery names more after them:
+ * the block's END after a SELECT the block ends with, and after a cast in a RESULTSET's bracketed query the cast's AS
+ * and its closing bracket (live-verified). A block's other shapes keep the parse's own lines.
  */
 public final class OverlayPlacingLines {
 
@@ -74,20 +82,24 @@ public final class OverlayPlacingLines {
                 break;
             }
         }
-        // OVERLAY ( name PLACING value FROM number )
-        if (placing < 4 || placing + 5 >= spoken.size() || !isWord(spoken.get(placing), "PLACING")
-                || spoken.get(placing - 1).getType() != FrostlakeLexer.IDENTIFIER
-                || spoken.get(placing - 2).getType() != FrostlakeLexer.LPAREN
-                || !isWord(spoken.get(placing - 3), "OVERLAY")
-                || !isLiteral(spoken.get(placing + 1).getType())
-                || spoken.get(placing + 2).getType() != FrostlakeLexer.FROM
-                || spoken.get(placing + 3).getType() != FrostlakeLexer.INTEGER_LITERAL
-                || spoken.get(placing + 4).getType() != FrostlakeLexer.RPAREN) {
+        if (placing < 3 || !isWord(spoken.get(placing), "PLACING")) {
             return;
         }
-        final List<Token> stacked = stackedLines(spoken, placing);
+        final OverlayCall call = OverlayCall.around(spoken, placing);
+        if (call == null) {
+            return;
+        }
+        final int start = spoken.get(0).getType() == FrostlakeLexer.SELECT ? 0 : blockSelect(spoken, placing);
+        final List<Token> stacked = start < 0 ? null : stackedLines(spoken, call, start);
         if (stacked == null) {
             return;
+        }
+        if (start > 0) {
+            final List<Token> recovered = blockRecovery(spoken, call, start);
+            if (recovered == null) {
+                return;
+            }
+            stacked.addAll(recovered);
         }
         final List<String> lines = new ArrayList<>();
         lines.add(SyntaxErrorListener.sentence(spoken.get(placing)));
@@ -98,18 +110,70 @@ public final class OverlayPlacingLines {
     }
 
     /**
-     * The tokens named after the PLACING, read from the brackets around the call — from the call outwards, C a cast's,
-     * F a call's, P a plain parenthesis — up to the first select item of a statement that is the text's first; null
-     * for a stack that was not measured.
+     * The SELECT that opens the block statement holding the PLACING: one written after the block's BEGIN or a
+     * statement's semicolon, or the query a RESULTSET is assigned in brackets; -1 for any other place.
      */
-    private static List<Token> stackedLines(final List<Token> spoken, final int placing) {
+    private static int blockSelect(final List<Token> spoken, final int placing) {
+        if (spoken.get(0).getType() != FrostlakeLexer.BEGIN) {
+            return -1;
+        }
+        for (int i = placing - 1; i > 0; i--) {
+            if (spoken.get(i).getType() != FrostlakeLexer.SELECT) {
+                continue;
+            }
+            final int before = spoken.get(i - 1).getType();
+            if (before == FrostlakeLexer.BEGIN || before == FrostlakeLexer.SEMI) {
+                return i;
+            }
+            return before == FrostlakeLexer.LPAREN && i >= 3 && spoken.get(i - 2).getType() == FrostlakeLexer.COLON_EQ
+                && spoken.get(i - 3).getType() == FrostlakeLexer.RESULTSET ? i : -1;
+        }
+        return -1;
+    }
+
+    /**
+     * What a block's recovery names after a statement's own lines: the block's END after a SELECT the block ends with,
+     * the cast's AS and its closing bracket after a cast that opens a RESULTSET's bracketed query; null for any other
+     * shape.
+     */
+    private static List<Token> blockRecovery(final List<Token> spoken, final OverlayCall call, final int start) {
+        final List<Token> named = new ArrayList<>();
+        final int close = call.getClose();
+        if (spoken.get(start - 1).getType() == FrostlakeLexer.LPAREN) {
+            final int cast = spoken.get(start + 1).getType();
+            if ((cast != FrostlakeLexer.CAST && cast != FrostlakeLexer.TRY_CAST) || call.getOpen() != start + 4
+                    || close + 3 >= spoken.size() || spoken.get(close + 1).getType() != FrostlakeLexer.AS
+                    || spoken.get(close + 3).getType() != FrostlakeLexer.RPAREN) {
+                return null;
+            }
+            named.add(spoken.get(close + 1));
+            named.add(spoken.get(close + 3));
+            return named;
+        }
+        for (int i = close + 1; i + 1 < spoken.size(); i++) {
+            if (spoken.get(i).getType() == FrostlakeLexer.SEMI) {
+                if (spoken.get(i + 1).getType() != FrostlakeLexer.END) {
+                    return null;
+                }
+                named.add(spoken.get(i + 1));
+                return named;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The tokens named after the PLACING, read from the brackets around the call of the select item a SELECT at
+     * {@code start} lists; null for a shape not measured.
+     */
+    private static List<Token> stackedLines(final List<Token> spoken, final OverlayCall call, final int start) {
         final StringBuilder stack = new StringBuilder();
         final List<Token> closes = new ArrayList<>();
-        int left = placing - 4;
-        int right = placing + 5;
+        int left = call.getOpen() - 2;
+        int right = call.getClose() + 1;
         while (left >= 0 && spoken.get(left).getType() == FrostlakeLexer.LPAREN && right < spoken.size()) {
             final int opener = left > 0 ? spoken.get(left - 1).getType() : Token.INVALID_TYPE;
-            if (opener == FrostlakeLexer.CAST) {
+            if (opener == FrostlakeLexer.CAST || opener == FrostlakeLexer.TRY_CAST) {
                 if (right + 2 >= spoken.size() || spoken.get(right).getType() != FrostlakeLexer.AS
                         || spoken.get(right + 2).getType() != FrostlakeLexer.RPAREN) {
                     return null;
@@ -137,42 +201,84 @@ public final class OverlayPlacingLines {
                 left -= 1;
             }
         }
-        if (left != 0 || spoken.get(0).getType() != FrostlakeLexer.SELECT || right >= spoken.size()
-                || spoken.get(right).getType() != FrostlakeLexer.FROM) {
+        final String kinds = stack.toString();
+        final List<Token> named = new ArrayList<>();
+        if (kinds.isEmpty()) {
+            // SELECT CASE WHEN x THEN OVERLAY(…) END FROM t names the PLACING's value.
+            if (start == 0 && call.isSimple() && call.getFor() < 0 && left == 4
+                    && spoken.get(0).getType() == FrostlakeLexer.SELECT
+                    && spoken.get(1).getType() == FrostlakeLexer.CASE && spoken.get(2).getType() == FrostlakeLexer.WHEN
+                    && spoken.get(left).getType() == FrostlakeLexer.THEN && right + 1 < spoken.size()
+                    && spoken.get(right).getType() == FrostlakeLexer.END
+                    && spoken.get(right + 1).getType() == FrostlakeLexer.FROM) {
+                named.add(spoken.get(call.getValue()));
+                return named;
+            }
             return null;
         }
-        final Token value = spoken.get(placing + 1);
-        final Token fromValue = spoken.get(placing + 3);
-        final List<Token> named = new ArrayList<>();
-        switch (stack.toString()) {
-            case "C":
-            case "CF":
-                named.add(value);
-                named.add(fromValue);
-                return named;
-            case "F":
-                named.add(fromValue);
-                return named;
-            case "FF":
-                named.add(closes.get(0));
-                return named;
-            case "FC":
-                named.add(closes.get(1));
-                return named;
-            case "P":
-                named.add(value);
-                return named;
-            default:
-                return null;
+        if (!firstOrSecondItem(spoken, left, start) || !endsAtFrom(spoken, right)
+                || !call.isSimple() && !"F".equals(kinds)
+                || call.getFor() >= 0 && !"F".equals(kinds) && kinds.charAt(0) != 'C') {
+            return null;
         }
+        final Token value = spoken.get(call.getValue());
+        final Token fromValue = spoken.get(call.getFromValue());
+        if (kinds.charAt(0) == 'C') {
+            named.add(value);
+            named.add(fromValue);
+        } else {
+            switch (kinds) {
+                case "F":
+                case "FP":
+                case "PP":
+                case "PF":
+                case "PC":
+                    named.add(fromValue);
+                    break;
+                case "FF":
+                case "FCF":
+                    named.add(closes.get(0));
+                    break;
+                case "FFF":
+                case "FC":
+                    named.add(closes.get(1));
+                    break;
+                case "P":
+                    named.add(value);
+                    break;
+                default:
+                    return null;
+            }
+        }
+        if (call.getFor() >= 0) {
+            named.add(spoken.get(call.getFor() + 1));
+        }
+        return named;
     }
 
-    private static boolean isWord(final Token token, final String word) {
+    /** Whether the item begins the select list, or follows a first item of one token and its comma. */
+    private static boolean firstOrSecondItem(final List<Token> spoken, final int left, final int start) {
+        if (spoken.get(start).getType() != FrostlakeLexer.SELECT) {
+            return false;
+        }
+        return left == start || left == start + 2 && spoken.get(start + 2).getType() == FrostlakeLexer.COMMA;
+    }
+
+    /** Whether the item ends at the FROM, or at an AS alias or a + of a number before it. */
+    private static boolean endsAtFrom(final List<Token> spoken, final int right) {
+        if (right < spoken.size() && spoken.get(right).getType() == FrostlakeLexer.FROM) {
+            return true;
+        }
+        if (right + 2 >= spoken.size() || spoken.get(right + 2).getType() != FrostlakeLexer.FROM) {
+            return false;
+        }
+        final int first = spoken.get(right).getType();
+        final int second = spoken.get(right + 1).getType();
+        return first == FrostlakeLexer.AS && second == FrostlakeLexer.IDENTIFIER
+            || first == FrostlakeLexer.PLUS && second == FrostlakeLexer.INTEGER_LITERAL;
+    }
+
+    static boolean isWord(final Token token, final String word) {
         return token.getType() == FrostlakeLexer.IDENTIFIER && word.equals(token.getText().toUpperCase(Locale.ROOT));
-    }
-
-    private static boolean isLiteral(final int type) {
-        return type == FrostlakeLexer.STRING_LITERAL || type == FrostlakeLexer.INTEGER_LITERAL
-            || type == FrostlakeLexer.FLOAT_LITERAL;
     }
 }

@@ -20,6 +20,7 @@ import com.snowflake.snowpark_java.Session;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.executor.udf.HandlerArguments;
 import dev.frostlake.executor.udf.JarHandlerLoader;
+import dev.frostlake.executor.udf.JavaHandlerFailure;
 import dev.frostlake.executor.udf.UdfConsoleCapture;
 import dev.frostlake.metastore.model.Procedure;
 import org.slf4j.Logger;
@@ -60,9 +61,9 @@ public final class ScalaProcedureExecutor {
         final String methodName = handler.substring(dot + 1);
 
         try {
-            // Inline bodies compile ONCE (cached); jar handlers load from IMPORTS. Avoids per-row recompiles.
+            // An inline body compiles once and each CALL loads its classes anew; jar handlers load from IMPORTS.
             final Class<?> compiled = procedure.getImports().isEmpty()
-                ? ScalaCompiler.compileCached(procedure.getBody(), className,
+                ? ScalaCompiler.callClass(procedure.getBody(), className,
                     " in function " + procedure.getName() + " with handler " + handler)
                 : JarHandlerLoader.load(engine != null ? engine.localImports(procedure.getImports())
                         : procedure.getImports(), className,
@@ -99,20 +100,18 @@ public final class ScalaProcedureExecutor {
 
         final Method target = findMethod(clazz, methodName, args.length);
         // Each argument as the class the handler declares for it, as a Java handler's are.
-        final Object[] adapted = HandlerArguments.adapt(target.getParameterTypes(), args, procedure.getName(),
-            procedure.getHandler());
+        final Object[] adapted = HandlerArguments.adapt(target.getParameterTypes(), args, procedure.getParameters(),
+            procedure.getName(), procedure.getHandler());
         UdfConsoleCapture.enter();
         try {
             return target.invoke(instance, adapted);
         } catch (final InvocationTargetException e) {
-            final Throwable cause = e.getCause();
-            if (cause instanceof RuntimeException re) {
-                throw re;
-            }
-            if (cause != null) {
-                throw new RuntimeException(cause.getMessage(), cause);
-            }
-            throw e;
+            // What the handler raised reaches SQL as its report, as a function's handler's does (live-verified),
+            // a statement it ran through its session that failed included.
+            final Throwable cause = e.getCause() != null ? e.getCause() : e;
+            throw new RuntimeException(JavaHandlerFailure.report(cause, clazz, " in function " + procedure.getName()
+                + " with handler " + procedure.getHandler(), ScalaCompiler.SOURCE_NAME,
+                ScalaCompiler.forwarderFrame(clazz, methodName)), cause);
         } finally {
             UdfConsoleCapture.exit();
         }

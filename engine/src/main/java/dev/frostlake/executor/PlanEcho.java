@@ -28,6 +28,7 @@ import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.UnaryOperator;
+import dev.frostlake.executor.expressions.UnsupportedFeatureException;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.window.BooleanArgumentWindowFunctions;
 import dev.frostlake.metastore.Catalog;
@@ -60,8 +61,9 @@ import org.antlr.v4.runtime.misc.Interval;
  *   OVER (PARTITION BY (g) ORDER BY n)   OVER (PARTITION BY EB.G ORDER BY EB.N ASC NULLS LAST)
  * </pre>
  *
- * <p>So ASC defaults to NULLS LAST and DESC to NULLS FIRST — the same defaults the sort itself uses —
- * and the direction is printed whether or not it was written. A PARTITION BY key takes neither, and
+ * <p>So ASC defaults to NULLS LAST and DESC to NULLS FIRST — the same defaults the sort itself uses, the
+ * other way round under DEFAULT_NULL_ORDERING = 'FIRST' (see {@link SessionNullOrdering}) — and the
+ * direction is printed whether or not it was written. A PARTITION BY key takes neither, and
  * its parentheses are dropped. Three things present in the source do NOT survive into a window echo:
  * the FRAME ({@code ROWS BETWEEN …}, {@code RANGE …}), the null treatment
  * ({@code IGNORE NULLS} / {@code RESPECT NULLS}), and all original spacing. DISTINCT does survive.
@@ -175,6 +177,19 @@ final class PlanEcho {
      * @param call the call
      */
     void refuseArgumentFamilies(final ParserRuleContext call) {
+        refuseArgumentTypes(call, false);
+    }
+
+    /**
+     * {@link #refuseArgumentFamilies}, and with {@code strict} the call's every argument type and its own type as
+     * well: an aggregate is typed whole before the place it stands in is judged — {@code VECTOR_AVG} over a VARIANT,
+     * {@code BITAND_AGG} over a BOOLEAN, {@code BOOLAND} over BOOLEANs and an AVG whose intermediate type no NUMBER
+     * holds are refused for the type (live-verified).
+     *
+     * @param call   the call
+     * @param strict whether the arguments' types and the call's own are judged too
+     */
+    void refuseArgumentTypes(final ParserRuleContext call, final boolean strict) {
         final Expression parsed;
         try {
             parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(call));
@@ -185,8 +200,13 @@ final class PlanEcho {
             new SourcePosition(call.getStart().getLine(), call.getStart().getCharPositionInLine()));
         try {
             printer.rejectArgumentFamilies(parsed);
+            if (strict) {
+                printer.validateStrict(parsed);
+                printer.inferStaticType(parsed);
+            }
         } catch (final RuntimeException refused) {
-            if (SqlCompilationError.isCompilationError(refused.getMessage())) {
+            if (SqlCompilationError.isCompilationError(refused.getMessage())
+                    || refused instanceof UnsupportedFeatureException) {
                 throw refused;
             }
         } finally {
@@ -438,7 +458,7 @@ final class PlanEcho {
             final Boolean nullsFirst = ValueComparisons.nullsFirstFlag(item);
             text.append(print(KeyContexts.of(item)))
                 .append(ascending ? " ASC NULLS " : " DESC NULLS ")
-                .append((nullsFirst != null ? nullsFirst.booleanValue() : !ascending) ? "FIRST" : "LAST");
+                .append(SessionNullOrdering.nullsFirst(ascending, nullsFirst) ? "FIRST" : "LAST");
         }
     }
 

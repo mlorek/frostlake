@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.ApproximateValues;
 
@@ -64,12 +65,12 @@ public class Div0 extends NumericArgumentFunction {
             return divisor == 0.0 ? Double.valueOf(0.0)
                 : Double.valueOf(ApproximateValues.written(dividendArg).doubleValue() / divisor);
         }
-        final BigDecimal divisor = new BigDecimal(divisorArg.toString());
+        final BigDecimal divisor = DecimalText.parse(divisorArg.toString());
         // Both DIV0 and DIV0NULL return 0 for a zero divisor instead of raising an error.
         if (divisor.compareTo(BigDecimal.ZERO) == 0) {
             return zeroAtDerivedScale(dividendArg);
         }
-        final BigDecimal dividend = new BigDecimal(dividendArg.toString());
+        final BigDecimal dividend = DecimalText.parse(dividendArg.toString());
         return SharedFunctionHelpers.divideWithSnowflakeScale(dividend, divisor);
     }
 
@@ -79,7 +80,7 @@ public class Div0 extends NumericArgumentFunction {
      * 0.000000000000 on the account, the quotient's own scale rather than a bare 0.
      */
     private static BigDecimal zeroAtDerivedScale(final Object dividendArg) {
-        final int dividendScale = Math.max(new BigDecimal(dividendArg.toString()).scale(), 0);
+        final int dividendScale = Math.max(DecimalText.parse(dividendArg.toString()).scale(), 0);
         return BigDecimal.ZERO.setScale(Math.max(dividendScale, Math.min(dividendScale + 6, 12)));
     }
 

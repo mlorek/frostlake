@@ -56,6 +56,8 @@ public class DroppedObject {
      * for every other kind, and for a version a snapshot older than the token kept.
      */
     private final String stageToken;
+    /** The rows of a version kept only to be listed (see {@link #listedOnly}), or -1 for one that keeps its rows. */
+    private final long listedRows;
 
     /**
      * Where the dropped table's storage waits while other sessions' open transactions that wrote it still commit
@@ -133,6 +135,34 @@ public class DroppedObject {
         this.retentionDays = retentionDays;
         this.droppedOn = droppedOn;
         this.stageToken = stageToken;
+        this.listedRows = -1L;
+    }
+
+    /** A version kept only to be listed: see {@link #listedOnly}. */
+    private DroppedObject(final Object object, final Instant droppedOn, final int retentionDays,
+                          final long listedRows) {
+        this.object = object;
+        this.rows = null;
+        this.tableRows = null;
+        this.hiddenTableRows = null;
+        this.retentionDays = retentionDays;
+        this.droppedOn = droppedOn;
+        this.stageToken = null;
+        this.listedRows = listedRows;
+    }
+
+    /**
+     * This version as SHOW ... HISTORY lists it and nothing more: its rows and stage files gone, its row count kept.
+     *
+     * @return the listing
+     */
+    public DroppedObject listedOnly() {
+        return new DroppedObject(object, droppedOn, retentionDays, rowCount());
+    }
+
+    /** The rows the version had when it was dropped, as SHOW ... HISTORY counts them. */
+    public long rowCount() {
+        return rows != null ? rows.size() : Math.max(listedRows, 0L);
     }
 
     /**

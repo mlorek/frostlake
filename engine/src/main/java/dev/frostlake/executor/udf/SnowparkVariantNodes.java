@@ -32,8 +32,11 @@ import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.sql.Time;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Date;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -87,8 +90,9 @@ public final class SnowparkVariantNodes {
 
     /**
      * @param value any value
-     * @return the tree it makes: a map an object by its keys' texts, with a {@code Variant} among its values as
-     *         the value that holds, and anything else as JSON writes it
+     * @return the tree it makes: a map an object by its keys' texts and an array of objects an array, with a
+     *         {@code Variant} among their members as the value that holds, and anything else as JSON writes it
+     *         (live-verified: {@code new Variant((Object) new Object[] {new Variant(1)})} is {@code [1]})
      */
     public static JsonNode ofObject(final Object value) {
         if (value instanceof Map) {
@@ -98,22 +102,33 @@ public final class SnowparkVariantNodes {
             }
             return object;
         }
-        return tree(value);
+        if (value instanceof Object[]) {
+            return ofElements(Arrays.asList((Object[]) value));
+        }
+        return tree(value, new ArrayList<String>());
     }
 
     private static JsonNode member(final Object value) {
-        return value instanceof Variant ? ((Variant) value).asJsonNode() : tree(value);
+        return value instanceof Variant ? ((Variant) value).asJsonNode() : tree(value, new ArrayList<String>());
     }
 
-    /** A value as JSON writes it: a date its milliseconds, bytes a binary, a collection an array. */
-    private static JsonNode tree(final Object value) {
+    /**
+     * A value as JSON writes it: a date its milliseconds, bytes a binary, a collection an array. A {@code Variant}
+     * within is no value JSON writes, refused with the way to it the serializer names: each list's or map's class
+     * with the element's index or the entry's key, an array's element by its own class - {@code (through reference
+     * chain: java.util.ArrayList[1]->java.util.Collections$SingletonMap["q"])} (live-verified).
+     *
+     * @param chain the way to {@code value} from the value the serializer was handed
+     */
+    private static JsonNode tree(final Object value, final List<String> chain) {
         if (value == null) {
             return NODES.nullNode();
         }
         if (value instanceof Variant) {
             throw new IllegalArgumentException("No serializer found for class " + Variant.class.getName()
                 + " and no properties discovered to create BeanSerializer (to avoid exception, disable"
-                + " SerializationFeature.FAIL_ON_EMPTY_BEANS)");
+                + " SerializationFeature.FAIL_ON_EMPTY_BEANS)"
+                + (chain.isEmpty() ? "" : " (through reference chain: " + String.join("->", chain) + ")"));
         }
         if (value instanceof String) {
             return NODES.stringNode((String) value);
@@ -148,7 +163,9 @@ public final class SnowparkVariantNodes {
             return NODES.binaryNode((byte[]) value);
         }
         if (value instanceof Time) {
-            return NODES.stringNode(SnowparkVariantTimes.text((Time) value));
+            // A time in a value is written as its own text, in the zone the handler's values are made in
+            // (live-verified: Time.valueOf("03:04:05") reads 03:04:05).
+            return NODES.stringNode(value.toString());
         }
         if (value instanceof Date) {
             return NODES.numberNode(((Date) value).getTime());
@@ -156,14 +173,17 @@ public final class SnowparkVariantNodes {
         if (value instanceof Map) {
             final ObjectNode object = NODES.objectNode();
             for (final Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
-                object.set(String.valueOf(entry.getKey()), tree(entry.getValue()));
+                final String key = String.valueOf(entry.getKey());
+                object.set(key, tree(entry.getValue(), through(chain, value, "\"" + key + "\"")));
             }
             return object;
         }
         if (value instanceof Iterable) {
             final ArrayNode array = NODES.arrayNode();
+            int index = 0;
             for (final Object element : (Iterable<?>) value) {
-                array.add(tree(element));
+                array.add(tree(element, through(chain, value, String.valueOf(index))));
+                index++;
             }
             return array;
         }
@@ -171,11 +191,34 @@ public final class SnowparkVariantNodes {
             final ArrayNode array = NODES.arrayNode();
             final int length = Array.getLength(value);
             for (int i = 0; i < length; i++) {
-                array.add(tree(Array.get(value, i)));
+                final Object element = Array.get(value, i);
+                array.add(tree(element, through(chain, element, String.valueOf(i))));
             }
             return array;
         }
         return MAPPER.valueToTree(value);
+    }
+
+    /** The way to a member: the way to its holder, then the class named and the member's place in brackets. */
+    private static List<String> through(final List<String> chain, final Object named, final String place) {
+        final List<String> longer = new ArrayList<>(chain);
+        if (named == null) {
+            longer.add("UNKNOWN[" + place + "]");
+            return longer;
+        }
+        Class<?> type = named.getClass();
+        final StringBuilder name = new StringBuilder();
+        int dimensions = 0;
+        while (type.isArray()) {
+            type = type.getComponentType();
+            dimensions++;
+        }
+        name.append(type.getName());
+        for (int i = 0; i < dimensions; i++) {
+            name.append("[]");
+        }
+        longer.add(name.append('[').append(place).append(']').toString());
+        return longer;
     }
 
     /**

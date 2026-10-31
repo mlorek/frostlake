@@ -63,6 +63,10 @@ public abstract class BaseJdbcTest {
         connection = LiveSnowflake.enabled() ? LiveAccountObjects.observing(LiveSnowflake.open())
             : new DirectConnection(sharedEngine);
         statement = connection.createStatement();
+        if (!LiveSnowflake.enabled()) {
+            // The live session reads column labels ignoring case (see LiveSnowflake.open); so does this one.
+            statement.execute("ALTER SESSION SET CLIENT_RESULT_COLUMN_CASE_INSENSITIVE = TRUE");
+        }
 
         if (LiveSnowflake.enabled()) {
             // Record which account-level objects pre-date the run, before the suite creates any.

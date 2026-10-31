@@ -48,6 +48,12 @@ public final class SignatureTailLine {
      */
     public static void requireBefore(final FrostlakeParser.SqlScriptContext script, final String sql,
                                      final SyntaxErrorListener listener) {
+        if (listener.unknownTypes() != null) {
+            // The parse's faults are words where types belong, and the text reads whole once they are types: a
+            // block's CREATE TABLE among them is refused for the type, as the statement on its own is (see
+            // UnknownTypeWords).
+            return;
+        }
         requireSignatureReading(script, sql, listener);
         if (script == null || sql == null || !listener.hasErrors() || script.flowChain().size() != 1
                 || script.flowChain().get(0).statement().size() != 1) {
@@ -97,7 +103,7 @@ public final class SignatureTailLine {
      */
     private static void requireSignatureReading(final FrostlakeParser.SqlScriptContext script, final String sql,
                                                 final SyntaxErrorListener listener) {
-        requireStatementReadings(script, sql);
+        requireStatementReadings(script, sql, listener);
         final SignatureRecovery reading = SignatureRecovery.of(script, sql);
         final List<String> lines = reading == null ? null : reading.lines();
         if (lines == null || faultBefore(listener, reading.open())) {
@@ -119,15 +125,37 @@ public final class SignatureTailLine {
      * Refuse a script of several statements in which a DROP's or a DESCRIBE's signature is faulty: each such
      * statement with the lines the account reports for it, read on its own, and every other statement with its own
      * lines, as if the faulty ones were not there — {@code DESCRIBE TABLE t ((a)); SELECT 1 x y} is the '(', the ')'
-     * and the y (live-verified).
+     * and the y (live-verified). A statement the account reads whole where this parse refused something in it — a
+     * stage reference of the account's own spelling — is left out the same way: {@code DESCRIBE TABLE t1 (a) x =
+     * @s!=x; SELECT 1 x y} is the y alone (live-verified).
      */
-    private static void requireStatementReadings(final FrostlakeParser.SqlScriptContext script, final String sql) {
+    private static void requireStatementReadings(final FrostlakeParser.SqlScriptContext script, final String sql,
+                                                 final SyntaxErrorListener listener) {
         final List<String> lines = new ArrayList<>();
         // The lines of one reading keep the order the account reports them in: only statements are put in order.
         final List<int[]> places = new ArrayList<>();
         char[] text = null;
+        boolean leftOut = false;
+        // The first statement the account reads whole, which a request of several fails at.
+        SignatureRecovery readWhole = null;
         for (final SignatureRecovery reading : SignatureRecovery.ofStatements(script, sql)) {
             final List<String> faults = reading.lines();
+            if (faults != null && faults.isEmpty() && refusedWithin(listener, reading)) {
+                if (readWhole == null) {
+                    readWhole = reading;
+                }
+                if (text == null) {
+                    text = sql.toCharArray();
+                }
+                for (int i = reading.ownStatement().getStart().getStartIndex(); i <= reading.last().getStopIndex()
+                        && i < text.length; i++) {
+                    if (text[i] != '\n') {
+                        text[i] = ' ';
+                    }
+                }
+                leftOut = true;
+                continue;
+            }
             if (faults == null || faults.isEmpty()) {
                 continue;
             }
@@ -151,6 +179,8 @@ public final class SignatureTailLine {
                     if (semicolon >= 0) {
                         lines.addAll(SignatureRecovery.namedPastItsEnd(spoken, semicolon));
                     }
+                } else if (reading.ownStatement().getStart().getType() == FrostlakeLexer.CREATE) {
+                    lines.addAll(laterStatementLines(sql, reading));
                 }
                 // A block is refused for its first faulty statement.
                 throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", lines)), lines, sql);
@@ -169,7 +199,7 @@ public final class SignatureTailLine {
                 break;
             }
         }
-        if (lines.isEmpty()) {
+        if (lines.isEmpty() && !leftOut) {
             return;
         }
         if (SignatureRecovery.holdsAStatement(new String(text))) {
@@ -193,7 +223,79 @@ public final class SignatureTailLine {
             ordered.add(place, lines.get(i));
             orderedAt.add(place, at);
         }
+        if (ordered.isEmpty()) {
+            noteWholeStatement(readWhole, text, sql, listener);
+            return;
+        }
         throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", ordered)), ordered, sql);
+    }
+
+    /**
+     * The lines of a block's statements after a CREATE whose words run on: the CREATE is given up at its semicolon and
+     * the statements after it read on as the block's own, their faults reported after its (live-verified: {@code BEGIN
+     * CREATE TABLE t (x INT) y z; SELECT 1 x y; END} is the z, the y and the END; with {@code SELECT 1 x} in its place,
+     * the z alone). A CREATE the block's END follows reads on to nothing.
+     */
+    private static List<String> laterStatementLines(final String sql, final SignatureRecovery reading) {
+        int semicolon = -1;
+        Token next = null;
+        for (final Token token : BlockReadOn.spoken(sql)) {
+            if (semicolon < 0 && token.getType() == FrostlakeLexer.SEMI
+                    && token.getStartIndex() >= reading.last().getStartIndex()) {
+                semicolon = token.getStopIndex();
+            } else if (semicolon >= 0 && next == null) {
+                next = token;
+            }
+        }
+        if (semicolon < 0 || next == null || next.getType() == FrostlakeLexer.END) {
+            return new ArrayList<>();
+        }
+        final char[] text = sql.toCharArray();
+        for (int i = reading.ownStatement().getStart().getStartIndex(); i <= semicolon && i < text.length; i++) {
+            if (text[i] != '\n') {
+                text[i] = ' ';
+            }
+        }
+        return SyntaxErrorListener.linesReportedFor(new String(text), true);
+    }
+
+    /**
+     * Note, on the refusal the parse is to throw, a request of several statements whose only refused one is a
+     * statement the account reads whole: the account runs the statements before it and refuses it as it compiles
+     * (see {@link WholeStatementReading}).
+     */
+    private static void noteWholeStatement(final SignatureRecovery readWhole, final char[] text, final String sql,
+                                           final SyntaxErrorListener listener) {
+        if (readWhole == null || text == null || readWhole.last() == null
+                || !SignatureRecovery.holdsAStatement(new String(text))) {
+            return;
+        }
+        final String refused = readWhole.propertyRefusal();
+        if (refused == null) {
+            return;
+        }
+        final Token start = readWhole.ownStatement().getStart();
+        listener.noteWholeStatement(new WholeStatementReading(start.getStartIndex(), readWhole.last().getStopIndex(),
+            start.getLine(), start.getCharPositionInLine(), sql, SqlCompilationError.of(refused)));
+    }
+
+    /** Whether this parse refused a token of the statement a reading reads. */
+    private static boolean refusedWithin(final SyntaxErrorListener listener, final SignatureRecovery reading) {
+        if (listener == null || !listener.hasErrors() || reading.last() == null) {
+            return false;
+        }
+        final Token start = reading.ownStatement().getStart();
+        final int[] from = {start.getLine(), start.getCharPositionInLine()};
+        // The reading's last token may be one this parse reads as several, a stage reference: its end counts.
+        final Token last = reading.last();
+        final int[] to = {last.getLine(), last.getCharPositionInLine() + last.getStopIndex() - last.getStartIndex()};
+        for (final String line : listener.reportedSyntaxLines()) {
+            final int[] at = SyntaxErrorListener.sentenceCoordinates(line);
+            if (at != null && !before(at, from) && !before(to, at)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

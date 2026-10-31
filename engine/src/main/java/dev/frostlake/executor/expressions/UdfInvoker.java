@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.executor.AmbiguousOverload;
 import dev.frostlake.executor.DeferredFault;
 import dev.frostlake.executor.ExpressionEvaluator;
@@ -24,6 +25,7 @@ import dev.frostlake.executor.OverloadConversionCosts;
 import dev.frostlake.executor.ParameterReferences;
 import dev.frostlake.executor.PrivilegeRefusal;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.ReadOnlyRequest;
 import dev.frostlake.executor.RoutineBody;
 import dev.frostlake.executor.RoutineSecretsCheck;
 import dev.frostlake.executor.SqlArgumentText;
@@ -34,6 +36,7 @@ import dev.frostlake.executor.commands.DeferredHandlerCheck;
 import dev.frostlake.executor.commands.ExternalFunctions;
 import dev.frostlake.executor.commands.ServiceFunctions;
 import dev.frostlake.executor.udf.GuestResults;
+import dev.frostlake.executor.udf.HandlerClassNotFound;
 import dev.frostlake.executor.udf.HandlerResults;
 import dev.frostlake.executor.udf.HandlerStateFactory;
 import dev.frostlake.executor.udf.ImportLocalizer;
@@ -41,8 +44,10 @@ import dev.frostlake.executor.udf.JarHandlerLoader;
 import dev.frostlake.executor.udf.JavaFunctionCompiler;
 import dev.frostlake.executor.udf.JavaHandlerArguments;
 import dev.frostlake.executor.udf.JavaHandlerClass;
+import dev.frostlake.executor.udf.JavaHandlerFailure;
 import dev.frostlake.executor.udf.JavaHandlerInstance;
 import dev.frostlake.executor.udf.JavaHandlerInstances;
+import dev.frostlake.executor.udf.JavaHandlerMethods;
 import dev.frostlake.executor.udf.JavaRuntimeLevel;
 import dev.frostlake.executor.udf.StatementHandlerStates;
 import dev.frostlake.executor.udf.UdfRuntimes;
@@ -73,6 +78,7 @@ import dev.frostlake.types.VectorType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantValue;
 
+import java.io.File;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
@@ -109,6 +115,9 @@ final class UdfInvoker {
 
     /** Names the state that holds a statement's own load of a Java handler's class. */
     private static final String JAVA_HANDLER_CLASS = "java-handler-class";
+
+    /** Names the state that holds a statement's own load of a handler class an IMPORTS jar holds. */
+    private static final String JAR_HANDLER_CLASS = "jar-handler-class";
 
     private final Catalog catalog;
     private final FunctionRegistry functionRegistry;
@@ -150,7 +159,8 @@ final class UdfInvoker {
      * runs, so date arithmetic inside the body stays in the timestamp domain and OBJECT/VARIANT output
      * renders it in full timestamp form rather than date-only.
      */
-    private List<Object> coerceArgsToParameterTypes(final Function function, final List<Object> args) {
+    private List<Object> coerceArgsToParameterTypes(final Function function, final List<Object> args,
+                                                    final List<DataType> argTypes) {
         final List<Parameter> params = function.getParameters();
         final boolean sqlBody = function.getUdfLanguage() == UdfLanguage.SQL;
         List<Object> coerced = null;
@@ -187,7 +197,9 @@ final class UdfInvoker {
                 // arrives - the same conversion a CAST to that type performs, refusing in the same
                 // words where the value will not convert (live-verified). Without it the argument
                 // reached the body as its text and the declared type never spoke.
-                if (keepsItsOwnNumber(paramType, value)) {
+                // A DECFLOAT is no NUMBER of its own: it converts to the parameter's type and rounds to its scale,
+                // f(CAST(1.5 AS DECFLOAT)) into NUMBER reading 2 (live-verified).
+                if (keepsItsOwnNumber(paramType, value) && !isDecfloat(argTypes, i)) {
                     // An exact number reaches an exact NUMBER parameter unconverted, so the parameter's
                     // SCALE never rounds it: num_p(1.257) into NUMBER(10,2) answers 1.257. One of a smaller
                     // scale is read at the parameter's where the body names it — 1 is 1.00 there — which is
@@ -624,6 +636,34 @@ final class UdfInvoker {
     }
 
     /**
+     * The arguments' static types, with a DECFLOAT that converted to an exact NUMBER parameter given that parameter's
+     * type: the body reads the converted value (see coerceArgsToParameterTypes).
+     */
+    private static List<DataType> decfloatsConverted(final Function function, final List<DataType> argTypes) {
+        if (argTypes == null) {
+            return null;
+        }
+        List<DataType> converted = null;
+        final List<Parameter> params = function.getParameters();
+        for (int i = 0; i < argTypes.size() && i < params.size(); i++) {
+            final DataType param = params.get(i).getDataType();
+            if (NumericType.isDecfloat(argTypes.get(i)) && param instanceof NumericType
+                    && !NumericType.isApproximate(param) && !NumericType.isDecfloat(param)) {
+                if (converted == null) {
+                    converted = new ArrayList<>(argTypes);
+                }
+                converted.set(i, param);
+            }
+        }
+        return converted == null ? argTypes : converted;
+    }
+
+    /** Whether the argument at {@code index} is a DECFLOAT by its static type. */
+    private static boolean isDecfloat(final List<DataType> argTypes, final int index) {
+        return argTypes != null && index < argTypes.size() && NumericType.isDecfloat(argTypes.get(index));
+    }
+
+    /**
      * {@link #evaluateUserDefinedFunction(Function, List)} with each argument's own static type, which a SQL
      * function's parameter takes its exact type and its binary width from (see SqlArgumentText).
      *
@@ -637,7 +677,7 @@ final class UdfInvoker {
         final QueryExecutor queryExecutor = visitor.getQueryExecutor();
         RoutineSecretsCheck.require(catalog, function.getEnvironment());
         final List<Object> given = withParameterDefaults(function, rawArgs);
-        final List<Object> args = coerceArgsToParameterTypes(function, given);
+        final List<Object> args = coerceArgsToParameterTypes(function, given, argTypes);
         // RETURNS NULL ON NULL INPUT (a.k.a. STRICT): a NULL in ANY argument short-circuits to NULL and the
         // body is NEVER entered. The clause was parsed and stored but not enforced, so a handler written on
         // that guarantee ran anyway and blew up on the null — e.g. `for k, v in OBJ.items()` raised
@@ -663,11 +703,17 @@ final class UdfInvoker {
         if (language != UdfLanguage.SQL && !Volatility.IMMUTABLE.name().equals(function.getVolatility())) {
             CheckpointDebt.owe();
         }
+        if (language == UdfLanguage.JAVASCRIPT && !Volatility.IMMUTABLE.name().equals(function.getVolatility())) {
+            // A subquery that calls a JavaScript function not declared IMMUTABLE is evaluated again for each outer
+            // row however uncorrelated it is, the function's state kept; a Python function's call is evaluated
+            // once (live-verified).
+            visitor.drawnAfresh();
+        }
 
         if (language == UdfLanguage.JAVA) {
             return evaluateJavaFunction(function, args);
         } else if (language == UdfLanguage.SQL) {
-            return evaluateSqlFunction(function, args, given, argTypes);
+            return evaluateSqlFunction(function, args, given, decfloatsConverted(function, argTypes));
         } else if (language == UdfLanguage.JAVASCRIPT || language == UdfLanguage.PYTHON
                 || language == UdfLanguage.SCALA) {
             // A handler loaded from IMPORTS finds a file an internal named stage keeps where the engine keeps it.
@@ -792,13 +838,23 @@ final class UdfInvoker {
         // parses to the same text.
         if (queryExecutor != null && queryExecutor.isProceduralBlock(trimmedBody)) {
             rejectUnsupportedScriptingReturnType(function);
-            // A block binds its parameters as variables when it starts, so it converts every argument then.
-            for (final Object arg : args) {
+            // A block binds its parameters as variables when it starts, so it converts every argument then: an
+            // exact number to its parameter's declared type too, 1.239 into a NUMBER(10,2) reading 1.24 and 1
+            // reading 1.00 (live-verified), where an expression body keeps the caller's number.
+            final List<Object> bound = new ArrayList<>(args);
+            for (int i = 0; i < bound.size(); i++) {
+                final Object arg = bound.get(i);
                 if (arg instanceof DeferredConversion) {
                     throw ((DeferredConversion) arg).getFailure();
                 }
+                final DataType declared = i < params.size() ? params.get(i).getDataType() : null;
+                if (arg instanceof Number && !(arg instanceof Double) && !(arg instanceof Float)
+                        && declared instanceof NumericType && !NumericType.isApproximate(declared)
+                        && !NumericType.isDecfloat(declared)) {
+                    bound.set(i, ValueCaster.castValue(arg, SqlTypeNames.canonical(declared)));
+                }
             }
-            final Object returned = queryExecutor.executeScriptingFunctionBody(function, args);
+            final Object returned = queryExecutor.executeScriptingFunctionBody(function, bound);
             // Snowflake casts the RETURNed value to the DECLARED return type: `RETURNS INT` over
             // `RETURN '7'` is 7, `RETURNS VARCHAR` over `RETURN 42` is the string '42', and
             // `RETURNS INT` over `RETURN 'abc'` fails "Numeric value 'abc' is not recognized".
@@ -873,7 +929,8 @@ final class UdfInvoker {
      * compilation error, as the account reports it; anything else says where it came from.
      */
     private RuntimeException inBody(final Exception failure) {
-        if (failure instanceof RuntimeException && SqlCompilationError.isCompilationError(failure.getMessage())) {
+        if (failure instanceof RuntimeException && (SqlCompilationError.isCompilationError(failure.getMessage())
+                || ReadOnlyRequest.isRefusal(failure.getMessage()))) {
             return (RuntimeException) failure;
         }
         if (cycleIn(failure) != null) {
@@ -912,15 +969,16 @@ final class UdfInvoker {
     }
 
     /**
-     * A scripting-block UDF may not RETURN a semi-structured value. Snowflake compiles such a body lazily,
-     * so this surfaces on the CALL and not on the CREATE (a block-bodied
-     * function declared {@code RETURNS VARIANT} / {@code ARRAY} / {@code OBJECT} is created without
-     * complaint, then every call fails "Unsupported return type for Snowscript UDF: VARIANT"). Every other
-     * type was verified to work — VARCHAR, NUMBER(p,s), FLOAT, BOOLEAN, BINARY, DATE, TIMESTAMP_NTZ — and
-     * a semi-structured PARAMETER is fine; only the return type is refused.
+     * A scripting-block UDF may not RETURN a DECFLOAT, which is told on the call, in lower case; a function so
+     * declared is created without complaint (live-verified). A semi-structured return is refused at CREATE, and a
+     * restored function of that shape on its call. A DECFLOAT or a semi-structured PARAMETER is fine; only the
+     * return type is refused.
      */
     private void rejectUnsupportedScriptingReturnType(final Function function) {
         final DataType returnType = function.getReturnType();
+        if (NumericType.isDecfloat(returnType)) {
+            throw new RuntimeException("Unsupported return type for Snowscript UDF: decfloat");
+        }
         if (returnType != null && returnType.getCategory() == TypeCategory.SEMI_STRUCTURED) {
             throw new RuntimeException("Unsupported return type for Snowscript UDF: "
                 + returnType.getName().toUpperCase(Locale.ROOT));
@@ -1013,25 +1071,32 @@ final class UdfInvoker {
         Class<?> fromBody = null;
         if (inline) {
             try {
-                fromBody = handlerClass(function, sourceCode, className);
+                fromBody = handlerClass(function, sourceCode, className, importedJars(function, queryExecutor));
             } catch (final RuntimeException notInTheBody) {
                 if (function.getImports().isEmpty()) {
                     throw notInTheBody;
                 }
             }
         }
-        final Class<?> compiledClass = fromBody != null ? fromBody
-            : JarHandlerLoader.load(queryExecutor != null
-                    ? queryExecutor.localImports(function.getImports()) : function.getImports(), className, catalog,
-                queryExecutor != null ? queryExecutor.getS3PathResolver() : null);
-
-        final Method method = javaCompiler.handlerMethod(compiledClass, methodName, args.size());
-        if (method == null) {
-            // No one method of that name and argument count: the method is looked for by the values' own classes.
-            return convertJavaResultToSql(javaCompiler.invokeMethod(compiledClass, methodName,
-                convertSqlArgsToJava(args)));
-        }
         final String where = " in function " + function.getName() + " with handler " + handler;
+        final Class<?> compiledClass;
+        try {
+            compiledClass = fromBody != null ? fromBody
+                : importedClass(function, className, queryExecutor != null
+                        ? queryExecutor.localImports(function.getImports()) : function.getImports(),
+                    queryExecutor != null ? queryExecutor.getS3PathResolver() : null);
+        } catch (final HandlerClassNotFound missing) {
+            // A class the imports no longer hold is refused as the account's class loader refuses one, as the
+            // function's CREATE would refuse it now (live-verified).
+            throw new RuntimeException(JavaHandlerFailure.missingClass(className,
+                JavaRuntimeLevel.declared(function.getRuntimeVersion()), where), missing);
+        }
+
+        final Method found = javaCompiler.handlerMethod(compiledClass, methodName, args.size());
+        // No one public method of that name and argument count - the function's imports changed since it was
+        // created - is refused as its CREATE would refuse it now (live-verified).
+        final Method method = found != null ? found
+            : JavaHandlerMethods.resolve(compiledClass, methodName, args.size(), function.getName(), handler);
         // Each argument, already of its parameter's SQL type, becomes the Java type the handler declares.
         final Object[] javaArgs = JavaHandlerArguments.of(method.getParameterTypes(), function.getParameters(), args,
             where);
@@ -1054,18 +1119,51 @@ final class UdfInvoker {
      * nothing else - not for a later statement, nor for another call of the function in the same statement
      * (live-verified). Outside a statement the one class every such caller shares.
      */
-    private static Class<?> handlerClass(final Function function, final String sourceCode, final String className) {
+    private static Class<?> handlerClass(final Function function, final String sourceCode, final String className,
+                                         final List<File> jars) {
         final int release = JavaRuntimeLevel.of(function.getRuntimeVersion());
         final String where = " in function " + function.getName() + " with handler " + function.getHandler();
         final AutoCloseable kept = StatementHandlerStates.state(function, JAVA_HANDLER_CLASS,
             new HandlerStateFactory() {
                 @Override
                 public AutoCloseable create() {
-                    return new JavaHandlerClass(javaCompiler.load(sourceCode, className, null, release, where));
+                    return new JavaHandlerClass(javaCompiler.load(sourceCode, className, null, release, where, true,
+                        jars));
                 }
             });
         return kept != null ? ((JavaHandlerClass) kept).handled()
-            : javaCompiler.compile(sourceCode, className, release, where);
+            : javaCompiler.compile(sourceCode, className, release, where, jars);
+    }
+
+    /**
+     * The jars a function's IMPORTS name, on the class path its inline body compiles against and beside the class it
+     * runs (live-verified); none without imports.
+     */
+    private List<File> importedJars(final Function function, final QueryExecutor queryExecutor) {
+        if (function.getImports().isEmpty()) {
+            return Collections.emptyList();
+        }
+        return JarHandlerLoader.localJars(queryExecutor != null ? queryExecutor.localImports(function.getImports())
+            : function.getImports(), catalog, queryExecutor != null ? queryExecutor.getS3PathResolver() : null);
+    }
+
+    /**
+     * The class an IMPORTS jar holds for the handler: loaded anew for the statement that is running and the place
+     * that calls the function, as an inline body's is, so what the jar's static fields hold is there for the
+     * statement's later rows and for nothing else (live-verified). Outside a statement the one class every such
+     * caller shares.
+     */
+    private Class<?> importedClass(final Function function, final String className, final List<String> imports,
+                                   final S3PathResolver s3Resolver) {
+        final AutoCloseable kept = StatementHandlerStates.state(function, JAR_HANDLER_CLASS,
+            new HandlerStateFactory() {
+                @Override
+                public AutoCloseable create() {
+                    return new JavaHandlerClass(JarHandlerLoader.loadAnew(imports, className, catalog, s3Resolver));
+                }
+            });
+        return kept != null ? ((JavaHandlerClass) kept).handled()
+            : JarHandlerLoader.load(imports, className, catalog, s3Resolver);
     }
 
     /**
@@ -1081,23 +1179,6 @@ final class UdfInvoker {
             }
         });
         return kept != null ? ((JavaHandlerInstance) kept).instance() : JavaHandlerInstances.create(handled, where);
-    }
-
-    private Object[] convertSqlArgsToJava(final List<Object> sqlArgs) {
-        final Object[] javaArgs = new Object[sqlArgs.size()];
-        for (int i = 0; i < sqlArgs.size(); i++) {
-            final Object arg = sqlArgs.get(i);
-            if (arg == null) {
-                javaArgs[i] = null;
-            } else if (arg instanceof Number || arg instanceof String || arg instanceof Boolean) {
-                // A number goes as it is: the handler's own parameter type decides which Java number it
-                // becomes (JavaFunctionCompiler.invokeMethod).
-                javaArgs[i] = arg;
-            } else {
-                javaArgs[i] = arg.toString();
-            }
-        }
-        return javaArgs;
     }
 
     private Object convertJavaResultToSql(final Object javaResult) {

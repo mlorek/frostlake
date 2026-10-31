@@ -19,6 +19,7 @@ package dev.frostlake.executor;
 import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.IntervalStringText;
 import dev.frostlake.executor.expressions.SourcePosition;
+import dev.frostlake.parser.BracedReplaceLines;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlSyntaxException;
 import org.antlr.v4.runtime.CharStream;
@@ -67,7 +68,8 @@ public final class SelectItemAccessors {
      * there: the keyword is a syntax error and so is the token after it — {@code {* REPLACE (a + 1 AS a)}} is
      * "unexpected 'REPLACE'" then "unexpected '('", {@code {* RENAME a AS z}} "unexpected 'RENAME'" then
      * "unexpected 'a'" (live-verified), while {@code {* EXCLUDE (a)}} and {@code {* ILIKE 'a%'}} run. They
-     * stay legal on a plain {@code *}.
+     * stay legal on a plain {@code *}. In a derived table's or a CTE's item more is refused after them, see
+     * {@link BracedReplaceLines}.
      */
     private static void rejectProjectionRewritingModifiers(final FrostlakeParser.ObjectStarItemContext star) {
         for (final FrostlakeParser.StarModifierContext modifier : star.starModifier()) {
@@ -80,6 +82,9 @@ public final class SelectItemAccessors {
             final List<String> lines = new ArrayList<>();
             lines.add(unexpected(modifier.getStart()));
             lines.add(unexpected(next));
+            for (final Token later : BracedReplaceLines.after(star, modifier)) {
+                lines.add(unexpected(later));
+            }
             final CharStream text = modifier.getStart().getInputStream();
             throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", lines)), lines,
                 text.getText(Interval.of(0, text.size() - 1)));
@@ -136,9 +141,13 @@ public final class SelectItemAccessors {
      * @param selectList the select list
      */
     public static void rejectRowItem(final FrostlakeParser.SelectListContext selectList) {
-        if (selectList == null) {
+        final String text = selectList == null ? null : ParseTreeText.getOriginalText(selectList);
+        if (selectList == null || UnreadRowItems.waives(text)) {
             return;
         }
+        // A scalar subquery's body is refused at its own SELECT (see ScalarBodyRowItems).
+        final Token body = ScalarBodyRowItems.names(text) && selectList.getParent() instanceof ParserRuleContext
+            ? ((ParserRuleContext) selectList.getParent()).getStart() : null;
         for (final FrostlakeParser.SelectItemContext item : selectList.selectItem()) {
             if (!(item instanceof FrostlakeParser.ExprItemContext)) {
                 continue;
@@ -149,14 +158,75 @@ public final class SelectItemAccessors {
             if (row == null && framed == null) {
                 continue;
             }
-            final Token at = valued.aliasName() != null ? valued.aliasName().getStart()
+            final Token at = body != null ? body : valued.aliasName() != null ? valued.aliasName().getStart()
                 : valued.identifier() != null ? valued.identifier().getStart()
                     : valued.bareAliasWord() != null ? valued.bareAliasWord().getStart()
                         : row != null ? row.getStart() : framed;
             final SourcePosition placed = ExpressionSource.place(at.getLine(), at.getCharPositionInLine());
-            throw new RuntimeException(SqlCompilationError.at(placed.getLine(), placed.getCharPositionInLine(),
+            throw new RowSelectItemException(SqlCompilationError.at(placed.getLine(), placed.getCharPositionInLine(),
                 "Unsupported: SELECT list element with multiple columns."));
         }
+    }
+
+    /** The one SELECT a query is, with no WITH, set operation, ORDER BY or LIMIT around it; null for any other. */
+    private static FrostlakeParser.SelectClauseContext soleSelect(final FrostlakeParser.SelectStatementContext query) {
+        if (query == null || query.withClause() != null || query.selectOperand().size() != 1
+                || query.orderByClause() != null || query.limitClause() != null || query.fetchClause() != null) {
+            return null;
+        }
+        return query.selectOperand(0).selectClause();
+    }
+
+    /**
+     * The select list of the one SELECT a query is, as written; null for any other query.
+     *
+     * @param query the query, or null
+     * @return the select list's text, or null
+     */
+    public static String soleSelectListText(final FrostlakeParser.SelectStatementContext query) {
+        final FrostlakeParser.SelectClauseContext select = soleSelect(query);
+        return select == null ? null : ParseTreeText.getOriginalText(select.selectList());
+    }
+
+    /**
+     * Whether a query is one SELECT that reads no relation and filters nothing, so that it answers one row.
+     *
+     * @param query the query, or null
+     * @return true for such a SELECT
+     */
+    public static boolean readsNoRelation(final FrostlakeParser.SelectStatementContext query) {
+        final FrostlakeParser.SelectClauseContext select = soleSelect(query);
+        return select != null && select.topClause() == null && select.tableExpression() == null
+            && select.whereClause() == null && select.groupByClause() == null && select.havingClause() == null
+            && select.qualifyClause() == null && select.connectByClause() == null;
+    }
+
+    /**
+     * The query with its one select item, a ROW, written as the ROW's members, an item each: the query whose columns
+     * type a subquery of that ROW as {@code ROW(<each member's type>)}. Null for any other query.
+     *
+     * @param query the query, or null
+     * @return the query's text with the ROW's members for items, or null
+     */
+    public static String rowMembersQuery(final FrostlakeParser.SelectStatementContext query) {
+        final FrostlakeParser.SelectClauseContext select = soleSelect(query);
+        if (select == null || select.selectList().selectItem().size() != 1
+                || !(select.selectList().selectItem(0) instanceof FrostlakeParser.ExprItemContext)) {
+            return null;
+        }
+        final FrostlakeParser.ExprItemContext item =
+            (FrostlakeParser.ExprItemContext) select.selectList().selectItem(0);
+        final FrostlakeParser.RowExprContext row = rowOf(item.booleanExpr());
+        if (row == null) {
+            return null;
+        }
+        final CharStream source = query.getStart().getInputStream();
+        final StringBuilder members = new StringBuilder();
+        for (final FrostlakeParser.ExpressionContext value : row.rowValues) {
+            members.append(members.length() > 0 ? ", " : "").append(ParseTreeText.getOriginalText(value));
+        }
+        return source.getText(Interval.of(query.getStart().getStartIndex(), item.getStart().getStartIndex() - 1))
+            + members + source.getText(Interval.of(item.getStop().getStopIndex() + 1, query.getStop().getStopIndex()));
     }
 
     /**

@@ -31,14 +31,17 @@ import org.antlr.v4.runtime.tree.ParseTree;
  * the way it reads an outer-join marker's, {@code (+)}: the first token inside is refused as well. When a comma inside
  * the bracket may carry on the list the predicate stands in — a select list, an ORDER BY or GROUP BY list, a call's
  * arguments — the bracket closes before that comma, and the first closing parenthesis left unmatched after it is refused
- * too; in a WHERE, HAVING, QUALIFY or join condition nothing more is. An ESCAPE after the bracket is never reported (all
- * live-verified):
+ * too; in a WHERE, HAVING, QUALIFY or join condition nothing more is. A bracket refused as the first token opens
+ * nothing: its own closing parenthesis closes the bracket around it, so a comma inside it carries the list on. An
+ * ESCAPE after the bracket is never reported (all live-verified):
  *
  * <pre>
  *   SELECT 'ab' ILIKE ALL ('a%') ESCAPE '!'                'ALL' at 18, ''a%'' at 23
  *   SELECT 'ab' ILIKE ALL ('x%', 'a!')                     'ALL' at 18, ''x%'' at 23, ')' at 33
  *   SELECT UPPER('ab' ILIKE ALL ('x%', 'a!'))              'ALL' at 24, ''x%'' at 29, ')' at 40
  *   SELECT a FROM t WHERE 'ab' ILIKE ALL ('x%', 'a!')      'ALL' at 33, ''x%'' at 38
+ *   SELECT 'a' ILIKE ALL (('a', 'b'))                      'ALL' at 17, '(' at 22, ')' at 31
+ *   SELECT 'a' ILIKE ALL (('a'), 'b')                      'ALL' at 17, '(' at 22, ')' at 32
  * </pre>
  *
  * <p>The rule applies only where the ALL and its bracket are the statement's one fault: the text must parse cleanly once
@@ -91,14 +94,15 @@ final class IlikeAllSyntax {
             return lines;
         }
         lines.add(SyntaxErrorListener.sentence(spoken.get(all + 2)));
-        final int comma = firstListComma(spoken, all + 1);
+        final boolean refusedBracket = spoken.get(all + 2).getType() == FrostlakeLexer.LPAREN;
+        final int comma = firstListComma(spoken, all + 1, refusedBracket);
         if (comma >= 0 && commaCarriesOn(predicate)) {
             final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
             lexer.removeErrorListeners();
             final CommonTokenStream tokens = new CommonTokenStream(lexer);
             tokens.fill();
             final Token unmatched = PositionNeedleSyntax.unmatchedClose(tokens,
-                tokens.get(spoken.get(comma).getTokenIndex()));
+                tokens.get(spoken.get(comma).getTokenIndex()), refusedBracket ? 1 : 0);
             if (unmatched != null) {
                 lines.add(SyntaxErrorListener.sentence(unmatched));
             }
@@ -138,19 +142,29 @@ final class IlikeAllSyntax {
         return -1;
     }
 
-    /** The index in {@code spoken} of the first comma directly inside the bracket opened at {@code open}, or -1. */
-    private static int firstListComma(final List<Token> spoken, final int open) {
+    /**
+     * The index in {@code spoken} of the first comma directly inside the bracket opened at {@code open}, or -1. A
+     * bracket refused as the bracket's first token opens nothing, and the parenthesis that closes it closes the
+     * bracket: a comma after it carries the list on as one inside it does.
+     */
+    private static int firstListComma(final List<Token> spoken, final int open, final boolean refusedBracket) {
         int depth = 0;
         for (int i = open; i < spoken.size(); i++) {
             final int type = spoken.get(i).getType();
+            if (refusedBracket && i == open + 1) {
+                continue;
+            }
+            if (type == Token.EOF || type == FrostlakeLexer.SEMI) {
+                return -1;
+            }
             if (type == FrostlakeLexer.LPAREN) {
                 depth++;
             } else if (type == FrostlakeLexer.RPAREN) {
                 depth--;
-                if (depth == 0) {
+                if (depth < 0 || depth == 0 && !refusedBracket) {
                     return -1;
                 }
-            } else if (type == FrostlakeLexer.COMMA && depth == 1) {
+            } else if (type == FrostlakeLexer.COMMA && (depth == 1 || refusedBracket && depth == 0)) {
                 return i;
             }
         }

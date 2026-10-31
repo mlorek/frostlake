@@ -26,14 +26,19 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * The functions that act on the account when they are called, which no stored query may hold (live-verified for
- * SYSTEM$ABORT_TRANSACTION): a view's query, the query a table is created from and a SQL function's body are each
- * refused while they compile, with {@code View or UDF contains a function with side effects [<name>]}. A column's
- * DEFAULT, an INSERT's source and an UPDATE's value may call one, and SYSTEM$WAIT is none of them.
+ * The functions that act on the account when they are called, which no stored query may hold (live-verified): a
+ * view's query, the query a table is created from and a SQL function's body are each refused while they compile, with
+ * {@code View or UDF contains a function with side effects [<name>]}, whether the name is written bare, in any case,
+ * or quoted. They are SYSTEM$ABORT_TRANSACTION, SYSTEM$AUTO_REFRESH_STATUS, SYSTEM$CANCEL_QUERY,
+ * SYSTEM$CANCEL_ALL_QUERIES, SYSTEM$SET_RETURN_VALUE, SYSTEM$TASK_DEPENDENTS_ENABLE and
+ * SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS. A column's DEFAULT, an INSERT's source, an UPDATE's value and a task's
+ * body may call one, and SYSTEM$WAIT, SYSTEM$TYPEOF and SYSTEM$PIPE_FORCE_RESUME are none of them.
  */
 public final class SideEffectFunctions {
 
-    private static final Set<String> NAMES = Set.of("SYSTEM$ABORT_TRANSACTION");
+    private static final Set<String> NAMES = Set.of("SYSTEM$ABORT_TRANSACTION", "SYSTEM$AUTO_REFRESH_STATUS",
+        "SYSTEM$CANCEL_QUERY", "SYSTEM$CANCEL_ALL_QUERIES", "SYSTEM$SET_RETURN_VALUE",
+        "SYSTEM$TASK_DEPENDENTS_ENABLE", "SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS");
 
     private SideEffectFunctions() {
     }
@@ -58,17 +63,45 @@ public final class SideEffectFunctions {
      * @param stored the parsed query or expression
      */
     public static void rejectInStoredQuery(final ParseTree stored) {
+        if (stored instanceof FrostlakeParser.FunctionCallExprContext
+                && ((FrostlakeParser.FunctionCallExprContext) stored).functionName() != null) {
+            // A quoted name reads as written: "SYSTEM$ABORT_TRANSACTION"(12) is the function itself.
+            final String called = SqlIdentifiers.canonicalText(
+                ((FrostlakeParser.FunctionCallExprContext) stored).functionName().getText());
+            if (NAMES.contains(called)) {
+                throw refusal(called);
+            }
+        }
         if (stored instanceof TerminalNode) {
             final Token token = ((TerminalNode) stored).getSymbol();
-            if (token.getType() == FrostlakeParser.SYSTEM_FUNC
+            // SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS is a word of its own in the grammar.
+            if ((token.getType() == FrostlakeParser.SYSTEM_FUNC
+                    || token.getType() == FrostlakeParser.SYSTEM_USER_TASK_CANCEL)
                     && NAMES.contains(token.getText().toUpperCase(Locale.ROOT))) {
-                throw new RuntimeException("SQL compilation error: \nView or UDF contains a function with side"
-                    + " effects [" + token.getText().toUpperCase(Locale.ROOT) + "]");
+                throw refusal(token.getText().toUpperCase(Locale.ROOT));
             }
             return;
         }
         for (int i = 0; i < stored.getChildCount(); i++) {
             rejectInStoredQuery(stored.getChild(i));
         }
+    }
+
+    /**
+     * The refusal of a call a procedure that runs with its owner's rights may not make: SYSTEM$ABORT_TRANSACTION and
+     * SYSTEM$SET_RETURN_VALUE, while SYSTEM$CANCEL_QUERY, SYSTEM$TASK_DEPENDENTS_ENABLE and
+     * SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS run there (live-verified).
+     *
+     * @param name the function's name, upper-cased
+     * @return the refusal
+     */
+    public static RuntimeException ownersRightsRefusal(final String name) {
+        return new RuntimeException("SQL compilation error: \nQuery called from a stored procedure contains a"
+            + " function with side effects [" + name + "].");
+    }
+
+    private static RuntimeException refusal(final String name) {
+        return new RuntimeException("SQL compilation error: \nView or UDF contains a function with side effects ["
+            + name + "]");
     }
 }

@@ -14,43 +14,24 @@
  * limitations under the License.
  */
 
+
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.functions.CollationMatching;
-import dev.frostlake.functions.TextArgumentFunction;
-import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.BooleanType;
 
-import java.util.List;
-
-public class EndsWith extends TextArgumentFunction {
-    public EndsWith() { super("ENDSWITH", new BooleanType()); }
+/** ENDSWITH(text, suffix) — whether the text ends with the suffix. */
+public class EndsWith extends TextMatchFunction {
+    public EndsWith() { super("ENDSWITH"); }
 
     @Override
-    public Object evaluate(final List<Object> args) {
-        // Snowflake: NULL in, NULL out — a NULL haystack or needle yields NULL, not 0/false
-        for (int i = 0; i < Math.min(args.size(), 2); i++) {
-            if (i < args.size() && args.get(i) == null) {
-                return null;
-            }
-        }
-        if (args.get(0) == null || args.get(1) == null) return false;
-        return SharedFunctionHelpers.textOf(args.get(0)).endsWith(SharedFunctionHelpers.textOf(args.get(1)));
+    protected boolean holds(final String text, final String needle) {
+        return text.endsWith(needle);
     }
 
     /** Under a collation the suffix is the one the collation matches, not the byte-for-byte one. */
     @Override
-    public Object evaluate(final List<Object> args, final CollationSpec collation) {
-        if (collation == null || args.get(0) == null || args.get(1) == null) {
-            return evaluate(args);
-        }
-        return CollationMatching.endsWithUnder(collation, SharedFunctionHelpers.textOf(args.get(0)),
-            SharedFunctionHelpers.textOf(args.get(1)));
+    protected boolean holdsUnder(final CollationSpec collation, final String text, final String needle) {
+        return CollationMatching.endsWithUnder(collation, text, needle);
     }
-
-    @Override
-    public int getMinArgCount() { return 2; }
-    @Override
-    public int getMaxArgCount() { return 2; }
 }

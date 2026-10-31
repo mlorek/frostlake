@@ -16,6 +16,7 @@
 
 package dev.frostlake.storage;
 
+import dev.frostlake.metastore.model.StoredRead;
 import dev.frostlake.types.DataType;
 import dev.frostlake.values.ValueRange;
 
@@ -44,6 +45,11 @@ public class ResultSetColumn {
     // nothing worked it out. Only a JavaScript procedure's result set tells it (isColumnNullable); the JDBC and
     // INFORMATION_SCHEMA answers keep the two fields above.
     private final Boolean derivedNullable;
+    // Whether a JavaScript procedure's result set tells the column nullable, where it differs from derivedNullable:
+    // a VALUES column only where a row holds NULL, and an item that is a scalar subquery as the subquery's item, while
+    // a derived relation's column made of either keeps derivedNullable (live-verified); null where derivedNullable
+    // tells it.
+    private final Boolean reportedNullable;
     // The interval the column's values lie in, propagated from the projection the way the account
     // propagates statistics, or null when none is known. Read only by the storage tag SYSTEM$TYPEOF
     // prints through a derived relation; never by a value path.
@@ -75,6 +81,12 @@ public class ResultSetColumn {
     // relation — which an exact number beside it reads as the bare word. Read only by the type rules that fold
     // such a NULL, through a derived relation built from this result set.
     private final boolean nullText;
+    // How the projection reads a stored table's column, carried out of a derived relation: what decides whether an
+    // element of it converts a VARIANT number to a DATE, a TIME or a TIMESTAMP_NTZ. Read only by that conversion,
+    // through a derived relation built from this result set.
+    private final StoredRead storedRead;
+    // Whether the column projects a number or boolean literal a FROM-less select writes (see withLiteralConstant).
+    private final boolean literalConstant;
 
     public ResultSetColumn(final String name, final DataType dataType) {
         this(name, dataType, null);
@@ -124,7 +136,8 @@ public class ResultSetColumn {
                             final boolean collationExplicit, final String projectionPolicyName,
                             final boolean nullText) {
         this(name, dataType, tableName, staticType, nullable, nullabilityKnown, valueRange, spelledNumber, collation,
-            uncheckedConstant, foldedDouble, collationExplicit, projectionPolicyName, nullText, null);
+            uncheckedConstant, foldedDouble, collationExplicit, projectionPolicyName, nullText, null, StoredRead.NONE,
+            false, null);
     }
 
     private ResultSetColumn(final String name, final DataType dataType, final String tableName,
@@ -133,8 +146,13 @@ public class ResultSetColumn {
                             final DataType spelledNumber, final String collation,
                             final boolean uncheckedConstant, final boolean foldedDouble,
                             final boolean collationExplicit, final String projectionPolicyName,
-                            final boolean nullText, final Boolean derivedNullable) {
+                            final boolean nullText, final Boolean derivedNullable,
+                            final StoredRead storedRead, final boolean literalConstant,
+                            final Boolean reportedNullable) {
         this.derivedNullable = derivedNullable;
+        this.reportedNullable = reportedNullable;
+        this.storedRead = storedRead;
+        this.literalConstant = literalConstant;
         this.name = name;
         this.dataType = dataType;
         this.tableName = tableName;
@@ -173,7 +191,31 @@ public class ResultSetColumn {
     public ResultSetColumn withCollation(final String spec, final boolean explicit) {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, spec, uncheckedConstant, foldedDouble, spec != null && explicit,
-            projectionPolicyName, nullText, derivedNullable);
+            projectionPolicyName, nullText, derivedNullable, storedRead, literalConstant, reportedNullable);
+    }
+
+    /**
+     * This column with no interval of values known, as a result read back from storage carries none: an exact number
+     * is then tagged by its declared width's own storage (see SystemTypeOfDescription).
+     *
+     * @return a copy of this column with no value range
+     */
+    public ResultSetColumn withoutValueRange() {
+        return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
+            null, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit, projectionPolicyName,
+            nullText, derivedNullable, storedRead, literalConstant, reportedNullable);
+    }
+
+    /**
+     * This column under another name.
+     *
+     * @param renamed the name
+     * @return a copy of this column carrying it
+     */
+    public ResultSetColumn withName(final String renamed) {
+        return new ResultSetColumn(renamed, dataType, tableName, staticType, nullable, nullabilityKnown,
+            valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit,
+            projectionPolicyName, nullText, derivedNullable, storedRead, literalConstant, reportedNullable);
     }
 
     /**
@@ -185,7 +227,7 @@ public class ResultSetColumn {
     public ResultSetColumn withDerivedNullable(final boolean derived) {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit,
-            projectionPolicyName, nullText, Boolean.valueOf(derived));
+            projectionPolicyName, nullText, Boolean.valueOf(derived), storedRead, literalConstant, reportedNullable);
     }
 
     /**
@@ -196,6 +238,30 @@ public class ResultSetColumn {
      */
     public Boolean getDerivedNullable() {
         return derivedNullable;
+    }
+
+    /**
+     * This column carrying what a JavaScript procedure's result set tells of it as {@code isColumnNullable} (see
+     * {@link #getReportedNullable}).
+     *
+     * @param reported whether it is told nullable
+     * @return a copy of this column carrying it
+     */
+    public ResultSetColumn withReportedNullable(final boolean reported) {
+        return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
+            valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit,
+            projectionPolicyName, nullText, derivedNullable, storedRead, literalConstant, Boolean.valueOf(reported));
+    }
+
+    /**
+     * What a JavaScript procedure's result set tells as {@code isColumnNullable}: whether the projection's expression
+     * can answer NULL as the account's metadata tells it, which is {@link #getDerivedNullable} but for a VALUES
+     * column and a scalar subquery item.
+     *
+     * @return whether it is told nullable, or null where nothing worked it out
+     */
+    public Boolean getReportedNullable() {
+        return reportedNullable != null ? reportedNullable : derivedNullable;
     }
 
     /**
@@ -216,7 +282,7 @@ public class ResultSetColumn {
     public ResultSetColumn withUncheckedConstant() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, collation, true, foldedDouble, collationExplicit, projectionPolicyName,
-            nullText, derivedNullable);
+            nullText, derivedNullable, storedRead, literalConstant, reportedNullable);
     }
 
     /**
@@ -228,7 +294,7 @@ public class ResultSetColumn {
     public ResultSetColumn withFoldedDouble() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, collation, uncheckedConstant, true, collationExplicit, projectionPolicyName,
-            nullText, derivedNullable);
+            nullText, derivedNullable, storedRead, literalConstant, reportedNullable);
     }
 
     /**
@@ -240,7 +306,47 @@ public class ResultSetColumn {
     public ResultSetColumn withNullText() {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit,
-            projectionPolicyName, true, derivedNullable);
+            projectionPolicyName, true, derivedNullable, storedRead, literalConstant, reportedNullable);
+    }
+
+    /**
+     * This column carrying how its projection reads a stored table's column (see {@link #getStoredRead}).
+     *
+     * @param read how it reads one
+     * @return a copy of this column carrying it
+     */
+    /**
+     * This column marked as projecting a number or boolean literal a FROM-less select writes, which a wrap of the
+     * derived relation's column into a VARIANT converts unchecked (see TableColumn#isLiteralConstant).
+     *
+     * @return a copy of this column so marked
+     */
+    public ResultSetColumn withLiteralConstant() {
+        return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
+            valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit,
+            projectionPolicyName, nullText, derivedNullable, storedRead, true,
+            reportedNullable);
+    }
+
+    /** Whether this column projects a number or boolean literal a FROM-less select writes. */
+    public boolean isLiteralConstant() {
+        return literalConstant;
+    }
+
+    public ResultSetColumn withStoredRead(final StoredRead read) {
+        return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
+            valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit,
+            projectionPolicyName, nullText, derivedNullable, read, literalConstant, reportedNullable);
+    }
+
+    /**
+     * How this column's projection reads a stored table's column: the column whole, an element or a path of it, or
+     * neither (see StoredRead).
+     *
+     * @return how it reads one
+     */
+    public StoredRead getStoredRead() {
+        return storedRead;
     }
 
     /**
@@ -261,7 +367,7 @@ public class ResultSetColumn {
     public ResultSetColumn withProjectionPolicy(final String policyName) {
         return new ResultSetColumn(name, dataType, tableName, staticType, nullable, nullabilityKnown,
             valueRange, spelledNumber, collation, uncheckedConstant, foldedDouble, collationExplicit, policyName,
-            nullText, derivedNullable);
+            nullText, derivedNullable, storedRead, literalConstant, reportedNullable);
     }
 
     /**
@@ -348,5 +454,16 @@ public class ResultSetColumn {
      */
     public boolean isNullabilityKnown() {
         return nullabilityKnown;
+    }
+
+    /**
+     * Whether a value of this column can be NULL as a write judges it: the projection's own judgement of its item
+     * where it made one, else a carried-out column's NOT NULL; a column nothing judged counts as never NULL. A number
+     * too wide for the column it is written to prints its type {@code {nullable}} when this answers true.
+     *
+     * @return whether a value can be NULL
+     */
+    public boolean canBeNull() {
+        return derivedNullable != null ? derivedNullable.booleanValue() : nullabilityKnown && nullable;
     }
 }

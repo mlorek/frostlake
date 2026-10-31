@@ -26,6 +26,7 @@
 import builtins as _builtins
 import re as _re
 import datetime as _datetime
+import decimal as _decimal
 import json as _json
 import math as _math
 import sys as _sys
@@ -209,7 +210,29 @@ def _frostlake_install_snowpark():
             return value
 
     def _from_sql_value(value, sql_type):
+        # A row holds what the Python connector maps each type to: a NUMBER with a scale a Decimal and a
+        # whole one an int (PythonResultSet hands over the exact text of either where a double would lose digits),
+        # a TIME a datetime.time and a TIMESTAMP_TZ or _LTZ an aware datetime, a VECTOR a list. A SQL NULL the
+        # engine's row holds reaches GraalPy as a foreign None, which `is None` matches; it is None here.
+        if value is None:
+            return None
         n = (sql_type or '').upper()
+        if n == 'NUMBER' and isinstance(value, str):
+            return _decimal.Decimal(value) if '.' in value else int(value)
+        if n == 'TIME' and isinstance(value, str):
+            try:
+                return _datetime.time.fromisoformat(value)
+            except ValueError:
+                return value
+        if n in ('TIMESTAMP_TZ', 'TIMESTAMP_LTZ'):
+            if isinstance(value, _datetime.datetime):
+                return value
+            try:
+                return _datetime.datetime.fromisoformat(str(value))
+            except ValueError:
+                return value
+        if n.startswith('VECTOR'):
+            return list(value)
         if n in ('VARIANT', 'ARRAY', 'OBJECT'):
             return _from_variant_text(value)
         if n.startswith('TIMESTAMP'):
@@ -241,6 +264,8 @@ def _frostlake_install_snowpark():
             return 'TRUE' if value else 'FALSE'
         if isinstance(value, int):
             return str(value)
+        if isinstance(value, _decimal.Decimal) and value.is_finite():
+            return format(value, 'f')
         if isinstance(value, float):
             if _math.isnan(value) or _math.isinf(value):
                 return 'NULL'
@@ -815,7 +840,7 @@ def _frostlake_install_snowpark():
 
     # ----------------------------------------------------------- DataFrame --
 
-    class GroupedFrame:
+    class RelationalGroupedDataFrame:
         def __init__(self, dataframe, keys):
             self._df = dataframe
             self._keys = keys
@@ -1128,7 +1153,7 @@ def _frostlake_install_snowpark():
                     flat.extend(k)
                 else:
                     flat.append(k)
-            return GroupedFrame(self, [str(k) for k in flat])
+            return RelationalGroupedDataFrame(self, [str(k) for k in flat])
 
         def groupBy(self, *keys):
             return self.group_by(*keys)
@@ -1150,7 +1175,10 @@ def _frostlake_install_snowpark():
         def to_pandas(self, **kwargs):
             self._materialize()
             import pandas
-            return pandas.DataFrame(data=[list(r) for r in self._rows], columns=list(self._names))
+            # Snowpark's to_pandas reads a NUMBER with a scale as float64, as the rows held it before they held a
+            # Decimal.
+            return pandas.DataFrame(data=[[float(v) if isinstance(v, _decimal.Decimal) else v for v in r]
+                                          for r in self._rows], columns=list(self._names))
 
         def toPandas(self, **kwargs):
             return self.to_pandas(**kwargs)
@@ -1477,7 +1505,7 @@ def _frostlake_install_snowpark():
 
     # -------------------------------------------------------------- Session --
 
-    class _SessionReader:
+    class DataFrameReader:
         def __init__(self, session):
             self._session = session
 
@@ -1569,7 +1597,7 @@ def _frostlake_install_snowpark():
 
         @property
         def read(self):
-            return _SessionReader(self)
+            return DataFrameReader(self)
 
         def close(self):
             pass
@@ -1692,6 +1720,21 @@ def _frostlake_install_snowpark():
 
     _se_mod.Session = Session
 
+    # Each class carries the name and the module Snowpark gives it, as a routine printing or comparing one sees:
+    # <snowflake.snowpark.dataframe.DataFrame object at 0x...>; each module is importable by that name.
+    _homes = (('dataframe', DataFrame), ('relational_grouped_dataframe', RelationalGroupedDataFrame),
+              ('session', Session), ('row', Row), ('column', Column), ('dataframe_writer', DataFrameWriter),
+              ('dataframe_reader', DataFrameReader))
+    for _home, _cls in _homes:
+        _cls.__module__ = 'snowflake.snowpark.' + _home
+        _cls.__qualname__ = _cls.__name__
+        _owner = _se_mod if _home == 'session' else _sys.modules.get('snowflake.snowpark.' + _home)
+        if _owner is None or _owner.__name__ != 'snowflake.snowpark.' + _home:
+            _owner = _types_mod.ModuleType('snowflake.snowpark.' + _home)
+        setattr(_owner, _cls.__name__, _cls)
+        setattr(_sp_mod, _home, _owner)
+        _sys.modules['snowflake.snowpark.' + _home] = _owner
+
     _sp_mod.Session = Session
     _sp_mod.DataFrame = DataFrame
     _sp_mod.Row = Row
@@ -1701,7 +1744,7 @@ def _frostlake_install_snowpark():
     _sp_mod.types = _ty_mod
     _sp_mod.session = _se_mod
     _sp_mod.exceptions = _ex_mod
-    _sp_mod.__version__ = '1.30.0'
+    _sp_mod.__version__ = '1.55.3'
 
     _sf_mod.snowpark = _sp_mod
 

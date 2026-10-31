@@ -58,11 +58,29 @@ import java.util.Locale;
  *
  * <p>A shape this printer does not model makes {@link #echo} answer null, and the caller keeps the query's text
  * as written.
+ *
+ * <p>Resolved, as a routine parameter's default is echoed, the operators read as they are written and a bare name
+ * is its relation's where the query reads one relation alone: {@code (SELECT COUNT(*) AS "COUNT(*)" FROM TC AS TC
+ * WHERE TC.I > 0)} (live-verified).
  */
 final class ParsedQueryEcho {
 
+    /** Whether the query is printed resolved (see the class's note). */
+    private final boolean resolved;
+
     /** How many operands of set operations have been named so far. */
     private int operands;
+
+    ParsedQueryEcho() {
+        this(false);
+    }
+
+    /**
+     * @param resolved whether the query is printed resolved (see the class's note)
+     */
+    ParsedQueryEcho(final boolean resolved) {
+        this.resolved = resolved;
+    }
     /** Whether the query being printed holds a shape this printer does not model. */
     private boolean unmodelled;
 
@@ -100,9 +118,17 @@ final class ParsedQueryEcho {
         final ParsedEchoPrinter printer = new ParsedEchoPrinter(true, true, this);
         final String tail = order(ctx.orderByClause(), printer) + rowLimit(ctx, null);
         if (written.size() == 1) {
-            // Brackets around a whole query; an ORDER BY or a row limit written after them is not modelled.
+            final FrostlakeParser.SelectStatementContext inner = written.get(0).selectStatement();
+            final FrostlakeParser.SelectClauseContext only = inner.selectOperand().size() == 1
+                ? inner.selectOperand().get(0).selectClause() : null;
+            if (!tail.isEmpty() && only != null && only.topClause() == null && inner.orderByClause() == null
+                    && inner.limitClause() == null && inner.fetchClause() == null) {
+                // An ORDER BY or a row limit written after brackets around one SELECT is that SELECT's own.
+                return block(only, ctx);
+            }
+            // Brackets around a whole query; an ORDER BY or a row limit written after them over more is not modelled.
             unmodelled = unmodelled || !tail.isEmpty();
-            return statement(written.get(0).selectStatement());
+            return statement(inner);
         }
         return setOperation(ctx) + tail;
     }
@@ -188,8 +214,20 @@ final class ParsedQueryEcho {
      */
     private String block(final FrostlakeParser.SelectClauseContext select,
                          final FrostlakeParser.SelectStatementContext whole) {
-        unmodelled = unmodelled || select.intoClause() != null || select.connectByClause() != null;
-        final ParsedEchoPrinter printer = new ParsedEchoPrinter(true, true, this);
+        unmodelled = unmodelled || select.intoClause() != null;
+        if (select.connectByClause() != null) {
+            // A hierarchy is read from as a query in FROM, its own clauses not printed.
+            return "SELECT * FROM (" + flat(select, whole) + ") values";
+        }
+        return flat(select, whole);
+    }
+
+    /** One SELECT without a hierarchy of its own, its clauses in the tree's order. */
+    private String flat(final FrostlakeParser.SelectClauseContext select,
+                        final FrostlakeParser.SelectStatementContext whole) {
+        final ParsedEchoPrinter printer = resolved
+            ? ParsedEchoPrinter.resolvedIn(this, onlyRelation(select.tableExpression()))
+            : new ParsedEchoPrinter(true, true, this);
         final StringBuilder text = new StringBuilder("SELECT ");
         if (select.DISTINCT() != null) {
             text.append("DISTINCT ");
@@ -230,6 +268,13 @@ final class ParsedQueryEcho {
             final String star = spelled(ParseTreeText.qualifiedNameParts(
                 ((FrostlakeParser.QualifiedStarItemContext) item).starQualifiedName())) + ".*";
             return star + " AS \"" + star + "\"";
+        }
+        if (item instanceof FrostlakeParser.ObjectStarItemContext) {
+            // A braced star is the object of the row's columns, named as written.
+            final FrostlakeParser.ObjectStarItemContext object = (FrostlakeParser.ObjectStarItemContext) item;
+            unmodelled = unmodelled || object.starQualifiedName() != null || !object.starModifier().isEmpty()
+                || object.aliasName() != null || object.identifier() != null;
+            return "OBJECT_CONSTRUCT(*)(*) AS \"{*}\"";
         }
         if (!(item instanceof FrostlakeParser.ExprItemContext)) {
             unmodelled = true;
@@ -294,7 +339,13 @@ final class ParsedQueryEcho {
     }
 
     private String join(final FrostlakeParser.JoinClauseContext ctx, final ParsedEchoPrinter printer) {
-        unmodelled = unmodelled || ctx.ASOF() != null;
+        if (ctx.ASOF() != null) {
+            final FrostlakeParser.AsofMatchConditionContext match = ctx.asofMatchCondition();
+            unmodelled = unmodelled || match == null || match.LIMIT() != null || ctx.LATERAL() != null
+                || ctx.booleanExpr() != null || ctx.usingColumnList() != null;
+            return " ASOF JOIN " + reference(ctx.tableReference(), printer) + " MATCH_CONDITION ("
+                + (match == null ? "" : condition(match.booleanExpr(), printer)) + ")";
+        }
         final FrostlakeParser.JoinTypeContext type = ctx.joinType();
         final String kind = type == null || type.INNER() != null ? "INNER"
             : type.LEFT() != null ? "LEFT OUTER" : type.RIGHT() != null ? "RIGHT OUTER" : "FULL OUTER";
@@ -308,26 +359,92 @@ final class ParsedQueryEcho {
 
     /** A relation in FROM under its alias; a LATERAL and a SAMPLE written with it are not kept. */
     private String reference(final FrostlakeParser.TableReferenceContext ctx, final ParsedEchoPrinter printer) {
-        unmodelled = unmodelled || ctx.pivotClause() != null || ctx.unpivotClause() != null
-            || ctx.matchRecognizeClause() != null;
-        final String alias;
-        if (ctx.aliasName() != null) {
-            alias = ParseTreeText.getIdentifier(ctx.aliasName());
-        } else if (ctx.nonJoinKeywordIdentifier() == null) {
-            alias = null;
-        } else if (ctx.nonJoinKeywordIdentifier().identifier() != null) {
-            alias = ParseTreeText.getIdentifier(ctx.nonJoinKeywordIdentifier().identifier());
-        } else {
-            alias = ctx.nonJoinKeywordIdentifier().getText().toUpperCase(Locale.ROOT);
+        unmodelled = unmodelled || ctx.matchRecognizeClause() != null || ctx.pivotAlias() != null;
+        final String relation = source(ctx.tableSource(), aliasOf(ctx), printer);
+        if (ctx.pivotClause() != null) {
+            // A pivoted relation is read from as a query over its source, the pivot not printed.
+            return "(SELECT * FROM " + relation + ") " + echoedName(ctx);
         }
-        return source(ctx.tableSource(), alias, printer);
+        if (ctx.unpivotClause() != null) {
+            final FrostlakeParser.UnpivotClauseContext unpivot = ctx.unpivotClause();
+            unmodelled = unmodelled || unpivot.unpivotNulls() != null;
+            final StringBuilder text = new StringBuilder("SELECT * FROM ").append(relation).append(" UNPIVOT (")
+                .append(spelled(unpivot.identifier(0))).append(" FOR ").append(spelled(unpivot.identifier(1)))
+                .append(" IN (");
+            final List<FrostlakeParser.UnpivotColumnContext> columns = unpivot.unpivotColumnList().unpivotColumn();
+            for (int i = 0; i < columns.size(); i++) {
+                unmodelled = unmodelled || columns.get(i).identifier().size() > 1;
+                text.append(i > 0 ? ", " : "").append(spelled(columns.get(i).identifier(0)));
+            }
+            // The account's echo leaves the UNPIVOT's own parenthesis unclosed.
+            return text.append(')').toString();
+        }
+        return relation;
+    }
+
+    /** A name as the echo spells it: in quotes only where it needs them. */
+    private static String spelled(final FrostlakeParser.IdentifierContext name) {
+        return SqlIdentifiers.spellCanonical(ParseTreeText.getIdentifier(name));
+    }
+
+    /** The name a relation goes by in the echo: its alias, or the last part of its name. */
+    private String echoedName(final FrostlakeParser.TableReferenceContext ctx) {
+        final String alias = aliasOf(ctx);
+        if (alias != null) {
+            return alias;
+        }
+        final FrostlakeParser.TableQualifiedNameContext name = ctx.tableSource().tableQualifiedName();
+        if (name == null) {
+            unmodelled = true;
+            return "";
+        }
+        final String[] parts = ParseTreeText.qualifiedNameParts(name);
+        return parts[parts.length - 1];
+    }
+
+    /** The alias a reference writes, or null. */
+    private static String aliasOf(final FrostlakeParser.TableReferenceContext ctx) {
+        if (ctx.aliasName() != null) {
+            return ParseTreeText.getIdentifier(ctx.aliasName());
+        }
+        if (ctx.nonJoinKeywordIdentifier() == null) {
+            return null;
+        }
+        if (ctx.nonJoinKeywordIdentifier().identifier() != null) {
+            return ParseTreeText.getIdentifier(ctx.nonJoinKeywordIdentifier().identifier());
+        }
+        return ctx.nonJoinKeywordIdentifier().getText().toUpperCase(Locale.ROOT);
+    }
+
+    /** The name the one table a FROM reads goes by, as the echo names it; null for any other FROM. */
+    private static String onlyRelation(final FrostlakeParser.TableExpressionContext tables) {
+        if (tables == null || !tables.joinClause().isEmpty() || tables.tableReference().size() != 1
+                || tables.tableReference(0).tableSource().tableQualifiedName() == null) {
+            return null;
+        }
+        final FrostlakeParser.TableReferenceContext only = tables.tableReference(0);
+        final String alias = aliasOf(only);
+        if (alias != null) {
+            return alias;
+        }
+        final String[] parts = ParseTreeText.qualifiedNameParts(only.tableSource().tableQualifiedName());
+        return parts[parts.length - 1];
     }
 
     private String source(final FrostlakeParser.TableSourceContext ctx, final String alias,
                           final ParsedEchoPrinter printer) {
         if (ctx.tableQualifiedName() != null) {
-            unmodelled = unmodelled || ctx.timeTravelClause() != null;
-            return table(ParseTreeText.qualifiedNameParts(ctx.tableQualifiedName()), alias);
+            final String[] parts = ParseTreeText.qualifiedNameParts(ctx.tableQualifiedName());
+            if (ctx.timeTravelClause() != null) {
+                // The point in time stands between the table and its alias; a statement's point is its job's.
+                return spelled(parts) + timeTravel(ctx.timeTravelClause(), printer) + " AS "
+                    + (alias != null ? alias : parts[parts.length - 1]);
+            }
+            return table(parts, alias);
+        }
+        if (ctx.stageRef() != null && ctx.stageQueryParams() == null && ctx.DIRECTORY() == null) {
+            // A stage read in FROM is the STAGE table function's call over its location.
+            return "TABLE (STAGE(1 => '" + ParseTreeText.getOriginalText(ctx.stageRef()) + "'))";
         }
         if (ctx.KW_IDENTIFIER_REF() != null && ctx.identifierArgument().STRING_LITERAL() != null) {
             return table(SqlIdentifiers.identifierReferenceParts(
@@ -362,6 +479,18 @@ final class ParsedQueryEcho {
         return "";
     }
 
+    /** A time-travel point after a table: {@code AT(OFFSET => -1)}, {@code BEFORE(JOBID => 'x')}. */
+    private String timeTravel(final FrostlakeParser.TimeTravelClauseContext ctx, final ParsedEchoPrinter printer) {
+        final FrostlakeParser.TimeTravelPointContext point = ctx.timeTravelPoint();
+        if (point == null || point.STREAM() != null) {
+            unmodelled = true;
+            return "";
+        }
+        final String kind = point.TIMESTAMP() != null ? "TIMESTAMP" : point.OFFSET() != null ? "OFFSET" : "JOBID";
+        return " " + (ctx.AT_KEYWORD() != null ? "AT" : "BEFORE") + "(" + kind + " => "
+            + value(point.expression(), printer) + ")";
+    }
+
     /** A table by its name as written, under its alias or the last part of that name. */
     private static String table(final String[] parts, final String alias) {
         return spelled(parts) + " AS " + (alias != null ? alias : parts[parts.length - 1]);
@@ -390,7 +519,8 @@ final class ParsedQueryEcho {
         for (final FrostlakeParser.NamedArgumentContext argument : named) {
             unmodelled = unmodelled || argument.expression() == null;
             if (argument.expression() != null) {
-                text.append(text.length() > 0 ? ", " : "").append(ParseTreeText.getIdentifier(argument.variableName()))
+                // A named argument keeps its name as written: FLATTEN(input => …).
+                text.append(text.length() > 0 ? ", " : "").append(argument.variableName().getText())
                     .append(" => ").append(value(argument.expression(), printer));
             }
         }

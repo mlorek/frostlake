@@ -46,16 +46,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>★ A FLOAT BESIDE AN EXACT NUMBER COMPARES AS A DOUBLE, a double casts to NUMBER from its exact
  * binary digits, and a sum of doubles is COMPENSATED: ten tenths are exactly {@code 1}.
  *
- * <p>Two things are deliberately not pinned. The digits {@code getObject} carries for a value that is
- * not exactly representable: the in-process driver hands back the engine's own double, while the
- * account's driver in JSON result mode re-parses the fifteen-digit text it was sent. And the sign of a
+ * <p>The cells are read on the results the account's driver asks for by default, where a FLOAT is its double
+ * and its text Java's own ({@code -0.0}, {@code 3.0}; see {@link DefaultResultFormat}), while the SQL text of
+ * the same value keeps Snowflake's width ({@code -0}). One thing is deliberately not pinned, the sign of a
  * zero read back through a TABLE aggregate or a constant column: the account answers those from
  * partition statistics, which hold no negative zero, so a stored {@code -0.0} reads as {@code 0} there
- * whenever it is the column's only value. A scalar subquery is a third, smaller caveat — the account
+ * whenever it is the column's only value. A scalar subquery is a second, smaller caveat — the account
  * re-parses its FLOAT answer from fifteen-digit text — so every comparison below is written inside the
  * FROM it reads.
  */
 public class FloatCarrierJdbcTest extends BaseJdbcTest {
+
+    @Override
+    protected void setupTest() throws SQLException {
+        DefaultResultFormat.use(statement);
+    }
 
     /** One expression as the driver renders it. */
     private String text(final String expression) throws SQLException {
@@ -97,23 +102,23 @@ public class FloatCarrierJdbcTest extends BaseJdbcTest {
     /** ★ A negative zero keeps its sign wherever the account keeps it. */
     @Test
     public void negativeZeroKeepsItsSign() throws SQLException {
-        assertEquals("-0", text("-0.0::FLOAT"), "the cast binds tighter than the sign, so this negates a double");
-        assertEquals("-0", text("-(0.0::FLOAT)"));
-        assertEquals("-0", text("-0e0::FLOAT"));
-        assertEquals("0", text("(-0.0)::FLOAT"), "a NUMBER literal has no sign of zero to carry into the cast");
+        assertEquals("-0.0", text("-0.0::FLOAT"), "the cast binds tighter than the sign, so this negates a double");
+        assertEquals("-0.0", text("-(0.0::FLOAT)"));
+        assertEquals("-0.0", text("-0e0::FLOAT"));
+        assertEquals("0.0", text("(-0.0)::FLOAT"), "a NUMBER literal has no sign of zero to carry into the cast");
         assertEquals("-0", text("TO_VARCHAR(-0.0::FLOAT)"));
         assertEquals("-0", text("-0.0::FLOAT || ''"));
         assertEquals("-0", text("(-0.0::FLOAT)::VARCHAR"));
-        assertEquals("-0", text("ABS(-0.0::FLOAT)"), "★ ABS keeps it — it negates only what is below zero");
-        assertEquals("-0", text("-0.0::FLOAT * 5"));
-        assertEquals("-0", text("-0.0::FLOAT / 5"));
-        assertEquals("-0", text("-0.0::FLOAT - 0"));
-        assertEquals("-0", text("-0.0::FLOAT + -0.0::FLOAT"));
-        assertEquals("-0", text("SQRT(-0.0::FLOAT)"));
-        assertEquals("-0", text("FLOOR(-0.0::FLOAT)"));
-        assertEquals("-0", text("IFF(TRUE, -0.0::FLOAT, 1)"));
-        assertEquals("-0", text("COALESCE(-0.0::FLOAT, 1)"));
-        assertEquals("-0", text("CASE WHEN TRUE THEN -0.0::FLOAT ELSE 0.0::FLOAT END"));
+        assertEquals("-0.0", text("ABS(-0.0::FLOAT)"), "★ ABS keeps it — it negates only what is below zero");
+        assertEquals("-0.0", text("-0.0::FLOAT * 5"));
+        assertEquals("-0.0", text("-0.0::FLOAT / 5"));
+        assertEquals("-0.0", text("-0.0::FLOAT - 0"));
+        assertEquals("-0.0", text("-0.0::FLOAT + -0.0::FLOAT"));
+        assertEquals("-0.0", text("SQRT(-0.0::FLOAT)"));
+        assertEquals("-0.0", text("FLOOR(-0.0::FLOAT)"));
+        assertEquals("-0.0", text("IFF(TRUE, -0.0::FLOAT, 1)"));
+        assertEquals("-0.0", text("COALESCE(-0.0::FLOAT, 1)"));
+        assertEquals("-0.0", text("CASE WHEN TRUE THEN -0.0::FLOAT ELSE 0.0::FLOAT END"));
         assertEquals("{\"k\":-0.000000000000000e+00}", text("TO_JSON(OBJECT_CONSTRUCT('k', -0.0::FLOAT))"));
         assertEquals(Double.valueOf(-0.0), firstObject("SELECT -0.0::FLOAT AS v"),
             "★ getObject is a Double, and Double.equals tells the two zeros apart");
@@ -122,17 +127,17 @@ public class FloatCarrierJdbcTest extends BaseJdbcTest {
     /** And loses it exactly where the account does. */
     @Test
     public void negativeZeroTurnsPositiveWhereTheAccountTurnsIt() throws SQLException {
-        assertEquals("0", text("-0.0::FLOAT + 0"));
-        assertEquals("0", text("-0.0::FLOAT * -1"));
-        assertEquals("0", text("-(-0.0::FLOAT)"));
-        assertEquals("0", text("CEIL(-0.4::FLOAT)"), "★ CEIL gives a positive zero where IEEE ceiling gives -0");
-        assertEquals("0", text("CEIL(-0.04::FLOAT, 1)"));
-        assertEquals("0", text("TRUNC(-0.4::FLOAT)"));
-        assertEquals("0", text("TRUNC(-0.04::FLOAT, 1)"));
-        assertEquals("0", text("ROUND(-0.4::FLOAT)"));
-        assertEquals("0", text("ROUND(-0.0::FLOAT, 2)"));
-        assertEquals("0", text("MOD(-0.0::FLOAT, 1)"));
-        assertEquals("0", text("SIGN(-0.0::FLOAT)"));
+        assertEquals("0.0", text("-0.0::FLOAT + 0"));
+        assertEquals("0.0", text("-0.0::FLOAT * -1"));
+        assertEquals("0.0", text("-(-0.0::FLOAT)"));
+        assertEquals("0.0", text("CEIL(-0.4::FLOAT)"), "★ CEIL gives a positive zero where IEEE ceiling gives -0");
+        assertEquals("0.0", text("CEIL(-0.04::FLOAT, 1)"));
+        assertEquals("0.0", text("TRUNC(-0.4::FLOAT)"));
+        assertEquals("0.0", text("TRUNC(-0.04::FLOAT, 1)"));
+        assertEquals("0.0", text("ROUND(-0.4::FLOAT)"));
+        assertEquals("0.0", text("ROUND(-0.0::FLOAT, 2)"));
+        assertEquals("0.0", text("MOD(-0.0::FLOAT, 1)"));
+        assertEquals("0.0", text("SIGN(-0.0::FLOAT)"));
     }
 
     /** The two zeros are EQUAL, a tie keeps the first, and DISTINCT counts them once. */
@@ -141,10 +146,10 @@ public class FloatCarrierJdbcTest extends BaseJdbcTest {
         assertTrue(truth("-0.0::FLOAT = 0.0::FLOAT"));
         assertFalse(truth("-0.0::FLOAT < 0"));
         assertTrue(truth("-0.0::FLOAT IN (0)"));
-        assertEquals("-0", text("GREATEST(-0.0::FLOAT, 0.0::FLOAT)"), "★ a tie keeps the first seen");
-        assertEquals("0", text("GREATEST(0.0::FLOAT, -0.0::FLOAT)"));
-        assertEquals("-0", text("LEAST(-0.0::FLOAT, 0.0::FLOAT)"));
-        assertEquals("0", text("LEAST(0.0::FLOAT, -0.0::FLOAT)"));
+        assertEquals("-0.0", text("GREATEST(-0.0::FLOAT, 0.0::FLOAT)"), "★ a tie keeps the first seen");
+        assertEquals("0.0", text("GREATEST(0.0::FLOAT, -0.0::FLOAT)"));
+        assertEquals("-0.0", text("LEAST(-0.0::FLOAT, 0.0::FLOAT)"));
+        assertEquals("0.0", text("LEAST(0.0::FLOAT, -0.0::FLOAT)"));
         statement.execute("CREATE OR REPLACE TABLE fzz (f FLOAT)");
         statement.execute("INSERT INTO fzz SELECT -0.0::FLOAT");
         statement.execute("INSERT INTO fzz SELECT 0.0::FLOAT");
@@ -175,12 +180,13 @@ public class FloatCarrierJdbcTest extends BaseJdbcTest {
             "text converts the same way");
         assertEquals("1234567890123456768", firstText("SELECT f::NUMBER(38,0) FROM fw WHERE id = 2"),
             "★ a nineteen-digit integer is the double nearest it");
-        assertEquals("1.23456789012346e+18", firstText("SELECT f FROM fw WHERE id = 2"));
+        assertEquals(Double.toString(1234567890123456768.0), firstText("SELECT f FROM fw WHERE id = 2"),
+            "the driver's text is Java's own of the double");
         assertEquals("1.23456789012346e+18", firstText("SELECT TO_VARCHAR(f) FROM fw WHERE id = 2"));
         assertEquals("1.23456789012346e+18", firstText("SELECT f::VARCHAR FROM fw WHERE id = 2"));
         assertEquals("9007199254740992", firstText("SELECT f::NUMBER(38,0) FROM fw WHERE id = 5"),
             "one past 2^53 rounds to the even double");
-        assertEquals("3", firstText("SELECT f FROM fw WHERE id = 4"));
+        assertEquals("3.0", firstText("SELECT f FROM fw WHERE id = 4"));
         assertEquals("1.50000000000000000000", firstText("SELECT f::NUMBER(38,20) FROM fw WHERE id = 6"),
             "a NUMBER(10,2) value converts exactly when the double can hold it");
         assertTrue(truthOf("SELECT f = 1234567890123456768 FROM fw WHERE id = 2"));

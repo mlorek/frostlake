@@ -20,6 +20,7 @@ import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.WrittenSignatureType;
 
 import org.antlr.v4.runtime.BailErrorStrategy;
@@ -33,8 +34,9 @@ import java.util.List;
 /**
  * A routine named by a text, {@code name(TYPES)}, as GET_DDL, TAG_REFERENCES and SYSTEM$GET_TAG take one. The
  * text is read whole as a routine reference: its name as an identifier reference is, any blank between its
- * tokens, and its types as DROP FUNCTION's are. A text that is not exactly this — no parentheses, something
- * after them, a type nobody knows — names no routine.
+ * tokens, and its types as DROP FUNCTION's are, a bare TIMESTAMP naming the flavour the session's
+ * TIMESTAMP_TYPE_MAPPING names. A text that is not exactly this — no parentheses, something after them, a type
+ * nobody knows — names no routine.
  */
 public final class RoutineReferenceText {
 
@@ -78,12 +80,25 @@ public final class RoutineReferenceText {
             }
             if (child instanceof FrostlakeParser.DataTypeNameContext) {
                 final ParseTree next = i + 1 < list.getChildCount() ? list.getChild(i + 1) : null;
-                types.add(WrittenSignatureType.of(DataTypeParser.parse((FrostlakeParser.DataTypeNameContext) child,
-                    next instanceof FrostlakeParser.TypeParametersContext
-                        ? (FrostlakeParser.TypeParametersContext) next : null),
+                types.add(WrittenSignatureType.of(sessionMapped(DataTypeParser.parse(
+                    (FrostlakeParser.DataTypeNameContext) child, next instanceof FrostlakeParser.TypeParametersContext
+                        ? (FrostlakeParser.TypeParametersContext) next : null)),
                     next instanceof FrostlakeParser.TypeParametersContext));
             }
         }
         return types;
+    }
+
+    /**
+     * A bare TIMESTAMP as the flavour the session's TIMESTAMP_TYPE_MAPPING names, its precision kept: a function
+     * declared {@code f(x TIMESTAMP)} under TIMESTAMP_LTZ takes a TIMESTAMP_LTZ, and the reference written the same
+     * way under the same mapping names it.
+     */
+    private static DataType sessionMapped(final DataType parsed) {
+        if (!(parsed instanceof DateTimeType) || !"TIMESTAMP".equalsIgnoreCase(parsed.getName())) {
+            return parsed;
+        }
+        final String mapping = SessionTimestampMapping.current();
+        return new DateTimeType(mapping, ((DateTimeType) parsed).getPrecision(), SessionTimestampMapping.isZoned());
     }
 }

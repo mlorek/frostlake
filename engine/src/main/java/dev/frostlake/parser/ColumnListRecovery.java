@@ -212,7 +212,11 @@ public final class ColumnListRecovery {
                 break;
             }
             final int end = columnEnd(spoken, i + 2);
-            if (end < 0 || reportedWithin(spoken, i + 1, end, reported)) {
+            // After a typeless column this parser reads the list as names and refuses the next column's type word
+            // itself; live reads that column whole, (n, m INT) refused at the comma alone (live-verified).
+            final boolean namesMisread = !lines.isEmpty() && type.getTokenIndex() == reported.getTokenIndex()
+                && type.getType() != FrostlakeLexer.IDENTIFIER && type.getType() != FrostlakeLexer.QUOTED_IDENTIFIER;
+            if (end < 0 || reportedWithin(spoken, namesMisread ? i + 2 : i + 1, end, reported)) {
                 return null;
             }
             if (spoken.get(end).getType() == FrostlakeLexer.RPAREN) {

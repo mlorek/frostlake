@@ -113,7 +113,7 @@ public final class InferredInitialiserCalls {
         final List<String> parts = call.getNameParts();
         final String name = parts == null ? call.getFunctionName() : parts.size() == 1 ? parts.get(0) : null;
         return name != null && name.toUpperCase(Locale.ROOT).startsWith("SYSTEM$")
-            && !SystemFunctionNames.contains(name) && !SystemFunctionNames.isLoggingStatement(name);
+            && !SystemFunctionNames.contains(name) && !SystemFunctionNames.isScriptingStatement(name);
     }
 
     /**

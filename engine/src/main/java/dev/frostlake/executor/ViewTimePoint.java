@@ -31,11 +31,25 @@ final class ViewTimePoint {
     final boolean before;
     /** The clause as written, for a source's description. */
     final String text;
+    /**
+     * Where the point falls among the statements of the session's own open transaction, or -1 when it falls among
+     * none: its tables are then read as the transaction saw them (see {@code QueryExecutor.ownTransactionOrdinal}).
+     */
+    final long ownOrdinal;
+    /** Whether the point is a statement's own moment read BEFORE it, without its changes. */
+    final boolean withoutStatement;
 
     ViewTimePoint(final long millis, final long sequence, final boolean before, final String text) {
+        this(millis, sequence, before, text, -1L, false);
+    }
+
+    ViewTimePoint(final long millis, final long sequence, final boolean before, final String text,
+                  final long ownOrdinal, final boolean withoutStatement) {
         this.millis = millis;
         this.sequence = sequence;
         this.before = before;
         this.text = text;
+        this.ownOrdinal = ownOrdinal;
+        this.withoutStatement = withoutStatement;
     }
 }

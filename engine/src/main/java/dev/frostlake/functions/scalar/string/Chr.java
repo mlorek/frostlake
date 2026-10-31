@@ -18,23 +18,32 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.WholeNumbers;
 import dev.frostlake.functions.scalar.WholeNumberArgument;
 import dev.frostlake.types.StringType;
 
-import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.util.List;
 
 public class Chr extends TextArgumentFunction {
-    public Chr() { super("CHR", StringType.VARCHAR); }
+    public Chr() { this("CHR"); }
+
+    /**
+     * @param name the name the function is called by: CHR, or CHAR, its other name
+     */
+    protected Chr(final String name) { super(name, StringType.VARCHAR); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        // A fraction goes to the nearest code point, and a NaN or an infinity is refused (WholeNumberArgument). The
-        // code is the number's low 32 bits, read signed: CHR(4294967361) is 'A', CHR(4294967296) a NUL and
-        // CHR(2147483713) refused, the refusal naming the number written (live-verified).
-        final BigInteger written = WholeNumberArgument.rounded(args.get(0), WholeNumberArgument.WIDE);
-        final int codePoint = written.intValue();
+        // A fraction goes to the nearest code point, and a FLOAT the 64-bit slot cannot hold is refused
+        // (WholeNumberArgument). The code is the number's low 32 bits, read signed: CHR(4294967361) is 'A',
+        // CHR(4294967296) a NUL and CHR(2147483713) refused, the refusal naming the number's low 64 bits, read
+        // signed: CHR(1e25) names 1590897978359414784 (live-verified).
+        WholeNumberArgument.requireFittingFloat(args.get(0), WholeNumberArgument.WIDE, false);
+        final long written = WholeNumbers.decimalOf(args.get(0)).setScale(0, RoundingMode.HALF_UP).toBigInteger()
+            .longValue();
+        final int codePoint = (int) written;
         // A surrogate is half of a character and names none.
         if (codePoint < 0 || codePoint > Character.MAX_CODE_POINT
                 || codePoint >= Character.MIN_SURROGATE && codePoint <= Character.MAX_SURROGATE) {

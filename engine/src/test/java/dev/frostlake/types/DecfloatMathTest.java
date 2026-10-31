@@ -248,4 +248,28 @@ public class DecfloatMathTest extends MeasuredCellsTestSupport {
                 "37727.856748707438532634789985003307542|DECFLOAT(38)[DECFLOAT18]"},
         });
     }
+
+    /**
+     * DIV0 and DIV0NULL over a DECFLOAT divide as {@code /} does, to 38 significant digits, a zero divisor answering
+     * a plain 0: they divided as a NUMBER at scale 6, so 1/3 was 0.333333, 1e-50/3 0 and 1e100/3 a NUMBER(38,6)
+     * overflow, all typed DECFLOAT.
+     */
+    @Test
+    public void div0AndDiv0NullDivideAsTheOperatorDoes() {
+        assertCells(new String[][] {
+            {"SELECT DIV0(DECFLOAT '1', 3)::VARCHAR, SYSTEM$TYPEOF(DIV0(DECFLOAT '1', 3)), "
+                + "(DECFLOAT '1' / 3)::VARCHAR, DIV0(DECFLOAT '1e-50', 3)::VARCHAR",
+                "3.3333333333333333333333333333333333333e-1|DECFLOAT(38)[DECFLOAT18]|"
+                + "3.3333333333333333333333333333333333333e-1|3.3333333333333333333333333333333333333e-51"},
+            {"SELECT DIV0(DECFLOAT '1e100', 3)::VARCHAR, DIV0NULL(DECFLOAT '-1e100', 3)::VARCHAR",
+                "3.3333333333333333333333333333333333333e99|-3.3333333333333333333333333333333333333e99"},
+            {"SELECT DIV0(1, DECFLOAT '3')::VARCHAR, DIV0NULL(DECFLOAT '1', 3)::VARCHAR, "
+                + "DIV0(1.5::FLOAT, DECFLOAT '3')::VARCHAR, DIV0('1', DECFLOAT '4')::VARCHAR",
+                "3.3333333333333333333333333333333333333e-1|3.3333333333333333333333333333333333333e-1|0.5|0.25"},
+            {"SELECT DIV0(DECFLOAT '1.5', 0)::VARCHAR, DIV0NULL(DECFLOAT '1.5', 0)::VARCHAR, "
+                + "DIV0NULL(DECFLOAT '1', NULL)::VARCHAR, DIV0(DECFLOAT '1', NULL)::VARCHAR, "
+                + "DIV0(NULL::DECFLOAT, 0)::VARCHAR, SYSTEM$TYPEOF(DIV0NULL(DECFLOAT '1', NULL))",
+                "0|0|0|null|null|DECFLOAT(38)[DECFLOAT18]"},
+        });
+    }
 }

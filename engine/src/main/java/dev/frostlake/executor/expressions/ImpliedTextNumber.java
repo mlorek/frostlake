@@ -17,6 +17,8 @@
 package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.NumericRangeRefusal;
+import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -104,6 +106,31 @@ public final class ImpliedTextNumber {
      */
     public static boolean isTextLiteral(final Expression expr) {
         return expr instanceof LiteralExpression && ((LiteralExpression) expr).getType() == LiteralType.STRING;
+    }
+
+    /**
+     * The refusal of a text literal read beside an exact number when the number it spells has more than 38 digits
+     * after its point. It is read at its own digits' precision and scale, an integer digit counted at least, and no
+     * NUMBER takes that scale: compared, added or listed beside a NUMBER, {@code '1e-39'} is "Invalid intermediate
+     * datatype: NUMBER(40,39).", {@code '2.5e-39'} NUMBER(41,40) and {@code '-1e-308'} NUMBER(309,308), while
+     * {@code '1e-38'} is read (live-verified).
+     *
+     * @param written the literal's text
+     * @return the refusal, or null for a text that spells no such number
+     */
+    public static String overScaledRefusal(final String written) {
+        final BigDecimal spelled;
+        try {
+            spelled = DecimalText.parse(written).stripTrailingZeros();
+        } catch (final NumberFormatException notSpelled) {
+            return null;
+        }
+        if (spelled.scale() <= 38) {
+            return null;
+        }
+        final int precision = Math.max(1, spelled.precision() - spelled.scale()) + spelled.scale();
+        return SqlCompilationError.withoutPosition("Invalid intermediate datatype: NUMBER(" + precision + ","
+            + spelled.scale() + ").");
     }
 
     /**

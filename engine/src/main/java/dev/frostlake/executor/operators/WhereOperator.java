@@ -31,6 +31,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * WHERE clause operator - filters rows based on a predicate expression.
@@ -91,7 +92,7 @@ public class WhereOperator implements Operator {
 
     @Override
     public String getDescription() {
-        return String.format("WHERE[%s, mode=%s]",
+        return String.format(Locale.ROOT, "WHERE[%s, mode=%s]",
             whereExpression.length() > 50 ? whereExpression.substring(0, 47) + "..." : whereExpression,
             mode);
     }

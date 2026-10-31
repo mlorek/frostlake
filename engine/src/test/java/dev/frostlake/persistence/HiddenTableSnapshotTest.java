@@ -29,9 +29,10 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * A permanent table hidden beneath a temporary table of the same name survives every copy of the engine's
- * state still hidden — an in-memory engine clone and an on-disk checkpoint both restore the temporary table
- * above it with each table's own rows — and the end of the session uncovers it.
+ * A permanent table hidden beneath a temporary table of the same name survives every copy of the engine's state with
+ * its own rows - an in-memory engine clone and an on-disk checkpoint alike - uncovered there, since a copy has none of
+ * the source's sessions and so none of their temporary tables, while the source keeps it hidden until the end of the
+ * session uncovers it.
  */
 public class HiddenTableSnapshotTest {
 
@@ -45,17 +46,18 @@ public class HiddenTableSnapshotTest {
     }
 
     @Test
-    public void everyCopyOfTheStateKeepsTheTableHidden() throws Exception {
+    public void everyCopyOfTheStateUncoversTheTable() throws Exception {
         final DatabaseEngine original = shadowingEngine();
 
         final DatabaseEngine twin = original.cloneInstance();
-        assertShadowed(twin);
+        assertUncovered(twin);
 
         dir = Files.createTempDirectory("hidden_table_snapshot_");
         original.checkpointStateTo(dir);
         final DatabaseEngine restored = new DatabaseEngine();
         restored.restoreStateFrom(dir);
-        assertShadowed(restored);
+        assertUncovered(restored);
+        assertShadowed(original);
     }
 
     @Test
@@ -75,6 +77,12 @@ public class HiddenTableSnapshotTest {
         engine.execute("CREATE TEMPORARY TABLE hidden_db.s.kt (b INT)");
         engine.execute("INSERT INTO hidden_db.s.kt VALUES (3)");
         return engine;
+    }
+
+    private static void assertUncovered(final DatabaseEngine engine) {
+        assertEquals("1 | 2", column(engine, "SELECT * FROM hidden_db.s.kt ORDER BY 1"));
+        assertEquals("BASE TABLE", column(engine, "SELECT table_type FROM hidden_db.information_schema.tables"
+            + " WHERE table_schema = 'S' ORDER BY 1"));
     }
 
     private static void assertShadowed(final DatabaseEngine engine) {

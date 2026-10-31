@@ -33,7 +33,7 @@ public class RestIcebergTableTest extends BaseRestTest {
         sql("CREATE DATABASE IF NOT EXISTS ri_db");
         sql("CREATE SCHEMA IF NOT EXISTS ri_db.s1");
         sql("CREATE OR REPLACE EXTERNAL VOLUME ri_vol STORAGE_LOCATIONS = ((NAME = 'l1' STORAGE_PROVIDER = 'S3'"
-            + " STORAGE_BASE_URL = 's3://ice/' STORAGE_AWS_ROLE_ARN = 'arn:r'))");
+            + " STORAGE_BASE_URL = 's3://ice/' STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r'))");
     }
 
     private static String table(final String name, final String comment) {
@@ -88,7 +88,7 @@ public class RestIcebergTableTest extends BaseRestTest {
         ok(post(BASE, table("src", "source")));
         sql("INSERT INTO ri_db.s1.src VALUES (1, 'x'), (2, 'y')");
         ok(post(BASE + ":as-select?query=SELECT%20a%20FROM%20ri_db.s1.src",
-            "{\"name\":\"ctas\",\"external_volume\":\"ri_vol\"}"));
+            "{\"name\":\"ctas\",\"external_volume\":\"ri_vol\",\"catalog\":\"SNOWFLAKE\"}"));
         assertEquals(1, ok(get(BASE + "/ctas")).path("columns").size());
         ok(post(BASE + "/src:clone", "{\"name\":\"cloned\"}"));
         assertEquals("RI_VOL", ok(get(BASE + "/cloned")).path("external_volume").asString());

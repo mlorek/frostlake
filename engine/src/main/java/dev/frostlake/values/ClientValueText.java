@@ -18,17 +18,19 @@ package dev.frostlake.values;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.NumericType;
 import java.math.BigDecimal;
 
 /**
  * A value as a CLIENT reads it — the text a driver hands back from {@code getString}.
  *
- * <p>★ AN APPROXIMATE VALUE IS SPELLED THE SAME WAY EVERYWHERE. TO_VARCHAR over a FLOAT already used
- * Snowflake's width; the driver path did not, and handed back Java's own {@code Double.toString}
- * instead — so the same value read two ways gave two answers, and neither the client nor the engine
- * could say which was the value's text. Live's driver returns the SQL text: {@code 1.414213562} for
- * a square root, {@code 1} for a whole one, {@code -0} keeping its sign, {@code inf} in lower case.
+ * <p>★ A FLOAT READS AS JAVA SPELLS ITS DOUBLE. On the results it asks for by default, the account's
+ * driver hands a FLOAT back as {@code Double.toString} of the double: {@code 0.30000000000000004} for
+ * {@code 0.1 + 0.2}, {@code 1.4142135623730951} for a square root, {@code 3.0} for a whole one,
+ * {@code 1.0E18}, {@code -0.0} keeping its sign, {@code NaN} and {@code Infinity} (live-verified). The
+ * SQL text of the same value, TO_VARCHAR's, keeps Snowflake's shorter width, {@code 0.3} and
+ * {@code 1.414213562}; so does that driver on JSON results, which carry the server's text, not the double.
  *
  * <p>★ THE DECLARED TYPE DECIDES, not the carrier. A FLOAT column holds a double, but a FLOAT-declared
  * value can still arrive in an exact carrier — an expression the engine computed exactly, or a value
@@ -45,13 +47,6 @@ public final class ClientValueText {
     }
 
     /**
-     * The text a client sees for one value.
-     *
-     * @param value the value
-     * @param declared the column's declared type, which is what tells the numeric families apart
-     * @return its client text, or null for a null value
-     */
-    /**
      * The object a client reads for a DECFLOAT: the BigDecimal of its text, as the account's driver builds it —
      * 1e40 is {@code 1.0000000000000000303786028427003666891E+40} and 1E-10 {@code 1E-10} (live-verified).
      *
@@ -59,9 +54,27 @@ public final class ClientValueText {
      * @return the decimal
      */
     public static BigDecimal decfloatObject(final Number value) {
-        return new BigDecimal(Decfloats.text(Decfloats.of(value, "TO_DECFLOAT")));
+        return DecimalText.parse(Decfloats.text(Decfloats.of(value, "TO_DECFLOAT")));
     }
 
+    /**
+     * The text a client reads for a FLOAT, by both transports: Java's {@code Double.toString} of its double,
+     * as the account's driver spells it on its default results.
+     *
+     * @param value the double
+     * @return its client text
+     */
+    public static String approximateText(final double value) {
+        return Double.toString(value);
+    }
+
+    /**
+     * The text a client sees for one value.
+     *
+     * @param value the value
+     * @param declared the column's declared type, which is what tells the numeric families apart
+     * @return its client text, or null for a null value
+     */
     public static String render(final Object value, final DataType declared) {
         if (value instanceof Boolean) {
             // Only a BOOLEAN column prints the driver's upper-case spelling; a boolean inside a
@@ -70,7 +83,7 @@ public final class ClientValueText {
                 ? booleanText(((Boolean) value).booleanValue()) : value.toString();
         }
         if (value instanceof Number && NumericType.isApproximate(declared)) {
-            return SharedFunctionHelpers.floatText(((Number) value).doubleValue());
+            return approximateText(((Number) value).doubleValue());
         }
         if (value instanceof Number && NumericType.isDecfloat(declared)) {
             // A DECFLOAT reads as its own text, scientific past 38 digits (live-verified through the driver).

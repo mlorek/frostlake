@@ -26,11 +26,13 @@ import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.UserLookup;
 import dev.frostlake.metastore.AccountDirectory;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.TagAssignments;
 import dev.frostlake.metastore.Taggable;
 import dev.frostlake.metastore.model.Account;
@@ -43,6 +45,7 @@ import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.ManagedAccount;
 import dev.frostlake.metastore.model.MaterializedView;
 import dev.frostlake.metastore.model.Pipe;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.Schema;
@@ -63,8 +66,10 @@ import dev.frostlake.types.StringType;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * Database roles (CREATE, ALTER, DROP, SHOW DATABASE ROLES, GRANT and REVOKE DATABASE ROLE), the grants listings
@@ -99,6 +104,14 @@ public final class AccessControlHandler {
 
     /** Runs one access-control statement: a result set for a listing, null for the rest. */
     public Object handle(final FrostlakeParser.AccessControlStatementContext ctx) {
+        if (ctx.CALLER() != null) {
+            // A caller grant listing reads a LIMIT and its count as the other grant listings do (live-verified).
+            final FrostlakeParser.ShowTailContext tail = ctx.showTail();
+            ShowTailSyntax.requireCountOnly(ctx, tail);
+            final ResultSet listing = new CallerGrantHandler(catalog, queryExecutor).show(ctx);
+            return tail == null || tail.LIMIT() == null ? listing
+                : firstRows(listing, ShowPageSize.require(tail.INTEGER_LITERAL().getText()));
+        }
         final int first = ctx.getStart().getType();
         if (ctx.MANAGED() != null) {
             return managedAccount(ctx, first);
@@ -152,6 +165,11 @@ public final class AccessControlHandler {
                 : " LIKE '" + pattern + "'") + "'; use 'SHOW DATABASE ROLES IN DATABASE <database_name>' instead.");
         }
         final Database database = catalog.databaseExact(visitor.getText(ctx.identifier()));
+        if (SystemDatabase.is(database.getName()) && (ctx.startsPrefix != null || ctx.LIMIT() != null)) {
+            // A shared database's roles are listed whole (live-verified).
+            throw new RuntimeException("Unsupported feature 'SHOW DATABASE ROLES IN DATABASE <shared database>"
+                + " [STARTS WITH <s>] [LIMIT <l>]'; use 'SHOW DATABASE ROLES IN DATABASE <shared database>' instead.");
+        }
         ResultSet listing = new AccessControlListings(catalog).databaseRoles(database);
         final String prefix = ctx.startsPrefix == null ? null : ParseTreeText.stringValue(ctx.startsPrefix);
         if (pattern != null || prefix != null) {
@@ -239,6 +257,7 @@ public final class AccessControlHandler {
         }
         final String[] parts = databaseRoleName(catalog, ctx.qualifiedName());
         final Database database = catalog.databaseExact(parts[0]);
+        SystemDatabase.refuseChange(database.getName());
         final String qualified = shown(database.getName(), parts[1]);
         final DatabaseRole existing = database.getDatabaseRole(parts[1]);
         if (existing != null && ctx.or_replace() == null) {
@@ -263,6 +282,7 @@ public final class AccessControlHandler {
     private void alterDatabaseRole(final FrostlakeParser.AccessControlStatementContext ctx) {
         final String[] parts = databaseRoleName(catalog, ctx.qualifiedName());
         final Database database = catalog.databaseExact(parts[0]);
+        SystemDatabase.refuseChange(database.getName());
         final DatabaseRole role = database.getDatabaseRole(parts[1]);
         if (role == null) {
             if (ctx.if_exists() != null) {
@@ -308,6 +328,7 @@ public final class AccessControlHandler {
     private ResultSet dropDatabaseRole(final FrostlakeParser.AccessControlStatementContext ctx) {
         final String[] parts = databaseRoleName(catalog, ctx.qualifiedName());
         final Database database = catalog.databaseExact(parts[0]);
+        SystemDatabase.refuseChange(database.getName());
         final DatabaseRole role = database.getDatabaseRole(parts[1]);
         if (DropPurge.written(ctx.dropBehavior()) && (role != null || ctx.if_exists() != null)) {
             throw DropPurge.refusal(ParseTreeText.qualifiedNameParts(ctx.qualifiedName()));
@@ -379,16 +400,45 @@ public final class AccessControlHandler {
                 throw new RuntimeException(SqlCompilationError.of("Cannot grant database role '"
                     + shown(role.getDatabase(), role.getName()) + "' to itself."));
             }
+            if (holdsDatabaseRole(role, holder.getQualifiedName(), new HashSet<String>())) {
+                // A grant that closes a loop is refused as an account role's is: the hierarchy stays one.
+                throw new RuntimeException("Cannot grant database role: would create circular role hierarchy");
+            }
             requireDatabaseRoleAuthority(role);
             holder.grantDatabaseRole(role.getQualifiedName(), grantor);
         } else if (ctx.USER() != null) {
-            final User holder = catalog.getUserExact(PrincipalNames.of(ctx.principalName(), queryExecutor));
+            final User holder = userHolder(PrincipalNames.of(ctx.principalName(), queryExecutor));
             holder.grantDatabaseRole(authorizedDatabaseRole(ctx.referencedName()).getQualifiedName(), grantor);
         } else {
             final Role holder = catalog.getRoleExact(PrincipalNames.of(ctx.principalName(), queryExecutor));
             holder.grantDatabaseRole(authorizedDatabaseRole(ctx.referencedName()).getQualifiedName(), grantor);
         }
         return null;
+    }
+
+    /** Whether a database role holds another, by its qualified name, directly or through the roles it holds. */
+    private boolean holdsDatabaseRole(final DatabaseRole from, final String target, final Set<String> seen) {
+        for (final String held : from.getDatabaseRoleGrants().keySet()) {
+            if (held.equals(target)) {
+                return true;
+            }
+            if (!seen.add(held)) {
+                continue;
+            }
+            final String[] parts = QualifiedName.parse(held).parts();
+            final Database database = parts.length == 2 && catalog.hasDatabaseExact(parts[0])
+                ? catalog.databaseExact(parts[0]) : null;
+            final DatabaseRole next = database == null ? null : database.getDatabaseRole(parts[1]);
+            if (next != null && holdsDatabaseRole(next, target, seen)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The user a database role is granted to or revoked from (see {@link UserLookup}). */
+    private User userHolder(final String name) {
+        return UserLookup.asking(catalog, queryExecutor.getSecurityManager(), name, Privilege.MANAGE_GRANTS);
     }
 
     /** REVOKE DATABASE ROLE d.r FROM USER u | ROLE r | DATABASE ROLE d.r2, its holder found first as a GRANT's is. */
@@ -398,7 +448,7 @@ public final class AccessControlHandler {
                 PrincipalNames.parts(ctx.databaseRoleGrantee().referencedName(), queryExecutor));
             holder.revokeDatabaseRole(authorizedDatabaseRole(ctx.referencedName()).getQualifiedName());
         } else if (ctx.USER() != null) {
-            final User holder = catalog.getUserExact(PrincipalNames.of(ctx.principalName(), queryExecutor));
+            final User holder = userHolder(PrincipalNames.of(ctx.principalName(), queryExecutor));
             holder.revokeDatabaseRole(authorizedDatabaseRole(ctx.referencedName()).getQualifiedName());
         } else {
             final Role holder = catalog.getRoleExact(PrincipalNames.of(ctx.principalName(), queryExecutor));

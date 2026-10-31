@@ -72,6 +72,9 @@ public class TemporaryHandlerFunctionsTest extends MeasuredCellsTestSupport {
             {"SELECT te_js(3)", "3.0"},
             {"CREATE OR REPLACE TEMPORARY FUNCTION te_js2(x DOUBLE) RETURNS DOUBLE LANGUAGE JAVASCRIPT AS 'return (;'",
                 "Function TE_JS2 successfully created."},
+            {"SELECT te_js2(3)",
+                "REFUSED JavaScript compilation error: Uncaught SyntaxError: Unexpected token ';' in TE_JS2 at "
+                + "'return (;' position 8"},
             {"CREATE OR REPLACE TEMPORARY FUNCTION te_sql(x NUMBER) RETURNS NUMBER AS 'x'",
                 "Function TE_SQL successfully created."},
             {"CREATE OR REPLACE TEMPORARY FUNCTION te_sql2(x NUMBER) RETURNS NUMBER AS 'nosuch_col'",
@@ -98,6 +101,9 @@ public class TemporaryHandlerFunctionsTest extends MeasuredCellsTestSupport {
             {"CALL tp_py2()", "REFUSED Could not find handler in function TP_PY2 with handler nosuch"},
             {"CREATE OR REPLACE TEMPORARY PROCEDURE tp_js() RETURNS FLOAT LANGUAGE JAVASCRIPT AS 'return 1;'",
                 "Function TP_JS successfully created."},
+            {"DROP AGGREGATE FUNCTION ae_t1(NUMBER)",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 5 unexpected 'AGGREGATE'. | syntax "
+                + "error line 1 at position 15 unexpected 'FUNCTION'."},
             {"DROP FUNCTION ae_t1(NUMBER)", "AE_T1 successfully dropped."},
             {"DROP FUNCTION te_py(NUMBER)", "TE_PY successfully dropped."},
         });
@@ -121,6 +127,8 @@ public class TemporaryHandlerFunctionsTest extends MeasuredCellsTestSupport {
             {"CREATE OR REPLACE PROCEDURE pp_py4(x INT) RETURNS INT LANGUAGE PYTHON RUNTIME_VERSION = '3.11' PACKAGES "
                 + "= ('snowflake-snowpark-python') HANDLER = 'run' AS 'def run(s):\n    return 1'",
                 "Function PP_PY4 successfully created."},
+            // A handler taking the session alone is handed it alone.
+            {"CALL pp_py4(1)", "1"},
             {"CREATE OR REPLACE TEMPORARY FUNCTION te_py6(x NUMBER) RETURNS NUMBER LANGUAGE PYTHON RUNTIME_VERSION = "
                 + "'3.11' HANDLER = 'f' AS 'def f(x, y):\n    return x'",
                 "Temporary function TE_PY6 successfully created, but not validated."},

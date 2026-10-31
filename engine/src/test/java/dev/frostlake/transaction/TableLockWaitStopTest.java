@@ -127,7 +127,7 @@ public class TableLockWaitStopTest {
         final Thread thread = waiting(answered);
         final String id = runningUpdate();
         assertTrue(id != null, "the waiting UPDATE is running");
-        assertEquals("Query cancelled.", say(other, "SELECT SYSTEM$CANCEL_QUERY('" + id + "')"));
+        assertEquals("query [" + id + "] terminated.", say(other, "SELECT SYSTEM$CANCEL_QUERY('" + id + "')"));
         thread.join(LONG_WAIT_MILLIS);
         assertEquals("REFUSED SQL execution canceled", answered[0]);
         say(holder, "COMMIT");

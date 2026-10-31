@@ -40,8 +40,8 @@ import java.util.TreeSet;
  *   TABLE(qa(nosuchcol)), TABLE(qa($1))     invalid identifier 'NOSUCHCOL' where the name stands: no relation is
  *                                           in scope for it, and every argument's names come first
  *   TABLE(qa(ABS(1, 2)))                    too many arguments for function [ABS(1, 2)] where the call stands
- *   t1, TABLE(qa(t1.c)), t1, TABLE(qa(c))   Invalid argument T1.C for procedure in FROM clause, at the argument,
- *                                           once the arguments' types fit the procedure
+ *   t1, TABLE(qa(t1.c)), t1, TABLE(qa(c))   Invalid argument T1.C for procedure in FROM clause, where the column
+ *                                           stands, once the arguments' types fit the procedure
  * </pre>
  *
  * A column of a relation written before the call is no value such a call may take: it is refused as an invalid
@@ -119,8 +119,12 @@ final class TableProcedureArguments {
             }
             for (final ColumnReferenceExpression reference : columnsOf(expression)) {
                 if (isLateral(reference, lateral)) {
+                    // The column is placed where it stands, inside a call of the argument too: UPPER(t1.c) at T1.C.
                     final Token start = argument.getStart();
-                    final int[] shown = LeadingCommentOffset.rebase(start.getLine(), start.getCharPositionInLine());
+                    final SourcePosition at = reference.getPosition() == null
+                        ? new SourcePosition(start.getLine(), start.getCharPositionInLine())
+                        : placed(argument, reference.getPosition());
+                    final int[] shown = LeadingCommentOffset.rebase(at.getLine(), at.getCharPositionInLine());
                     throw new RuntimeException(SqlCompilationError.PREFIX + " error line " + shown[0] + " at position "
                         + shown[1] + ": Invalid argument " + lateralName(reference, lateral)
                         + " for procedure in FROM clause");

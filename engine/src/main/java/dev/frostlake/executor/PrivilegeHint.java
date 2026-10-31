@@ -33,7 +33,7 @@ import java.util.Set;
  * Schema 'D.S' does not exist or not authorized.
  *     Your primary role R must have USAGE or any other privilege granted on SCHEMA D.S.
  * User 'U' does not exist or not authorized.
- *     Your primary role R must have USAGE granted on ACCOUNT A.
+ *     Your primary role R must have MANAGE GRANTS granted on ACCOUNT A.
  * </pre>
  *
  * <p>Each hint follows its first sentence on the same line, after one space. The object is named exactly as the
@@ -47,8 +47,10 @@ import java.util.Set;
  *       an image, artifact or git repository on STAGE, and an external volume on VOLUME;</li>
  *   <li>a database, an application and an application package ask for "USAGE or any other privilege" on
  *       DATABASE, and a schema for the same on SCHEMA;</li>
- *   <li>a user names no object at all, asking for USAGE on the ACCOUNT by its locator, and a network rule asks
- *       for MONITOR there — a GRANT, a REVOKE or a SHOW GRANTS ON one for MONITOR, then RESOLVE ALL;</li>
+ *   <li>a network rule names no object at all, asking for MONITOR on the ACCOUNT by its locator — a GRANT, a REVOKE
+ *       or a SHOW GRANTS ON one for MONITOR, then RESOLVE ALL;</li>
+ *   <li>a user carries no hint of its own: only a statement working under an account privilege asks a role without
+ *       that privilege for it ({@link UserLookup});</li>
  *   <li>a column is no securable object and carries no hint, and neither does any other name that is none — a
  *       star's qualifier, a constraint, a stage path — whose refusal is worded without asking here at all.</li>
  * </ul>
@@ -75,15 +77,11 @@ public final class PrivilegeHint {
         "Application package"));
 
     /**
-     * The account privileges any one of which would let a role DESCRIBE a network rule, in the order live lists
-     * them. A statement that grants on a missing rule asks for {@link #NETWORK_RULE_GRANTS}, and every other
-     * statement over one for MONITOR alone.
+     * The account privilege a DESCRIBE of a missing network rule asks for. A statement that grants on a missing rule
+     * asks for {@link #NETWORK_RULE_GRANTS}, and every other statement over one for MONITOR alone.
      */
     private static final List<String> NETWORK_RULE_READERS = Collections.unmodifiableList(Arrays.asList(
-        "APPLY AGGREGATION POLICY", "APPLY DATA MOVEMENT POLICY", "APPLY PRIVACY POLICY", "APPLY JOIN POLICY",
-        "APPLY MASKING POLICY", "APPLY MULTI PARTY APPROVAL POLICY", "APPLY FEATURE POLICY",
-        "APPLY PROJECTION POLICY", "APPLY ROW ACCESS POLICY", "APPLY STORAGE LIFECYCLE POLICY",
-        "APPLY TOKENIZATION POLICY", "MONITOR", "RESOLVE ALL"));
+        "APPLY MASKING POLICY"));
 
     /**
      * The account privileges a GRANT, a REVOKE or a SHOW GRANTS ON over a missing network rule asks for, in the order
@@ -109,7 +107,7 @@ public final class PrivilegeHint {
     }
 
     /**
-     * The hint a DESCRIBE NETWORK RULE refusal ends with for the running statement: one sentence per account
+     * The hint a DESCRIBE NETWORK RULE refusal ends with for the running statement: the sentence naming the account
      * privilege in {@link #NETWORK_RULE_READERS}.
      *
      * @return the hint with its leading space, or "" when no statement pinned a role
@@ -126,6 +124,16 @@ public final class PrivilegeHint {
      */
     public static String toGrantOnNetworkRule() {
         return onAccount(NETWORK_RULE_GRANTS);
+    }
+
+    /**
+     * The hint that asks the running statement's role for one privilege on the account.
+     *
+     * @param privilege the privilege, in words
+     * @return the hint with its leading space, or "" when no statement pinned a role
+     */
+    public static String toHoldOnAccount(final String privilege) {
+        return onAccount(Collections.singletonList(privilege));
     }
 
     /** One sentence per account privilege, in order, addressed to the running statement's role; "" with none pinned. */
@@ -174,11 +182,8 @@ public final class PrivilegeHint {
 
     /** What the role must have, with what it would be granted on; null when the kind carries no hint. */
     private static String privilege(final String kind, final String spelled, final String account) {
-        if ("Column".equals(kind)) {
+        if ("Column".equals(kind) || "User".equals(kind)) {
             return null;
-        }
-        if ("User".equals(kind)) {
-            return account == null ? null : "USAGE granted on ACCOUNT " + account;
         }
         if ("Network rule".equals(kind)) {
             return account == null ? null : "MONITOR granted on ACCOUNT " + account;

@@ -25,6 +25,7 @@ import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.InformationSchemaGuard;
 import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.executor.ParseTreeText;
+import dev.frostlake.executor.PrivilegeRefusal;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
 import dev.frostlake.executor.SessionParameterCatalog;
@@ -35,15 +36,18 @@ import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.TransientRetentionLimit;
+import dev.frostlake.executor.UserLookup;
 import dev.frostlake.executor.WarehouseReference;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.IntervalCasts;
 import dev.frostlake.executor.expressions.PolicyObjectTagCalls;
+import dev.frostlake.executor.expressions.StructuredCast;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.ColumnRenames;
 import dev.frostlake.metastore.DataMetricFunctions;
+import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.InstanceFamilies;
 import dev.frostlake.metastore.MaterializedViewValidity;
 import dev.frostlake.metastore.NameTakenException;
@@ -59,8 +63,10 @@ import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.ComputePool;
 import dev.frostlake.metastore.model.ComputePoolState;
 import dev.frostlake.metastore.model.Contact;
+import dev.frostlake.metastore.model.ContactHolder;
 import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.DataMetricAttachment;
+import dev.frostlake.metastore.model.DataMetricAttachments;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.JoinPolicy;
@@ -72,7 +78,6 @@ import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.RowAccessPolicy;
 import dev.frostlake.metastore.model.ScalingPolicy;
 import dev.frostlake.metastore.model.Schema;
-import dev.frostlake.metastore.model.SecurableObjectType;
 import dev.frostlake.metastore.model.SequenceDefault;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.Table;
@@ -86,10 +91,12 @@ import dev.frostlake.metastore.model.View;
 import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.WarehouseSize;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.TableStorage;
+import dev.frostlake.task.TaskGraphs;
 import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.transaction.TransactionManager;
 import dev.frostlake.types.ArrayType;
@@ -97,6 +104,7 @@ import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.DecimalText;
 import dev.frostlake.types.DeclaredTypeFold;
 import dev.frostlake.types.GeographyType;
 import dev.frostlake.types.IcebergTypes;
@@ -116,15 +124,15 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.math.BigDecimal;
-
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -217,9 +225,13 @@ public class AlterCommandHandler implements CommandHandler {
             if (ctx.DATABASE() != null) {
                 final String dbName = visitor.getText(ctx.identifier());
                 final Database database = catalog.databaseExact(dbName);
-                checkAlter(SecurableObjectType.DATABASE, dbName);
                 SystemDatabase.refuseChange(database.getName());
                 altered = database;
+                if (ctx.databaseAction().RENAME() == null && ctx.databaseAction().SWAP() == null) {
+                    // Every change but a rename or a swap, which ask for OWNERSHIP, asks for MODIFY.
+                    queryExecutor.requirePrivilege(Privilege.MODIFY, "DATABASE", new String[] {database.getName()},
+                        null);
+                }
 
                 if (ctx.databaseAction().RENAME() != null) {
                     // Renaming an object needs OWNERSHIP of it, as replacing or dropping it does.
@@ -251,6 +263,7 @@ public class AlterCommandHandler implements CommandHandler {
                         ctx.databaseAction().tableSetProperty();
                     requireContainerProperties(properties, "DATABASE", database.isTransientObject(),
                         database.getName());
+                    requireCatalogParameter(properties);
                     for (final FrostlakeParser.TableSetPropertyContext property : properties) {
                         final String rawKey = property.optionKey().getText();
                         final Integer retention = retentionDays(rawKey, property.copyOptionValue());
@@ -300,7 +313,6 @@ public class AlterCommandHandler implements CommandHandler {
                 }
                 final Schema schema = catalog.resolveSchema(
                     QualifiedName.of(catalog.withoutAccount(qualifiedNameParts(ctx.qualifiedName()), 2)));
-                checkAlter(SecurableObjectType.SCHEMA, schemaName);
                 if ("INFORMATION_SCHEMA".equals(schema.getName())) {
                     // INFORMATION_SCHEMA is read-only: no ALTER changes it - not its name, its comment, its
                     // parameters, its tags or its managed access.
@@ -322,6 +334,7 @@ public class AlterCommandHandler implements CommandHandler {
                     final List<FrostlakeParser.TableSetPropertyContext> properties =
                         ctx.schemaAction().tableSetProperty();
                     requireContainerProperties(properties, "SCHEMA", schema.isTransientObject(), schema.getName());
+                    requireCatalogParameter(properties);
                     for (final FrostlakeParser.TableSetPropertyContext property : properties) {
                         final String rawKey = property.optionKey().getText();
                         final Integer retention = retentionDays(rawKey, property.copyOptionValue());
@@ -352,7 +365,12 @@ public class AlterCommandHandler implements CommandHandler {
                 }
                 if (ctx.schemaAction() != null && ctx.schemaAction().MANAGED() != null) {
                     // ENABLE | DISABLE MANAGED ACCESS: only the schema owner grants on its objects.
-                    schema.setManagedAccess(ctx.schemaAction().ENABLE() != null);
+                    final boolean enable = ctx.schemaAction().ENABLE() != null;
+                    if (queryExecutor.getSecurityManager() != null) {
+                        queryExecutor.getSecurityManager().checkManagedAccessSwitch(schema, enable,
+                            FutureGrants.openIn(catalog, schema));
+                    }
+                    schema.setManagedAccess(enable);
                 }
 
                 if (ctx.schemaAction().SWAP() != null) {
@@ -375,9 +393,8 @@ public class AlterCommandHandler implements CommandHandler {
                         : catalog.getCurrentDatabase() != null ? catalog.getCurrentDatabase() : oldDatabase;
                     // Nor is a schema moved into the SNOWFLAKE database.
                     SystemDatabase.refuseChange(targetDatabase);
+                    // A session whose current schema is renamed away keeps its name (see Catalog.getCurrentSchema).
                     catalog.moveSchema(schema, targetDatabase, target);
-                    // A current schema renamed away leaves the session with none.
-                    catalog.releaseVanishedCurrentSchema();
                     queryExecutor.renameSchemaStorage(oldDatabase, oldName, schema.getDatabaseName(), schema.getName());
                     logger.trace("Renamed schema {} to {}.{}", schemaName, schema.getDatabaseName(), schema.getName());
                 } else if (ctx.schemaAction().COMMENT() != null) {
@@ -397,7 +414,6 @@ public class AlterCommandHandler implements CommandHandler {
                 branchHandlesIfExists = true;
                 final MaskingPolicy policy;
                 try {
-                    checkAlter(SecurableObjectType.MASKING_POLICY, policyName);
                     policy = existingPolicy(catalog.findMaskingPolicyExact(policyName), "Masking policy", policyName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) {
@@ -406,6 +422,7 @@ public class AlterCommandHandler implements CommandHandler {
                     logger.debug("Masking policy does not exist (IF EXISTS): {}", policyName);
                     return null;
                 }
+                requirePolicyChange("MASKING_POLICY", qualifiedNameParts(ctx.qualifiedName()), action);
                 if (action.RENAME() != null) {
                     requirePolicyRenameTarget(action.qualifiedName(), Privilege.CREATE_MASKING_POLICY);
                     catalog.renameMaskingPolicy(policyName, visitor.getText(action.qualifiedName()));
@@ -507,22 +524,25 @@ public class AlterCommandHandler implements CommandHandler {
 
             } else if (ctx.CONTACT() != null) {
                 final String contactName = visitor.getText(ctx.qualifiedName());
+                // IF EXISTS forgives the contact's absence alone: the properties are judged before the contact is
+                // looked for (live-verified).
+                branchHandlesIfExists = true;
+                applyContactAction(new Contact(contactName), ctx.contactAction());
+                final Contact contact;
                 try {
-                    final Contact contact = catalog.findContact(contactName);
+                    contact = catalog.findContact(contactName);
                     if (contact == null) {
                         throw new RuntimeException(SqlCompilationError.doesNotExist("Contact",
-                            catalog.qualifiedObjectName(contactName)));
+                            catalog.qualifiedExactName(contactName)));
                     }
-                    // UNSET COMMENT is the form without a comment clause.
-                    contact.setComment(ctx.commentClause() == null ? null
-                        : visitor.extractStringLiteral(ctx.commentClause().STRING_LITERAL()));
-                    logger.trace("Set comment on contact {}", contactName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) {
                         throw e;
                     }
                     logger.debug("Contact does not exist (IF EXISTS): {}", contactName);
+                    return null;
                 }
+                alterContact(contact, contactName, ctx.contactAction());
 
             } else if (ctx.ROW() != null && ctx.ACCESS() != null && ctx.POLICY() != null) {
                 final String policyName = visitor.getText(ctx.qualifiedName());
@@ -531,7 +551,6 @@ public class AlterCommandHandler implements CommandHandler {
                 branchHandlesIfExists = true;
                 final RowAccessPolicy policy;
                 try {
-                    checkAlter(SecurableObjectType.ROW_ACCESS_POLICY, policyName);
                     policy = existingPolicy(catalog.findRowAccessPolicyExact(policyName), "Row access policy",
                         policyName);
                 } catch (final RuntimeException e) {
@@ -541,6 +560,7 @@ public class AlterCommandHandler implements CommandHandler {
                     logger.debug("Row access policy does not exist (IF EXISTS): {}", policyName);
                     return null;
                 }
+                requirePolicyChange("ROW_ACCESS_POLICY", qualifiedNameParts(ctx.qualifiedName()), action);
                 if (action.RENAME() != null) {
                     requirePolicyRenameTarget(action.qualifiedName(), Privilege.CREATE_ROW_ACCESS_POLICY);
                     catalog.renameRowAccessPolicy(policyName, visitor.getText(action.qualifiedName()));
@@ -566,28 +586,26 @@ public class AlterCommandHandler implements CommandHandler {
             } else if (ctx.DYNAMIC() != null && ctx.TABLE() != null && ctx.dynamicTableAction().RENAME() != null) {
                 // IF EXISTS forgives only the table's absence: a taken new name still refuses (live-verified).
                 branchHandlesIfExists = true;
-                final String[] renamedParts = qualifiedNameParts(ctx.qualifiedName());
+                final String[] renamedParts = queryExecutor.alterTargetNameParts(ctx);
                 final String[] newParts =
                     queryExecutor.resolveWholeObjectNameParts(ctx.dynamicTableAction().wholeObjectName());
                 if (ddlHandler.findDynamicTable(renamedParts) != null) {
-                    checkAlter(SecurableObjectType.DYNAMIC_TABLE, visitor.getText(ctx.qualifiedName()));
+                    queryExecutor.requireOwnership("DYNAMIC_TABLE", renamedParts, null);
                     ddlHandler.renameDynamicTable(renamedParts, newParts);
                 } else if (viewUnder(renamedParts) != null) {
                     // A view under the name is renamed by this statement too (live-verified).
-                    checkAlter(SecurableObjectType.VIEW, visitor.getText(ctx.qualifiedName()));
                     renameViewAsOtherKind(renamedParts, newParts);
                 } else if (alterTargetTableExists(renamedParts)) {
                     // The statement renames whatever table the name finds: a plain one as ALTER TABLE does.
-                    final String plainName = visitor.getText(ctx.qualifiedName());
+                    final String plainName = queryExecutor.alterTargetName(ctx);
                     final Table plain = catalog.resolveTable(QualifiedName.of(renamedParts));
-                    checkAlter(SecurableObjectType.TABLE, plainName);
                     renameTable(plainName, renamedParts, plain, newParts);
                 } else if (!ifExists) {
-                    ddlHandler.resolveDynamicTable(ctx.qualifiedName());
+                    ddlHandler.resolveDynamicTable(renamedParts);
                 }
             } else if (ctx.DYNAMIC() != null && ctx.TABLE() != null) {
                 final FrostlakeParser.DynamicTableActionContext dynamicAction = ctx.dynamicTableAction();
-                final String[] alteredParts = qualifiedNameParts(ctx.qualifiedName());
+                final String[] alteredParts = queryExecutor.alterTargetNameParts(ctx);
                 if (ddlHandler.findDynamicTable(alteredParts) == null && viewUnder(alteredParts) != null) {
                     // A view under the name: a suspension asks for ALTER VIEW, anything else is refused by the
                     // view's kind (live-verified).
@@ -597,11 +615,17 @@ public class AlterCommandHandler implements CommandHandler {
                     }
                     throw new RuntimeException(SqlCompilationError.objectOfOtherType("VIEW", "DYNAMIC_TABLE"));
                 }
-                checkAlter(SecurableObjectType.DYNAMIC_TABLE, visitor.getText(ctx.qualifiedName()));
+                if (operatesDynamicTable(dynamicAction)) {
+                    queryExecutor.requirePrivilege(Privilege.OPERATE, "DYNAMIC_TABLE", alteredParts, null);
+                } else if (dynamicAction.SWAP() != null) {
+                    queryExecutor.requireOwnership("DYNAMIC_TABLE", alteredParts, null);
+                } else {
+                    queryExecutor.requirePrivilege(Privilege.MODIFY, "DYNAMIC_TABLE", alteredParts, null);
+                }
                 if (dynamicAction.tagSet() != null) {
-                    applyTagSet(ddlHandler.resolveDynamicTable(ctx.qualifiedName()), dynamicAction.tagSet());
+                    applyTagSet(ddlHandler.resolveDynamicTable(alteredParts), dynamicAction.tagSet());
                 } else if (dynamicAction.tagUnset() != null) {
-                    applyTagUnset(ddlHandler.resolveDynamicTable(ctx.qualifiedName()), dynamicAction.tagUnset());
+                    applyTagUnset(ddlHandler.resolveDynamicTable(alteredParts), dynamicAction.tagUnset());
                 } else {
                     return ddlHandler.handleAlterStatement(ctx);
                 }
@@ -611,7 +635,10 @@ public class AlterCommandHandler implements CommandHandler {
                 branchHandlesIfExists = true;
                 // What the statement sets is judged before the service is looked for (live-verified).
                 rejectCortexSearchSettings(ctx.cortexSearchAction());
-                if (ifExists && !catalog.hasCortexSearchService(serviceParts)) {
+                // DROP SCORING PROFILE IF EXISTS forgives the service's absence too (live-verified).
+                final boolean forgiven = ifExists || ctx.cortexSearchAction().SCORING() != null
+                    && ctx.cortexSearchAction().DROP() != null && ctx.cortexSearchAction().if_exists() != null;
+                if (forgiven && !catalog.hasCortexSearchService(serviceParts)) {
                     // A service that is not there is named in the statement's answer.
                     ConditionalDdlOutcome.alterSkipped();
                     logger.debug("Cortex search service does not exist (IF EXISTS): {}", serviceParts[serviceParts.length - 1]);
@@ -687,28 +714,42 @@ public class AlterCommandHandler implements CommandHandler {
                 if (ctx.ICEBERG() != null) {
                     requireIcebergAction(ctx.tableAction());
                 }
+                if (ctx.tableAction() != null && ctx.tableAction().RECLUSTER() != null
+                        && ctx.tableAction().SUSPEND() == null && ctx.tableAction().RESUME() == null) {
+                    // Manual reclustering is no feature the account runs any more (live-verified).
+                    throw new RuntimeException("Unsupported feature 'RECLUSTER'.");
+                }
                 final String[] tableParts = queryExecutor.alterTargetNameParts(ctx);
                 InformationSchemaGuard.refuseWrite(catalog, tableParts);
+                if (ctx.tableAction() != null && ctx.tableAction().SET() != null
+                        && !ctx.tableAction().tableSetProperty().isEmpty()) {
+                    rejectUnknownTableNames(ctx.tableAction().tableSetProperty());
+                }
                 if (ctx.tableAction() != null && ctx.tableAction().RENAME() != null
                         && ctx.tableAction().COLUMN() == null && ctx.tableAction().CONSTRAINT() == null
                         && !alterTargetTableExists(tableParts) && ddlHandler.findDynamicTable(tableParts) != null) {
                     // A dynamic table is renamed by this statement too (live-verified).
-                    checkAlter(SecurableObjectType.DYNAMIC_TABLE, tableName);
+                    queryExecutor.requireOwnership("DYNAMIC_TABLE", tableParts, null);
                     ddlHandler.renameDynamicTable(tableParts,
                         queryExecutor.resolveWholeObjectNameParts(ctx.tableAction().wholeObjectName()));
                 } else if (ctx.tableAction() != null && !alterTargetTableExists(tableParts)
                         && ddlHandler.findDynamicTable(tableParts) != null) {
                     // The statement takes a dynamic table's comment, clustering and reclustering (live-verified).
-                    checkAlter(SecurableObjectType.DYNAMIC_TABLE, tableName);
+                    queryExecutor.requirePrivilege(Privilege.MODIFY, "DYNAMIC_TABLE", tableParts, null);
                     ddlHandler.alterDynamicTableAsTable(ddlHandler.findDynamicTable(tableParts), ctx.tableAction());
                 } else if (ctx.tableAction() != null && !alterTargetTableExists(tableParts)
                         && ddlHandler.materializedViewExists(tableParts)) {
                     // A materialized view takes the statement's clustering actions and its rename (live-verified).
-                    checkAlter(SecurableObjectType.MATERIALIZED_VIEW, tableName);
+                    if (ctx.tableAction().wholeObjectName() != null) {
+                        queryExecutor.requireOwnership("MATERIALIZED_VIEW", tableParts, null);
+                    } else {
+                        queryExecutor.requirePrivilege(Privilege.MODIFY, "MATERIALIZED_VIEW", tableParts, null);
+                    }
                     ddlHandler.alterMaterializedViewAsTable(tableParts, ctx.tableAction());
                 } else if (ctx.tableAction() != null && !alterTargetTableExists(tableParts)
-                        && viewUnder(tableParts) != null && alterViewAsTable(tableParts, tableName, ctx.tableAction(),
-                            ifExists)) {
+                        && viewUnder(tableParts) != null && alterViewAsTable(tableParts, ctx.tableAction(), ifExists,
+                            ctx.objectName() != null ? ctx.objectName().getStart()
+                                : ctx.openedIdentifierReference().getStart())) {
                     logger.trace("Altered view {} through ALTER TABLE", tableName);
                 } else if (ctx.tableAction() != null && ctx.tableAction().ADD() != null
                         && ctx.tableAction().SEARCH() != null && !alterTargetTableExists(tableParts)) {
@@ -724,7 +765,9 @@ public class AlterCommandHandler implements CommandHandler {
                     if (ctx.tableAction() != null && ctx.tableAction().SWAP() != null) {
                         final String other = visitor.getText(ctx.tableAction().qualifiedName());
                         catalog.refuseOtherRelationKind(other);
-                        catalog.resolveTable(other);
+                        if (catalog.resolveTable(other).getIcebergMetadata() != null) {
+                            throw new RuntimeException(SWAP_OF_ICEBERG_TABLE);
+                        }
                     }
                     // A CLUSTER BY action's expressions are still compiled, and with no table no
                     // column reference can resolve (live-verified, positioned at the reference); so are the
@@ -747,7 +790,6 @@ public class AlterCommandHandler implements CommandHandler {
                     }
                     final Table table = catalog.resolveTable(QualifiedName.of(tableParts));
                     requireStatementOfTableKind(ctx, table);
-                    checkAlter(SecurableObjectType.TABLE, tableName);
                     if (ctx.tableAction() != null && ctx.tableAction().SWAP() == null
                             && ctx.tableAction().wholeObjectName() == null) {
                         // Every change but a rename or a swap, which ask for OWNERSHIP, asks for MODIFY.
@@ -812,11 +854,17 @@ public class AlterCommandHandler implements CommandHandler {
                             if (holdsRows) {
                                 AddedColumns.refuseNonConstantDefault(colDef, colName, table.getName());
                             }
+                            new DefaultExpressionCalls(queryExecutor).requireAddedColumnReads(colDef, table);
                             final TableColumn newColumn =
                                 ddlHandler.getColumnParser().parseSingleColumnDef(colDef, true,
                                     table.getIcebergMetadata() != null);
                             if (holdsRows) {
                                 AddedColumns.refuseUnfillableNotNull(newColumn, table.getName());
+                            }
+                            if (newColumn.isVirtual()) {
+                                final List<TableColumn> readable = new ArrayList<>(table.columnsView());
+                                readable.addAll(added);
+                                VirtualColumnDefinitions.judgeAdded(readable, newColumn, colDef, queryExecutor);
                             }
                             added.add(newColumn);
                             addedDefs.add(colDef);
@@ -907,25 +955,10 @@ public class AlterCommandHandler implements CommandHandler {
                         logger.trace("Dropped FOREIGN KEY {} from table {}", columns, tableName);
                     } else if (ctx.tableAction().CONTACT() != null
                             && !ctx.tableAction().contactAssignment().isEmpty()) {
-                        // SET CONTACT purpose = contact, … — no parentheses, live refuses those.
-                        for (final FrostlakeParser.ContactAssignmentContext assignment
-                                : ctx.tableAction().contactAssignment()) {
-                            final String purpose = contactPurpose(assignment.contactPurpose());
-                            final String contactName = visitor.getText(assignment.qualifiedName());
-                            if (catalog.findContact(contactName) == null) {
-                                throw new RuntimeException(SqlCompilationError.doesNotExist("Contact",
-                                    catalog.qualifiedObjectName(contactName)));
-                            }
-                            table.setContact(purpose, catalog.qualifiedObjectName(contactName));
-                        }
+                        setContacts(table, ctx.tableAction().contactAssignment());
                         logger.trace("Set contact(s) on table {}", tableName);
                     } else if (ctx.tableAction().CONTACT() != null) {
-                        // UNSET CONTACT purpose, … — detaching a purpose nothing was attached for is
-                        // no error; only the purpose itself is validated.
-                        for (final FrostlakeParser.ContactPurposeContext purposeCtx
-                                : ctx.tableAction().contactPurpose()) {
-                            table.unsetContact(contactPurpose(purposeCtx));
-                        }
+                        unsetContacts(table, ctx.tableAction().contactPurpose());
                         logger.trace("Unset contact(s) on table {}", tableName);
                     } else if (ctx.tableAction().METRIC() != null) {
                         // ADD / DROP / MODIFY DATA METRIC FUNCTION <fn> ON (cols) — the attachment is
@@ -1012,11 +1045,12 @@ public class AlterCommandHandler implements CommandHandler {
                         // SET JOIN POLICY p [FORCE] — one per table, guarded by the same 3549 sentence.
                         final String written = visitor.getText(
                             ctx.tableAction().joinPolicyClause().qualifiedName());
+                        // Named exactly, and recorded so (live-verified).
                         if (catalog.findJoinPolicy(written) == null) {
                             throw new RuntimeException(SqlCompilationError.doesNotExist(
-                                "Join policy", catalog.qualifiedObjectName(written)));
+                                "Join policy", catalog.qualifiedExactName(written)));
                         }
-                        final String policyName = catalog.qualifiedObjectName(written);
+                        final String policyName = catalog.qualifiedExactName(written);
                         if (table.hasJoinPolicy()
                                 && !sameMaskingPolicy(table.getJoinPolicyName(), policyName)
                                 && ctx.tableAction().FORCE() == null) {
@@ -1217,6 +1251,7 @@ public class AlterCommandHandler implements CommandHandler {
                         final String policyName = visitor.getText(ctx.tableAction().qualifiedName());
                         final List<String> cols = rowAccessPolicyColumns(ctx.tableAction().identifierList(),
                             table, table.getName(), policyName, table.hasRowAccessPolicy());
+                        requireApplyRowAccessPolicy(policyName);
                         // Recorded in full, as every policy attachment is, so a query from another schema
                         // still finds it (see PolicyReferences).
                         table.setRowAccessPolicyName(catalog.qualifiedExactName(policyName));
@@ -1229,6 +1264,9 @@ public class AlterCommandHandler implements CommandHandler {
                             requireRowAccessPolicyAttached(
                                 visitor.getText(ctx.tableAction().qualifiedName()),
                                 table.getName(), table.getRowAccessPolicyName());
+                        }
+                        if (table.getRowAccessPolicyName() != null) {
+                            requireApplyRowAccessPolicy(table.getRowAccessPolicyName());
                         }
                         table.setRowAccessPolicyName(null);
                         table.setRowAccessPolicyColumns(new ArrayList<>());
@@ -1287,12 +1325,18 @@ public class AlterCommandHandler implements CommandHandler {
                         for (final FrostlakeParser.TableSetPropertyContext property
                                 : ctx.tableAction().tableSetProperty()) {
                             final String rawKey = property.optionKey().getText();
+                            if (table.getIcebergMetadata() == null) {
+                                CreatedObjectProperties.refuseOtherTableKindParameter(
+                                    ParameterRegistry.canonical(rawKey), property.copyOptionValue(), table.getName(),
+                                    true);
+                            }
                             requireLegalRetention(rawKey, property.copyOptionValue());
                             requireAccountRetention(rawKey, property.copyOptionValue());
                             // A transient table keeps a day at most, as its transient containers do.
                             requireTransientRetention(rawKey, table.isTransient(), property.copyOptionValue());
                             requireLegalExtensionTime(rawKey, property.copyOptionValue());
                             requireLegalErrorLogging(rawKey, property.copyOptionValue());
+                            CreatedObjectProperties.requireSwitchValue(rawKey, property.copyOptionValue());
                             if ("DATA_RETENTION_TIME_IN_DAYS".equalsIgnoreCase(rawKey)
                                     && property.copyOptionValue() != null
                                     && property.copyOptionValue().getText().matches("[0-9]+")) {
@@ -1337,9 +1381,18 @@ public class AlterCommandHandler implements CommandHandler {
                                     ? visitor.extractStringLiteral(value.STRING_LITERAL()) : null);
                                 logger.trace("Set comment on table {}", tableName);
                             } else if ("STAGE_COPY_OPTIONS".equalsIgnoreCase(rawKey)
+                                    && property.stageCopyOptionList() != null) {
+                                // Judged as a stage's are, and merged into the ones the table has; a NULL size
+                                // clears the size it had (live-verified).
+                                final Map<String, String> written =
+                                    StageCopyOptions.read(property.stageCopyOptionList());
+                                if (StageCopyOptions.clearsSizeLimit(property.stageCopyOptionList())) {
+                                    table.getStageCopyOptions().remove("SIZE_LIMIT");
+                                }
+                                table.getStageCopyOptions().putAll(written);
+                            } else if ("STAGE_FILE_FORMAT".equalsIgnoreCase(rawKey)
                                     && property.parenOptionList() != null) {
-                                // Judged as a stage's are, and merged into the ones the table has (live-verified).
-                                table.getStageCopyOptions().putAll(StageCopyOptions.read(property.parenOptionList()));
+                                TableStageOptions.judgeFormat(property.parenOptionList());
                             } else if (!ParameterRegistry.isTableParameter(ParameterRegistry.canonical(rawKey))) {
                                 // A known parameter is accepted and inert; an unknown one refuses (live-verified).
                                 throw ParameterRegistry.invalidProperty(ParameterRegistry.spell(rawKey), "TABLE");
@@ -1366,7 +1419,7 @@ public class AlterCommandHandler implements CommandHandler {
                     }
                     final String[] mvParts = queryExecutor.alterTargetNameParts(ctx);
                     if (alterTargetTableExists(mvParts)) {
-                        checkAlter(SecurableObjectType.TABLE, queryExecutor.alterTargetName(ctx));
+                        queryExecutor.requirePrivilege(Privilege.MODIFY, "TABLE", mvParts, null);
                         alterTableAsMaterializedView(catalog.resolveTable(QualifiedName.of(mvParts)), action);
                         return null;
                     }
@@ -1376,7 +1429,6 @@ public class AlterCommandHandler implements CommandHandler {
                     refuseMissingMaterializedView(ctx, action, ifExists);
                     return null;
                 }
-                checkAlter(SecurableObjectType.MATERIALIZED_VIEW, queryExecutor.alterTargetName(ctx));
                 if (ctx.materializedViewAction() != null && ctx.materializedViewAction().RENAME() == null) {
                     queryExecutor.requireOnRelation(Privilege.MODIFY, queryExecutor.alterTargetName(ctx));
                 }
@@ -1425,7 +1477,6 @@ public class AlterCommandHandler implements CommandHandler {
                     throw new RuntimeException(SqlCompilationError.doesNotExist("View", catalog.requireOwningSchema(
                         QualifiedName.of(viewParts)).qualifiedName(viewParts[viewParts.length - 1])));
                 }
-                checkAlter(SecurableObjectType.VIEW, viewName);
                 if (ctx.viewAction().RENAME() == null) {
                     queryExecutor.requirePrivilege(Privilege.MODIFY, "VIEW", queryExecutor.alterTargetNameParts(ctx),
                         null);
@@ -1462,6 +1513,19 @@ public class AlterCommandHandler implements CommandHandler {
                 } else if (ctx.viewAction().SECURE() != null) {
                     view.setSecure(ctx.viewAction().SET() != null);
                     logger.trace("Set secure on view {}: {}", viewName, view.isSecure());
+                } else if (ctx.viewAction().aggregationPolicyClause() != null) {
+                    setViewAggregationPolicy(view, ctx.viewAction().aggregationPolicyClause(),
+                        ctx.viewAction().FORCE() != null);
+                } else if (ctx.viewAction().UNSET() != null && ctx.viewAction().AGGREGATION() != null) {
+                    unsetViewAggregationPolicy(view);
+                } else if (ctx.viewAction().joinPolicyClause() != null) {
+                    setViewJoinPolicy(view, ctx.viewAction().joinPolicyClause(), ctx.viewAction().FORCE() != null);
+                } else if (ctx.viewAction().UNSET() != null && ctx.viewAction().JOIN() != null) {
+                    unsetViewJoinPolicy(view);
+                } else if (ctx.viewAction().CONTACT() != null && !ctx.viewAction().contactAssignment().isEmpty()) {
+                    setContacts(view, ctx.viewAction().contactAssignment());
+                } else if (ctx.viewAction().CONTACT() != null) {
+                    unsetContacts(view, ctx.viewAction().contactPurpose());
                 } else if (!ctx.viewAction().optionKey().isEmpty()) {
                     if (unsetsComment(ctx.viewAction().optionKey())) {
                         view.setComment(null);
@@ -1469,6 +1533,9 @@ public class AlterCommandHandler implements CommandHandler {
                     }
                     if (AlteredViewProperties.unsetsChangeTracking(ctx.viewAction().optionKey())) {
                         view.setChangeTracking(false);
+                    }
+                    if (AlteredViewProperties.unsetsDataMetricSchedule(ctx.viewAction().optionKey())) {
+                        view.dataMetricAttachments().setSchedule(null);
                     }
                 } else if (!ctx.viewAction().viewSetItem().isEmpty()) {
                     final List<FrostlakeParser.ViewSetItemContext> items = ctx.viewAction().viewSetItem();
@@ -1482,22 +1549,21 @@ public class AlterCommandHandler implements CommandHandler {
                         view.setComment(AlteredViewProperties.commentOf(items));
                         logger.trace("Set comment on view: {}", viewName);
                     }
-                } else if (ctx.viewAction().ROW() != null && ctx.viewAction().ADD() != null) {
-                    // ADD ROW ACCESS POLICY policyName ON (col1, col2)
-                    final String policyName = visitor.getText(ctx.viewAction().qualifiedName());
-                    final List<String> cols = rowAccessPolicyColumns(ctx.viewAction().identifierList(),
-                        null, view.getName(), policyName, view.hasRowAccessPolicy());
-                    view.setRowAccessPolicyName(catalog.qualifiedExactName(policyName));
-                    view.setRowAccessPolicyColumns(cols);
-                    logger.trace("Added row access policy {} to view {}", policyName, viewName);
-                } else if (ctx.viewAction().ROW() != null && ctx.viewAction().DROP() != null) {
-                    if (ctx.viewAction().ALL() == null) {
-                        requireRowAccessPolicyAttached(visitor.getText(ctx.viewAction().qualifiedName()),
-                            view.getName(), view.getRowAccessPolicyName());
+                    final String schedule = AlteredViewProperties.dataMetricScheduleOf(items);
+                    if (schedule != null) {
+                        // Recorded so DATA_METRIC_FUNCTION_REFERENCES can render it as cron.
+                        view.dataMetricAttachments().setSchedule(schedule);
                     }
-                    view.setRowAccessPolicyName(null);
-                    view.setRowAccessPolicyColumns(new ArrayList<>());
-                    logger.trace("Dropped row access policy from view {}", viewName);
+                } else if (ctx.viewAction().METRIC() != null) {
+                    final FrostlakeParser.ViewActionContext action = ctx.viewAction();
+                    applyDataMetricAction(view.dataMetricAttachments(), viewColumns(view), "View",
+                        action.qualifiedName(), action.identifierList(), action.ADD() != null,
+                        action.MODIFY() != null, action.SUSPEND() != null);
+                } else if (ctx.viewAction().ROW() != null && ctx.viewAction().ADD() != null) {
+                    addViewRowAccessPolicy(view, ctx.viewAction().qualifiedName(), ctx.viewAction().identifierList());
+                } else if (ctx.viewAction().ROW() != null && ctx.viewAction().DROP() != null) {
+                    dropViewRowAccessPolicy(view, ctx.viewAction().ALL() != null ? null
+                        : ctx.viewAction().qualifiedName());
                 } else if (ctx.viewAction().tagSet() != null) {
                     applyTagSet(view, ctx.viewAction().tagSet());
                 } else if (ctx.viewAction().tagUnset() != null) {
@@ -1515,26 +1581,17 @@ public class AlterCommandHandler implements CommandHandler {
                         ctx.viewAction().qualifiedName(), ctx.viewAction().FORCE() != null);
                     logger.trace("Set/unset a projection policy on a column of view {}", viewName);
                 } else if (ctx.viewAction().columnTagAction() != null) {
-                    final FrostlakeParser.ColumnTagActionContext action = ctx.viewAction().columnTagAction();
-                    final Table columns = viewColumns(view);
-                    requireColumn(columns, visitor.getText(action.identifier()), action.identifier());
-                    final TableColumn column = columns.getColumn(visitor.getText(action.identifier()));
-                    if (action.tagSet() != null) {
-                        applyTagSet(column, action.tagSet());
-                    } else {
-                        applyTagUnset(column, action.tagUnset());
-                    }
+                    viewColumnTag(view, ctx.viewAction().columnTagAction());
                 }
 
             } else if (ctx.STREAM() != null) {
-                final String streamQn = visitor.getText(ctx.qualifiedName());
                 final String[] streamParts = qualifiedNameParts(ctx.qualifiedName());
                 final String streamName = streamParts[streamParts.length - 1];
                 final Schema schema;
                 schema = catalog.requireOwningSchema(QualifiedName.of(streamParts));
                 // A quoted name in another case is another stream, which is not there (live-verified).
                 final Stream stream = schema.getStreamExact(streamName);
-                checkAlter(SecurableObjectType.STREAM, streamQn);
+                queryExecutor.requirePrivilege(Privilege.MODIFY, "STREAM", streamParts, null);
 
                 final FrostlakeParser.StreamActionContext streamAction = ctx.streamAction();
                 if (streamAction.tagSet() != null) {
@@ -1550,14 +1607,21 @@ public class AlterCommandHandler implements CommandHandler {
                 }
 
             } else if (ctx.TASK() != null) {
-                final String taskQn = visitor.getText(ctx.qualifiedName());
                 final String[] taskParts = qualifiedNameParts(ctx.qualifiedName());
                 final String taskName = taskParts[taskParts.length - 1];
                 final Schema schema;
                 schema = catalog.requireOwningSchema(QualifiedName.of(taskParts));
                 // A quoted name in another case is another task, which is not there (live-verified).
                 final Task task = schema.getTaskExact(taskName);
-                checkAlter(SecurableObjectType.TASK, taskQn);
+                // The task is there, so IF EXISTS has nothing left to forgive: every later refusal stands.
+                branchHandlesIfExists = true;
+                if (ctx.taskAction().RESUME() != null || ctx.taskAction().SUSPEND() != null) {
+                    // OPERATE "Grants the ability to suspend or resume a task" (documented); every other action
+                    // is the owner's.
+                    queryExecutor.requirePrivilege(Privilege.OPERATE, "TASK", taskParts, null);
+                } else {
+                    queryExecutor.requirePrivilege(Privilege.MODIFY, "TASK", taskParts, null);
+                }
 
                 // Canonical scheduler key (DB.SCHEMA.TASK), built identically for RESUME and SUSPEND so the
                 // scheduler arms and later cancels the same entry.
@@ -1569,23 +1633,11 @@ public class AlterCommandHandler implements CommandHandler {
                 } else if (ctx.taskAction().tagUnset() != null) {
                     applyTagUnset(task, ctx.taskAction().tagUnset());
                 } else if (ctx.taskAction().CONTACT() != null && !ctx.taskAction().contactAssignment().isEmpty()) {
-                    // SET CONTACT purpose = contact, … as on a table.
-                    for (final FrostlakeParser.ContactAssignmentContext assignment
-                            : ctx.taskAction().contactAssignment()) {
-                        final String purpose = contactPurpose(assignment.contactPurpose());
-                        final String contactName = visitor.getText(assignment.qualifiedName());
-                        if (catalog.findContact(contactName) == null) {
-                            throw new RuntimeException(SqlCompilationError.doesNotExist("Contact",
-                                catalog.qualifiedObjectName(contactName)));
-                        }
-                        task.setContact(purpose, catalog.qualifiedObjectName(contactName));
-                    }
+                    setContacts(task, ctx.taskAction().contactAssignment());
                 } else if (ctx.taskAction().CONTACT() != null) {
-                    // UNSET CONTACT purpose, … - a purpose nothing was attached for is no error.
-                    for (final FrostlakeParser.ContactPurposeContext purpose : ctx.taskAction().contactPurpose()) {
-                        task.unsetContact(contactPurpose(purpose));
-                    }
+                    unsetContacts(task, ctx.taskAction().contactPurpose());
                 } else if (ctx.taskAction().RESUME() != null) {
+                    requireRunStateChangeable(task, schema);
                     // RESUME flips state to STARTED AND arms the scheduler so the task fires on its SCHEDULE
                     // (scheduleTask is a no-op until the scheduler is started). resumeTask sets the state.
                     if (visitor.getTaskScheduler() != null) {
@@ -1595,6 +1647,7 @@ public class AlterCommandHandler implements CommandHandler {
                     }
                     logger.trace("Resumed task: {}", taskName);
                 } else if (ctx.taskAction().SUSPEND() != null) {
+                    requireRunStateChangeable(task, schema);
                     // SUSPEND flips state to SUSPENDED AND cancels any armed timer. suspendTask sets the state.
                     if (visitor.getTaskScheduler() != null) {
                         visitor.getTaskScheduler().suspendTask(taskKey, task);
@@ -1604,14 +1657,20 @@ public class AlterCommandHandler implements CommandHandler {
                     logger.trace("Suspended task: {}", taskName);
                 } else if (ctx.taskAction().SET() != null && ctx.taskAction().taskExecuteAs() != null) {
                     final String runAs = TaskProperties.runAsUser(ctx.taskAction().taskExecuteAs(), queryExecutor);
-                    new TaskProperties(catalog, schema).requireRunAsUser(task, runAs);
+                    final TaskProperties properties = new TaskProperties(catalog, schema);
+                    properties.requireRunAsUser(task, runAs);
+                    properties.requireSuspendedGraph(task);
                     task.setExecuteAsUser(runAs);
                 } else if (ctx.taskAction().UNSET() != null && ctx.taskAction().EXECUTE() != null) {
+                    new TaskProperties(catalog, schema).requireSuspendedGraph(task);
                     task.setExecuteAsUser(null);
                 } else if (ctx.taskAction().SET() != null) {
                     final List<TaskPropertySetting> settings = alterTaskSettings(ctx.taskAction());
                     final TaskProperties properties = new TaskProperties(catalog, schema);
                     properties.compile(settings);
+                    // A parameter a child takes from its root is refused first, and only then a graph that runs.
+                    properties.requireRootParameters(task, settings);
+                    properties.requireSuspendedGraph(task);
                     // The statement is tried on a copy first, so a refused one leaves the task as it was.
                     final Task scratch = TaskProperties.scratchCopy(task);
                     for (final Task target : Arrays.asList(scratch, task)) {
@@ -1634,11 +1693,13 @@ public class AlterCommandHandler implements CommandHandler {
                     for (final FrostlakeParser.TaskParamNameContext pn : ctx.taskAction().taskParamName()) {
                         requireUnsettableTaskParam(pn.getText().toUpperCase(Locale.ROOT));
                     }
+                    new TaskProperties(catalog, schema).requireSuspendedGraph(task);
                     for (final FrostlakeParser.TaskParamNameContext pn : ctx.taskAction().taskParamName()) {
                         unsetTaskParam(task, pn.getText().toUpperCase(Locale.ROOT));
                     }
                     logger.trace("Unset params on task: {}", taskName);
                 } else if (ctx.taskAction().REMOVE() != null && ctx.taskAction().WHEN() != null) {
+                    new TaskProperties(catalog, schema).requireSuspendedGraph(task);
                     task.setCondition(null);
                 } else if (ctx.taskAction().ADD() != null) {
                     addTaskPredecessors(task, ctx.taskAction().qualifiedName(), schema);
@@ -1647,10 +1708,12 @@ public class AlterCommandHandler implements CommandHandler {
                 } else if (ctx.taskAction().MODIFY() != null && ctx.taskAction().AS() != null) {
                     // MODIFY AS <sql> replaces the task body.
                     TaskBodySyntax.requireOneStatement(ctx);
+                    new TaskProperties(catalog, schema).requireSuspendedGraph(task);
                     task.setSqlStatement(ParseTreeText.taskBodyText(ctx.taskAction().taskBody()));
                     logger.trace("Modified task body: {}", taskName);
                 } else if (ctx.taskAction().MODIFY() != null && ctx.taskAction().WHEN() != null) {
                     // MODIFY WHEN <boolean> replaces the run condition.
+                    new TaskProperties(catalog, schema).requireSuspendedGraph(task);
                     task.setCondition(visitor.getOriginalText(ctx.taskAction().booleanExpr()).trim());
                     logger.trace("Modified task condition: {}", taskName);
                 }
@@ -1659,8 +1722,10 @@ public class AlterCommandHandler implements CommandHandler {
                 final String pipeName = visitor.getText(ctx.qualifiedName());
                 final Schema schema = catalog.resolveOwningSchema(pipeName);
                 final Pipe pipe = schema.getPipeExact(QualifiedName.parse(pipeName).last());
-                checkAlter(SecurableObjectType.PIPE, pipeName);
                 final FrostlakeParser.PipeActionContext action = ctx.pipeAction();
+                // Only the owner changes a pipe; OPERATE refreshes it, and pauses or resumes it (documented).
+                queryExecutor.requirePrivilege(operatesPipe(action) ? Privilege.OPERATE : Privilege.MODIFY, "PIPE",
+                    qualifiedNameParts(ctx.qualifiedName()), null);
                 // Every ALTER is DDL on the pipe but a REFRESH, which queues files rather than changing the pipe.
                 if (action.REFRESH() == null) {
                     altered = pipe;
@@ -1744,7 +1809,7 @@ public class AlterCommandHandler implements CommandHandler {
                     logger.debug("Warehouse does not exist (IF EXISTS): {}", warehouseName);
                 } else {
                     final Warehouse warehouse = catalog.getWarehouseExact(warehouseName);
-                    checkAlter(SecurableObjectType.WAREHOUSE, warehouseName);
+                    queryExecutor.requireWarehousePrivilege(warehousePrivilege(ctx.warehouseAction()), warehouse);
 
                     if (ctx.warehouseAction().RENAME() != null) {
                         final String newName = visitor.getText(ctx.warehouseAction().identifier());
@@ -1856,6 +1921,8 @@ public class AlterCommandHandler implements CommandHandler {
                         unsetSessionParameter(setting.key());
                     }
                 }
+                // The statements after it in a block or a procedure run under the values it left.
+                queryExecutor.repinSessionSettings();
 
             } else if (ctx.TAG() != null) {
                 final String tagName = visitor.getText(ctx.qualifiedName());
@@ -1868,7 +1935,12 @@ public class AlterCommandHandler implements CommandHandler {
                     return null;
                 }
                 final Tag tag = catalog.getTagExact(tagName);
-                checkAlter(SecurableObjectType.TAG, tagName);
+                if (ctx.tagAction().RENAME() != null) {
+                    queryExecutor.requireOwnership("TAG", qualifiedNameParts(ctx.qualifiedName()), null);
+                } else {
+                    queryExecutor.requirePrivilege(Privilege.MODIFY, "TAG", qualifiedNameParts(ctx.qualifiedName()),
+                        null);
+                }
 
                 if (ctx.tagAction().ADD() != null) {
                     // The conflict rule is judged against the values the statement would leave, before they change.
@@ -2001,7 +2073,6 @@ public class AlterCommandHandler implements CommandHandler {
             // The table's own refusal, or the table itself where one of that name is there.
             catalog.resolveTable(QualifiedName.of(parts));
         }
-        checkAlter(SecurableObjectType.MATERIALIZED_VIEW, queryExecutor.alterTargetName(ctx));
         ddlHandler.handleAlterStatement(ctx);
     }
 
@@ -2104,6 +2175,53 @@ public class AlterCommandHandler implements CommandHandler {
      * included — is refused as the statement wrote it, and the schema is then asked for the privilege to create
      * one (live-verified).
      */
+    /**
+     * ALTER CONTACT's action (live-verified): a RENAME TO, which may move the contact to the schema its new name
+     * names, or a SET or an UNSET of its properties, each judged as CREATE CONTACT judges it ({@link
+     * ContactProperties}). The properties are judged together before any changes, so a refused statement leaves the
+     * contact as it was: a URL given to a contact reached by its address, or the reverse, is refused, as both
+     * written at once are.
+     */
+    private void alterContact(final Contact contact, final String contactName,
+                              final FrostlakeParser.ContactActionContext action) {
+        if (action.RENAME() != null) {
+            catalog.renameContact(contactName, visitor.getText(action.qualifiedName()));
+            logger.trace("Renamed contact {}", contactName);
+            return;
+        }
+        final Contact altered = new Contact(contact.getName());
+        altered.setComment(contact.getComment());
+        altered.setUrl(contact.getUrl());
+        altered.setEmailDistributionList(contact.getEmailDistributionList());
+        applyContactAction(altered, action);
+        if (action.SET() != null) {
+            ContactProperties.requireOneWay(altered);
+        }
+        contact.setComment(altered.getComment());
+        contact.setUrl(altered.getUrl());
+        contact.setEmailDistributionList(altered.getEmailDistributionList());
+        logger.trace("Altered contact {}", contactName);
+    }
+
+    /**
+     * Apply an ALTER CONTACT's SET or UNSET to a contact, each property judged as it is read; a RENAME applies none.
+     */
+    private void applyContactAction(final Contact contact, final FrostlakeParser.ContactActionContext action) {
+        if (action.SET() != null) {
+            for (final FrostlakeParser.ContactSettingContext setting : action.contactSetting()) {
+                if (setting.commentClause() != null) {
+                    contact.setComment(visitor.extractStringLiteral(setting.commentClause().STRING_LITERAL()));
+                } else {
+                    ContactProperties.set(contact, setting.contactProperty(), catalog);
+                }
+            }
+        } else if (action.UNSET() != null) {
+            for (final FrostlakeParser.OptionKeyContext key : action.optionKey()) {
+                ContactProperties.unset(contact, key.getText());
+            }
+        }
+    }
+
     private void requirePolicyRenameTarget(final FrostlakeParser.QualifiedNameContext written,
                                            final Privilege privilege) {
         final String[] parts = qualifiedNameParts(written);
@@ -2239,27 +2357,31 @@ public class AlterCommandHandler implements CommandHandler {
      * projection policy is set or unset on the view's column. A clustering key, its drop, a paused or resumed
      * reclustering, a column's ALTER, a column's masking policy and an added constraint are {@code cannot use ALTER
      * TABLE on a view; use ALTER VIEW instead}, and a RENAME COLUMN names a missing table as written; IF EXISTS
-     * forgives these. A SET or UNSET of a parameter is refused as the view's to operate on, and an added or dropped
-     * column, a swap, and a SET or UNSET of the comment or the change tracking are refused by the view's kind, IF
-     * EXISTS or not.
+     * forgives these. IF EXISTS forgives none of the others: a constraint's ALTER, MODIFY or DROP, a key's, and a
+     * dropped search optimization are {@code cannot use ALTER TABLE on a view} too, a renamed constraint is one the
+     * view does not have, and an added search optimization is a materialized view's, refused at the view's name. A
+     * SET or UNSET of DATA_METRIC_SCHEDULE, an added or dropped column, a swap, and a SET or UNSET of the comment or
+     * the change tracking are refused by the view's kind, and one of a parameter as the view's to operate on. The
+     * view's row access, aggregation and join policies, its tags and its columns', its data metric functions and its
+     * contacts are set and unset as ALTER VIEW sets them.
      *
      * @param viewParts the view's name, as written
-     * @param name      the same name, joined
      * @param action    the statement's action
      * @param ifExists  whether the statement is ALTER TABLE IF EXISTS
-     * @return true when the view was renamed; false for an action not judged here, which goes on as a missing table's
+     * @param named     the first token of the view's name in the statement
+     * @return true when the action was applied to the view; false for an action not judged here, which goes on as a
+     *         missing table's
      */
-    private boolean alterViewAsTable(final String[] viewParts, final String name,
-                                     final FrostlakeParser.TableActionContext action, final boolean ifExists) {
+    private boolean alterViewAsTable(final String[] viewParts, final FrostlakeParser.TableActionContext action,
+                                     final boolean ifExists, final Token named) {
         if (action.RENAME() != null && action.COLUMN() == null && action.CONSTRAINT() == null) {
-            checkAlter(SecurableObjectType.VIEW, name);
             renameViewAsOtherKind(viewParts,
                 queryExecutor.resolveWholeObjectNameParts(action.wholeObjectName()));
             return true;
         }
         if (action.PROJECTION() != null && (action.ALTER() != null || action.MODIFY() != null)) {
             // A column's projection policy is the view column's, set as ALTER VIEW sets it.
-            checkAlter(SecurableObjectType.VIEW, name);
+            queryExecutor.requirePrivilege(Privilege.MODIFY, "VIEW", viewParts, null);
             columnProjectionPolicy(viewColumns(viewUnder(viewParts)), action.identifier(0),
                 action.UNSET() != null ? null : action.qualifiedName(), action.FORCE() != null);
             return true;
@@ -2276,6 +2398,21 @@ public class AlterCommandHandler implements CommandHandler {
                 : "Table '" + SqlIdentifiers.spellAlreadyCanonicalPath(QualifiedName.join(viewParts))
                     + "' does not exist"));
         }
+        if (action.RENAME() != null && action.CONSTRAINT() != null) {
+            throw new RuntimeException(SqlCompilationError.of("constraint '"
+                + visitor.getText(action.identifier(0)).toUpperCase(Locale.ROOT) + "' does not exist"));
+        }
+        if (action.CONSTRAINT() != null || action.PRIMARY() != null || action.UNIQUE() != null
+                || action.FOREIGN() != null || action.SEARCH() != null && action.DROP() != null) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "cannot use ALTER TABLE on a view; use ALTER VIEW instead"));
+        }
+        if (action.SEARCH() != null) {
+            throw new RuntimeException(SqlCompilationError.at(named.getLine(), named.getCharPositionInLine(),
+                "Invalid materialized view definition. '"
+                    + SqlIdentifiers.spellAlreadyCanonicalPath(QualifiedName.join(viewParts))
+                    + "' should be a table."));
+        }
         final List<String> keys = new ArrayList<>();
         for (final FrostlakeParser.TableSetPropertyContext property : action.tableSetProperty()) {
             keys.add(ParameterRegistry.canonical(property.optionKey().getText()));
@@ -2284,6 +2421,9 @@ public class AlterCommandHandler implements CommandHandler {
             for (final FrostlakeParser.OptionKeyContext key : action.tableUnsetProperties().optionKey()) {
                 keys.add(ParameterRegistry.canonical(key.getText()));
             }
+        }
+        if (keys.contains("DATA_METRIC_SCHEDULE")) {
+            throw new RuntimeException(SqlCompilationError.objectOfOtherType("VIEW", "TABLE"));
         }
         for (final String key : keys) {
             if (CreatedObjectProperties.isParameter(key)) {
@@ -2297,7 +2437,179 @@ public class AlterCommandHandler implements CommandHandler {
         if (ofTheTableKind) {
             throw new RuntimeException(SqlCompilationError.objectOfOtherType("VIEW", "TABLE"));
         }
-        return false;
+        return alterViewsOwn(viewUnder(viewParts), viewParts, action);
+    }
+
+    /**
+     * What ALTER TABLE over a view sets and unsets as ALTER VIEW does: its row access, aggregation and join policies,
+     * its tags and its columns', its data metric functions and its contacts (live-verified).
+     *
+     * @return true when the action was one of these and was applied
+     */
+    private boolean alterViewsOwn(final View view, final String[] viewParts,
+                                  final FrostlakeParser.TableActionContext action) {
+        final boolean policy = action.ROW() != null || action.AGGREGATION() != null || action.JOIN() != null
+            || action.aggregationPolicyClause() != null || action.joinPolicyClause() != null;
+        if (!policy && action.tagSet() == null && action.tagUnset() == null && action.columnTagAction() == null
+                && action.METRIC() == null && action.CONTACT() == null) {
+            return false;
+        }
+        queryExecutor.requirePrivilege(Privilege.MODIFY, "VIEW", viewParts, null);
+        if (action.aggregationPolicyClause() != null) {
+            setViewAggregationPolicy(view, action.aggregationPolicyClause(), action.FORCE() != null);
+        } else if (action.AGGREGATION() != null) {
+            unsetViewAggregationPolicy(view);
+        } else if (action.joinPolicyClause() != null) {
+            setViewJoinPolicy(view, action.joinPolicyClause(), action.FORCE() != null);
+        } else if (action.JOIN() != null) {
+            unsetViewJoinPolicy(view);
+        } else if (action.ROW() != null && action.ADD() != null) {
+            addViewRowAccessPolicy(view, action.qualifiedName(), action.identifierList());
+        } else if (action.ROW() != null) {
+            dropViewRowAccessPolicy(view, action.ALL() != null ? null : action.qualifiedName());
+        } else if (action.tagSet() != null) {
+            applyTagSet(view, action.tagSet());
+        } else if (action.tagUnset() != null) {
+            applyTagUnset(view, action.tagUnset());
+        } else if (action.columnTagAction() != null) {
+            viewColumnTag(view, action.columnTagAction());
+        } else if (action.METRIC() != null) {
+            applyDataMetricAction(view.dataMetricAttachments(), viewColumns(view), "View", action.qualifiedName(),
+                action.identifierList(), action.ADD() != null, action.MODIFY() != null, action.SUSPEND() != null);
+        } else if (!action.contactAssignment().isEmpty()) {
+            setContacts(view, action.contactAssignment());
+        } else {
+            unsetContacts(view, action.contactPurpose());
+        }
+        return true;
+    }
+
+    /** SET AGGREGATION POLICY p [ENTITY KEY (…)] [FORCE] over a view, as over a table (live-verified). */
+    private void setViewAggregationPolicy(final View view, final FrostlakeParser.AggregationPolicyClauseContext clause,
+                                          final boolean force) {
+        final String written = visitor.getText(clause.qualifiedName());
+        if (catalog.findAggregationPolicyExact(written) == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist(
+                "Aggregation policy", catalog.qualifiedExactName(written)));
+        }
+        final String policyName = catalog.qualifiedExactName(written);
+        if (view.hasAggregationPolicy() && !sameMaskingPolicy(view.getAggregationPolicyName(), policyName) && !force) {
+            throw new RuntimeException("Object " + view.getName().toUpperCase(Locale.ROOT)
+                + " already has a AGGREGATION_POLICY. Only one AGGREGATION_POLICY is allowed at a time.");
+        }
+        final List<String> entityKey = new ArrayList<>();
+        if (clause.identifierList() != null) {
+            for (final FrostlakeParser.IdentifierContext id : clause.identifierList().identifier()) {
+                entityKey.add(visitor.getText(id));
+            }
+        }
+        view.setAggregationPolicyName(policyName);
+        view.setAggregationEntityKey(entityKey);
+        logger.trace("Set aggregation policy on view {}", view.getName());
+    }
+
+    /** UNSET AGGREGATION POLICY over a view: a view the policy is not on is named a TABLE there (live-verified). */
+    private void unsetViewAggregationPolicy(final View view) {
+        if (!view.hasAggregationPolicy()) {
+            throw new RuntimeException("Any policy of kind AGGREGATION_POLICY is not attached to TABLE "
+                + view.getName().toUpperCase(Locale.ROOT) + ".");
+        }
+        view.setAggregationPolicyName(null);
+        view.setAggregationEntityKey(null);
+        logger.trace("Unset aggregation policy on view {}", view.getName());
+    }
+
+    /** SET JOIN POLICY p [FORCE] over a view, as over a table (live-verified). */
+    private void setViewJoinPolicy(final View view, final FrostlakeParser.JoinPolicyClauseContext clause,
+                                   final boolean force) {
+        final String written = visitor.getText(clause.qualifiedName());
+        if (catalog.findJoinPolicy(written) == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Join policy",
+                catalog.qualifiedExactName(written)));
+        }
+        final String policyName = catalog.qualifiedExactName(written);
+        if (view.hasJoinPolicy() && !sameMaskingPolicy(view.getJoinPolicyName(), policyName) && !force) {
+            throw new RuntimeException("Object " + view.getName().toUpperCase(Locale.ROOT)
+                + " already has a JOIN_POLICY. Only one JOIN_POLICY is allowed at a time.");
+        }
+        view.setJoinPolicyName(policyName);
+        logger.trace("Set join policy on view {}", view.getName());
+    }
+
+    /** UNSET JOIN POLICY over a view: a view the policy is not on is named a TABLE there (live-verified). */
+    private void unsetViewJoinPolicy(final View view) {
+        if (!view.hasJoinPolicy()) {
+            throw new RuntimeException("Any policy of kind JOIN_POLICY is not attached to TABLE "
+                + view.getName().toUpperCase(Locale.ROOT) + ".");
+        }
+        view.setJoinPolicyName(null);
+        logger.trace("Unset join policy on view {}", view.getName());
+    }
+
+    /** ADD ROW ACCESS POLICY p ON (c, …) over a view, as over a table: each column one of the view's. */
+    private void addViewRowAccessPolicy(final View view, final FrostlakeParser.QualifiedNameContext policy,
+                                        final FrostlakeParser.IdentifierListContext columns) {
+        final String policyName = visitor.getText(policy);
+        final List<String> cols = rowAccessPolicyColumns(columns, viewColumns(view), view.getName(), policyName,
+            view.hasRowAccessPolicy());
+        requireApplyRowAccessPolicy(policyName);
+        view.setRowAccessPolicyName(catalog.qualifiedExactName(policyName));
+        view.setRowAccessPolicyColumns(cols);
+        logger.trace("Added row access policy {} to view {}", policyName, view.getName());
+    }
+
+    /** DROP ROW ACCESS POLICY p, or with no policy named DROP ALL ROW ACCESS POLICIES, over a view. */
+    private void dropViewRowAccessPolicy(final View view, final FrostlakeParser.QualifiedNameContext policy) {
+        if (policy != null) {
+            requireRowAccessPolicyAttached(visitor.getText(policy), view.getName(), view.getRowAccessPolicyName());
+        }
+        if (view.getRowAccessPolicyName() != null) {
+            requireApplyRowAccessPolicy(view.getRowAccessPolicyName());
+        }
+        view.setRowAccessPolicyName(null);
+        view.setRowAccessPolicyColumns(new ArrayList<>());
+        logger.trace("Dropped row access policy from view {}", view.getName());
+    }
+
+    /** {ALTER | MODIFY} COLUMN c SET or UNSET TAG over a view's column, as over a table's. */
+    private void viewColumnTag(final View view, final FrostlakeParser.ColumnTagActionContext action) {
+        final Table columns = viewColumns(view);
+        requireColumn(columns, visitor.getText(action.identifier()), action.identifier());
+        final TableColumn column = columns.getColumn(visitor.getText(action.identifier()));
+        if (action.tagSet() != null) {
+            applyTagSet(column, action.tagSet());
+        } else {
+            applyTagUnset(column, action.tagUnset());
+        }
+    }
+
+    /**
+     * SET CONTACT purpose = contact, … onto a table, a view or a task — no parentheses, live refuses those. Each
+     * contact is looked for as its purpose is read, and a purpose written as a list is refused once its contact is
+     * found (see ListValues).
+     */
+    private void setContacts(final ContactHolder holder,
+                             final List<FrostlakeParser.ContactAssignmentContext> assignments) {
+        for (final FrostlakeParser.ContactAssignmentContext assignment : assignments) {
+            final FrostlakeParser.ListValueContext listed = assignment.listValue();
+            final String purpose = listed == null ? contactPurpose(assignment.contactPurpose()) : null;
+            final String contactName = visitor.getText(assignment.qualifiedName());
+            if (catalog.findContact(contactName) == null) {
+                throw new RuntimeException(SqlCompilationError.doesNotExist("Contact",
+                    catalog.qualifiedExactName(contactName)));
+            }
+            if (listed != null) {
+                throw ListValues.noPurpose(listed);
+            }
+            holder.setContact(purpose, catalog.qualifiedExactName(contactName));
+        }
+    }
+
+    /** UNSET CONTACT purpose, … — a purpose nothing was attached for is no error; only the purpose is judged. */
+    private void unsetContacts(final ContactHolder holder, final List<FrostlakeParser.ContactPurposeContext> purposes) {
+        for (final FrostlakeParser.ContactPurposeContext purpose : purposes) {
+            holder.unsetContact(contactPurpose(purpose));
+        }
     }
 
     /**
@@ -2374,6 +2686,23 @@ public class AlterCommandHandler implements CommandHandler {
             // column must RESTATE its collation, verbatim: dropping it, changing it or adding one
             // is refused with a message that QUOTES both types (live-verified).
             final DataType newDataType = alteredColumnType(table, item);
+            // A structured type evolves into another of its kind member by member, in the format's terms where the
+            // format typed the column (see StructuredEvolution).
+            final boolean formatTyped = table.getIcebergMetadata() != null && column.isFormatTyped();
+            final DataType held = formatTyped ? column.getFormatType() : column.getDataType();
+            final DataType written = formatTyped ? alteredFormatType(item) : newDataType;
+            if (StructuredEvolution.applies(held, written)) {
+                StructuredEvolution.require(colName.toUpperCase(Locale.ROOT), held, written, action.RENAME() != null,
+                    formatTyped);
+                return;
+            }
+            if (action.RENAME() != null) {
+                // RENAME FIELDS renames a structured type's keys: between two kinds it changes a type, and over a
+                // type that is no structured one it is no feature at all (live-verified).
+                throw IcebergTypes.isStructured(held) && IcebergTypes.isStructured(written)
+                    ? StructuredEvolution.changedOnRename(colName.toUpperCase(Locale.ROOT))
+                    : new RuntimeException("Unsupported feature 'RENAME'.");
+            }
             if (table.getIcebergMetadata() != null) {
                 IcebergColumnTypes.requirePromotion(colName.toUpperCase(Locale.ROOT), column, alteredFormatType(item));
             }
@@ -2511,7 +2840,7 @@ public class AlterCommandHandler implements CommandHandler {
         for (final Row row : storage.scan()) {
             final Object value = row.getValue(slot);
             if (value instanceof Number
-                    && NumericRangeRefusal.exceeds(new BigDecimal(value.toString()), newPrecision, scale)) {
+                    && NumericRangeRefusal.exceeds(DecimalText.parse(value.toString()), newPrecision, scale)) {
                 throw new RuntimeException(SqlCompilationError.trailing("cannot change column "
                     + colName.toUpperCase(Locale.ROOT)
                     + " from type " + typeText(oldType) + " to " + typeText(newType)
@@ -2638,9 +2967,11 @@ public class AlterCommandHandler implements CommandHandler {
     /** The type an ALTER COLUMN … SET DATA TYPE writes: an Iceberg table's column takes the one the format holds. */
     private DataType alteredColumnType(final Table table, final FrostlakeParser.AlterColumnItemContext item) {
         final FrostlakeParser.AlterColumnItemActionContext action = item.alterColumnItemAction();
-        return table.getIcebergMetadata() == null
-            ? visitor.parseDataType(action.dataTypeName(), action.typeParameters())
-            : IcebergTypes.tableType(alteredFormatType(item));
+        if (table.getIcebergMetadata() != null) {
+            return IcebergTypes.tableType(alteredFormatType(item));
+        }
+        IcebergColumnTypes.refuseFormatWords(action.dataTypeName());
+        return visitor.parseDataType(action.dataTypeName(), action.typeParameters());
     }
 
     /** The type in the Iceberg format's own terms an ALTER COLUMN … SET DATA TYPE gives an Iceberg table's column. */
@@ -2653,14 +2984,9 @@ public class AlterCommandHandler implements CommandHandler {
 
     /**
      * What an ALTER ICEBERG TABLE writes is judged before its table is looked for: a column's type must be one
-     * the format holds, and there is no SWAP WITH, a syntax error at the word (live-verified).
+     * the format holds (live-verified).
      */
     private void requireIcebergAction(final FrostlakeParser.TableActionContext action) {
-        if (action.SWAP() != null) {
-            final Token swap = action.SWAP().getSymbol();
-            throw new RuntimeException(SqlCompilationError.of("syntax error line " + swap.getLine()
-                + " at position " + swap.getCharPositionInLine() + " unexpected '" + swap.getText() + "'."));
-        }
         if (action.ADD() != null && action.columnDef() != null) {
             final List<FrostlakeParser.ColumnDefContext> added = new ArrayList<>();
             added.add(action.columnDef());
@@ -2679,27 +3005,64 @@ public class AlterCommandHandler implements CommandHandler {
         }
     }
 
+    /** The refusal of an ALTER ICEBERG TABLE of a table that is none. */
+    private static RuntimeException notOfIcebergKind(final Table table) {
+        return new RuntimeException("SQL Compilation error: The table " + table.getName() + " is a legacy"
+            + " Iceberg table. Legacy Iceberg tables should use the ALTER TABLE commands. Please ensure the"
+            + " appropriate command format is used.");
+    }
+
+    /**
+     * The other table of a swap, looked for before either table's kind is read, or null when the name is another
+     * relation's: that one is refused where the swap runs, unless a kind refuses the swap first.
+     */
+    private Table swapPartner(final String name) {
+        try {
+            catalog.refuseOtherRelationKind(name);
+        } catch (final RuntimeException otherKind) {
+            return null;
+        }
+        return catalog.resolveTable(name);
+    }
+
+    /**
+     * What a swap asks of its tables (live-verified). ALTER TABLE swaps no Iceberg table, and ALTER ICEBERG TABLE swaps
+     * two of them and nothing else: an Iceberg table beside any other relation is refused in words of its own, and two
+     * plain tables as the ones any ALTER ICEBERG TABLE of a plain table reads. A plain ALTER TABLE names its other
+     * table where it runs.
+     */
+    private void requireSwapOfTableKinds(final FrostlakeParser.AlterStatementContext ctx, final Table table) {
+        final FrostlakeParser.QualifiedNameContext named = ctx.tableAction().qualifiedName();
+        final boolean iceberg = table.getIcebergMetadata() != null;
+        final boolean icebergStatement = ctx.ICEBERG() != null;
+        if (!iceberg && !icebergStatement && !alterTargetTableExists(qualifiedNameParts(named))) {
+            return;
+        }
+        final Table other = swapPartner(visitor.getText(named));
+        final boolean otherIceberg = other != null && other.getIcebergMetadata() != null;
+        if (icebergStatement ? iceberg != otherIceberg : iceberg || otherIceberg) {
+            throw new RuntimeException(SWAP_OF_ICEBERG_TABLE);
+        }
+        if (icebergStatement && !iceberg) {
+            throw notOfIcebergKind(table);
+        }
+    }
+
     /**
      * A table is altered by the statement of its kind: an Iceberg table by ALTER ICEBERG TABLE and any other by
-     * ALTER TABLE. A swap is refused in words of its own when either table is an Iceberg table, and a tag or a row
-     * access policy the statement names is looked for first (live-verified).
+     * ALTER TABLE. A swap has rules of its own (see {@link #requireSwapOfTableKinds}), and a tag or a row access
+     * policy the statement names is looked for first (live-verified).
      */
     private void requireStatementOfTableKind(final FrostlakeParser.AlterStatementContext ctx, final Table table) {
         final boolean iceberg = table.getIcebergMetadata() != null;
         final FrostlakeParser.TableActionContext action = ctx.tableAction();
-        if (ctx.ICEBERG() != null) {
-            if (!iceberg) {
-                throw new RuntimeException("SQL Compilation error: The table " + table.getName() + " is a legacy"
-                    + " Iceberg table. Legacy Iceberg tables should use the ALTER TABLE commands. Please ensure the"
-                    + " appropriate command format is used.");
-            }
+        if (action.SWAP() != null) {
+            requireSwapOfTableKinds(ctx, table);
             return;
         }
-        if (action.SWAP() != null) {
-            final String[] other = qualifiedNameParts(action.qualifiedName());
-            if (iceberg || alterTargetTableExists(other)
-                    && catalog.resolveTable(QualifiedName.of(other)).getIcebergMetadata() != null) {
-                throw new RuntimeException("SWAP WITH is not supported for ICEBERG TABLE.");
+        if (ctx.ICEBERG() != null) {
+            if (!iceberg) {
+                throw notOfIcebergKind(table);
             }
             return;
         }
@@ -2718,6 +3081,12 @@ public class AlterCommandHandler implements CommandHandler {
         }
         if (action.ROW() != null && action.ADD() != null) {
             requireRowAccessPolicy(visitor.getText(action.qualifiedName()));
+        }
+        for (final FrostlakeParser.AlterColumnItemContext item : action.alterColumnItem()) {
+            if (item.alterColumnItemAction().dataTypeName() != null) {
+                // A type no table but an Iceberg one takes is refused before the table's kind is (live-verified).
+                IcebergColumnTypes.refuseFormatWords(item.alterColumnItemAction().dataTypeName());
+            }
         }
         throw IcebergTables.alteredAsTable(table);
     }
@@ -2753,7 +3122,12 @@ public class AlterCommandHandler implements CommandHandler {
         final String colName = visitor.getText(item.identifier());
         final FrostlakeParser.AlterColumnItemActionContext action = item.alterColumnItemAction();
         if (action.dataTypeName() != null) {
-            table.alterColumnType(colName, alteredColumnType(table, item));
+            final DataType stored = table.getColumn(colName).getDataType();
+            final DataType evolved = alteredColumnType(table, item);
+            table.alterColumnType(colName, evolved);
+            if (StructuredEvolution.applies(stored, evolved)) {
+                evolveStoredValues(table, tableName, colName, stored, evolved, action.RENAME() != null);
+            }
             // A column the format's types typed keeps them; one a query or LIKE gave the table keeps a table's.
             final TableColumn altered = table.getColumn(colName);
             if (table.getIcebergMetadata() != null && altered != null && altered.isFormatTyped()) {
@@ -2789,6 +3163,30 @@ public class AlterCommandHandler implements CommandHandler {
         return null;
     }
 
+    /**
+     * Rewrites a structured column's stored values in the type an ALTER evolved it to (see
+     * StructuredCast#evolved).
+     */
+    private void evolveStoredValues(final Table table, final String tableName, final String colName,
+                                    final DataType stored, final DataType evolved, final boolean renameFields) {
+        final TableStorage storage = queryExecutor.getStorageEngine()
+            .getTableStorage(queryExecutor.getFullyQualifiedTableName(tableName));
+        final int slot = table.getColumnIndex(colName);
+        if (storage == null || slot < 0) {
+            return;
+        }
+        for (int i = 0; i < storage.getRowCount(); i++) {
+            final Row row = storage.getRow(i);
+            final Object value = slot < row.size() ? row.getValue(slot) : null;
+            if (value == null) {
+                continue;
+            }
+            final Row rewritten = row.copy();
+            rewritten.setValue(slot, StructuredCast.evolved(value, evolved, renameFields, stored));
+            storage.replaceRow(i, rewritten);
+        }
+    }
+
     /** The transient cap, which turns the modifier into a rule rather than a metadata word. */
     /**
      * The properties of an ALTER DATABASE or ALTER SCHEMA … SET, all judged before any is applied: a name given twice
@@ -2804,13 +3202,15 @@ public class AlterCommandHandler implements CommandHandler {
                                                    final String name) {
         final List<String> names = new ArrayList<>();
         final List<Boolean> taken = new ArrayList<>();
+        final List<WrittenParameterValue> values = new ArrayList<>();
         for (final FrostlakeParser.TableSetPropertyContext property : properties) {
             names.add(property.optionKey().getText());
             taken.add(Boolean.valueOf(takenByContainer(ParameterRegistry.canonical(property.optionKey().getText()),
                 kind)));
+            values.add(WrittenParameterValue.of(property));
         }
         PropertyDuplicates.reject(names);
-        ParameterLevels.judgeAlter(names, taken, kind, kind.toLowerCase(Locale.ROOT), name);
+        ParameterLevels.judgeAlter(names, taken, values, kind, kind.toLowerCase(Locale.ROOT), name);
         for (final FrostlakeParser.TableSetPropertyContext property : properties) {
             final String rawKey = property.optionKey().getText();
             ParameterLevels.refuseClassificationProfile(ParameterRegistry.canonical(rawKey),
@@ -2818,6 +3218,19 @@ public class AlterCommandHandler implements CommandHandler {
             requireLegalRetention(rawKey, property.copyOptionValue());
             requireAccountRetention(rawKey, property.copyOptionValue());
             requireTransientRetention(rawKey, transientObject, property.copyOptionValue());
+        }
+    }
+
+    /**
+     * The catalog a container's CATALOG names must be one the account holds, the name as it is written
+     * (live-verified). The other properties of the list have been judged already.
+     */
+    private void requireCatalogParameter(final List<FrostlakeParser.TableSetPropertyContext> properties) {
+        for (final FrostlakeParser.TableSetPropertyContext property : properties) {
+            if ("CATALOG".equals(ParameterRegistry.canonical(property.optionKey().getText()))
+                    && property.copyOptionValue() != null) {
+                IcebergTables.requireCatalogParameter(NamespaceProperties.render(property.copyOptionValue()), catalog);
+            }
         }
     }
 
@@ -3043,10 +3456,80 @@ public class AlterCommandHandler implements CommandHandler {
         }
     }
 
-    private void checkAlter(final SecurableObjectType objectType, final String objectName) {
-        if (queryExecutor.getSecurityManager() != null) {
-            queryExecutor.getSecurityManager().checkAlter(objectType, objectName);
+    /**
+     * Refuse an ALTER of a masking or row access policy the session may not make: a rename asks OWNERSHIP, as
+     * renaming any object does, and every other change MODIFY, which the policy's owner holds.
+     *
+     * @param kind   MASKING_POLICY or ROW_ACCESS_POLICY
+     * @param parts  the policy's name, part by part
+     * @param action what the statement does to it
+     */
+    private void requirePolicyChange(final String kind, final String[] parts,
+                                     final FrostlakeParser.PolicyActionContext action) {
+        if (action.RENAME() != null) {
+            queryExecutor.requireOwnership(kind, parts, null);
+        } else {
+            queryExecutor.requirePrivilege(Privilege.MODIFY, kind, parts, null);
         }
+    }
+
+    /**
+     * Whether an ALTER PIPE operates the pipe rather than changing it: a REFRESH, or a SET of PIPE_EXECUTION_PAUSED
+     * alone.
+     */
+    private boolean operatesPipe(final FrostlakeParser.PipeActionContext action) {
+        if (action.REFRESH() != null) {
+            return true;
+        }
+        if (action.SET() == null) {
+            return false;
+        }
+        for (final FrostlakeParser.PipeSetOptionContext option : action.pipeSetOption()) {
+            if (!"PIPE_EXECUTION_PAUSED".equals(visitor.getText(option.identifier(0)).toUpperCase(Locale.ROOT))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * The privilege an ALTER WAREHOUSE asks: OPERATE to resume or suspend the warehouse or abort its queries, MODIFY
+     * for its properties and tags (documented), or null for a rename, which asks OWNERSHIP.
+     */
+    private static Privilege warehousePrivilege(final FrostlakeParser.WarehouseActionContext action) {
+        if (action.RENAME() != null) {
+            return null;
+        }
+        return action.RESUME() != null || action.RESUME_IF_SUSPENDED() != null || action.SUSPEND() != null
+            || action.ABORT_ALL_QUERIES() != null ? Privilege.OPERATE : Privilege.MODIFY;
+    }
+
+    /**
+     * Whether an ALTER DYNAMIC TABLE action is one OPERATE allows: without it a role cannot "suspend, resume,
+     * refresh, or change the warehouse or target lag" (documented, dynamic table privileges). A rename, a swap,
+     * the tags, the reclustering and the other properties stay the owner's.
+     */
+    private static boolean operatesDynamicTable(final FrostlakeParser.DynamicTableActionContext action) {
+        if (action.RECLUSTER() != null) {
+            return false;
+        }
+        if (action.SUSPEND() != null || action.RESUME() != null || action.REFRESH() != null) {
+            return true;
+        }
+        final List<FrostlakeParser.DynamicTablePropertyContext> properties = new ArrayList<>();
+        if (action.SET() != null) {
+            for (final FrostlakeParser.DynamicTableSettingContext setting : action.dynamicTableSetting()) {
+                properties.add(setting.dynamicTableProperty());
+            }
+        } else if (action.UNSET() != null) {
+            properties.addAll(action.dynamicTableProperty());
+        }
+        for (final FrostlakeParser.DynamicTablePropertyContext property : properties) {
+            if (property.TARGET_LAG() == null && property.WAREHOUSE() == null) {
+                return false;
+            }
+        }
+        return !properties.isEmpty();
     }
 
     /** The policy an ALTER found, its absence refused in live's sentence. */
@@ -3084,6 +3567,9 @@ public class AlterCommandHandler implements CommandHandler {
      * @param action the statement's action
      * @param ifExists whether the statement says IF EXISTS
      */
+    /** What a swap is told when an Iceberg table stands beside any other relation, or under ALTER TABLE at all. */
+    private static final String SWAP_OF_ICEBERG_TABLE = "SWAP WITH is not supported for ICEBERG TABLE.";
+
     /** What an ALTER of the account, or of the session's own user, is told when it is written with IF EXISTS. */
     private static final String IF_EXISTS_WITHOUT_NAME = "Cannot specify IF EXISTS when no object name is specified";
 
@@ -3104,10 +3590,24 @@ public class AlterCommandHandler implements CommandHandler {
         }
         final FrostlakeParser.SessionActionContext action = ctx.sessionAction();
         if (action == null) {
-            // The account's tags: a named account is looked for before its tags are.
+            // The account's tags: a named account is looked for before its tags are, and under IF EXISTS another
+            // account's are the organization's to change, refused before the account is looked for (live-verified).
+            if (ifExists && !isThisAccount(named, true)) {
+                final SecurityManager security = queryExecutor.getSecurityManager();
+                if (security != null) {
+                    throw new PrivilegeRefusal(SqlAccessControlError.privilegeRequired("ACCOUNT",
+                        visitor.getText(named.qualifiedName()).toUpperCase(Locale.ROOT),
+                        security.getSessionContext().getCurrentRole(),
+                        security.getSessionContext().isSecondaryRolesInUse(), "MANAGE ORGANIZATION ACCOUNTS",
+                        catalog.getAccountLocator()));
+                }
+                return;
+            }
             if (!isThisAccount(named, ifExists)) {
                 return;
             }
+            // The account's tags change as its other properties do, with MODIFY on it.
+            AccountPrivileges.requireOnAccount(queryExecutor, catalog, Privilege.MODIFY);
             if (ctx.tagSet() != null) {
                 applyTagSet(catalog.getAccountTags(), ctx.tagSet());
             } else {
@@ -3128,6 +3628,7 @@ public class AlterCommandHandler implements CommandHandler {
             }
             AccountPrivileges.requireOnAccount(queryExecutor, catalog, Privilege.MODIFY);
             LeveledParameterSettings.requireTaken(settings, catalog);
+            LeveledParameterSettings.requireCatalog(settings, catalog);
             LeveledParameterSettings.set(catalog.getAccountParameters(), settings);
             return;
         }
@@ -3187,7 +3688,7 @@ public class AlterCommandHandler implements CommandHandler {
             UserProperties.checkUnset(action.userUnsetProperty());
         } else if (action.tagSet() != null || action.tagUnset() != null) {
             if (!ifExists) {
-                catalog.getUserExact(userName);
+                UserLookup.asking(catalog, queryExecutor.getSecurityManager(), userName, Privilege.APPLY_TAG);
             }
             if (action.tagSet() != null) {
                 for (final FrostlakeParser.TagAssignContext assign : action.tagSet().tagAssign()) {
@@ -3206,6 +3707,9 @@ public class AlterCommandHandler implements CommandHandler {
         final User user = catalog.getUserExact(userName);
         if (action.tagSet() == null && action.tagUnset() == null) {
             AccountPrivileges.requireOnUser(queryExecutor, user, action);
+        } else {
+            requireApplyTags(user,
+                action.tagSet() != null ? tagNames(action.tagSet()) : action.tagUnset().qualifiedName());
         }
         if (parameters != null) {
             parameters.requireTaken(catalog);
@@ -3242,6 +3746,40 @@ public class AlterCommandHandler implements CommandHandler {
         } else if (action.COMMENT() != null) {
             user.setComment(visitor.extractStringLiteral(action.STRING_LITERAL()));
             logger.trace("Set comment on user: {}", userName);
+        }
+    }
+
+    /** The tags a SET TAG names, in the order written. */
+    private static List<FrostlakeParser.QualifiedNameContext> tagNames(final FrostlakeParser.TagSetContext set) {
+        final List<FrostlakeParser.QualifiedNameContext> names = new ArrayList<>();
+        for (final FrostlakeParser.TagAssignContext assign : set.tagAssign()) {
+            names.add(assign.qualifiedName());
+        }
+        return names;
+    }
+
+    /**
+     * Refuses an ALTER USER … SET TAG or UNSET TAG the session may not make. MODIFY on the user is not what it asks:
+     * setting or unsetting a tag on an object takes APPLY TAG on the account, or APPLY on the tag and OWNERSHIP of
+     * the object (documented, "Tag privileges"). A role with neither was let tag and untag any user.
+     *
+     * @param user the user tagged
+     * @param tags the tags named, each one there
+     */
+    private void requireApplyTags(final User user, final List<FrostlakeParser.QualifiedNameContext> tags) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        if (security == null || security.holdsAccountPrivilege(Privilege.APPLY_TAG)) {
+            return;
+        }
+        for (final FrostlakeParser.QualifiedNameContext name : tags) {
+            final Tag tag = referencedTag(name);
+            ApplyPrivileges.require(queryExecutor, Privilege.APPLY_TAG, "TAG",
+                catalog.qualifiedExactName(visitor.getText(name)), tag.getOwner());
+        }
+        if (!security.holdsPrivilege(Privilege.OWNERSHIP, "USER", user.getName(), user.getOwner())) {
+            throw new PrivilegeRefusal(SqlAccessControlError.privilegeRequired("USER", user.getName(),
+                security.getSessionContext().getCurrentRole(), security.getSessionContext().isSecondaryRolesInUse(),
+                "OWNERSHIP", user.getName()));
         }
     }
 
@@ -3313,6 +3851,10 @@ public class AlterCommandHandler implements CommandHandler {
         final TaskProperties properties = new TaskProperties(catalog, schema);
         final List<String> resolved = properties.requirePredecessors(task, names);
         properties.requireConfigFree(task);
+        // Neither the graph the task leaves as a root nor the one it joins may run.
+        final List<Task> graphs = new ArrayList<>(properties.namedPredecessors(names));
+        graphs.add(task);
+        properties.requireSuspendedRoots(graphs);
         for (final String predecessor : resolved) {
             if (!TaskProperties.hasPredecessor(task, predecessor)) {
                 task.addPredecessor(predecessor);
@@ -3320,10 +3862,23 @@ public class AlterCommandHandler implements CommandHandler {
         }
     }
 
+    /**
+     * A child or a finalizer is resumed or suspended only while its graph's root is suspended; the root itself always
+     * is (live-verified).
+     */
+    private void requireRunStateChangeable(final Task task, final Schema schema) {
+        if (!TaskGraphs.isRoot(task) || task.isFinalizer()) {
+            new TaskProperties(catalog, schema).requireSuspendedGraph(task);
+        }
+    }
+
     /** ALTER TASK … REMOVE AFTER: every named task must be a predecessor, and each stops being one. */
     private void removeTaskPredecessors(final Task task, final List<FrostlakeParser.QualifiedNameContext> names,
                                         final Schema schema) {
-        final List<String> removed = new TaskProperties(catalog, schema).requireRemovablePredecessors(task, names);
+        final TaskProperties properties = new TaskProperties(catalog, schema);
+        final List<String> removed = properties.requireRemovablePredecessors(task, names);
+        // A child leaves its graph only while the graph's root is suspended.
+        properties.requireSuspendedRoots(Collections.singletonList(task));
         for (final String name : removed) {
             final Iterator<String> it = task.getPredecessors().iterator();
             while (it.hasNext()) {
@@ -3565,6 +4120,34 @@ public class AlterCommandHandler implements CommandHandler {
      * or on both when none is; REFRESH asks for a refresh, which changes nothing the catalog keeps. The engine
      * holds no index, so nothing is rebuilt.
      */
+    /**
+     * ADD or DROP a named scoring profile of a service. A profile added twice, or one dropped that the service does
+     * not have, is refused unless IF NOT EXISTS or IF EXISTS forgives it; the words of both refusals are this
+     * engine's own, since no service can be created on the account the forms were measured on.
+     */
+    private void applyScoringProfile(final CortexSearchService service,
+                                     final FrostlakeParser.CortexSearchActionContext action) {
+        final String profile = visitor.getText(action.identifier());
+        if (action.ADD() != null) {
+            if (service.getScoringProfiles().containsKey(profile)) {
+                if (action.if_not_exists() == null) {
+                    throw new RuntimeException(SqlCompilationError.of("Scoring profile '" + profile
+                        + "' already exists."));
+                }
+                return;
+            }
+            final String dollarQuoted = action.DOLLAR_QUOTED_STRING() == null ? null
+                : action.DOLLAR_QUOTED_STRING().getText();
+            service.addScoringProfile(profile, dollarQuoted == null
+                ? visitor.extractStringLiteral(action.STRING_LITERAL())
+                : dollarQuoted.substring(2, dollarQuoted.length() - 2));
+            return;
+        }
+        if (!service.dropScoringProfile(profile) && action.if_exists() == null) {
+            throw new RuntimeException(SqlCompilationError.of("Scoring profile '" + profile + "' does not exist."));
+        }
+    }
+
     private void applyCortexSearchAction(final CortexSearchService service,
                                          final FrostlakeParser.CortexSearchActionContext action) {
         if (action.tagSet() != null) {
@@ -3576,6 +4159,10 @@ public class AlterCommandHandler implements CommandHandler {
             return;
         }
         if (action.REFRESH() != null) {
+            return;
+        }
+        if (action.SCORING() != null) {
+            applyScoringProfile(service, action);
             return;
         }
         if (action.UNSET() != null) {
@@ -3676,6 +4263,8 @@ public class AlterCommandHandler implements CommandHandler {
                 + " policies of same kind.please drop the current association in"
                 + " order to attach a new policy.");
         }
+        // A column another policy reads as an argument takes none (MaskedArguments).
+        MaskedArguments.requireProjectable(target, col);
         col.setProjectionPolicyName(policyName);
     }
 
@@ -3703,6 +4292,9 @@ public class AlterCommandHandler implements CommandHandler {
         final TableColumn col = target.getColumn(colName);
         if (policyName == null) {
             // Detaching what is not attached is a no-op, not an error — the opposite of the row access policy's DROP.
+            if (col.getMaskingPolicyName() != null) {
+                requireApplyMaskingPolicy(col.getMaskingPolicyName());
+            }
             col.setMaskingPolicyName(null);
             col.setMaskingPolicyArguments(null);
             return;
@@ -3724,14 +4316,60 @@ public class AlterCommandHandler implements CommandHandler {
                 final TableColumn argCol = target.hasColumn(argName) ? target.getColumn(argName) : null;
                 if (argCol != null && argCol != col) {
                     MaskedArguments.requireReadable(catalog, argCol);
+                    MaskedArguments.requireUnprojected(argCol);
                 }
                 arguments.add(argName);
             }
         }
         MaskingPolicyAttachment.requireTypeMatch(catalog.findMaskingPolicyExact(policyName), col);
+        requireApplyMaskingPolicy(policyName);
+        if (col.getMaskingPolicyName() != null && !sameMaskingPolicy(col.getMaskingPolicyName(), policyName)) {
+            // FORCE replaces the policy there, which detaches it.
+            requireApplyMaskingPolicy(col.getMaskingPolicyName());
+        }
         col.setMaskingPolicyName(policyName);
         // A conditional policy reads its further arguments from the columns USING names, in order.
         col.setMaskingPolicyArguments(arguments);
+    }
+
+    /**
+     * Refuses attaching or detaching a masking policy the session may not apply: it needs APPLY MASKING POLICY on the
+     * account, or APPLY on the policy (see {@link ApplyPrivileges}).
+     *
+     * @param policyName the policy's name in full, as an attachment records it
+     */
+    private void requireApplyMaskingPolicy(final String policyName) {
+        MaskingPolicy policy;
+        try {
+            policy = catalog.findMaskingPolicyExact(policyName);
+        } catch (final RuntimeException gone) {
+            policy = null;
+        }
+        ApplyPrivileges.require(queryExecutor, Privilege.APPLY_MASKING_POLICY, "MASKING_POLICY", policyName,
+            policy == null ? null : policy.getOwner());
+    }
+
+    /**
+     * Refuses adding or dropping a row access policy the session may not apply: it needs APPLY ROW ACCESS POLICY on
+     * the account, or APPLY on the policy (see {@link ApplyPrivileges}).
+     *
+     * @param policyName the policy's name, as written or as the attachment records it
+     */
+    private void requireApplyRowAccessPolicy(final String policyName) {
+        RowAccessPolicy policy;
+        try {
+            policy = catalog.findRowAccessPolicyExact(policyName);
+        } catch (final RuntimeException gone) {
+            policy = null;
+        }
+        String fullName;
+        try {
+            fullName = catalog.qualifiedExactName(policyName);
+        } catch (final RuntimeException unresolved) {
+            fullName = policyName;
+        }
+        ApplyPrivileges.require(queryExecutor, Privilege.APPLY_ROW_ACCESS_POLICY, "ROW_ACCESS_POLICY", fullName,
+            policy == null ? null : policy.getOwner());
     }
 
     /** A view's columns as a relation whose columns are the view's own, so a policy set on one stays with the view. */
@@ -3890,6 +4528,13 @@ public class AlterCommandHandler implements CommandHandler {
                     throw new RuntimeException("Cannot drop column '" + keyed
                         + "' which belongs to a clustering key\n");
                 }
+                if (table.hasRowAccessPolicy() && table.getRowAccessPolicyColumns().contains(keyed)) {
+                    // A column the row access policy reads stays while the policy is attached, refused in one line
+                    // whatever else the statement drops; a masking or a projection policy on the column itself
+                    // does not keep it (live-verified).
+                    throw new RuntimeException(SqlCompilationError.inline("Cannot drop column '" + keyed
+                        + "' which is associated with a Row access policy."));
+                }
             }
         }
         final Set<String> dropping = new LinkedHashSet<>();
@@ -3909,6 +4554,20 @@ public class AlterCommandHandler implements CommandHandler {
         if (!dropping.isEmpty() && dropping.size() >= table.columnCount()) {
             throw new RuntimeException(SqlCompilationError.of("cannot drop all the columns of a table"));
         }
+        for (final TableColumn masked : table.columnsView()) {
+            if (!masked.hasMaskingPolicy()) {
+                continue;
+            }
+            // A column a conditional masking policy reads through USING stays too, even when the column it masks goes
+            // in the same statement, where the masked column alone may go (live-verified).
+            for (final String argument : masked.getMaskingPolicyArguments()) {
+                if (!argument.equals(masked.getName()) && dropping.contains(argument)) {
+                    throw new RuntimeException(SqlCompilationError.inline("Cannot drop column '" + argument
+                        + "' which is associated with a Masking policy."));
+                }
+            }
+        }
+        VirtualColumnDefinitions.refuseDroppedReads(table, dropping);
         final String fullyQualifiedName = queryExecutor.getFullyQualifiedTableName(tableName);
         final Schema columnOwner = catalog.resolveOwningSchema(tableName);
         for (final String colName : dropping) {
@@ -4009,22 +4668,40 @@ public class AlterCommandHandler implements CommandHandler {
         new ForeignKeyDependents(catalog).releaseKey(keyOwner.getDatabaseName(), keyOwner, table, key, primaryKey);
     }
 
-    /**
-     * The three DATA METRIC FUNCTION actions. The metric must be a system one — live resolves only
-     * SNOWFLAKE.CORE names and refuses a bare one — every named column must exist, and a DROP that
-     * finds no attachment is refused while a repeated ADD is silently ignored.
-     */
+    /** A table's DATA METRIC FUNCTION action. */
     private void applyDataMetricAction(final Table table,
                                        final FrostlakeParser.TableActionContext action) {
-        final String metric = visitor.getText(action.qualifiedName());
+        applyDataMetricAction(table.dataMetricAttachments(), table, "Table", action.qualifiedName(),
+            action.identifierList(), action.ADD() != null, action.MODIFY() != null, action.SUSPEND() != null);
+    }
+
+    /**
+     * The three DATA METRIC FUNCTION actions of a table or a view. The metric must be a system one — live resolves
+     * only SNOWFLAKE.CORE names and refuses a bare one — every named column must exist, and a DROP that finds no
+     * attachment is refused while a repeated ADD is silently ignored.
+     *
+     * @param attachments the object's attachments
+     * @param table       the object's columns
+     * @param kind        the object's kind, as a refused DROP names it
+     * @param name        the metric as written
+     * @param columnList  the columns it measures, or null for none
+     * @param add         whether the metric is added
+     * @param modify      whether it is suspended or resumed
+     * @param suspend     whether a MODIFY suspends it
+     */
+    private void applyDataMetricAction(final DataMetricAttachments attachments, final Table table, final String kind,
+                                       final FrostlakeParser.QualifiedNameContext name,
+                                       final FrostlakeParser.IdentifierListContext columnList, final boolean add,
+                                       final boolean modify, final boolean suspend) {
+        final String metric = visitor.getText(name);
         if (!DataMetricFunctions.exists(metric)) {
             // A metric that is not a system one is refused without a privilege hint (live-verified).
             throw new RuntimeException(SqlCompilationError.doesNotExistWithoutHint("Function",
                 metric.toUpperCase(Locale.ROOT)));
         }
         final List<String> columns = new ArrayList<>();
-        if (action.identifierList() != null) {
-            for (final FrostlakeParser.IdentifierContext id : action.identifierList().identifier()) {
+        if (columnList != null) {
+            for (final FrostlakeParser.IdentifierContext id : columnList.identifier()) {
                 final String colName = visitor.getText(id);
                 if (!table.hasColumn(colName)) {
                     throw new RuntimeException(SqlCompilationError.columnDoesNotExist(
@@ -4033,21 +4710,21 @@ public class AlterCommandHandler implements CommandHandler {
                 columns.add(colName);
             }
         }
-        if (action.ADD() != null) {
-            table.addDataMetric(new DataMetricAttachment(metric.toUpperCase(Locale.ROOT), columns));
+        if (add) {
+            attachments.add(new DataMetricAttachment(metric.toUpperCase(Locale.ROOT), columns));
             return;
         }
-        if (action.MODIFY() != null) {
-            final DataMetricAttachment attachment = table.findDataMetric(
-                metric.toUpperCase(Locale.ROOT), columns);
+        // A metric the object does not carry is refused alike by MODIFY and by DROP (live-verified).
+        if (modify) {
+            final DataMetricAttachment attachment = attachments.find(metric.toUpperCase(Locale.ROOT), columns);
             if (attachment != null) {
-                attachment.setSuspended(action.SUSPEND() != null);
+                attachment.setSuspended(suspend);
+                return;
             }
-            return;
         }
-        if (!table.dropDataMetric(metric.toUpperCase(Locale.ROOT), columns)) {
+        if (modify || !attachments.drop(metric.toUpperCase(Locale.ROOT), columns)) {
             throw new RuntimeException(SqlCompilationError.PREFIX + " Data metric function "
-                + DataMetricFunctions.bareName(metric) + " is not attached to Table "
+                + DataMetricFunctions.bareName(metric) + " is not attached to " + kind + " "
                 + table.getName().toUpperCase(Locale.ROOT) + ".");
         }
     }
@@ -4086,10 +4763,12 @@ public class AlterCommandHandler implements CommandHandler {
                 + target.toUpperCase(Locale.ROOT) + "'"));
         }
         final TableColumn column = table.getColumn(target);
-        // GEO indexes only a geography, so live refuses it over anything else.
-        if ("GEO".equals(method) && !(column.getDataType() instanceof GeographyType)) {
+        // GEO indexes only a geography, so live refuses it over anything else; EQUALITY and SUBSTRING take no DECFLOAT.
+        if ("GEO".equals(method) && !(column.getDataType() instanceof GeographyType)
+                || ("EQUALITY".equals(method) || "SUBSTRING".equals(method))
+                    && NumericType.isDecfloat(column.getDataType())) {
             throw new RuntimeException(SqlCompilationError.at(line, position,
-                "Expression GEO(" + SEARCH_SOURCE_ALIAS + "." + column.getName()
+                "Expression " + method + "(" + SEARCH_SOURCE_ALIAS + "." + column.getName()
                 + ") cannot be used in search optimization."));
         }
         table.addSearchOptimization(searchOptimizationMethod(method), column.getName(),
@@ -4114,18 +4793,49 @@ public class AlterCommandHandler implements CommandHandler {
                                                      final Table table) {
         final List<String> names = new ArrayList<>();
         final List<Boolean> taken = new ArrayList<>();
+        final List<WrittenParameterValue> values = new ArrayList<>();
         for (final FrostlakeParser.TableSetPropertyContext property : properties) {
-            final String raw = property.optionKey().getText();
-            names.add(raw);
-            taken.add(Boolean.valueOf("CHANGE_TRACKING".equalsIgnoreCase(raw)
-                || "DATA_METRIC_SCHEDULE".equalsIgnoreCase(raw) || "ENABLE_SCHEMA_EVOLUTION".equalsIgnoreCase(raw)
-                || "COMMENT".equalsIgnoreCase(raw)
-                || "STAGE_COPY_OPTIONS".equalsIgnoreCase(raw) && property.parenOptionList() != null
-                || ParameterRegistry.isTableParameter(ParameterRegistry.canonical(raw))));
+            names.add(property.optionKey().getText());
+            taken.add(Boolean.valueOf(tableTakes(property)));
+            values.add(WrittenParameterValue.of(property));
         }
         // A parameter of another level is no table's to set (see ParameterLevels).
-        ParameterLevels.judgeAlter(names, taken, "TABLE", privilegeKind(table), table.getName());
+        ParameterLevels.judgeAlter(names, taken, values, "TABLE", privilegeKind(table), table.getName());
     }
+
+    /** Whether an ALTER TABLE … SET's property is one a table takes: its own, or a parameter of its level. */
+    private static boolean tableTakes(final FrostlakeParser.TableSetPropertyContext property) {
+        final String raw = property.optionKey().getText();
+        return "CHANGE_TRACKING".equalsIgnoreCase(raw) || "DATA_METRIC_SCHEDULE".equalsIgnoreCase(raw)
+            || "ENABLE_SCHEMA_EVOLUTION".equalsIgnoreCase(raw) || "COMMENT".equalsIgnoreCase(raw)
+            || "STAGE_COPY_OPTIONS".equalsIgnoreCase(raw) && property.stageCopyOptionList() != null
+            || ParameterRegistry.isTableParameter(ParameterRegistry.canonical(raw));
+    }
+
+    /**
+     * Refuses what an ALTER TABLE … SET names that no table takes before the table is looked for (live-verified): an
+     * unknown name as an invalid property, the name as written, and BASE_LOCATION, which only an Iceberg table's
+     * CREATE writes, as an unsupported feature.
+     */
+    private static void rejectUnknownTableNames(final List<FrostlakeParser.TableSetPropertyContext> properties) {
+        final List<String> names = new ArrayList<>();
+        final List<Boolean> taken = new ArrayList<>();
+        boolean baseLocation = false;
+        for (final FrostlakeParser.TableSetPropertyContext property : properties) {
+            final boolean isBaseLocation = BASE_LOCATION.equals(
+                ParameterRegistry.canonical(property.optionKey().getText()));
+            baseLocation |= isBaseLocation;
+            names.add(property.optionKey().getText());
+            taken.add(Boolean.valueOf(isBaseLocation || tableTakes(property)));
+        }
+        ParameterLevels.rejectUnknownNames(names, taken, "TABLE");
+        if (baseLocation) {
+            throw new RuntimeException("Unsupported feature '" + BASE_LOCATION + "'.");
+        }
+    }
+
+    /** The location an Iceberg table's CREATE writes, which ALTER TABLE … SET does not take. */
+    private static final String BASE_LOCATION = "BASE_LOCATION";
 
     /** The noun a refusal for want of access names a table by: an Iceberg table is an iceberg_table (live-verified). */
     private static String privilegeKind(final Table table) {
@@ -4201,7 +4911,8 @@ public class AlterCommandHandler implements CommandHandler {
      */
     private void trackViewChanges(final View view, final String viewName) {
         final Schema home = catalog.resolveOwningSchema(viewName);
-        final String untracked = ChangeTrackedQuery.viewRefusal(catalog, home.getDatabaseName(), home.getName(), view);
+        final String untracked = ChangeTrackedQuery.viewRefusal(catalog, queryExecutor.getFunctionRegistry(),
+            home.getDatabaseName(), home.getName(), view);
         if (untracked != null) {
             throw new RuntimeException(untracked);
         }
@@ -4253,7 +4964,7 @@ public class AlterCommandHandler implements CommandHandler {
             throw new RuntimeException(SqlCompilationError.of("Empty SQL statement."));
         }
         if (action.RENAME() != null) {
-            checkAlter(SecurableObjectType.MATERIALIZED_VIEW, QualifiedName.join(viewParts));
+            queryExecutor.requireOwnership("MATERIALIZED_VIEW", viewParts, null);
             final Schema home = ddlHandler.materializedViewHome(viewParts);
             ddlHandler.renameMaterializedView(home, home.getMaterializedView(viewParts[viewParts.length - 1]),
                 qualifiedNameParts(action.qualifiedName()));
@@ -4419,8 +5130,9 @@ public class AlterCommandHandler implements CommandHandler {
      * snapshot) carries only the last part, so those are compared bare.
      */
     private boolean sameMaskingPolicy(final String attached, final String resolved) {
+        // Compared exactly: a policy whose quoted name differs only in case is another policy (live-verified).
         return QualifiedName.parse(attached).parts().length == 3
-            ? attached.equalsIgnoreCase(resolved)
-            : bareName(attached).equals(bareName(resolved));
+            ? attached.equals(resolved)
+            : QualifiedName.parse(attached).last().equals(QualifiedName.parse(resolved).last());
     }
 }

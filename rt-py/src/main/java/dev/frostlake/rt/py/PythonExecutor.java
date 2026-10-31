@@ -20,7 +20,6 @@ import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.UdfLanguage;
-import org.graalvm.polyglot.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
@@ -61,17 +60,20 @@ public final class PythonExecutor {
                 + parameters.size() + " arguments but got " + arguments.size());
         }
 
-        PythonModuleFrame frame = null;
+        // The module this call site keeps for the running statement, its body run on the site's first call alone (see
+        // PythonModuleState); a call outside any statement has a module of its own.
+        final String key = PythonModuleState.keptFor(function);
+        Object frame = null;
         try {
-            frame = PythonRuntime.enterModule();
+            frame = key != null ? PythonInterpreter.resumeModule(key) : PythonInterpreter.enterModule();
             for (int i = 0; i < parameters.size(); i++) {
-                // Each argument as the Python value its parameter's type maps to (see PythonRuntime.bindArgument),
+                // Each argument as the Python value its parameter's type maps to (see PythonInterpreter.bindArgument),
                 // under a name of the runtime's own, which the handler's call passes on.
                 final Parameter parameter = parameters.get(i);
-                PythonRuntime.bindArgument(FUNCTION_ARGUMENT + i, arguments.get(i), parameter.getDataType());
+                PythonInterpreter.bindArgument(parameter, FUNCTION_ARGUMENT + i, arguments.get(i));
                 if (function.getHandler() == null || function.getHandler().isEmpty()) {
                     // A body with no handler reads its parameters by their names.
-                    PythonRuntime.alias(parameter.getName(), FUNCTION_ARGUMENT + i);
+                    PythonInterpreter.bindArgument(parameter, parameter.getName(), arguments.get(i));
                 }
             }
 
@@ -79,27 +81,36 @@ public final class PythonExecutor {
             // shim install is idempotent per thread.
             PythonProcedureExecutor.installSnowparkShim();
             if (PythonHandlerCheck.isDotted(function.getHandler())) {
-                PythonRuntime.bind("__fl_handler_name", function.getHandler());
+                PythonInterpreter.bind("__fl_handler_name", function.getHandler());
             }
-            PythonRuntime.eval(buildCode(function, parameters));
+            if (function.getHandler() != null && !function.getHandler().isEmpty()) {
+                if (!PythonInterpreter.resumed(frame)) {
+                    PythonFailureReport.runSource(dedent(function.getBody()), function.getHandler());
+                }
+                PythonFailureReport.run(handlerCall(function, parameters));
+            } else {
+                PythonInterpreter.eval(buildCode(function, parameters));
+            }
 
             final Object answer = answered(function);
+            if (key != null) {
+                PythonInterpreter.keepModule(key);
+            }
             logger.debug("Python function {} executed successfully", function.getName());
             return answer;
         } catch (final PythonReturnRefusal refused) {
             throw refused;
         } catch (final Exception e) {
-            // Worded before the context is settled (see PythonRuntime.settleAfter): a discarded context answers
+            // Worded before the context is settled (see PythonInterpreter.settleAfter): a discarded context answers
             // nothing more of its failure, so the refusal then travels as text alone.
-            final String refusal = PythonRuntimeDiagnostics.describeFailure(
-                "function", function.getName(), function.getRuntimeVersion(), function.getBody(), e);
+            final String refusal = refusal("function", function, e);
             logger.error("Error executing Python function: {}", function.getName(), e);
-            if (!PythonRuntime.settleAfter(e)) {
+            if (!PythonInterpreter.settleAfter(e)) {
                 throw new RuntimeException(refusal);
             }
             throw new RuntimeException(refusal, e);
         } finally {
-            PythonRuntime.leaveModule(frame);
+            PythonInterpreter.leaveModule(frame);
         }
     }
 
@@ -109,10 +120,9 @@ public final class PythonExecutor {
      * the runtime holds it reading a dict or a list as a VARIANT.
      */
     private static Object answered(final Function function) {
-        final Value answer = PythonRuntime.global("__result");
-        final Object declared = PythonReturn.declared(answer, function.getReturnType(), function.getName(),
+        final Object declared = PythonReturn.declaredGlobal("__result", function.getReturnType(), function.getName(),
             function.getHandler());
-        return declared != PythonReturn.AS_IS ? declared : sqlResult(PythonRuntime.toJava(answer));
+        return declared != PythonReturn.AS_IS ? declared : sqlResult(PythonInterpreter.global("__result"));
     }
 
     /**
@@ -146,16 +156,20 @@ public final class PythonExecutor {
     static Object executePythonAggregate(final Function function, final List<List<Object>> rows) {
         final List<Parameter> parameters = function.getParameters();
         final String handlerName = function.getHandler();
-        PythonModuleFrame frame = null;
+        // The call's module reads every group, its body run for the first alone (see PythonModuleState).
+        final String key = PythonModuleState.keptFor(function);
+        Object frame = null;
         try {
-            frame = PythonRuntime.enterModule();
+            frame = key != null ? PythonInterpreter.resumeModule(key) : PythonInterpreter.enterModule();
             PythonProcedureExecutor.installSnowparkShim();
-            PythonRuntime.eval(dedent(function.getBody()));
+            if (!PythonInterpreter.resumed(frame)) {
+                PythonFailureReport.runSource(dedent(function.getBody()), handlerName);
+            }
             if (PythonHandlerCheck.isDotted(handlerName)) {
-                PythonRuntime.bind("__fl_handler_name", handlerName);
-                PythonRuntime.eval(PythonHandlerCheck.RESOLVE_DOTTED + "__fl_aggregate = __fl_handler()");
+                PythonInterpreter.bind("__fl_handler_name", handlerName);
+                PythonFailureReport.run(PythonHandlerCheck.RESOLVE_DOTTED + "__fl_aggregate = __fl_handler()");
             } else {
-                PythonRuntime.eval("__fl_aggregate = " + handlerName + "()");
+                PythonFailureReport.run("__fl_aggregate = " + handlerName + "()");
             }
             final StringBuilder call = new StringBuilder("__fl_aggregate.accumulate(");
             for (int i = 0; i < parameters.size(); i++) {
@@ -164,24 +178,26 @@ public final class PythonExecutor {
             final String accumulate = call.append(')').toString();
             for (final List<Object> row : rows) {
                 for (int i = 0; i < parameters.size(); i++) {
-                    PythonRuntime.bindArgument(AGGREGATE_ARGUMENT + i, i < row.size() ? row.get(i) : null,
-                        parameters.get(i).getDataType());
+                    PythonInterpreter.bindArgument(parameters.get(i), AGGREGATE_ARGUMENT + i, i < row.size() ? row.get(i) : null);
                 }
-                PythonRuntime.eval(accumulate);
+                PythonFailureReport.run(accumulate);
             }
-            PythonRuntime.eval("__result = __fl_aggregate.finish()");
-            return answered(function);
+            PythonFailureReport.run("__result = __fl_aggregate.finish()");
+            final Object answer = answered(function);
+            if (key != null) {
+                PythonInterpreter.keepModule(key);
+            }
+            return answer;
         } catch (final PythonReturnRefusal refused) {
             throw refused;
         } catch (final Exception e) {
-            final String refusal = PythonRuntimeDiagnostics.describeFailure(
-                "function", function.getName(), function.getRuntimeVersion(), function.getBody(), e);
-            if (!PythonRuntime.settleAfter(e)) {
+            final String refusal = refusal("function", function, e);
+            if (!PythonInterpreter.settleAfter(e)) {
                 throw new RuntimeException(refusal);
             }
             throw new RuntimeException(refusal, e);
         } finally {
-            PythonRuntime.leaveModule(frame);
+            PythonInterpreter.leaveModule(frame);
         }
     }
 
@@ -195,20 +211,23 @@ public final class PythonExecutor {
      * identical nonsense body is refused for a function and accepted for a procedure.
      */
     static void compilePythonFunction(final Function function) {
-        PythonModuleFrame frame = null;
+        Object frame = null;
         try {
             try {
-                frame = PythonRuntime.enterModule();
+                frame = PythonInterpreter.enterModule();
                 // The body's module-level snowpark imports must resolve at CREATE exactly as they do at
                 // execution; without the shim the compile refused every function importing snowpark.
                 PythonProcedureExecutor.installSnowparkShim();
                 PythonHandlerCheck.forget(function.getHandler());
-                PythonRuntime.eval(dedent(function.getBody()));
+                if (function.getHandler() != null && !function.getHandler().isEmpty()) {
+                    PythonFailureReport.runSource(dedent(function.getBody()), function.getHandler());
+                } else {
+                    PythonInterpreter.eval(dedent(function.getBody()));
+                }
             } catch (final Exception e) {
-                // Same discipline as execution (see PythonRuntime.settleAfter).
-                final String refusal = PythonRuntimeDiagnostics.describeFailure(
-                    "function", function.getName(), function.getRuntimeVersion(), function.getBody(), e);
-                if (!PythonRuntime.settleAfter(e)) {
+                // Same discipline as execution (see PythonInterpreter.settleAfter).
+                final String refusal = refusal("function", function, e);
+                if (!PythonInterpreter.settleAfter(e)) {
                     throw new RuntimeException(refusal);
                 }
                 throw new RuntimeException(refusal, e);
@@ -224,7 +243,7 @@ public final class PythonExecutor {
                     : " in function " + function.getName() + " with handler " + handlerName));
             }
         } finally {
-            PythonRuntime.leaveModule(frame);
+            PythonInterpreter.leaveModule(frame);
         }
     }
 
@@ -236,14 +255,8 @@ public final class PythonExecutor {
         final String body = dedent(function.getBody());
         final String handlerName = function.getHandler();
         final StringBuilder code = new StringBuilder();
-        if (PythonHandlerCheck.isDotted(handlerName)) {
-            code.append(body).append('\n').append(PythonHandlerCheck.RESOLVE_DOTTED).append("__result = __fl_handler(");
-            appendArgs(code, parameters);
-            code.append(')');
-        } else if (handlerName != null && !handlerName.isEmpty()) {
-            code.append(body).append("\n__result = ").append(handlerName).append('(');
-            appendArgs(code, parameters);
-            code.append(')');
+        if (handlerName != null && !handlerName.isEmpty()) {
+            code.append(body).append('\n').append(handlerCall(function, parameters));
         } else if (body.contains("def ") && body.contains("return")) {
             code.append(body).append("\n__result = ").append(extractFunctionName(body)).append('(');
             appendArgs(code, parameters);
@@ -258,6 +271,36 @@ public final class PythonExecutor {
             code.append("__result = __temp_func()");
         }
         return code.toString();
+    }
+
+    /** The call of the handler a function names, its answer left in {@code __result}. */
+    private static String handlerCall(final Function function, final List<Parameter> parameters) {
+        final StringBuilder code = new StringBuilder();
+        if (PythonHandlerCheck.isDotted(function.getHandler())) {
+            code.append(PythonHandlerCheck.RESOLVE_DOTTED).append("__result = __fl_handler(");
+        } else {
+            code.append("__result = ").append(function.getHandler()).append('(');
+        }
+        appendArgs(code, parameters);
+        return code.append(')').toString();
+    }
+
+    /**
+     * A failure's refusal: the account's report where the handler's source raised it, else the runtime's own words.
+     *
+     * @param kind     "function" or "procedure", for the runtime's own words
+     * @param function the routine
+     * @param failure  what was raised
+     * @return the refusal
+     */
+    static String refusal(final String kind, final Function function, final Exception failure) {
+        final String reported = function.getHandler() == null || function.getHandler().isEmpty() ? null
+            : PythonFailureReport.wording(function.getName(), function.getHandler());
+        return reported != null
+            ? reported + PythonRuntimeDiagnostics.newerSyntaxNote(kind, function.getRuntimeVersion(),
+                function.getBody(), failure)
+            : PythonRuntimeDiagnostics.describeFailure(kind, function.getName(), function.getRuntimeVersion(),
+                function.getBody(), failure);
     }
 
     private static void appendArgs(final StringBuilder code, final List<Parameter> parameters) {
@@ -323,6 +366,7 @@ public final class PythonExecutor {
         return result.toString().trim();
     }
 
+
     /**
      * A Python {@code dict} / {@code list} (or tuple) return value as a Jackson node, so it can be rendered as
      * the JSON text the engine uses for VARIANT. Returns null for anything that is not a container, letting the
@@ -365,7 +409,7 @@ public final class PythonExecutor {
 
     /** A value inside a returned container: temporals stringify like Python str(), others pass through. */
     private static Object unwrapScalar(final Object value) {
-        return PythonRuntime.temporalInContainer(value);
+        return PythonValueText.temporalInContainer(value);
     }
 
 }

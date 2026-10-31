@@ -68,6 +68,8 @@ public class Schema extends SqlObject {
     private final Map<Long, Map<String, Table>> sessionTablesAside = new ConcurrentHashMap<>();
     /** Each session's own temporary views, by session and then by name, as {@link #sessionTables} holds tables. */
     private final Map<Long, Map<String, View>> sessionViews = new ConcurrentHashMap<>();
+    /** Each session's own temporary stages, by session and then by name, as {@link #sessionTables} holds tables. */
+    private final Map<Long, Map<String, Stage>> sessionStages = new ConcurrentHashMap<>();
     private final Map<String, View> views;
     private final NamedObjects<MaterializedView> materializedViews = new NamedObjects<>(this, "Materialized view");
     private final NamedObjects<DynamicTable> dynamicTables = new NamedObjects<>(this, "Dynamic table");
@@ -660,16 +662,22 @@ public class Schema extends SqlObject {
         materializedViews.add(materializedView);
     }
 
+    /**
+     * Drops the materialized view of EXACTLY this name. A materialized view's name is matched exactly, as a dynamic
+     * table's is: one created as "mv" and one created as MV are two views, and an unquoted MV never reaches "mv".
+     */
     public void dropMaterializedView(final String name) {
-        materializedViews.drop(name);
+        materializedViews.dropExact(name);
     }
 
+    /** The materialized view of EXACTLY this name, refused in the does-not-exist family when there is none. */
     public MaterializedView getMaterializedView(final String name) {
-        return materializedViews.get(name);
+        return materializedViews.getExact(name);
     }
 
+    /** Whether a materialized view of EXACTLY this name is here. */
     public boolean hasMaterializedView(final String name) {
-        return materializedViews.has(name);
+        return materializedViews.hasExact(name);
     }
 
     public List<MaterializedView> getMaterializedViews() {
@@ -706,9 +714,15 @@ public class Schema extends SqlObject {
     public void addContact(final Contact contact) {
         contacts.put(contact);
     }
-    public void dropContact(final String name) { contacts.remove(name); }
-    public Contact getContact(final String name) { return contacts.find(name); }
-    public boolean hasContact(final String name) { return contacts.has(name); }
+    // A contact is named exactly: a quoted name in another case is another contact (live-verified).
+    public void dropContact(final String name) { contacts.dropExact(name); }
+    public Contact getContact(final String name) { return contacts.findExact(name); }
+    public boolean hasContact(final String name) { return contacts.hasExact(name); }
+
+    /** Rename a contact here; a name another contact holds is refused. */
+    public void renameContact(final String oldName, final String newName) {
+        NamedObjects.rename(contacts, oldName, newName);
+    }
     public List<Contact> getContacts() { return contacts.values(); }
 
     private final SecurityObjectStore securityObjects = new SecurityObjectStore();
@@ -722,12 +736,18 @@ public class Schema extends SqlObject {
     public void addJoinPolicy(final JoinPolicy policy) {
         joinPolicies.put(policy);
     }
-    public void dropJoinPolicy(final String name) { joinPolicies.remove(name); }
-    public JoinPolicy getJoinPolicy(final String name) { return joinPolicies.find(name); }
-    public boolean hasJoinPolicy(final String name) { return joinPolicies.has(name); }
+    // A join policy holds exactly its own name, as a masking, aggregation or projection policy does: "jp" and an
+    // unquoted JP are two policies, and neither name reaches the other.
+    public void dropJoinPolicy(final String name) {
+        if (joinPolicies.hasExact(name)) {
+            joinPolicies.dropExact(name);
+        }
+    }
+    public JoinPolicy getJoinPolicy(final String name) { return joinPolicies.findExact(name); }
+    public boolean hasJoinPolicy(final String name) { return joinPolicies.hasExact(name); }
     public List<JoinPolicy> getJoinPolicies() { return joinPolicies.values(); }
     public void renameJoinPolicy(final String oldName, final String newName) {
-        NamedObjects.rename(joinPolicies, oldName, newName.toUpperCase(Locale.ROOT));
+        NamedObjects.rename(joinPolicies, oldName, newName);
     }
 
     // Aggregation Policies
@@ -798,6 +818,16 @@ public class Schema extends SqlObject {
     // a differently-cased name, for the engine's Java callers.
     public void addProcedure(final Procedure procedure) {
         procedures.add(procedure);
+    }
+
+    /**
+     * Refuses a procedure whose signature a procedure of the other lifetime its session holds here (see
+     * {@link OverloadStore#requireLifetimeFree}).
+     *
+     * @param procedure the new procedure
+     */
+    public void requireProcedureLifetimeFree(final Procedure procedure) {
+        procedures.requireLifetimeFree(procedure);
     }
 
     /**
@@ -872,6 +902,16 @@ public class Schema extends SqlObject {
     public void addFunction(final Function function) {
         functions.add(function);
         function.setHome(this);
+    }
+
+    /**
+     * Refuses a function whose signature a function of the other lifetime its session holds here (see
+     * {@link OverloadStore#requireLifetimeFree}).
+     *
+     * @param function the new function
+     */
+    public void requireFunctionLifetimeFree(final Function function) {
+        functions.requireLifetimeFree(function);
     }
 
     /**
@@ -1156,6 +1196,30 @@ public class Schema extends SqlObject {
         return alerts.get(name);
     }
 
+    /** Whether an alert of EXACTLY this name is here: a name that differs only in case is another alert. */
+    public boolean hasAlertExact(final String name) {
+        return alerts.hasExact(name);
+    }
+
+    /**
+     * The alert of EXACTLY this name, as SQL names one, refused in the does-not-exist family when there is none.
+     *
+     * @param name the canonical name
+     * @return the alert
+     */
+    public Alert getAlertExact(final String name) {
+        return alerts.getExact(name);
+    }
+
+    /**
+     * Drops the alert of EXACTLY this name.
+     *
+     * @param name the canonical name
+     */
+    public void dropAlertExact(final String name) {
+        alerts.dropExact(name);
+    }
+
     /** Every alert of the schema. */
     public List<Alert> getAlerts() {
         return alerts.values();
@@ -1312,6 +1376,16 @@ public class Schema extends SqlObject {
      * Note: Table data cloning must be handled separately at the storage engine level
      */
     public Schema clone() {
+        return clone(CloneContent.DEFAULT);
+    }
+
+    /**
+     * This schema's clone, copying what the CLONE clause asks for beyond its own objects (see CloneContent).
+     *
+     * @param content what the clause asks for
+     * @return the clone, under this schema's name
+     */
+    public Schema clone(final CloneContent content) {
         final Schema clonedSchema = new Schema(this.getName());
         clonedSchema.setComment(this.getComment());
         clonedSchema.getParameters().copyFrom(parameters);
@@ -1325,6 +1399,9 @@ public class Schema extends SqlObject {
         // the children of a cloned container keep their grants. A clone suspends automatic clustering
         // (documented).
         for (final Table table : getNonTemporaryTables()) {
+            if (table.isHybrid() && content.ignoresHybridTables()) {
+                continue;
+            }
             final Table clonedTable = table.copyAs(table.getName(), false, table.isTransient());
             clonedTable.setOwner(table.getOwner());
             clonedTable.setLastDdlBy(table.getLastDdlBy());
@@ -1580,11 +1657,13 @@ public class Schema extends SqlObject {
             clonedSchema.rowAccessPolicies.put(withPolicyDetails(policy, clonedPolicy));
         }
 
-        // Clone stages — the DEFINITION carries over (Snowflake's CLONE keeps stage definitions), its
-        // file format options, copy options and directory setting included (Stage.copy). Dropping them
-        // silently broke every jar-backed UDF in a cloned database ("Stage does not exist" at first
-        // invocation).
+        // Clone stages: a named external stage always, a named internal one only when the clause includes internal
+        // stages, a temporary one never (live-verified). The DEFINITION carries over, its file format options, copy
+        // options and directory setting included (Stage.copy); an internal stage carries no files.
         for (final Stage stage : stages.all()) {
+            if (stage.isTemporary() || (!isExternal(stage) && !content.includesInternalStages())) {
+                continue;
+            }
             clonedSchema.stages.put(stage.copy());
         }
 
@@ -1603,6 +1682,11 @@ public class Schema extends SqlObject {
         }
 
         return clonedSchema;
+    }
+
+    /** Whether a stage is an external one: it names a location of its own. */
+    private static boolean isExternal(final Stage stage) {
+        return stage.getUrl() != null && !stage.getUrl().isEmpty();
     }
 
     /** Copies one object's tag assignments onto its clone. */
@@ -1640,17 +1724,30 @@ public class Schema extends SqlObject {
         return stage != null && stage.getType() == StageType.INTERNAL;
     }
 
-    // Stages
+    // Stages. A session's own temporary stage is its own, held apart from the stages every session shares: two
+    // sessions may each hold one of a name, and one above a permanent stage of its name hides that stage from its
+    // session alone (live-verified). The current session's own stages answer to a name before the shared ones.
     public void addStage(final Stage stage) {
+        if (isSessionStage(stage)) {
+            final Map<String, Stage> own = sessionMap(sessionStages, stage.getCreatedInSession());
+            if (own.putIfAbsent(stage.getName(), stage) != null) {
+                throw new NameTakenException(SqlCompilationError.of(
+                    "Object '" + SqlIdentifiers.spellCanonical(stage.getName()) + "' already exists."));
+            }
+            return;
+        }
         stages.add(stage);
     }
 
     public void dropStage(final String name) {
-        stages.drop(name);
+        if (removeOwnStage(name, false) == null) {
+            stages.drop(name);
+        }
     }
 
     public Stage getStage(final String name) {
-        return stages.get(name);
+        final Stage own = ownStage(name, false);
+        return own != null ? own : stages.get(name);
     }
 
     /**
@@ -1660,11 +1757,12 @@ public class Schema extends SqlObject {
      * @return the stage
      */
     public Stage getStageExact(final String name) {
-        return stages.getExact(name);
+        final Stage own = ownStage(name, true);
+        return own != null ? own : stages.getExact(name);
     }
 
     public boolean hasStage(final String name) {
-        return stages.has(name);
+        return ownStage(name, false) != null || stages.has(name);
     }
 
     /**
@@ -1672,7 +1770,20 @@ public class Schema extends SqlObject {
      * only in case is a different stage.
      */
     public boolean hasStageExact(final String name) {
-        return stages.hasExact(name);
+        return ownStage(name, true) != null || stages.hasExact(name);
+    }
+
+    /**
+     * Whether a stage of exactly this name takes it from a new stage of that lifetime: the current session's own
+     * temporary stage from a temporary one, a shared stage from a permanent one. A temporary stage takes the name of
+     * a permanent one and hides it (live-verified).
+     *
+     * @param name      the canonical name
+     * @param temporary whether the new stage is temporary
+     * @return whether the name is taken
+     */
+    public boolean holdsStageFor(final String name, final boolean temporary) {
+        return temporary ? ownStage(name, true) != null : stages.hasExact(name);
     }
 
     /**
@@ -1681,17 +1792,116 @@ public class Schema extends SqlObject {
      * @param name the canonical name
      */
     public void dropStageExact(final String name) {
-        stages.dropExact(name);
+        if (removeOwnStage(name, true) == null) {
+            stages.dropExact(name);
+        }
     }
 
-    /** The stages a statement here lists: every one but another session's temporary ones. */
+    /**
+     * Drops the stage of exactly this canonical name that a new stage of that lifetime replaces (see
+     * {@link #holdsStageFor}), refused as missing when there is none.
+     *
+     * @param name      the canonical name
+     * @param temporary whether the new stage is temporary
+     */
+    public void dropStageFor(final String name, final boolean temporary) {
+        // The engine's own session keeps its temporary stages among the shared ones, as it keeps its temporary tables.
+        if (!temporary || StatementSession.current() == null) {
+            stages.dropExact(name);
+        } else if (removeOwnStage(name, true) == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", qualifiedName(name)));
+        }
+    }
+
+    /**
+     * The stages a statement here lists: the current session's own temporary stages and every shared one they do not
+     * hide, but no other session's. The engine's own session lists every session's.
+     */
     public List<Stage> getStages() {
-        return stages.values();
+        final Long session = StatementSession.current();
+        if (session == null) {
+            return allStages();
+        }
+        final Map<String, Stage> own = sessionStages.get(session);
+        final List<Stage> listed = new ArrayList<>();
+        if (own != null) {
+            listed.addAll(own.values());
+        }
+        for (final Stage shared : stages.values()) {
+            if (own == null || !own.containsKey(shared.getName())) {
+                listed.add(shared);
+            }
+        }
+        return listed;
     }
 
     /** Every stage held here, every session's temporary ones included: the engine's own bookkeeping reads these. */
     public List<Stage> allStages() {
-        return stages.all();
+        final List<Stage> all = stages.all();
+        for (final Map<String, Stage> own : sessionStages.values()) {
+            all.addAll(own.values());
+        }
+        return all;
+    }
+
+    /**
+     * Remove a stage, whichever session runs the statement: a session's own temporary stage when its session ended,
+     * any other by its name.
+     *
+     * @param stage the stage
+     */
+    public void removeStage(final Stage stage) {
+        final Map<String, Stage> own = isSessionStage(stage) ? sessionStages.get(stage.getCreatedInSession()) : null;
+        if (own != null && own.get(stage.getName()) == stage) {
+            own.remove(stage.getName());
+            if (own.isEmpty()) {
+                sessionStages.remove(stage.getCreatedInSession());
+            }
+            return;
+        }
+        stages.remove(stage.getName());
+    }
+
+    /** Whether a stage is a session's own temporary one, held apart from the shared stages. */
+    private static boolean isSessionStage(final Stage stage) {
+        return stage.isTemporary() && stage.getCreatedInSession() != null;
+    }
+
+    /**
+     * The current session's own temporary stage a name reaches, exactly or folding case; the engine's own session
+     * reaches any session's where no shared stage holds the name. Null when there is none.
+     */
+    private Stage ownStage(final String name, final boolean exact) {
+        if (name == null) {
+            return null;
+        }
+        final Long session = StatementSession.current();
+        if (session == null) {
+            if (exact ? stages.hasExact(name) : stages.has(name)) {
+                return null;
+            }
+            for (final Map<String, Stage> held : sessionStages.values()) {
+                final Stage stage = exact ? held.get(name) : held.get(NameKeys.keyFor(held, name));
+                if (stage != null) {
+                    return stage;
+                }
+            }
+            return null;
+        }
+        final Map<String, Stage> own = sessionStages.get(session);
+        if (own == null) {
+            return null;
+        }
+        return exact ? own.get(name) : own.get(NameKeys.keyFor(own, name));
+    }
+
+    /** Remove the current session's own temporary stage a name reaches (see ownStage), returning it or null. */
+    private Stage removeOwnStage(final String name, final boolean exact) {
+        final Stage own = ownStage(name, exact);
+        if (own != null) {
+            removeStage(own);
+        }
+        return own;
     }
 
     // Cortex search services

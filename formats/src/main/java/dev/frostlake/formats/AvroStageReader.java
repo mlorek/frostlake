@@ -16,6 +16,7 @@
 
 package dev.frostlake.formats;
 
+import dev.frostlake.executor.copy.FileFormatOptions;
 import dev.frostlake.executor.copy.StageFileReader;
 import dev.frostlake.executor.copy.StagedFileColumn;
 import org.apache.avro.file.DataFileReader;
@@ -39,14 +40,26 @@ public class AvroStageReader implements StageFileReader {
 
     @Override
     public List<JsonNode> readRecords(final Path file) throws IOException {
+        return readRecords(file, new FileFormatOptions(), String.valueOf(file.getFileName()));
+    }
+
+    /**
+     * A file's records, a string holding a byte that is no part of UTF-8 refusing the file unless
+     * REPLACE_INVALID_CHARACTERS reads each such byte as U+FFFD (live-verified).
+     */
+    @Override
+    public List<JsonNode> readRecords(final Path file, final FileFormatOptions options, final String shownName)
+            throws IOException {
         final List<JsonNode> records = new ArrayList<>();
         final DatumReader<GenericRecord> datumReader = new GenericDatumReader<>();
         try (final DataFileReader<GenericRecord> reader = new DataFileReader<>(file.toFile(), datumReader)) {
             while (reader.hasNext()) {
-                records.add(AvroRecordConverter.toJson(reader.next()));
+                records.add(AvroRecordConverter.toJson(reader.next(), options.replacesInvalidCharacters()));
             }
         } catch (final IOException io) {
             throw io;
+        } catch (final AvroUnreadableText unreadable) {
+            throw unreadable;
         } catch (final RuntimeException avroError) {
             throw new RuntimeException("Invalid Avro in file " + file.getFileName() + ": " + avroError.getMessage(),
                 avroError);

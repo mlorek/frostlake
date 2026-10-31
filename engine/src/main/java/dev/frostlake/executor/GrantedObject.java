@@ -31,6 +31,7 @@ public final class GrantedObject {
     private final String owner;
     private final Instant createdTime;
     private final List<String> spellings;
+    private final String recordedName;
 
     /**
      * @param kind        the object's kind as live reports it
@@ -42,11 +43,26 @@ public final class GrantedObject {
      */
     public GrantedObject(final String kind, final String name, final String owner, final Instant createdTime,
                          final List<String> spellings) {
+        this(kind, name, owner, createdTime, spellings, name);
+    }
+
+    /**
+     * @param kind         the object's kind as live reports it
+     * @param name         its full name as live reports it
+     * @param owner        the role that owns it
+     * @param createdTime  when it was created
+     * @param spellings    every name a statement can reach it by from where it lives
+     * @param recordedName the name its privileges are recorded under, where that is not the reported one: a
+     *                     routine's signature, its name unquoted and its defaults marked (GrantNames.routine)
+     */
+    public GrantedObject(final String kind, final String name, final String owner, final Instant createdTime,
+                         final List<String> spellings, final String recordedName) {
         this.kind = kind;
         this.name = name;
         this.owner = owner;
         this.createdTime = createdTime;
         this.spellings = spellings;
+        this.recordedName = recordedName;
     }
 
     public String getKind() {
@@ -67,6 +83,17 @@ public final class GrantedObject {
 
     public List<String> getSpellings() {
         return spellings;
+    }
+
+    /**
+     * The name its privileges are recorded under, which a privilege is asked by. It is the reported name but for a
+     * routine, which SHOW GRANTS spells {@code P.PUBLIC."pq"()} and which records its privileges under
+     * {@code P.PUBLIC.pq()}.
+     *
+     * @return the recorded name
+     */
+    public String getRecordedName() {
+        return recordedName;
     }
 
     /** Its own name, without its database, schema or argument types: the first of its spellings. */

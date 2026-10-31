@@ -16,6 +16,9 @@
 
 package dev.frostlake.rt.scala;
 
+import dev.frostlake.executor.udf.HandlerStateFactory;
+import dev.frostlake.executor.udf.JavaHandlerClass;
+import dev.frostlake.executor.udf.StatementHandlerStates;
 import scala.collection.Iterator;
 import scala.reflect.internal.util.Position;
 import scala.tools.nsc.Global;
@@ -23,6 +26,7 @@ import scala.tools.nsc.Settings;
 import scala.tools.nsc.reporters.StoreReporter;
 
 import java.io.File;
+import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
@@ -46,6 +50,15 @@ final class ScalaCompiler {
     /** The name a compile error and a handler's frame place the body in. */
     static final String SOURCE_NAME = "ScalaUDF";
 
+    /** What the class a statement's call site loads is kept under among its function's states. */
+    private static final String STATEMENT_CLASS = "scala-handler-class";
+
+    /**
+     * The Java level a Scala handler runs at: the class loader's frames of a class a body does not hold are
+     * numbered as Java 11 numbers them (live-verified).
+     */
+    static final int JAVA_LEVEL = 11;
+
     // key -> kept-alive temp dir (the URLClassLoader resolves classes from it); only touched under CACHE's lock.
     private static final Map<String, Path> CACHE_DIRS = new HashMap<>();
 
@@ -63,6 +76,97 @@ final class ScalaCompiler {
                 return false;
             }
         });
+
+    /**
+     * The frame a handler's report shows after the handler's own: an {@code object}'s method is reached through
+     * the forwarder its companion class holds, {@code function_handler_0//H.f(ScalaUDF)} (live-verified).
+     *
+     * @param handled    the handler's class, an object's ending in {@code $}
+     * @param methodName the handler's method
+     * @return the forwarder's frame, or null for a class's method, which none reaches
+     */
+    static String forwarderFrame(final Class<?> handled, final String methodName) {
+        final String name = handled.getName();
+        return name.endsWith("$") ? "function_handler_0//" + name.substring(0, name.length() - 1) + '.' + methodName
+            + '(' + SOURCE_NAME + ')' : null;
+    }
+
+    /**
+     * The class a function's handler runs in: loaded anew, from the classes its body compiled to once, for the
+     * statement that is running and the place that calls the function, so what an object's fields hold is there
+     * for the statement's later rows and for nothing else - not for a later statement, nor for another call of
+     * the function in the same statement (live-verified). Outside a statement the one class every caller shares.
+     *
+     * @param routine    the function, which the class is kept for
+     * @param sourceCode the body
+     * @param className  the handler's class
+     * @param where      the end of a compile error's report
+     * @return the class
+     * @throws Exception when the body does not compile or holds no such class
+     */
+    static Class<?> statementClass(final Object routine, final String sourceCode, final String className,
+                                   final String where) throws Exception {
+        final Class<?> shared = compileCached(sourceCode, className, where);
+        final Path dir = compiledDir(sourceCode, className);
+        if (dir == null) {
+            return shared;
+        }
+        final AutoCloseable kept = StatementHandlerStates.state(routine, STATEMENT_CLASS, new HandlerStateFactory() {
+            @Override
+            public AutoCloseable create() {
+                return new JavaHandlerClass(loadFrom(dir, className));
+            }
+        });
+        return kept != null ? ((JavaHandlerClass) kept).handled() : shared;
+    }
+
+    /**
+     * The class a procedure's handler runs in: loaded anew for each call, from the classes its body compiled to
+     * once, so what an object's fields hold is the call's own (live-verified).
+     *
+     * @param sourceCode the body
+     * @param className  the handler's class
+     * @param where      the end of a compile error's report
+     * @return the class
+     * @throws Exception when the body does not compile or holds no such class
+     */
+    static Class<?> callClass(final String sourceCode, final String className, final String where)
+            throws Exception {
+        final Class<?> shared = compileCached(sourceCode, className, where);
+        final Path dir = compiledDir(sourceCode, className);
+        return dir == null ? shared : loadFrom(dir, className);
+    }
+
+    /** Where a body's classes were compiled to, or null when the cache no longer holds them. */
+    private static Path compiledDir(final String sourceCode, final String className) {
+        synchronized (CACHE) {
+            return CACHE_DIRS.get(className + ":" + sourceCode);
+        }
+    }
+
+    /** The handler's class, loaded from a compile's directory by a loader of its own. */
+    private static Class<?> loadFrom(final Path dir, final String className) {
+        try {
+            return load(new URLClassLoader(new URL[]{ dir.toUri().toURL() },
+                Thread.currentThread().getContextClassLoader()), className);
+        } catch (final ClassNotFoundException | MalformedURLException unloadable) {
+            throw new IllegalStateException("The compiled handler class " + className + " cannot be loaded",
+                unloadable);
+        }
+    }
+
+    /**
+     * A Scala {@code object} compiles to ClassName$ (the singleton, holding MODULE$ and the methods) plus a
+     * static-forwarder ClassName: the {@code $} singleton is loaded first, so the handler runs on MODULE$, and the
+     * plain name for a regular {@code class}.
+     */
+    private static Class<?> load(final ClassLoader classLoader, final String className) throws ClassNotFoundException {
+        try {
+            return classLoader.loadClass(className + "$");
+        } catch (final ClassNotFoundException e) {
+            return classLoader.loadClass(className);
+        }
+    }
 
     /** Compile (or reuse a cached) Scala handler class — reused across invocations to avoid per-row recompiles. */
     static Class<?> compileCached(final String sourceCode, final String className, final String where)
@@ -115,17 +219,8 @@ final class ScalaCompiler {
             throw new ScalaCompileFailure(describe(reporter));
         }
 
-        // A Scala `object` compiles to ClassName$ (the singleton, holding MODULE$ and the methods) plus a
-        // static-forwarder ClassName. Load the `$` singleton first so the handler runs on MODULE$; fall
-        // back to the plain name for a regular `class`.
-        final URLClassLoader classLoader = new URLClassLoader(
-            new URL[]{ tempDir.toUri().toURL() },
-            Thread.currentThread().getContextClassLoader());
-        try {
-            return classLoader.loadClass(className + "$");
-        } catch (final ClassNotFoundException e) {
-            return classLoader.loadClass(className);
-        }
+        return load(new URLClassLoader(new URL[]{ tempDir.toUri().toURL() },
+            Thread.currentThread().getContextClassLoader()), className);
     }
 
     /**

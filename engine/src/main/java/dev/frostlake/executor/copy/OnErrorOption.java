@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor.copy;
 
+import dev.frostlake.types.DecimalText;
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Locale;
@@ -101,7 +103,7 @@ public final class OnErrorOption {
         }
         final Matcher share = SKIP_FILE_SHARE.matcher(upper);
         if (share.matches()) {
-            final BigDecimal percent = new BigDecimal(share.group(1));
+            final BigDecimal percent = DecimalText.parse(share.group(1));
             return percent.compareTo(WHOLE) <= 0 ? new OnErrorOption(upper, null, percent) : null;
         }
         return null;

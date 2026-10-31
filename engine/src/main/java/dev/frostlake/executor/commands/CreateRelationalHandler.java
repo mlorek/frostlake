@@ -17,9 +17,12 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ChangeTrackedQuery;
+import dev.frostlake.executor.ClusteringKeySpelling;
 import dev.frostlake.executor.ConditionalDdlOutcome;
+import dev.frostlake.executor.DdlStatusNote;
 import dev.frostlake.executor.DmlWriteTarget;
 import dev.frostlake.executor.DynamicTableColumns;
+import dev.frostlake.executor.DynamicTableRefreshReason;
 import dev.frostlake.executor.InformationSchemaGuard;
 import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.MaterializedViewRefresh;
@@ -27,6 +30,7 @@ import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.ProjectionSlot;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.RecursiveViewChain;
+import dev.frostlake.executor.RowSelectItemException;
 import dev.frostlake.executor.SelectItemAccessors;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
@@ -36,6 +40,7 @@ import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.udf.TemporaryObjectStatements;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.CreationGrants;
 import dev.frostlake.metastore.FutureGrants;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.MaterializedViewValidity;
@@ -46,6 +51,8 @@ import dev.frostlake.metastore.model.Initialize;
 import dev.frostlake.metastore.model.MaterializedView;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.RefreshMode;
+import dev.frostlake.metastore.model.RefreshTrigger;
+import dev.frostlake.metastore.model.RefreshTriggers;
 import dev.frostlake.metastore.model.RelationKind;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.State;
@@ -65,6 +72,7 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -109,6 +117,90 @@ public class CreateRelationalHandler implements CommandHandler {
      * qualified) column reference names itself, so it is never "missing". Star items make the
      * count unknowable at this layer, so they skip both checks.
      */
+    /**
+     * CREATE VIEW ... [WITH] AGGREGATION POLICY p [ENTITY KEY (cols)] and [WITH] JOIN POLICY p: the view is read under
+     * them as a table is, each policy resolved first (live-verified).
+     */
+    private void attachViewPolicies(final FrostlakeParser.CreateStatementContext ctx, final View view) {
+        for (final FrostlakeParser.ViewPolicyClauseContext policy : ctx.viewPolicyClause()) {
+            if (policy.aggregationPolicyClause() != null) {
+                final FrostlakeParser.AggregationPolicyClauseContext clause = policy.aggregationPolicyClause();
+                final String written = getText(clause.qualifiedName());
+                if (catalog.findAggregationPolicyExact(written) == null) {
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Aggregation policy",
+                        catalog.qualifiedExactName(written)));
+                }
+                view.setAggregationPolicyName(catalog.qualifiedExactName(written));
+                final List<String> entityKey = new ArrayList<>();
+                if (clause.identifierList() != null) {
+                    for (final FrostlakeParser.IdentifierContext id : clause.identifierList().identifier()) {
+                        entityKey.add(getText(id));
+                    }
+                }
+                view.setAggregationEntityKey(entityKey);
+            } else {
+                final String written = getText(policy.joinPolicyClause().qualifiedName());
+                if (catalog.findJoinPolicy(written) == null) {
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Join policy",
+                        catalog.qualifiedExactName(written)));
+                }
+                view.setJoinPolicyName(catalog.qualifiedExactName(written));
+            }
+        }
+    }
+
+    /**
+     * An aggregation policy's ENTITY KEY names columns of the view itself: one the view does not have is refused as
+     * the view is created (live-verified: {@code ENTITY KEY (nosuch)} is {@code column 'NOSUCH' does not exist}).
+     */
+    private static void requireEntityKeyColumns(final View view) {
+        if (!view.hasAggregationPolicy() || view.getAggregationEntityKey() == null || !view.hasResolvedColumns()) {
+            return;
+        }
+        for (final String key : view.getAggregationEntityKey()) {
+            boolean held = false;
+            for (final TableColumn column : view.getResolvedColumns()) {
+                held |= column.getName().equals(key);
+            }
+            if (!held) {
+                throw new RuntimeException(SqlCompilationError.columnDoesNotExist(key));
+            }
+        }
+    }
+
+    /**
+     * What a CREATE VIEW fails to compile for, nothing created: its body compiled where the view would live and its
+     * columns named, as the view's creation judges them. A session whose transaction was aborted is refused for this
+     * before the aborted transaction (live-verified).
+     *
+     * @param queryExecutor the executor compiling the view
+     * @param ctx           the CREATE VIEW
+     */
+    public static void compileOnly(final QueryExecutor queryExecutor,
+                                   final FrostlakeParser.CreateStatementContext ctx) {
+        final Catalog catalog = queryExecutor.getCatalog();
+        final String[] parts = catalog.withoutAccount(queryExecutor.resolveObjectNameParts(ctx.objectName()), 3);
+        final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+        List<String> columnNames = null;
+        if (ctx.viewColumnList() != null) {
+            columnNames = new ArrayList<>();
+            for (final FrostlakeParser.ViewColumnDefContext column : ctx.viewColumnList().viewColumnDef()) {
+                columnNames.add(SqlIdentifiers.canonical(column.identifier()));
+            }
+        }
+        final SourcePosition displacedBody = ExpressionSource.beginNested(originOf(ctx.selectStatement()));
+        try {
+            queryExecutor.resolveViewShapeInScope(parts.length == 3 ? parts[0] : catalog.getCurrentDatabase(),
+                schema.getName(), ParseTreeText.getOriginalText(ctx.selectStatement()), columnNames);
+        } catch (final RowSelectItemException rowItem) {
+            validateViewColumns(ctx);
+            throw rowItem;
+        } finally {
+            ExpressionSource.end(displacedBody);
+        }
+        validateViewColumns(ctx);
+    }
+
     /** The database a CREATE names its schema in: the written one, else the session's current one. */
     private String schemaDatabaseName(final String[] parts) {
         return parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
@@ -126,7 +218,7 @@ public class CreateRelationalHandler implements CommandHandler {
         }
     }
 
-    private void validateViewColumns(final FrostlakeParser.CreateStatementContext ctx) {
+    private static void validateViewColumns(final FrostlakeParser.CreateStatementContext ctx) {
         final FrostlakeParser.SelectStatementContext select = ctx.selectStatement();
         final FrostlakeParser.SelectListContext selectList = firstSelectList(select);
         if (selectList == null) {
@@ -167,7 +259,8 @@ public class CreateRelationalHandler implements CommandHandler {
      * descend into WITH-clause CTE bodies and validate the wrong projection. Null when the first
      * operand is itself parenthesized or shapeless (validation is skipped conservatively).
      */
-    private FrostlakeParser.SelectListContext firstSelectList(final FrostlakeParser.SelectStatementContext select) {
+    private static FrostlakeParser.SelectListContext firstSelectList(
+            final FrostlakeParser.SelectStatementContext select) {
         if (select.selectOperand().isEmpty()) {
             return null;
         }
@@ -238,6 +331,8 @@ public class CreateRelationalHandler implements CommandHandler {
     }
 
     public Object handleCreateView(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
+        // A column list holding its clauses in a shape the account does not read is a syntax error, before anything.
+        ViewColumnClauses.requireReadable(ctx.viewColumnList(), ddl.getOriginalText(ctx));
         final String qualifiedName = queryExecutor.resolveObjectName(ctx.objectName());
         final String[] parts = catalog.withoutAccount(queryExecutor.resolveObjectNameParts(ctx.objectName()), 3);
         // CREATE OR ALTER VIEW takes the new body where the view is already there, which is what OR
@@ -279,6 +374,12 @@ public class CreateRelationalHandler implements CommandHandler {
                 schema.requireCreatable(Privilege.CREATE_VIEW);
             } else {
                 ddl.checkCreatePrivilege(Privilege.CREATE_VIEW, schema);
+            }
+            if (ctx.or_alter() != null && ctx.tagList() != null) {
+                InlineTags.refuseOnOrAlter(ctx.tagList(), queryExecutor);
+            }
+            if (ctx.or_alter() != null) {
+                OrAlterPolicies.refuseView(ctx, queryExecutor);
             }
             // A VIEW answers existence FIRST: over an existing view, IF NOT EXISTS succeeds without the
             // body ever compiling (live: a broken body over an existing view is "already exists").
@@ -330,6 +431,7 @@ public class CreateRelationalHandler implements CommandHandler {
                 }
                 view.setRowAccessPolicyColumns(policyCols);
             }
+            attachViewPolicies(ctx, view);
 
             if (ctx.SECURE() != null) view.setSecure(true);
             view.setTemporary(TemporaryObjectStatements.isTemporary(ctx));
@@ -366,8 +468,8 @@ public class CreateRelationalHandler implements CommandHandler {
             for (final FrostlakeParser.ViewPropertyContext property : ctx.viewProperty()) {
                 if ("CHANGE_TRACKING".equalsIgnoreCase(property.optionKey().getText())) {
                     final boolean tracked = "TRUE".equalsIgnoreCase(property.copyOptionValue().getText());
-                    final String untracked = tracked ? ChangeTrackedQuery.refusal(catalog, ctx.selectStatement())
-                        : null;
+                    final String untracked = tracked ? ChangeTrackedQuery.refusal(catalog,
+                        queryExecutor.getFunctionRegistry(), ctx.selectStatement()) : null;
                     if (untracked != null) {
                         throw new RuntimeException(untracked);
                     }
@@ -394,7 +496,8 @@ public class CreateRelationalHandler implements CommandHandler {
                 grantsSetAside = schema.qualifiedName(schema.getView(viewName).getName());
                 GrantNames.setAside(catalog, "VIEW", grantsSetAside);
             }
-            view.setOwner(FutureGrants.ownerOfNew(catalog, "VIEW", schema, viewName));
+            final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "VIEW", schema, viewName);
+            view.setOwner(grantsOfNew.owner());
             view.setLastDdlBy(catalog.currentUserForDdl());
             if (ctx.tagList() != null) {
                 InlineTags.apply(view, ctx.tagList(), queryExecutor);
@@ -415,7 +518,12 @@ public class CreateRelationalHandler implements CommandHandler {
                 // The body compiles where the view will live, whatever the session's context.
                 view.setResolvedColumns(queryExecutor.resolveViewShapeInScope(
                     schemaDatabaseName(parts), schema.getName(), selectQuery, view.getColumnNames(),
-                    selectQuery.equals(writtenQuery) ? null : ctx.objectName().getStop().getText()));
+                    selectQuery.equals(writtenQuery) ? null : viewName));
+            } catch (final RowSelectItemException rowItem) {
+                // A ROW the body selects is named before it is judged: an unnamed one is Missing column
+                // specification (live-verified).
+                validateViewColumns(ctx);
+                throw rowItem;
             } finally {
                 ExpressionSource.end(displacedBody);
             }
@@ -425,10 +533,13 @@ public class CreateRelationalHandler implements CommandHandler {
             queryExecutor.requireSelectIn(ctx.selectStatement(), bodyCteNames);
             validateViewColumns(ctx);
             DuplicateColumnNames.rejectAmong(view.getResolvedColumns());
+            requireEntityKeyColumns(view);
             if (ctx.viewColumnList() != null) {
                 // A per-column COMMENT in the view's own column list belongs to the VIEW's column —
                 // DESCRIBE reports it there, and never the base column's comment (live-verified).
                 applyViewColumnComments(ctx.viewColumnList(), view.getResolvedColumns());
+                // So do its policies and its tags, which the view's readers then meet (live-verified).
+                ViewColumnClauses.attach(ctx.viewColumnList(), view.getResolvedColumns(), queryExecutor);
             }
             // OR REPLACE drops the old view only once the new one is fully validated. A FAILED
             // CREATE OR REPLACE VIEW leaves the existing view standing on live — every failure mode
@@ -451,6 +562,10 @@ public class CreateRelationalHandler implements CommandHandler {
                 }
             }
             schema.addView(view);
+            if (ctx.or_alter() == null || grantsSetAside == null) {
+                // A CREATE OR ALTER that found its view altered it: future grants are for new objects only.
+                grantsOfNew.apply();
+            }
             if (grantsSetAside != null) {
                 if (ctx.or_alter() != null || !ctx.copyGrants().isEmpty()) {
                     GrantNames.takeBack(catalog, "VIEW", grantsSetAside, ctx.or_alter() == null);
@@ -612,9 +727,13 @@ public class CreateRelationalHandler implements CommandHandler {
             return;
         }
         ProjectionSlot.reset();
-        // The first refresh refreshes a dynamic table it reads that never refreshed, first (live-verified).
+        // The first refresh refreshes the dynamic tables it reads first, a creation's refreshes each of them
+        // (live-verified).
+        final RefreshTrigger trigger = RefreshTriggers.begin(RefreshTrigger.CREATION);
         final boolean outer = queryExecutor.beginDynamicTableRefresh();
         try {
+            queryExecutor.refreshUpstreamOf(schema, dt);
+            final Instant start = Instant.now();
             List<Row> rows;
             try {
                 rows = queryExecutor.executeSelectFromContext(ctx.selectStatement()).getRows();
@@ -634,9 +753,11 @@ public class CreateRelationalHandler implements CommandHandler {
                 }
             }
             // What the first refresh holds is what a listing counts and what the next refresh compares.
-            queryExecutor.recordDynamicTableRefresh(dt, rows);
+            queryExecutor.noteDynamicTableRefresh(schema, dt, queryExecutor.recordDynamicTableRefresh(dt, rows,
+                queryExecutor.identifiedDynamicTableRows(schema, dt)), start, true);
         } finally {
             queryExecutor.endDynamicTableRefresh(outer);
+            RefreshTriggers.end(trigger);
         }
     }
 
@@ -692,6 +813,9 @@ public class CreateRelationalHandler implements CommandHandler {
     }
 
     public Object handleCreateMaterializedView(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
+        ViewColumnClauses.requireReadable(ctx.viewColumnList(), ddl.getOriginalText(ctx));
+        ViewColumnClauses.requireReadable(ctx.trailingViewColumns() == null ? null
+            : ctx.trailingViewColumns().viewColumnList(), ddl.getOriginalText(ctx));
         final String qualifiedName = queryExecutor.resolveObjectName(ctx.objectName());
         final String[] parts = catalog.withoutAccount(queryExecutor.resolveObjectNameParts(ctx.objectName()), 3);
         final boolean orReplace = ctx.or_replace() != null;
@@ -758,7 +882,9 @@ public class CreateRelationalHandler implements CommandHandler {
             }
 
             // The future grants of the schema or its database cover the new view (live-verified).
-            mv.setOwner(FutureGrants.ownerOfNew(catalog, "MATERIALIZED_VIEW", schema, mvName));
+            final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "MATERIALIZED_VIEW", schema,
+                mvName);
+            mv.setOwner(grantsOfNew.owner());
             mv.setLastDdlBy(catalog.currentUserForDdl());
             // Live POPULATES a materialized view at CREATE, as a CTAS fills its table. The body compiles,
             // its columns must be named, and then its rows are produced, so a value that faults refuses the
@@ -786,15 +912,17 @@ public class CreateRelationalHandler implements CommandHandler {
             if (declaredColumns != null) {
                 // A materialized view's declared column comments behave exactly as a view's
                 // (live-verified): its own comment surfaces in DESCRIBE, and the base column's
-                // never does.
+                // never does. So do its columns' policies and tags.
                 applyViewColumnComments(declaredColumns, mv.getResolvedColumns());
+                ViewColumnClauses.attach(declaredColumns, mv.getResolvedColumns(), queryExecutor);
             }
             // The clustering key reads the view's own columns, under the names its column list gives them;
             // of several CLUSTER BY clauses the last one stands.
             if (!ctx.clusterByClause().isEmpty()) {
-                mv.setClusterKeys(MaterializedViewKeys.read(
-                    ctx.clusterByClause(ctx.clusterByClause().size() - 1).expressionList(), mv.getResolvedColumns(),
-                    ddl, queryExecutor));
+                final FrostlakeParser.ClusterByClauseContext clause =
+                    ctx.clusterByClause(ctx.clusterByClause().size() - 1);
+                mv.setClusterKeys(MaterializedViewKeys.read(clause.expressionList(), mv.getResolvedColumns(), ddl,
+                    queryExecutor), ClusteringKeySpelling.written(clause.clusterKeyOrder(), clause.expressionList()));
             }
                         // Same rule as the plain view: a FAILED CREATE OR REPLACE leaves the existing materialized
             // view standing on live (measured over an uncompilable body, a missing base table and an
@@ -808,6 +936,7 @@ public class CreateRelationalHandler implements CommandHandler {
                 }
             }
             schema.addMaterializedView(mv);
+            grantsOfNew.apply();
             logger.trace("Created materialized view: {}", qualifiedName);
         } catch (final RuntimeException e) {
             if (e == bodyRefusal) {
@@ -881,6 +1010,7 @@ public class CreateRelationalHandler implements CommandHandler {
             Integer retentionDays = null;
             String comment = null;
             final List<String> clusterKeys = new ArrayList<>();
+            String clusterByText = null;
 
             if (ctx.dynamicTableOptions() != null) {
                 for (final FrostlakeParser.DynamicTableOptionContext opt : ctx.dynamicTableOptions().dynamicTableOption()) {
@@ -907,6 +1037,8 @@ public class CreateRelationalHandler implements CommandHandler {
                         for (final FrostlakeParser.ExpressionContext key : opt.expression()) {
                             clusterKeys.add(ddl.getOriginalText(key));
                         }
+                        clusterByText = ClusteringKeySpelling.written(opt.clusterKeyOrder(), opt.LPAREN(),
+                            opt.RPAREN());
                     }
                 }
             }
@@ -919,7 +1051,7 @@ public class CreateRelationalHandler implements CommandHandler {
             if (retentionDays != null) {
                 dt.setDataRetentionDays(retentionDays.intValue());
             }
-            dt.setClusterKeys(clusterKeys);
+            dt.setClusterKeys(clusterKeys, clusterByText);
             // A dynamic table in a transient schema is transient, as a table there is.
             dt.setTransient(ctx.TRANSIENT() != null || schema.isTransientObject());
 
@@ -927,7 +1059,8 @@ public class CreateRelationalHandler implements CommandHandler {
             recordCreateText(ctx, dt);
 
             // The future grants of the schema or its database cover the new table (live-verified).
-            dt.setOwner(FutureGrants.ownerOfNew(catalog, "DYNAMIC_TABLE", schema, dtName));
+            final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "DYNAMIC_TABLE", schema, dtName);
+            dt.setOwner(grantsOfNew.owner());
             dt.setLastDdlBy(catalog.currentUserForDdl());
             // Live compiles a dynamic table's body at CREATE and, unless it is to INITIALIZE ON_SCHEDULE,
             // refreshes it there too. An existing table that is not being replaced is never rebuilt, and a
@@ -949,7 +1082,27 @@ public class CreateRelationalHandler implements CommandHandler {
             if (orReplace) {
                 try { schema.dropDynamicTable(dtName); } catch (final RuntimeException ignored) {}
             }
+            // An AUTO refresh mode settles on FULL where the query holds a construct an incremental refresh does not
+            // follow, and the status sentence says why (live-verified).
+            if (refreshMode == RefreshMode.AUTO && creates) {
+                final String reason = DynamicTableRefreshReason.of(catalog, queryExecutor.getFunctionRegistry(),
+                    catalog.getCurrentDatabase(),
+                    catalog.getCurrentSchema(), ctx.selectStatement());
+                dt.setFullRefreshReason(reason);
+                if (reason != null) {
+                    DdlStatusNote.add("FULL refresh mode was selected because: " + reason);
+                }
+            }
             schema.addDynamicTable(dt);
+            grantsOfNew.apply();
+            if (creates) {
+                // The tables its query reads track their changes from now on: the account turns change tracking on
+                // for a dynamic table's sources as it creates the table (live-verified: a CHANGES clause over its
+                // base table answers).
+                for (final Table read : ChangeTrackedQuery.trackedTables(catalog, ctx.selectStatement())) {
+                    read.setChangeTracking(true);
+                }
+            }
             logger.trace("Created dynamic table: {}", qualifiedName);
         } catch (final RuntimeException e) {
             if (e == bodyRefusal) {

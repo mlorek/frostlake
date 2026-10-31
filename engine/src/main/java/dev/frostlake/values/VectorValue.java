@@ -73,6 +73,10 @@ public final class VectorValue implements Comparable<VectorValue>, Serializable 
         "Vector value being cast to a vector is not an array or vector, or has incorrect dimension "
             + "or element type";
 
+    /** Snowflake's message when an array of the right length has a missing element. */
+    private static final String MISSING_ELEMENTS = "Cannot convert an array with missing elements to a vector. "
+        + "Compact the array to a dense representation first using ARRAY_COMPACT.";
+
     private final VectorElementType elementType;
     private final double[] elements;
 
@@ -121,6 +125,13 @@ public final class VectorValue implements Comparable<VectorValue>, Serializable 
         final List<JsonNode> raw = readElements(value);
         if (raw.size() != target.getDimension()) {
             throw new VectorCastRefusal(NOT_A_VECTOR);
+        }
+        // A missing element is refused before any element is judged, so [1,'a',NULL] names the hole; a JSON null is
+        // an element, judged as one (live-verified).
+        for (final JsonNode element : raw) {
+            if (VariantUndefined.isUndefined(element)) {
+                throw new VectorCastRefusal(MISSING_ELEMENTS);
+            }
         }
         final double[] converted = new double[raw.size()];
         for (int i = 0; i < raw.size(); i++) {

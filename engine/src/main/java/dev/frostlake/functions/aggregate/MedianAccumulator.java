@@ -29,7 +29,7 @@ import java.util.List;
  * ({@link CoercedNumericArgumentAccumulator}) and takes live's whole-number rule instead.
  */
 public class MedianAccumulator implements AggregateFunction.Accumulator, ApproximateAwareAccumulator,
-    CoercedNumericArgumentAccumulator {
+    CoercedNumericArgumentAccumulator, DecfloatAwareAccumulator {
     private final List<Object> values = new ArrayList<>();
     private boolean approximateArgument;
     private boolean coercedArgument;
@@ -42,6 +42,22 @@ public class MedianAccumulator implements AggregateFunction.Accumulator, Approxi
     @Override
     public void setCoercedNumericArgument(final boolean coerced) {
         this.coercedArgument = coerced;
+    }
+
+    /** Whether the argument is declared DECFLOAT, interpolated to 38 digits (see DecfloatAggregates). */
+    private boolean decfloatArgument;
+
+    /** Whether the call is computed per group, which refuses a DECFLOAT interpolation (see DecfloatAggregates). */
+    private boolean perGroup;
+
+    /** @param computedPerGroup whether a GROUP BY or a PARTITION BY computes the call group by group */
+    public void setPerGroup(final boolean computedPerGroup) {
+        this.perGroup = computedPerGroup;
+    }
+
+    @Override
+    public void setDecfloatArgument(final boolean decfloat) {
+        this.decfloatArgument = decfloat;
     }
 
     /** The JSON nulls of a VARIANT argument, each sorting after every number (see AggregateNumerics). */
@@ -62,6 +78,9 @@ public class MedianAccumulator implements AggregateFunction.Accumulator, Approxi
 
     @Override
     public Object getResult() {
+        if (decfloatArgument) {
+            return DecfloatAggregates.percentileCont(values, 0.5d, false, perGroup);
+        }
         return coercedArgument
             ? AggregateNumerics.medianOverCoerced(values, jsonNulls)
             : AggregateNumerics.percentileCont(values, 0.5d, approximateArgument, jsonNulls);

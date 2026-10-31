@@ -91,7 +91,7 @@ public class ConstantConversionTagTest extends BaseDatabaseTest {
             {"SELECT SYSTEM$TYPEOF(CURRENT_DATE()::VARCHAR::DATE)", "DATE[SB4]"},
             {"SELECT SYSTEM$TYPEOF(('1' || '2')::NUMBER(10,2) * 3)", "NUMBER(11,2)[SB2]"},
             {"SELECT SYSTEM$TYPEOF(1e2::NUMBER)", "NUMBER(38,0)[SB1]"},
-            {"SELECT SYSTEM$TYPEOF(TRUE::NUMBER)", "NUMBER(2,0)[SB1]"},
+            {"SELECT SYSTEM$TYPEOF(TRUE::NUMBER)", "NUMBER(38,0)[SB16]"},
         });
     }
 
@@ -135,7 +135,7 @@ public class ConstantConversionTagTest extends BaseDatabaseTest {
             {"SELECT SYSTEM$TYPEOF(TO_VARIANT(1.5)::NUMBER(10,2))", "NUMBER(10,2)[SB2]"},
             {"SELECT SYSTEM$TYPEOF(PARSE_JSON('5')::NUMBER + 1)", "NUMBER(38,0)[SB16]"},
             {"SELECT SYSTEM$TYPEOF('5'::NUMBER) FROM t", "NUMBER(38,0)[SB1] | NUMBER(38,0)[SB1]"},
-            {"SELECT SYSTEM$TYPEOF(TO_BOOLEAN('true')::NUMBER)", "NUMBER(2,0)[SB1]"},
+            {"SELECT SYSTEM$TYPEOF(TO_BOOLEAN('true')::NUMBER)", "NUMBER(38,0)[SB16]"},
             {"SELECT SYSTEM$TYPEOF(ZEROIFNULL('5'::NUMBER))", "NUMBER(38,0)[SB1]"},
             {"SELECT SYSTEM$TYPEOF(ABS('5'::NUMBER))", "NUMBER(38,0)[SB1]"},
         });

@@ -76,6 +76,26 @@ public class CastExpression implements Expression {
         return declaredTarget;
     }
 
+    /**
+     * The type this cast converts to: the parsed target where one was recorded, else the type its text names; null
+     * for a target text that names no type the engine knows.
+     *
+     * @return the type
+     */
+    public DataType getTargetDataType() {
+        return declaredTarget != null ? declaredTarget : TypeInferencer.declaredCastTarget(targetType);
+    }
+
+    /**
+     * The target's base type name as written: the words before its parameters, upper-cased, with no space between
+     * them.
+     *
+     * @return the base name
+     */
+    public String getTargetBaseName() {
+        return TypeInferencer.baseTypeName(targetType);
+    }
+
     /** The {@code RENAME FIELDS} / {@code ADD FIELDS} modifier, never null. */
     public CastFieldsModifier getFieldsModifier() {
         return fieldsModifier;

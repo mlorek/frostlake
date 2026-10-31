@@ -17,16 +17,28 @@
 package dev.frostlake.functions.scalar.conditional;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
+import dev.frostlake.functions.aggregate.NumericAggregateInput;
 import dev.frostlake.types.NumericType;
 import java.util.List;
 
-/** REGR_VALY(y, x) — y when BOTH arguments are non-NULL, else NULL. */
+/**
+ * REGR_VALY(y, x) — y as a DOUBLE when BOTH arguments are non-NULL, else NULL (live-verified: FLOAT, 1.0 for an INT y).
+ * The y is converted to the DOUBLE, so a VECTOR there is refused as that conversion; the x is only tested for NULL.
+ */
 public class RegrValy extends BuiltInFunction {
-    public RegrValy() { super("REGR_VALY", NumericType.NUMBER); }
+    public RegrValy() { super("REGR_VALY", NumericType.DOUBLE); }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        return args.get(0) == null || args.get(1) == null ? null : args.get(0);
+        return args.get(0) == null || args.get(1) == null ? null
+            : Double.valueOf(NumericAggregateInput.asDouble(args.get(0)));
+    }
+
+    /** A VECTOR y is refused as its conversion to a DOUBLE (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return position == 0 ? SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER : SemiStructuredRejection.NONE;
     }
 
     @Override

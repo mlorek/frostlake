@@ -374,6 +374,16 @@ public class PolicyReferencesFunction extends TableFunction {
             listed(byPolicy, attachment(schema, view.getRowAccessPolicyName(), "ROW_ACCESS_POLICY",
                 view.getName(), "VIEW", null, view.getRowAccessPolicyColumns()));
         }
+        // A view's aggregation and join policies are listed as a table's are, the entity key as the arguments
+        // (live-verified).
+        if (view.hasAggregationPolicy()) {
+            listed(byPolicy, attachment(schema, view.getAggregationPolicyName(), "AGGREGATION_POLICY",
+                view.getName(), "VIEW", null, view.getAggregationEntityKey()));
+        }
+        if (view.hasJoinPolicy()) {
+            listed(byPolicy, attachment(schema, view.getJoinPolicyName(), "JOIN_POLICY", view.getName(), "VIEW",
+                null, null));
+        }
         for (final List<Row> attachments : byPolicy.values()) {
             rows.addAll(attachments);
         }
