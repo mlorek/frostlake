@@ -132,12 +132,16 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
      */
     private static final Map<String, Set<String>> COMPRESSION_VALUES = new LinkedHashMap<>();
 
+    /** Every codec there is: a word outside them is no codec, whatever the type. */
+    private static final Set<String> CODECS = Set.of("AUTO", "GZIP", "BZ2", "BROTLI", "ZSTD", "DEFLATE", "RAW_DEFLATE",
+        "NONE", "LZO", "SNAPPY");
+
     static {
         final Set<String> codecs = Set.of("AUTO", "GZIP", "BZ2", "BROTLI", "ZSTD", "DEFLATE", "RAW_DEFLATE", "NONE");
         COMPRESSION_VALUES.put("CSV", codecs);
         COMPRESSION_VALUES.put("JSON", codecs);
         COMPRESSION_VALUES.put("XML", codecs);
-        COMPRESSION_VALUES.put("AVRO", Set.of("AUTO", "GZIP", "BROTLI", "ZSTD", "DEFLATE", "RAW_DEFLATE", "NONE"));
+        COMPRESSION_VALUES.put("AVRO", codecs);
         COMPRESSION_VALUES.put("PARQUET", Set.of("AUTO", "LZO", "SNAPPY", "NONE"));
     }
 
@@ -228,9 +232,10 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
     }
 
     /**
-     * Judge a COMPRESSION value against the codecs its format TYPE takes, refusing any other in the account's
-     * words. A type this cannot name — a list that only names a format, or ORC, which has no COMPRESSION — is
-     * judged against every type's codecs, so only a value no type takes is refused here.
+     * Judge a COMPRESSION value in the account's words (live-verified): a word that is no codec is an invalid value
+     * as written, and a codec the format TYPE does not take is an invalid compression format, named in upper case. A
+     * type this cannot name — a list that only names a format, or ORC, which has no COMPRESSION — and the lists a
+     * stage or a table keeps, which the account judges no further than that, take every codec.
      *
      * @param type    the effective format type, or null when it is not known
      * @param value   the value, decoded
@@ -241,16 +246,13 @@ private static final Map<String, List<FormatProperty>> TREES = new LinkedHashMap
             return;
         }
         final String codec = value.toUpperCase(Locale.ROOT);
-        final Set<String> legal = type == null ? null : COMPRESSION_VALUES.get(type.toUpperCase(Locale.ROOT));
-        boolean known = legal != null && legal.contains(codec);
-        if (legal == null) {
-            for (final Set<String> codecs : COMPRESSION_VALUES.values()) {
-                known |= codecs.contains(codec);
-            }
-        }
-        if (!known) {
+        if (!CODECS.contains(codec)) {
             throw new RuntimeException(SqlCompilationError.of(
                 "invalid value [" + written + "] for parameter 'COMPRESSION'"));
+        }
+        final Set<String> legal = type == null ? null : COMPRESSION_VALUES.get(type.toUpperCase(Locale.ROOT));
+        if (legal != null && !legal.contains(codec)) {
+            throw new RuntimeException(SqlCompilationError.of("Invalid compression format " + codec));
         }
     }
 

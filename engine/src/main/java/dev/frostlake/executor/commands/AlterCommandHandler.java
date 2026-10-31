@@ -36,6 +36,7 @@ import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.TransientRetentionLimit;
+import dev.frostlake.executor.UserLookup;
 import dev.frostlake.executor.WarehouseReference;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
@@ -262,6 +263,7 @@ public class AlterCommandHandler implements CommandHandler {
                         ctx.databaseAction().tableSetProperty();
                     requireContainerProperties(properties, "DATABASE", database.isTransientObject(),
                         database.getName());
+                    requireCatalogParameter(properties);
                     for (final FrostlakeParser.TableSetPropertyContext property : properties) {
                         final String rawKey = property.optionKey().getText();
                         final Integer retention = retentionDays(rawKey, property.copyOptionValue());
@@ -332,6 +334,7 @@ public class AlterCommandHandler implements CommandHandler {
                     final List<FrostlakeParser.TableSetPropertyContext> properties =
                         ctx.schemaAction().tableSetProperty();
                     requireContainerProperties(properties, "SCHEMA", schema.isTransientObject(), schema.getName());
+                    requireCatalogParameter(properties);
                     for (final FrostlakeParser.TableSetPropertyContext property : properties) {
                         final String rawKey = property.optionKey().getText();
                         final Integer retention = retentionDays(rawKey, property.copyOptionValue());
@@ -762,7 +765,9 @@ public class AlterCommandHandler implements CommandHandler {
                     if (ctx.tableAction() != null && ctx.tableAction().SWAP() != null) {
                         final String other = visitor.getText(ctx.tableAction().qualifiedName());
                         catalog.refuseOtherRelationKind(other);
-                        catalog.resolveTable(other);
+                        if (catalog.resolveTable(other).getIcebergMetadata() != null) {
+                            throw new RuntimeException(SWAP_OF_ICEBERG_TABLE);
+                        }
                     }
                     // A CLUSTER BY action's expressions are still compiled, and with no table no
                     // column reference can resolve (live-verified, positioned at the reference); so are the
@@ -1385,6 +1390,9 @@ public class AlterCommandHandler implements CommandHandler {
                                     table.getStageCopyOptions().remove("SIZE_LIMIT");
                                 }
                                 table.getStageCopyOptions().putAll(written);
+                            } else if ("STAGE_FILE_FORMAT".equalsIgnoreCase(rawKey)
+                                    && property.parenOptionList() != null) {
+                                TableStageOptions.judgeFormat(property.parenOptionList());
                             } else if (!ParameterRegistry.isTableParameter(ParameterRegistry.canonical(rawKey))) {
                                 // A known parameter is accepted and inert; an unknown one refuses (live-verified).
                                 throw ParameterRegistry.invalidProperty(ParameterRegistry.spell(rawKey), "TABLE");
@@ -2976,14 +2984,9 @@ public class AlterCommandHandler implements CommandHandler {
 
     /**
      * What an ALTER ICEBERG TABLE writes is judged before its table is looked for: a column's type must be one
-     * the format holds, and there is no SWAP WITH, a syntax error at the word (live-verified).
+     * the format holds (live-verified).
      */
     private void requireIcebergAction(final FrostlakeParser.TableActionContext action) {
-        if (action.SWAP() != null) {
-            final Token swap = action.SWAP().getSymbol();
-            throw new RuntimeException(SqlCompilationError.of("syntax error line " + swap.getLine()
-                + " at position " + swap.getCharPositionInLine() + " unexpected '" + swap.getText() + "'."));
-        }
         if (action.ADD() != null && action.columnDef() != null) {
             final List<FrostlakeParser.ColumnDefContext> added = new ArrayList<>();
             added.add(action.columnDef());
@@ -3002,27 +3005,64 @@ public class AlterCommandHandler implements CommandHandler {
         }
     }
 
+    /** The refusal of an ALTER ICEBERG TABLE of a table that is none. */
+    private static RuntimeException notOfIcebergKind(final Table table) {
+        return new RuntimeException("SQL Compilation error: The table " + table.getName() + " is a legacy"
+            + " Iceberg table. Legacy Iceberg tables should use the ALTER TABLE commands. Please ensure the"
+            + " appropriate command format is used.");
+    }
+
+    /**
+     * The other table of a swap, looked for before either table's kind is read, or null when the name is another
+     * relation's: that one is refused where the swap runs, unless a kind refuses the swap first.
+     */
+    private Table swapPartner(final String name) {
+        try {
+            catalog.refuseOtherRelationKind(name);
+        } catch (final RuntimeException otherKind) {
+            return null;
+        }
+        return catalog.resolveTable(name);
+    }
+
+    /**
+     * What a swap asks of its tables (live-verified). ALTER TABLE swaps no Iceberg table, and ALTER ICEBERG TABLE swaps
+     * two of them and nothing else: an Iceberg table beside any other relation is refused in words of its own, and two
+     * plain tables as the ones any ALTER ICEBERG TABLE of a plain table reads. A plain ALTER TABLE names its other
+     * table where it runs.
+     */
+    private void requireSwapOfTableKinds(final FrostlakeParser.AlterStatementContext ctx, final Table table) {
+        final FrostlakeParser.QualifiedNameContext named = ctx.tableAction().qualifiedName();
+        final boolean iceberg = table.getIcebergMetadata() != null;
+        final boolean icebergStatement = ctx.ICEBERG() != null;
+        if (!iceberg && !icebergStatement && !alterTargetTableExists(qualifiedNameParts(named))) {
+            return;
+        }
+        final Table other = swapPartner(visitor.getText(named));
+        final boolean otherIceberg = other != null && other.getIcebergMetadata() != null;
+        if (icebergStatement ? iceberg != otherIceberg : iceberg || otherIceberg) {
+            throw new RuntimeException(SWAP_OF_ICEBERG_TABLE);
+        }
+        if (icebergStatement && !iceberg) {
+            throw notOfIcebergKind(table);
+        }
+    }
+
     /**
      * A table is altered by the statement of its kind: an Iceberg table by ALTER ICEBERG TABLE and any other by
-     * ALTER TABLE. A swap is refused in words of its own when either table is an Iceberg table, and a tag or a row
-     * access policy the statement names is looked for first (live-verified).
+     * ALTER TABLE. A swap has rules of its own (see {@link #requireSwapOfTableKinds}), and a tag or a row access
+     * policy the statement names is looked for first (live-verified).
      */
     private void requireStatementOfTableKind(final FrostlakeParser.AlterStatementContext ctx, final Table table) {
         final boolean iceberg = table.getIcebergMetadata() != null;
         final FrostlakeParser.TableActionContext action = ctx.tableAction();
-        if (ctx.ICEBERG() != null) {
-            if (!iceberg) {
-                throw new RuntimeException("SQL Compilation error: The table " + table.getName() + " is a legacy"
-                    + " Iceberg table. Legacy Iceberg tables should use the ALTER TABLE commands. Please ensure the"
-                    + " appropriate command format is used.");
-            }
+        if (action.SWAP() != null) {
+            requireSwapOfTableKinds(ctx, table);
             return;
         }
-        if (action.SWAP() != null) {
-            final String[] other = qualifiedNameParts(action.qualifiedName());
-            if (iceberg || alterTargetTableExists(other)
-                    && catalog.resolveTable(QualifiedName.of(other)).getIcebergMetadata() != null) {
-                throw new RuntimeException("SWAP WITH is not supported for ICEBERG TABLE.");
+        if (ctx.ICEBERG() != null) {
+            if (!iceberg) {
+                throw notOfIcebergKind(table);
             }
             return;
         }
@@ -3178,6 +3218,19 @@ public class AlterCommandHandler implements CommandHandler {
             requireLegalRetention(rawKey, property.copyOptionValue());
             requireAccountRetention(rawKey, property.copyOptionValue());
             requireTransientRetention(rawKey, transientObject, property.copyOptionValue());
+        }
+    }
+
+    /**
+     * The catalog a container's CATALOG names must be one the account holds, the name as it is written
+     * (live-verified). The other properties of the list have been judged already.
+     */
+    private void requireCatalogParameter(final List<FrostlakeParser.TableSetPropertyContext> properties) {
+        for (final FrostlakeParser.TableSetPropertyContext property : properties) {
+            if ("CATALOG".equals(ParameterRegistry.canonical(property.optionKey().getText()))
+                    && property.copyOptionValue() != null) {
+                IcebergTables.requireCatalogParameter(NamespaceProperties.render(property.copyOptionValue()), catalog);
+            }
         }
     }
 
@@ -3514,6 +3567,9 @@ public class AlterCommandHandler implements CommandHandler {
      * @param action the statement's action
      * @param ifExists whether the statement says IF EXISTS
      */
+    /** What a swap is told when an Iceberg table stands beside any other relation, or under ALTER TABLE at all. */
+    private static final String SWAP_OF_ICEBERG_TABLE = "SWAP WITH is not supported for ICEBERG TABLE.";
+
     /** What an ALTER of the account, or of the session's own user, is told when it is written with IF EXISTS. */
     private static final String IF_EXISTS_WITHOUT_NAME = "Cannot specify IF EXISTS when no object name is specified";
 
@@ -3572,6 +3628,7 @@ public class AlterCommandHandler implements CommandHandler {
             }
             AccountPrivileges.requireOnAccount(queryExecutor, catalog, Privilege.MODIFY);
             LeveledParameterSettings.requireTaken(settings, catalog);
+            LeveledParameterSettings.requireCatalog(settings, catalog);
             LeveledParameterSettings.set(catalog.getAccountParameters(), settings);
             return;
         }
@@ -3631,7 +3688,7 @@ public class AlterCommandHandler implements CommandHandler {
             UserProperties.checkUnset(action.userUnsetProperty());
         } else if (action.tagSet() != null || action.tagUnset() != null) {
             if (!ifExists) {
-                catalog.getUserExact(userName);
+                UserLookup.asking(catalog, queryExecutor.getSecurityManager(), userName, Privilege.APPLY_TAG);
             }
             if (action.tagSet() != null) {
                 for (final FrostlakeParser.TagAssignContext assign : action.tagSet().tagAssign()) {

@@ -129,8 +129,7 @@ public class RoutineBodyCompilationTest extends BaseDatabaseTest {
 
     @Test
     public void tableFunctionBodyThatIsAScriptingBlockIsRejected() {
-        // The one UDF shape a block is still wrong for: live, a RETURNS TABLE(...) function with a
-        // BEGIN...END body is an ordinary SQL-UDF syntax error.
+        // The one UDF shape a block is still wrong for: live, a Snowscript UDF returns no table.
         final RuntimeException failure = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
@@ -138,7 +137,7 @@ public class RoutineBodyCompilationTest extends BaseDatabaseTest {
                     + "AS 'BEGIN RETURN 1; END'");
             }
         });
-        assertTrue(failure.getMessage().contains("SQL compilation error"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("Unsupported return type for Snowscript UDF: TABLE return type"), failure.getMessage());
     }
 
     @Test

@@ -67,7 +67,7 @@ public class ShowReplicationAndRegionListingsTest extends MeasuredCellsTestSuppo
             + "replication_schedule:VARCHAR(16777216), secondary_state:VARCHAR(16777216), "
             + "next_scheduled_refresh:TIMESTAMP_LTZ, owner:VARCHAR(16777216), "
             + "is_listing_auto_fulfillment_group:VARCHAR(16777216), error_integration:VARCHAR(16777216), "
-            + "is_optimized_refresh_enabled:VARCHAR(16777216)";
+            + "is_primary_read_only:VARCHAR(16777216), is_optimized_refresh_enabled:VARCHAR(16777216)";
 
     @Test
     public void replicationDatabases() {
@@ -509,8 +509,7 @@ public class ShowReplicationAndRegionListingsTest extends MeasuredCellsTestSuppo
             "REFUSED SQL compilation error: | syntax error line 1 at position 30 unexpected 'LIKE'.",
             "SHOW DELEGATED AUTHORIZATIONS LIKE");
         assertShape(
-            "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
             "SHOW DELEGATED AUTHORIZATIONS BY USER nosuch_user_x9");
         assertShape(
             "REFUSED SQL compilation error: | Integration 'NOSUCH_INT_X9' does not exist or not authorized. Your "
@@ -535,12 +534,10 @@ public class ShowReplicationAndRegionListingsTest extends MeasuredCellsTestSuppo
             "REFUSED SQL compilation error: | Object does not exist, or operation cannot be performed.",
             "SHOW DELEGATED AUTHORIZATIONS BY USER nosuch_a.nosuch_b");
         assertShape(
-            "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
             "SHOW TERSE DELEGATED AUTHORIZATIONS BY USER nosuch_user_x9");
         assertShape(
-            "REFUSED SQL compilation error: | User '\"nosuch lower\"' does not exist or not authorized. Your "
-                + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User '\"nosuch lower\"' does not exist or not authorized.",
             "SHOW DELEGATED AUTHORIZATIONS BY USER \"nosuch lower\"");
         assertShape(
             "REFUSED SQL compilation error: | Integration '\"nosuch lower\"' does not exist or not authorized. "

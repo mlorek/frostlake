@@ -27,6 +27,7 @@ import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.ManagedAccount;
 import dev.frostlake.metastore.model.ObjectParameters;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
@@ -223,7 +224,8 @@ final class ShowSessionExecutor {
      * @param likePattern the LIKE pattern, or null for every row
      */
     public ResultSet showParametersInUser(final String userName, final String likePattern) {
-        final User listed = catalog.getUserExact(userName);
+        final User listed = UserLookup.asking(catalog, facade.getSecurityManager(), userName,
+            Privilege.MANAGE_GRANTS);
         final String user = listed.getName();
         final Map<String, SessionParameterRow> known = new HashMap<>();
         for (final SessionParameterRow parameter : SessionParameterCatalog.rows()) {

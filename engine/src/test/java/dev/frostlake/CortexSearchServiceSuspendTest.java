@@ -35,8 +35,16 @@ public class CortexSearchServiceSuspendTest extends BaseDatabaseTest {
         engine.execute("CREATE WAREHOUSE IF NOT EXISTS fl_css_suspend_wh WAREHOUSE_SIZE = XSMALL "
             + "INITIALLY_SUSPENDED = TRUE");
         engine.execute("CREATE TABLE docs (id INT, body STRING)");
-        engine.execute("CREATE CORTEX SEARCH SERVICE svc ON body WAREHOUSE = fl_css_suspend_wh "
-            + "TARGET_LAG = '1 hour' AS SELECT id, body FROM docs");
+        try {
+            engine.execute("CREATE CORTEX SEARCH SERVICE svc ON body WAREHOUSE = fl_css_suspend_wh "
+                + "TARGET_LAG = '1 hour' AS SELECT id, body FROM docs");
+        } catch (final RuntimeException refused) {
+            if (!isLiveSnowflake()) {
+                throw refused;
+            }
+            // A trial account carries no Cortex AI functions: the test is skipped with the account's own sentence.
+            LiveFeatureGate.skipIfAccountTierBlocks(refused);
+        }
     }
 
     @AfterEach

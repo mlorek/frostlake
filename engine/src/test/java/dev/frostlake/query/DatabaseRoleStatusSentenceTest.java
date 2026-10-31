@@ -100,31 +100,25 @@ public class DatabaseRoleStatusSentenceTest extends MeasuredCellsTestSupport {
         engine.execute(
             "CREATE OR REPLACE TABLE t (a INT)");
         assertAnswer(
-            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized. Your "
-                + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized.",
             "ALTER USER nosuch_user_w7 SET NETWORK_POLICY = 'nosuch_np_g7'");
         assertAnswer(
-            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized. Your "
-                + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized.",
             "ALTER USER nosuch_user_w7 SET NETWORK_POLICY = nosuch_np_g7");
         assertAnswer(
-            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized. Your "
-                + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized.",
             "ALTER USER nosuch_user_w7 SET NETWORK_POLICY = 'NOSUCH_NP_G7'");
         assertAnswer(
-            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized. Your "
-                + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized.",
             "ALTER USER nosuch_user_w7 SET NETWORK_POLICY = \"nosuch_np_g7\"");
         assertAnswer(
             "Statement executed successfully.",
             "ALTER USER IF EXISTS nosuch_user_w7 SET NETWORK_POLICY = 'nosuch_np_g7'");
         assertAnswer(
-            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized. Your "
-                + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized.",
             "ALTER USER nosuch_user_w7 UNSET NETWORK_POLICY");
         assertAnswer(
-            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized. Your "
-                + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User 'NOSUCH_USER_W7' does not exist or not authorized.",
             "ALTER USER nosuch_user_w7 SET NETWORK_POLICY = 'a b'");
         assertAnswer(
             "REFUSED SQL compilation error: | invalid value [1] for parameter 'NETWORK_POLICY'",

@@ -133,12 +133,10 @@ public class NotebookStreamlitTest extends BaseDatabaseTest {
         engine.execute("COPY INTO @stg/app/streamlit_app.py FROM (SELECT 'import streamlit')"
             + " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE");
         assertEquals("Streamlit APP successfully created.", engine.executeQuery("CREATE STREAMLIT app FROM "
-            + "'@stg/app' MAIN_FILE = 'streamlit_app.py' TITLE = 'My app' QUERY_WAREHOUSE = fl_app_wh1 "
-            + "IMPORTS = ('@stg/lib.py') EXTERNAL_ACCESS_INTEGRATIONS = (ext1)").getRows().get(0).getValue(0));
+            + "'@stg/app' MAIN_FILE = 'streamlit_app.py' TITLE = 'My app' QUERY_WAREHOUSE = fl_app_wh1")
+            .getRows().get(0).getValue(0));
         ResultSet described = engine.executeQuery("DESCRIBE STREAMLIT app");
         assertEquals("My app", cell(described, "title"));
-        assertEquals("[\"@stg/lib.py\"]", cell(described, "import_urls"));
-        assertEquals("[\"EXT1\"]", cell(described, "external_access_integrations"));
         assertEquals("VERSION$1", cell(described, "last_version_name"));
         assertNull(cell(described, "live_version_location_uri"));
         refused("ALTER STREAMLIT app COMMIT", "Live version is not found.");
@@ -159,16 +157,44 @@ public class NotebookStreamlitTest extends BaseDatabaseTest {
         assertNull(cell(engine.executeQuery("DESCRIBE STREAMLIT app"), "live_version_location_uri"));
     }
 
+    /** An app's imports and external access integrations are listed as given. A trial account refuses the latter. */
+    @Test
+    public void importsAndExternalAccessAreListed() {
+        engine.execute("CREATE OR REPLACE STAGE stg");
+        engine.execute("COPY INTO @stg/app/streamlit_app.py FROM (SELECT 'import streamlit')"
+            + " FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE");
+        try {
+            engine.execute("CREATE STREAMLIT app FROM '@stg/app' MAIN_FILE = 'streamlit_app.py'"
+                + " QUERY_WAREHOUSE = fl_app_wh1 IMPORTS = ('@stg/lib.py') EXTERNAL_ACCESS_INTEGRATIONS = (ext1)");
+        } catch (final RuntimeException refused) {
+            if (!isLiveSnowflake()) {
+                throw refused;
+            }
+            LiveFeatureGate.skipIfAccountTierBlocks(refused);
+        }
+        final ResultSet described = engine.executeQuery("DESCRIBE STREAMLIT app");
+        assertEquals("[\"@stg/lib.py\"]", cell(described, "import_urls"));
+        assertEquals("[\"EXT1\"]", cell(described, "external_access_integrations"));
+    }
+
     @Test
     public void aLegacyStreamlitDescribesItsRootLocation() {
+        refused("CREATE STREAMLIT legacy ROOT_LOCATION = '@stg/old' MAIN_FILE = 'a.py'", "The specified stage STG"
+            + " does not exist or the current role does not have access. Owner of the Streamlit must have at least"
+            + " READ on the specified stage.");
+        refused("CREATE STREAMLIT legacy ROOT_LOCATION = 'stg/old' MAIN_FILE = 'a.py'",
+            "invalid URL prefix found in: 'stg/old'");
+        engine.execute("CREATE OR REPLACE STAGE stg");
         engine.execute("CREATE STREAMLIT legacy ROOT_LOCATION = '@stg/old' MAIN_FILE = 'a.py'");
         final ResultSet described = engine.executeQuery("DESC STREAMLIT legacy");
-        assertEquals("@stg/old", cell(described, "root_location"));
+        assertEquals("@STG/old", cell(described, "root_location"), "the stage by its name, the path as written");
         assertEquals("a.py", cell(described, "main_file"));
         for (int i = 0; i < described.getColumnCount(); i++) {
             assertTrue(!described.getColumns().get(i).getName().startsWith("last_version"),
                 "a legacy app has no versions");
         }
+        refused("ALTER STREAMLIT legacy SET ROOT_LOCATION = '@nostage/x'",
+            "Stage 'TEST_DB.TEST_SCHEMA.NOSTAGE' does not exist or not authorized.");
     }
 
     @Test

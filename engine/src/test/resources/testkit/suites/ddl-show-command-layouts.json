@@ -307,7 +307,7 @@
       {"sql": "CREATE OR REPLACE USER holder_user"},
       {"sql": "GRANT ROLE held_role TO USER holder_user"},
       {"sql": "SHOW GRANTS OF ROLE held_role",
-       "expect": {"rowCount": 1, "columns": ["created_on", "role", "granted_to", "grantee_name", "granted_by"]}},
+       "expect": {"rowCount": 1, "columns": ["created_on", "role", "granted_to", "grantee_name", "granted_by", "expires_on"]}},
       {"sql": "SELECT \"role\", \"granted_to\", \"grantee_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
        "expect": {"rows": [["HELD_ROLE", "USER", "HOLDER_USER"]]}},
       {"sql": "DROP USER holder_user"},
@@ -315,7 +315,7 @@
     ]},
     {"name": "bare-show-grants-carries-live-column-layout", "steps": [
       {"sql": "SHOW GRANTS",
-       "expect": {"columns": ["created_on", "privilege", "granted_on", "name", "role", "granted_to", "grantee_name", "grant_option", "granted_by"]}}
+       "expect": {"columns": ["created_on", "privilege", "granted_on", "name", "role", "granted_to", "grantee_name", "grant_option", "granted_by", "expires_on"]}}
     ]},
     {"name": "describe-pipe-returns-the-show-pipes-row", "steps": [
       {"sql": "CREATE TABLE pipe_desc_target (k INTEGER)"},
@@ -344,12 +344,12 @@
     ]},
     {"name": "describe-user-lists-every-property-live-lists", "steps": [
       {"sql": "CREATE OR REPLACE USER desc_all_user"},
-      {"sql": "DESCRIBE USER desc_all_user", "expect": {"rowCount": 44}},
+      {"sql": "DESCRIBE USER desc_all_user", "expect": {"rowCount": 45}},
       {"sql": "SELECT \"property\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1", "expect": {"value": "NAME"}},
       {"sql": "DESCRIBE USER desc_all_user"},
       {"sql": "SELECT \"property\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1 OFFSET 1", "expect": {"value": "COMMENT"}},
       {"sql": "DESCRIBE USER desc_all_user"},
-      {"sql": "SELECT \"property\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1 OFFSET 43", "expect": {"value": "LOCK_DETAILS"}},
+      {"sql": "SELECT \"property\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1 OFFSET 44", "expect": {"value": "LOCK_DETAILS"}},
       {"sql": "DESCRIBE USER desc_all_user"},
       {"sql": "SELECT \"property\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1 OFFSET 38", "expect": {"value": "MINS_TO_BYPASS_SESSION_POLICY"}},
       {"sql": "DESCRIBE USER desc_all_user"},

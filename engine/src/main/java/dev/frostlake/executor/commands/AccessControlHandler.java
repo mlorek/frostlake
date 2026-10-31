@@ -26,6 +26,7 @@ import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.UserLookup;
 import dev.frostlake.metastore.AccountDirectory;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
@@ -44,6 +45,7 @@ import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.ManagedAccount;
 import dev.frostlake.metastore.model.MaterializedView;
 import dev.frostlake.metastore.model.Pipe;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.Schema;
@@ -405,7 +407,7 @@ public final class AccessControlHandler {
             requireDatabaseRoleAuthority(role);
             holder.grantDatabaseRole(role.getQualifiedName(), grantor);
         } else if (ctx.USER() != null) {
-            final User holder = catalog.getUserExact(PrincipalNames.of(ctx.principalName(), queryExecutor));
+            final User holder = userHolder(PrincipalNames.of(ctx.principalName(), queryExecutor));
             holder.grantDatabaseRole(authorizedDatabaseRole(ctx.referencedName()).getQualifiedName(), grantor);
         } else {
             final Role holder = catalog.getRoleExact(PrincipalNames.of(ctx.principalName(), queryExecutor));
@@ -434,6 +436,11 @@ public final class AccessControlHandler {
         return false;
     }
 
+    /** The user a database role is granted to or revoked from (see {@link UserLookup}). */
+    private User userHolder(final String name) {
+        return UserLookup.asking(catalog, queryExecutor.getSecurityManager(), name, Privilege.MANAGE_GRANTS);
+    }
+
     /** REVOKE DATABASE ROLE d.r FROM USER u | ROLE r | DATABASE ROLE d.r2, its holder found first as a GRANT's is. */
     public Object revokeDatabaseRole(final FrostlakeParser.RevokeDatabaseRoleStatementContext ctx) {
         if (ctx.databaseRoleGrantee() != null) {
@@ -441,7 +448,7 @@ public final class AccessControlHandler {
                 PrincipalNames.parts(ctx.databaseRoleGrantee().referencedName(), queryExecutor));
             holder.revokeDatabaseRole(authorizedDatabaseRole(ctx.referencedName()).getQualifiedName());
         } else if (ctx.USER() != null) {
-            final User holder = catalog.getUserExact(PrincipalNames.of(ctx.principalName(), queryExecutor));
+            final User holder = userHolder(PrincipalNames.of(ctx.principalName(), queryExecutor));
             holder.revokeDatabaseRole(authorizedDatabaseRole(ctx.referencedName()).getQualifiedName());
         } else {
             final Role holder = catalog.getRoleExact(PrincipalNames.of(ctx.principalName(), queryExecutor));

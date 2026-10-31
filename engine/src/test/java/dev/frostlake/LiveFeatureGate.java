@@ -44,11 +44,24 @@ public final class LiveFeatureGate {
     public static void skipIfAccountTierBlocks(final RuntimeException failure) {
         final String message = String.valueOf(failure.getMessage());
         if (message.contains("not available for trial accounts")
+                || message.contains("not supported for trial accounts")
+                || message.contains("not available to trial accounts")
                 || message.contains("not enabled for your account")
                 || message.contains("not supported in your account")) {
             Assumptions.abort("live account tier blocks this feature: " + firstSentence(message));
         }
         throw failure;
+    }
+
+    /**
+     * Abort the current test as SKIPPED when {@code message} is the account refusing an organization-level statement
+     * its role has no right to: outside an organization's administration an account cannot create, drop or restore
+     * other accounts, so a test of those statements measures nothing there. Any other message returns normally.
+     */
+    public static void skipIfOrganizationRightsMissing(final String message) {
+        if (String.valueOf(message).contains("must have MANAGE ACCOUNTS granted")) {
+            Assumptions.abort("live account cannot manage accounts: " + firstSentence(String.valueOf(message)));
+        }
     }
 
     /** The refusal's own first sentence, for a skip reason that quotes the account rather than us. */

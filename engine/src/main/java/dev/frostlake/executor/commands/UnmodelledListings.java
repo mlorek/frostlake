@@ -19,8 +19,10 @@ package dev.frostlake.executor.commands;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.UserLookup;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.RelationKind;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurityObjectKind;
@@ -174,7 +176,9 @@ final class UnmodelledListings {
         } else if (!listing.isAccountLevel()) {
             schemas = requireScope(ctx, listing, scope);
         }
-        final ResultSet columns = UnmodelledListing.of(listing).listing(ctx.TERSE() != null);
+        final UnmodelledListing described = listing == ShowListing.INDEXES && schemas == null
+            && ctx.objectName() != null ? UnmodelledListing.TABLE_INDEXES : UnmodelledListing.of(listing);
+        final ResultSet columns = described.listing(ctx.TERSE() != null);
         final SecurityObjectKind modelled = listing == ShowListing.SESSION_POLICIES ? SecurityObjectKind.SESSION_POLICY
             : listing == ShowListing.AUTHENTICATION_POLICIES ? SecurityObjectKind.AUTHENTICATION_POLICY
             : listing == ShowListing.PACKAGES_POLICIES ? SecurityObjectKind.PACKAGES_POLICY : null;
@@ -229,7 +233,7 @@ final class UnmodelledListings {
             if (user.length > 1) {
                 throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
             }
-            catalog.getUserExact(user[0]);
+            UserLookup.asking(catalog, queryExecutor.getSecurityManager(), user[0], Privilege.MANAGE_GRANTS);
             return;
         }
         if (scope.INTEGRATION() == null) {

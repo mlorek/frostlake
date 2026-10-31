@@ -969,15 +969,16 @@ final class UdfInvoker {
     }
 
     /**
-     * A scripting-block UDF may not RETURN a semi-structured value. Snowflake compiles such a body lazily,
-     * so this surfaces on the CALL and not on the CREATE (a block-bodied
-     * function declared {@code RETURNS VARIANT} / {@code ARRAY} / {@code OBJECT} is created without
-     * complaint, then every call fails "Unsupported return type for Snowscript UDF: VARIANT"). Every other
-     * type was verified to work — VARCHAR, NUMBER(p,s), FLOAT, BOOLEAN, BINARY, DATE, TIMESTAMP_NTZ — and
-     * a semi-structured PARAMETER is fine; only the return type is refused.
+     * A scripting-block UDF may not RETURN a DECFLOAT, which is told on the call, in lower case; a function so
+     * declared is created without complaint (live-verified). A semi-structured return is refused at CREATE, and a
+     * restored function of that shape on its call. A DECFLOAT or a semi-structured PARAMETER is fine; only the
+     * return type is refused.
      */
     private void rejectUnsupportedScriptingReturnType(final Function function) {
         final DataType returnType = function.getReturnType();
+        if (NumericType.isDecfloat(returnType)) {
+            throw new RuntimeException("Unsupported return type for Snowscript UDF: decfloat");
+        }
         if (returnType != null && returnType.getCategory() == TypeCategory.SEMI_STRUCTURED) {
             throw new RuntimeException("Unsupported return type for Snowscript UDF: "
                 + returnType.getName().toUpperCase(Locale.ROOT));

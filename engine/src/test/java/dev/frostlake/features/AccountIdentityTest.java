@@ -109,6 +109,8 @@ public class AccountIdentityTest extends BaseDatabaseTest {
      */
     @Test
     public void theAccountListingCarriesTheMeasuredShape() {
+        // An organization administrator is who the listing tells every column to.
+        engine.execute("USE ROLE ORGADMIN");
         final List<String> shape = List.of(
             "organization_name", "account_name", "snowflake_region", "edition", "account_url",
             "created_on", "comment", "account_locator", "account_locator_url", "managed_accounts",

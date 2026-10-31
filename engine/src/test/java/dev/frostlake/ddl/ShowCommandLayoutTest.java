@@ -743,7 +743,7 @@ public class ShowCommandLayoutTest extends BaseDatabaseTest {
         engine.execute("CREATE USER holder_user");
         engine.execute("GRANT ROLE held_role TO USER holder_user");
         final ResultSet rs = engine.executeQuery("SHOW GRANTS OF ROLE held_role");
-        assertEquals(List.of("created_on", "role", "granted_to", "grantee_name", "granted_by"),
+        assertEquals(List.of("created_on", "role", "granted_to", "grantee_name", "granted_by", "expires_on"),
             columnNames(rs));
         // This listing names the ROLE rather than an object, so it has no name column at all.
         assertEquals(1, rs.getRows().size());
@@ -758,7 +758,7 @@ public class ShowCommandLayoutTest extends BaseDatabaseTest {
     public void bareShowGrantsCarriesLiveColumnLayout() {
         assertEquals(List.of(
             "created_on", "privilege", "granted_on", "name", "role", "granted_to", "grantee_name",
-            "grant_option", "granted_by"), columnNames(engine.executeQuery("SHOW GRANTS")));
+            "grant_option", "granted_by", "expires_on"), columnNames(engine.executeQuery("SHOW GRANTS")));
     }
 
     /** DESCRIBE PIPE returns the pipe's SHOW PIPES row, as DESCRIBE TASK does for tasks. */
@@ -796,12 +796,12 @@ public class ShowCommandLayoutTest extends BaseDatabaseTest {
         assertEquals("desc@example.com", userProperty(rs, "EMAIL"));
     }
 
-    /** Live lists 44 properties, in this order, whether or not the user set any of them. */
+    /** Live lists 45 properties, in this order, whether or not the user set any of them. */
     @Test
     public void describeUserListsEveryPropertyLiveLists() {
         engine.execute("CREATE USER desc_all_user");
         final ResultSet rs = engine.executeQuery("DESCRIBE USER desc_all_user");
-        assertEquals(44, rs.getRows().size());
+        assertEquals(45, rs.getRows().size());
         final List<String> names = new ArrayList<>();
         final int propertyIndex = columnNames(rs).indexOf("property");
         for (final Row row : rs.getRows()) {
@@ -810,6 +810,7 @@ public class ShowCommandLayoutTest extends BaseDatabaseTest {
         assertEquals("NAME", names.get(0));
         assertEquals("COMMENT", names.get(1));
         assertEquals("LOCK_DETAILS", names.get(names.size() - 1));
+        assertEquals(names.indexOf("MINS_TO_BYPASS_SESSION_POLICY") + 1, names.indexOf("MINS_TO_BYPASS_INGRESS_POLICY"));
         assertTrue(names.contains("RSA_PUBLIC_KEY_2_LAST_SET_TIME"));
         // Sits mid-list (after PASSWORD_LAST_SET_TIME), not appended at the end.
         assertEquals("MINS_TO_BYPASS_SESSION_POLICY", names.get(38));

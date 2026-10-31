@@ -189,6 +189,20 @@ final class LeveledParameterSettings {
     }
 
     /**
+     * Judges the catalog a CATALOG setting names (see {@link IcebergTables}).
+     *
+     * @param settings the settings, judged for their kinds
+     * @param catalog  the catalog
+     */
+    static void requireCatalog(final List<SessionParameterSetting> settings, final Catalog catalog) {
+        for (final SessionParameterSetting setting : settings) {
+            if ("CATALOG".equals(setting.key()) && setting.stored() != null) {
+                IcebergTables.requireCatalogParameter(String.valueOf(setting.stored()), catalog);
+            }
+        }
+    }
+
+    /**
      * Writes judged settings to the level that keeps them.
      *
      * @param target   the account's parameters, or a user's

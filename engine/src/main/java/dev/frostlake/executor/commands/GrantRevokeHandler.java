@@ -23,6 +23,7 @@ import dev.frostlake.executor.SQLCommandVisitor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StatementErrors;
+import dev.frostlake.executor.UserLookup;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
@@ -232,7 +233,7 @@ public class GrantRevokeHandler implements CommandHandler {
                     // Every user and role holds PUBLIC already: the grant changes nothing, and says so once the
                     // grantee is found.
                     if (ctx.USER() != null) {
-                        catalog.getUserExact(targetName2);
+                        grantee(targetName2);
                     } else {
                         catalog.getRoleExact(targetName2);
                     }
@@ -841,7 +842,7 @@ public class GrantRevokeHandler implements CommandHandler {
             return;
         }
         if (toUser) {
-            catalog.getUserExact(granteeName);
+            grantee(granteeName);
         } else {
             catalog.getRoleExact(granteeName);
         }
@@ -900,7 +901,7 @@ public class GrantRevokeHandler implements CommandHandler {
     /** The principal an OWNERSHIP grant or revoke names, found as a GRANT ROLE finds it: a User or a Role. */
     private Object ownedPrincipalOf(final FrostlakeParser.OwnedPrincipalContext owned) {
         if (owned.USER() != null) {
-            return catalog.getUserExact(principal(owned.principalName()));
+            return grantee(principal(owned.principalName()));
         }
         if (owned.DATABASE() != null) {
             return AccessControlHandler.databaseRole(catalog,
@@ -1063,10 +1064,15 @@ public class GrantRevokeHandler implements CommandHandler {
     /** A grantee that does not exist is refused by its kind and name before anything about the grant. */
     private void requireGrantee(final boolean isUser, final String name) {
         if (isUser) {
-            catalog.getUserExact(name);
+            grantee(name);
         } else {
             catalog.getRoleExact(name);
         }
+    }
+
+    /** The user a grant or a revoke names, found as a statement over grants finds one (see {@link UserLookup}). */
+    private User grantee(final String name) {
+        return UserLookup.asking(catalog, queryExecutor.getSecurityManager(), name, Privilege.MANAGE_GRANTS);
     }
 
     /** Whether a privilege list names OWNERSHIP. */

@@ -136,7 +136,7 @@ public class ExternalAccessIntegrationTest extends BaseDatabaseTest {
     public void aRoutineNamesOnlyExternalAccessIntegrations() {
         status("CREATE EXTERNAL ACCESS INTEGRATION eai5" + RULES + " ENABLED = TRUE");
         engine.execute("CREATE API INTEGRATION eai_api API_PROVIDER = aws_api_gateway"
-            + " API_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r' API_ALLOWED_PREFIXES = ('https://a.example.com/')"
+            + " API_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r' API_ALLOWED_PREFIXES = ('https://a1.execute-api.us-east-1.amazonaws.com/')"
             + " ENABLED = TRUE");
         engine.execute("CREATE FUNCTION eai_f(x FLOAT) RETURNS FLOAT LANGUAGE JAVASCRIPT"
             + " EXTERNAL_ACCESS_INTEGRATIONS = (eai5) AS 'return X;'");

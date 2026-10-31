@@ -131,9 +131,10 @@ public class MissingObjectPrivilegeHintTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void aUserOrANetworkRuleAsksForAnAccountPrivilege() {
+    public void aNetworkRuleAsksForAnAccountPrivilegeAndAUserForNothing() {
         final String onAccount = " granted on ACCOUNT " + account();
-        assertEquals(missing("User", "NOSUCH_HINT_USER", "USAGE" + onAccount), refusal("DROP USER nosuch_hint_user"));
+        assertEquals(ERROR + "User 'NOSUCH_HINT_USER' does not exist or not authorized.",
+            refusal("DROP USER nosuch_hint_user"));
         assertEquals(missing("Network rule", "TEST_DB.TEST_SCHEMA.NOSUCH_NR", "MONITOR" + onAccount),
             refusal("DROP NETWORK RULE nosuch_nr"));
         assertEquals(missing("Network rule", "TEST_DB.TEST_SCHEMA.NOSUCH_NR", "MONITOR" + onAccount),
@@ -292,7 +293,7 @@ public class MissingObjectPrivilegeHintTest extends BaseDatabaseTest {
         final String table = "TEST_DB.TEST_SCHEMA.NOSUCH_T";
         assertEquals(missingAsOwner("Table", table, anyOn("TABLE", table))
             + "|" + missingAsOwner("Database", "NOSUCH_HINT_DB", usageOn("DATABASE", "NOSUCH_HINT_DB"))
-            + "|" + missingAsOwner("User", "NOSUCH_HINT_USER", "USAGE granted on ACCOUNT " + account()) + "|",
+            + "|" + ERROR + "User 'NOSUCH_HINT_USER' does not exist or not authorized.|",
             scalar("CALL p_own()"));
     }
 

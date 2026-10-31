@@ -495,8 +495,9 @@ final class ObjectDdl {
     }
 
     /**
-     * {@code create or replace password policy P PASSWORD_MIN_LENGTH=14 … PASSWORD_HISTORY=5 ;} — every property,
-     * each followed by a space, its default where the policy set none.
+     * {@code create or replace password policy P PASSWORD_MIN_LENGTH=14 … PASSWORD_HISTORY=5 COMMENT='c' ;} — every
+     * property, each followed by a space, its default where the policy set none, and the comment last, where it has
+     * one (live-verified).
      */
     static String passwordPolicy(final SecurityObject policy, final String name) {
         final StringBuilder sb = new StringBuilder("create or replace password policy ").append(name).append(' ');
@@ -507,14 +508,20 @@ final class ObjectDdl {
             final Object value = policy.getProperty(spec.getName());
             sb.append(spec.getName()).append('=').append(value == null ? spec.getDefaultValue() : value).append(' ');
         }
-        return sb.append(';').toString();
+        return sb.append(commentOf(policy)).append(';').toString();
+    }
+
+    /** A policy's comment as its DDL ends with it, or nothing where it has none or an empty one. */
+    private static String commentOf(final SecurityObject policy) {
+        final String comment = policy.getComment();
+        return comment == null || comment.isEmpty() ? "" : "COMMENT=" + quoted(comment) + " ";
     }
 
     /**
      * {@code create or replace session policy P SESSION_IDLE_TIMEOUT_MINS=240 … ALLOWED_SECONDARY_ROLES=('ALL')
-     * BLOCKED_SECONDARY_ROLES=() AGENT_RESTRICTED_SESSION_SCOPE=NULL ;} — every property but the comment, each
-     * followed by a space, its default where the policy set none, a role list in parentheses and the agent scope
-     * quoted (live-verified).
+     * BLOCKED_SECONDARY_ROLES=() AGENT_RESTRICTED_SESSION_SCOPE=NULL COMMENT='c' ;} — every property, each followed
+     * by a space, its default where the policy set none, a role list in parentheses, the agent scope quoted and the
+     * comment last, where it has one (live-verified).
      */
     static String sessionPolicy(final SecurityObject policy, final String name) {
         final StringBuilder sb = new StringBuilder("create or replace session policy ").append(name).append(' ');
@@ -539,7 +546,7 @@ final class ObjectDdl {
             }
             sb.append(' ');
         }
-        return sb.append(';').toString();
+        return sb.append(commentOf(policy)).append(';').toString();
     }
 
     /**

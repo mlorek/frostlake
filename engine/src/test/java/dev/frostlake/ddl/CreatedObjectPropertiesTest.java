@@ -180,7 +180,12 @@ public class CreatedObjectPropertiesTest extends BaseDatabaseTest {
         refused(SYNTAX + "45 unexpected '<EOF>'.", "CREATE OR REPLACE TABLE cop_new CLONE cop_t x");
         refused(SYNTAX + "36 unexpected '<EOF>'.", "CREATE OR REPLACE SEQUENCE cop_seq x");
         refused(SYNTAX + "37 unexpected 'bar'.", "CREATE OR REPLACE SEQUENCE cop_s foo bar");
-        refused(SYNTAX + "44 unexpected '<EOF>'.", "CREATE OR REPLACE SEQUENCE cop_seq START 1 x");
+        refused(SYNTAX + "43 unexpected 'x'.", "CREATE OR REPLACE SEQUENCE cop_seq START 1 x");
+        // After an option a word is refused where it stands; after a comma it is read as a property's name.
+        refused(SYNTAX + "43 unexpected 'x'.", "CREATE OR REPLACE SEQUENCE cop_seq START 1 x y");
+        refused(SYNTAX + "41 unexpected 'y'.", "CREATE OR REPLACE SEQUENCE cop_seq x = 1 y");
+        refused(SYNTAX + "45 unexpected '<EOF>'.", "CREATE OR REPLACE SEQUENCE cop_seq START 1, x");
+        refused(SYNTAX + "49 unexpected 'x'.", "CREATE OR REPLACE SEQUENCE cop_seq COMMENT = 'c' x");
         refused(SYNTAX + "33 unexpected '<EOF>'.", "CREATE OR REPLACE VIEW cop_view x");
         refused(SYNTAX + "34 unexpected 'y'.", "CREATE OR REPLACE VIEW cop_view x y AS SELECT 1 a");
     }

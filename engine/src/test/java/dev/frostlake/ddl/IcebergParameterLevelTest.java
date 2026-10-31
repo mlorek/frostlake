@@ -43,7 +43,7 @@ public class IcebergParameterLevelTest {
         engine.execute("CREATE DATABASE ipl_db");
         engine.execute("USE SCHEMA ipl_db.PUBLIC");
         engine.execute("CREATE EXTERNAL VOLUME ice_vol STORAGE_LOCATIONS = ((NAME = 'l1' STORAGE_PROVIDER = 'S3'"
-            + " STORAGE_BASE_URL = 's3://ice/' STORAGE_AWS_ROLE_ARN = 'arn:r'))");
+            + " STORAGE_BASE_URL = 's3://ice/' STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r'))");
         engine.execute("CREATE ICEBERG TABLE nf_ice (a INT) EXTERNAL_VOLUME = 'ice_vol' CATALOG = 'SNOWFLAKE'"
             + " BASE_LOCATION = 'nf_ice/'");
         engine.execute("CREATE TABLE nf_p (a INT)");

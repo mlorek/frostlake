@@ -482,6 +482,40 @@ Changes since 0.3.0 accumulate here as they land.
   the first token after the call that closes no bracket (after a join's alias, its ON as well); the built-in ran.
 - **COUNT(DISTINCT a, b) over a window that orders its rows is refused at its OVER** (live-verified):
   `too many arguments for function [Window function COUNT(DISTINCT ...)] expected 1, got 2`; it counted.
+- **A password policy set on the account cannot be dropped** (live-verified): `DROP PASSWORD POLICY p` while
+  `ALTER ACCOUNT SET PASSWORD POLICY p` holds is `Policy P cannot be dropped/replaced as it is associated with one or
+  more entities.`, as it already was for a policy set on a user; it was dropped.
+- **A Streamlit app's ROOT_LOCATION must name a stage that exists** (live-verified): `CREATE STREAMLIT s ROOT_LOCATION =
+  '@stg/old'` with no stage STG is `The specified stage STG does not exist or the current role does not have access.
+  Owner of the Streamlit must have at least READ on the specified stage.`, a location with no `@` is `invalid URL
+  prefix found in: 'stg/old'`, and an `ALTER STREAMLIT … SET ROOT_LOCATION` naming no stage is `Stage
+  'TEST_DB.TEST_SCHEMA.NOSTAGE' does not exist or not authorized.`; each was taken as written. The location now
+  describes its stage by name, `@STG/old`, the path as written.
+- **An external volume's STORAGE_AWS_ROLE_ARN must name an IAM role** (live-verified):
+  `arn:aws[-partition]:iam::<digits>:role`, with any path after it, in any case. Anything else is
+  `invalid value ''arn:r'' for property 'STORAGE_AWS_ROLE_ARN'`, at CREATE and at ALTER … ADD STORAGE_LOCATION, before
+  the location's name is judged; any text was taken.
+- **COPY judges a COMPRESSION written beside a FORMAT_NAME by the named format's type** (live-verified):
+  `FILE_FORMAT = (FORMAT_NAME = f COMPRESSION = SNAPPY)` over a CSV format is `Invalid compression format SNAPPY`, and an
+  `ALTER TABLE … SET STAGE_FILE_FORMAT` list is judged as a CREATE's is; both were taken unread.
+- **A CREATE ICEBERG TABLE on an external volume must name a catalog** (live-verified), written or set on its schema,
+  database or account, or it is `Iceberg tables require a catalog integration to be specified`. A catalog integration
+  on a table with a column list is `Column specifications are only allowed for Iceberg tables using the Snowflake
+  catalog …`, an unknown name is quoted as it is written, and managed storage takes `SNOWFLAKE` alone.
+- **A CATALOG parameter names SNOWFLAKE or a catalog integration** (live-verified), at ALTER SCHEMA, DATABASE and ACCOUNT
+  and at CREATE SCHEMA and DATABASE: `Catalog integration X is not valid. Please ensure required properties are valid.`
+- **An API integration's prefixes follow its provider** (live-verified): an Amazon gateway's are
+  `<id>.execute-api.<region>.amazonaws.com` hosts of the provider's own partition, a Google gateway's
+  `<x>.<code>.gateway.dev` hosts, an Azure gateway's `.azure-api.net` hosts and the Git provider's named https hosts, at
+  CREATE and ALTER, allowed and blocked alike. An empty list is `invalid value [TOK_CONSTANT_LIST]`, and API_KEY is no
+  option of the Git provider.
+- **A notification integration's targets are held to their shapes** (live-verified): a webhook goes to Slack, Teams or
+  PagerDuty on their own paths (`WEBHOOK_URL: … is invalid. Verify whether secret replacement makes it invalid`), and
+  AWS_SNS_TOPIC_ARN and AWS_SNS_ROLE_ARN are an SNS topic's and an IAM role's ARNs.
+- **A table function's body is a query** (live-verified): an expression is `Table function definition expected a subquery,
+  found ' 1 '.`, once its names and calls are found.
+- **A Snowscript UDF's semi-structured or geospatial return is refused at CREATE**, the type in its whole spelling, before
+  the body is judged; it was refused on the call. A DECFLOAT return is refused on the call (live-verified).
 
 ### Added
 
@@ -2819,6 +2853,47 @@ Changes since 0.3.0 accumulate here as they land.
   OVER ()` keeps its DISTINCT in the echo.
 - **A whole number of a scaled NUMBER cast to VARIANT keeps no trailing zeros** (live-verified):
   `TO_JSON(100::NUMBER(10,2)::VARIANT)` and its VARCHAR are `100`, as TO_VARIANT gives them; they read `100.00`.
+- **SHOW PASSWORD POLICIES ON USER lists only a policy set on the user itself** (live-verified): a user with none
+  lists the built-in policy, even while the account's policy governs the user; it listed the account's policy.
+- **A word after CREATE SEQUENCE's options is refused where it stands** (live-verified): `CREATE SEQUENCE s START 1
+  x` is `unexpected 'x'`, and so is a stray word after INCREMENT, ORDER, NOORDER, a COMMENT or a property; it was
+  refused at the end of the input, as though the word began a statement of its own. A bare word first, or after a
+  comma, is still read as a property's name and refused where its `=` should be.
+- **A file format's COMPRESSION is judged as the account judges it** (live-verified): a codec its type does not take is
+  `Invalid compression format SNAPPY` in upper case, in a file format and in COPY's list, where it was `invalid value
+  [SNAPPY] for parameter 'COMPRESSION'`, kept for a word that is no codec at all. AVRO takes BZ2, and the list a stage or
+  a table keeps takes all ten codecs whatever its type; each was refused.
+- **ALTER ICEBERG TABLE … SWAP WITH swaps two Iceberg tables** (live-verified), columns, rows, comment and files. It was
+  a syntax error. An Iceberg table beside any other relation is `SWAP WITH is not supported for ICEBERG TABLE.`, under
+  ALTER TABLE beside anything at all, and the other table is looked for first, IF EXISTS or not.
+- **A bad STORAGE_SERIALIZATION_POLICY reads as the account has it** (live-verified): `Invalid value for storage
+  serialization policy. Supported are COMPATIBLE,OPTIMIZED.`, once the volume and the catalog are judged.
+  `EXTERNAL_VOLUME = ''` names no volume, where it was looked for.
+- **AUTOINCREMENT and IDENTITY take the forms the account does** (live-verified): `START [WITH] [=] n`,
+  `INCREMENT [BY] [=] n`, and one ORDER or NOORDER before a `(start, step)` pair, any number after it; an option written
+  twice is `duplicate property 'SEQUENCE_START';` where the second one stands, and a further option after a pair ends the
+  report at its word.
+- **A missing integration option is told as the account tells it** (live-verified): what a provider needs reads `Missing
+  required property 'API_AWS_ROLE_ARN' on API integration with API provider AWS_API_GATEWAY.`, after the options every
+  integration needs, and an API or catalog integration written with nothing at all is asked for its TYPE.
+- **A table function's body that reads as Snowscript is refused for its return type** (live-verified): `Unsupported return
+  type for Snowscript UDF: TABLE return type` for a block or a terminated statement, which were syntax errors. Several
+  statements are refused by their count whatever the function returns, a block among them or not.
+- **GET_DDL of a session or a password policy ends with its comment** (live-verified), escaped as a string is, and an empty
+  comment writes none.
+- **Bare SHOW GRANTS, SHOW GRANTS OF ROLE and SHOW GRANTS TO USER end with `expires_on`** (live-verified), a TIMESTAMP_LTZ
+  that is NULL for every grant here, and DESCRIBE USER lists MINS_TO_BYPASS_INGRESS_POLICY after the session bypass.
+- **A missing user is refused in one sentence** (live-verified): DROP USER, DESCRIBE USER, COMMENT ON USER and ALTER
+  USER no longer go on to ask for USAGE on the account. A statement over a user's grants or parameters asks a role
+  without MANAGE GRANTS for it, and an ALTER USER that sets or unsets a tag a role without APPLY TAG.
+- **SHOW INDEXES IN TABLE has a table's own columns** (live-verified): `key_expressions` and `included_expressions`
+  for `columns` and `included_columns`, then `kind`, `progress_percentage` and `storage_bytes`. SHOW REPLICATION GROUPS
+  and SHOW FAILOVER GROUPS list `is_primary_read_only` before `is_optimized_refresh_enabled`.
+- **An unload to AVRO, ORC or XML is refused in the account's sentence** (live-verified), `Unload not yet implemented
+  for file format 'AVRO'`, naming the type as the statement wrote it and judged after the source and the stage. An XML
+  load into several columns points at a transformation alone, without MATCH_BY_COLUMN_NAME.
+- **LIST of a stage encrypted with SNOWFLAKE_SSE shows each file's own size** (live-verified), where any other internal
+  stage shows the size padded to the cipher's block.
 
 ### Changed
 

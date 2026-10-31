@@ -57,6 +57,7 @@ public final class FileFormatOptions {
     private static final String NONE = "NONE";
 
     private String type = "CSV";
+    private String writtenType;
     private String fieldDelimiter = ",";
     private String recordDelimiter = "\n";
     private Character enclosure;
@@ -109,6 +110,7 @@ public final class FileFormatOptions {
     public void takeWritten(final FileFormatClause clause) {
         if (clause.writtenType() != null) {
             take("TYPE", clause.writtenType());
+            writtenType = clause.writtenType();
         }
         takeAll(clause.format().getOptions());
     }
@@ -276,6 +278,10 @@ public final class FileFormatOptions {
     }
 
     /** The format's TYPE, upper-cased; CSV until a format says otherwise. */
+    public String getWrittenType() {
+        return writtenType;
+    }
+
     public String getType() {
         return type;
     }

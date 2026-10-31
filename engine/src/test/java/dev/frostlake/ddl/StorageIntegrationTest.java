@@ -139,9 +139,10 @@ public class StorageIntegrationTest extends BaseDatabaseTest {
 
     @Test
     public void eachProviderTakesAndRequiresItsOwnProperties() {
-        assertEquals("SQL compilation error:\nMissing option(s): STORAGE_PROVIDER",
+        assertEquals("SQL compilation error:\nMissing option(s): STORAGE_ALLOWED_LOCATIONS",
             refusal("CREATE STORAGE INTEGRATION si_bad TYPE = EXTERNAL_STAGE ENABLED = TRUE"));
-        assertEquals("SQL compilation error:\nMissing option(s): STORAGE_AWS_ROLE_ARN",
+        assertEquals("SQL compilation error:\nMissing required property 'STORAGE_AWS_ROLE_ARN' on storage integration"
+            + " with storage provider S3.",
             refusal("CREATE STORAGE INTEGRATION si_bad TYPE = EXTERNAL_STAGE STORAGE_PROVIDER = 'S3' ENABLED = TRUE"
                 + " STORAGE_ALLOWED_LOCATIONS = ('s3://b/')"));
         assertEquals("SQL compilation error:\nMissing option(s): STORAGE_ALLOWED_LOCATIONS",

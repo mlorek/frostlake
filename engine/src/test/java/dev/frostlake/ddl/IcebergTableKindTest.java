@@ -38,6 +38,7 @@ public class IcebergTableKindTest extends BaseDatabaseTest {
         + " ALTER ICEBERG TABLE commands. Please ensure the appropriate command format is used.";
     private static final String USE_ALTER_TABLE = "The table PLAIN_KIND is a legacy Iceberg table. Legacy Iceberg tables"
         + " should use the ALTER TABLE commands. Please ensure the appropriate command format is used.";
+    private static final String SWAP_REFUSED = "SWAP WITH is not supported for ICEBERG TABLE.";
     private static final String TRACKING_KEPT = "invalid value 'false' for property 'CHANGE_TRACKING', Reason: Change"
         + " Tracking cannot be turned off for Iceberg tables";
 
@@ -105,11 +106,6 @@ public class IcebergTableKindTest extends BaseDatabaseTest {
             "COMMENT ON COLUMN ice_kind.a IS 'c'"}) {
             refused(statement, USE_ALTER_ICEBERG);
         }
-        // Neither table of a swap may be an Iceberg table, and ALTER ICEBERG TABLE has no swap.
-        refused("ALTER TABLE ice_kind SWAP WITH plain_kind", "SWAP WITH is not supported for ICEBERG TABLE.");
-        refused("ALTER TABLE plain_kind SWAP WITH ice_kind", "SWAP WITH is not supported for ICEBERG TABLE.");
-        refused("ALTER ICEBERG TABLE ice_kind SWAP WITH plain_kind",
-            "syntax error line 1 at position 29 unexpected 'SWAP'.");
         // What the statement names beside the table is looked for first, and a syntax error is one for any table.
         refused("ALTER TABLE ice_kind SET TAG nosuch_tag = 'x'", "Tag 'NOSUCH_TAG' does not exist or not authorized.");
         refused("ALTER TABLE ice_kind ADD ROW ACCESS POLICY nosuch ON (a)",
@@ -124,6 +120,67 @@ public class IcebergTableKindTest extends BaseDatabaseTest {
         engine.executeQuery("DROP TABLE ice_kind");
         engine.executeQuery("UNDROP TABLE ice_kind");
         assertEquals("[Y]", column("SHOW TABLES LIKE 'ICE_KIND'", "is_iceberg").toString());
+    }
+
+    @Test
+    public void aSwapAsksForTablesOfOneKind() {
+        engine.executeQuery("CREATE ICEBERG TABLE ice_two (c INT) COMMENT = 'two'");
+        engine.executeQuery("INSERT INTO ice_two VALUES (2), (3)");
+        engine.executeQuery("INSERT INTO ice_kind VALUES (1, 'x')");
+        engine.executeQuery("CREATE TABLE plain_two (a INT)");
+        engine.executeQuery("CREATE VIEW view_kind AS SELECT 1 AS a");
+        // ALTER TABLE swaps no Iceberg table, whatever stands beside it.
+        for (final String statement : new String[] {"ALTER TABLE ice_kind SWAP WITH plain_kind",
+            "ALTER TABLE plain_kind SWAP WITH ice_kind", "ALTER TABLE ice_kind SWAP WITH ice_two",
+            "ALTER TABLE ice_kind SWAP WITH ice_kind", "ALTER TABLE ice_kind SWAP WITH view_kind",
+            "ALTER TABLE IF EXISTS ice_nosuch SWAP WITH ice_kind"}) {
+            refused(statement, SWAP_REFUSED);
+        }
+        // ALTER ICEBERG TABLE swaps two Iceberg tables and nothing else.
+        for (final String statement : new String[] {"ALTER ICEBERG TABLE ice_kind SWAP WITH plain_kind",
+            "ALTER ICEBERG TABLE plain_kind SWAP WITH ice_kind", "ALTER ICEBERG TABLE ice_kind SWAP WITH view_kind",
+            "ALTER ICEBERG TABLE IF EXISTS ice_kind SWAP WITH plain_kind",
+            "ALTER ICEBERG TABLE IF EXISTS ice_nosuch SWAP WITH ice_kind"}) {
+            refused(statement, SWAP_REFUSED);
+        }
+        refused("ALTER ICEBERG TABLE plain_kind SWAP WITH plain_two", USE_ALTER_TABLE);
+        refused("ALTER ICEBERG TABLE plain_kind SWAP WITH view_kind", USE_ALTER_TABLE);
+        refused("ALTER ICEBERG TABLE IF EXISTS plain_kind SWAP WITH plain_two", USE_ALTER_TABLE);
+        // The other table is looked for first, and the table the statement alters before it.
+        final String noTable = "Table 'TEST_DB.TEST_SCHEMA.ICE_NOSUCH' does not exist or not authorized.";
+        for (final String statement : new String[] {"ALTER ICEBERG TABLE ice_kind SWAP WITH ice_nosuch",
+            "ALTER ICEBERG TABLE plain_kind SWAP WITH ice_nosuch", "ALTER TABLE ice_kind SWAP WITH ice_nosuch",
+            "ALTER ICEBERG TABLE ice_nosuch SWAP WITH plain_kind", "ALTER ICEBERG TABLE ice_nosuch SWAP WITH ice_kind",
+            "ALTER ICEBERG TABLE ice_nosuch SWAP WITH ice_other",
+            "ALTER ICEBERG TABLE IF EXISTS ice_other SWAP WITH ice_nosuch"}) {
+            refused(statement, noTable);
+        }
+        final String noSchema = "Schema 'TEST_DB.NO_SCHEMA' does not exist or not authorized.";
+        refused("ALTER ICEBERG TABLE no_schema.ice_kind SWAP WITH plain_kind", noSchema);
+        refused("ALTER ICEBERG TABLE ice_kind SWAP WITH no_schema.plain_kind", noSchema);
+        final String aView = "Object found is of type 'VIEW', not specified type 'TABLE'.";
+        refused("ALTER ICEBERG TABLE view_kind SWAP WITH plain_kind", aView);
+        refused("ALTER ICEBERG TABLE view_kind SWAP WITH ice_kind", aView);
+        refused("ALTER ICEBERG TABLE IF EXISTS view_kind SWAP WITH plain_kind", aView);
+        refused("ALTER ICEBERG TABLE IF EXISTS ice_nosuch SWAP WITH view_kind", aView);
+        refused("ALTER ICEBERG TABLE information_schema.tables SWAP WITH plain_kind",
+            "Insufficient privileges to operate on view 'TABLES'.");
+        // A table that is not there is passed over when the other one could take its place.
+        engine.executeQuery("ALTER ICEBERG TABLE IF EXISTS ice_nosuch SWAP WITH plain_kind");
+        // Two Iceberg tables trade everything, their files too; one traded with itself stays as it is.
+        final List<String> locationOfTwo = column("SHOW ICEBERG TABLES LIKE 'ICE_TWO'", "base_location");
+        engine.executeQuery("ALTER ICEBERG TABLE ice_kind SWAP WITH ice_two");
+        assertEquals("[C NUMBER(10,0)]", described("ice_kind").toString());
+        assertEquals("[A NUMBER(10,0), B VARCHAR(134217728)]", described("ice_two").toString());
+        assertEquals("[2, 3]", rows("SELECT * FROM ice_kind ORDER BY 1").toString());
+        assertEquals("[1|x]", rows("SELECT * FROM ice_two").toString());
+        assertEquals("[two]", column("SHOW ICEBERG TABLES LIKE 'ICE_KIND'", "comment").toString());
+        assertEquals(locationOfTwo, column("SHOW ICEBERG TABLES LIKE 'ICE_KIND'", "base_location"));
+        engine.executeQuery("ALTER ICEBERG TABLE IF EXISTS ice_kind SWAP WITH ice_two");
+        assertEquals("[C NUMBER(10,0)]", described("ice_two").toString());
+        engine.executeQuery("ALTER ICEBERG TABLE ice_two SWAP WITH ice_two");
+        assertEquals("[C NUMBER(10,0)]", described("ice_two").toString());
+        assertEquals("[2, 3]", rows("SELECT * FROM ice_two ORDER BY 1").toString());
     }
 
     @Test

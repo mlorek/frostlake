@@ -65,6 +65,15 @@ final class TableStageOptions {
     }
 
     /**
+     * Judge a format group an ALTER TABLE … SET writes, as a CREATE's is judged.
+     *
+     * @param group the group
+     */
+    static void judgeFormat(final FrostlakeParser.ParenOptionListContext group) {
+        FileFormatClause.read(group, new FileFormat("WRITTEN", "CSV"), true);
+    }
+
+    /**
      * Keep a written format group as a stage keeps one: TYPE as written, FORMAT_NAME as the listing spells it, and
      * the options as a named format keeps them.
      *

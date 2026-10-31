@@ -190,9 +190,17 @@ final class IntegrationRules {
 
     /**
      * Checks a CREATE's properties: every one taken by the kind, the variant-choosing ones set to a value the
-     * kind knows, and every property the variant requires present — the first one missing is reported.
+     * kind knows, and every property the variant requires present — one that is missing is reported, what a provider
+     * asks for after the rest and in words of its own (live-verified; with several missing the account names one of
+     * them, not always the same one). An API or catalog integration written with nothing at all is asked for a TYPE,
+     * as every integration is.
+     *
+     * @param kind       the kind of integration
+     * @param properties the properties written
+     * @param region     the account's region, as {@code aws-eu-west-1}
      */
-    static void checkCreate(final IntegrationKind kind, final Map<String, PropertyValue> properties) {
+    static void checkCreate(final IntegrationKind kind, final Map<String, PropertyValue> properties,
+                            final String region) {
         if (kind == IntegrationKind.SECURITY) {
             checkCreateSecurity(properties);
             return;
@@ -208,27 +216,38 @@ final class IntegrationRules {
                 throw invalidValue(property.getKey(), property.getValue());
             }
         }
+        if (properties.isEmpty() && (kind == IntegrationKind.API || kind == IntegrationKind.CATALOG)) {
+            throw new RuntimeException(SqlCompilationError.of("Missing option(s): TYPE"));
+        }
         final List<String> required = new ArrayList<>();
+        final List<String> providerOwn = new ArrayList<>();
+        String owner = null;
         if (kind == IntegrationKind.API) {
             final String provider = choice(properties, "API_PROVIDER", API_PROVIDERS);
-            required.add("API_PROVIDER");
+            required.add("ENABLED");
             if ("PYPI".equals(provider)) {
                 refusePackageIndexOptions(properties);
             } else {
                 required.add("API_ALLOWED_PREFIXES");
             }
-            if (provider != null && provider.startsWith("AWS_")) {
-                required.add("API_AWS_ROLE_ARN");
-            } else if (provider != null && provider.startsWith("AZURE_")) {
-                required.add("AZURE_TENANT_ID");
-                required.add("AZURE_AD_APPLICATION_ID");
-            } else if ("GOOGLE_API_GATEWAY".equals(provider)) {
-                required.add("GOOGLE_AUDIENCE");
+            if ("GIT_HTTPS_API".equals(provider) && properties.containsKey("API_KEY")) {
+                throw new RuntimeException(SqlCompilationError.of(
+                    "Invalid option(s) for API integration: [API_KEY]"));
             }
+            if (provider != null && provider.startsWith("AWS_")) {
+                providerOwn.add("API_AWS_ROLE_ARN");
+            } else if (provider != null && provider.startsWith("AZURE_")) {
+                providerOwn.add("AZURE_TENANT_ID");
+                providerOwn.add("AZURE_AD_APPLICATION_ID");
+            } else if ("GOOGLE_API_GATEWAY".equals(provider)) {
+                providerOwn.add("GOOGLE_AUDIENCE");
+            }
+            owner = "API integration with API provider " + provider;
         } else if (kind == IntegrationKind.CATALOG) {
             final String source = choice(properties, "CATALOG_SOURCE", CATALOG_SOURCES);
             choice(properties, "TABLE_FORMAT", TABLE_FORMATS);
             required.add("CATALOG_SOURCE");
+            required.add("ENABLED");
             required.add("TABLE_FORMAT");
             if ("GLUE".equals(source)) {
                 required.add("GLUE_AWS_ROLE_ARN");
@@ -241,7 +260,8 @@ final class IntegrationRules {
             checkExternalAccessLists(properties);
             required.add("ALLOWED_NETWORK_RULES");
         } else if (kind == IntegrationKind.STORAGE) {
-            requireStorage(properties, required);
+            final String provider = requireStorage(properties, required, providerOwn);
+            owner = "storage integration with storage provider " + provider;
         } else {
             final String type = choice(properties, "TYPE", NOTIFICATION_TYPES);
             final String provider = choice(properties, "NOTIFICATION_PROVIDER", NOTIFICATION_PROVIDERS);
@@ -272,11 +292,24 @@ final class IntegrationRules {
                 }
             }
         }
-        required.add("ENABLED");
+        if (!required.contains("ENABLED")) {
+            required.add("ENABLED");
+        }
         for (final String key : required) {
             if (!properties.containsKey(key)) {
                 throw new RuntimeException(SqlCompilationError.of("Missing option(s): " + key));
             }
+        }
+        for (final String key : providerOwn) {
+            if (!properties.containsKey(key)) {
+                throw new RuntimeException(SqlCompilationError.of("Missing required property '" + key + "' on " + owner
+                    + "."));
+            }
+        }
+        if (kind == IntegrationKind.API) {
+            IntegrationValueShapes.requirePrefixes(providerOf(properties), properties, region);
+        } else if (kind == IntegrationKind.NOTIFICATION) {
+            IntegrationValueShapes.requireNotificationTargets(properties);
         }
         checkWebhookTemplate(properties);
         checkPubSubName("GCP_PUBSUB_SUBSCRIPTION_NAME", SUBSCRIPTION_NAME,
@@ -284,11 +317,14 @@ final class IntegrationRules {
     }
 
     /**
-     * What a storage integration requires: its type, its provider, what the provider is reached through — an AWS
-     * role for S3, a tenant for Azure — and the locations it allows. A property of another provider's is refused as
-     * one the integration does not take (documented).
+     * What a storage integration requires: its type, the locations it allows, ENABLED and its provider, and what the
+     * provider is reached through — an AWS role for S3, a tenant for Azure — after them (live-verified). A property of
+     * another provider's is refused as one the integration does not take (documented).
+     *
+     * @return the provider, or null when none is written
      */
-    private static void requireStorage(final Map<String, PropertyValue> properties, final List<String> required) {
+    private static String requireStorage(final Map<String, PropertyValue> properties, final List<String> required,
+                                         final List<String> providerOwn) {
         choice(properties, "TYPE", STORAGE_TYPES);
         final String provider = choice(properties, "STORAGE_PROVIDER", STORAGE_PROVIDERS);
         if (provider != null) {
@@ -300,13 +336,21 @@ final class IntegrationRules {
             }
         }
         required.add("TYPE");
+        required.add("STORAGE_ALLOWED_LOCATIONS");
+        required.add("ENABLED");
         required.add("STORAGE_PROVIDER");
         if (provider != null && provider.startsWith("S3")) {
-            required.add("STORAGE_AWS_ROLE_ARN");
+            providerOwn.add("STORAGE_AWS_ROLE_ARN");
         } else if ("AZURE".equals(provider)) {
-            required.add("AZURE_TENANT_ID");
+            providerOwn.add("AZURE_TENANT_ID");
         }
-        required.add("STORAGE_ALLOWED_LOCATIONS");
+        return provider;
+    }
+
+    /** An API integration's provider as a CREATE writes it, or null when none is written. */
+    private static String providerOf(final Map<String, PropertyValue> properties) {
+        final PropertyValue provider = properties.get("API_PROVIDER");
+        return provider == null ? null : provider.getText();
     }
 
     /** What a storage integration of the provider takes. */
@@ -507,9 +551,14 @@ final class IntegrationRules {
 
     /**
      * Checks the properties an ALTER … SET names against what the integration's kind lets ALTER set; any other is
-     * refused as a property of the integration's type.
+     * refused as a property of the integration's type, and a value is held to the shape a CREATE's is.
+     *
+     * @param integration the integration
+     * @param properties  the properties written
+     * @param region      the account's region, as {@code aws-eu-west-1}
      */
-    static void checkSet(final Integration integration, final Map<String, PropertyValue> properties) {
+    static void checkSet(final Integration integration, final Map<String, PropertyValue> properties,
+                         final String region) {
         checkWebhookTemplate(properties);
         if (integration.getKind() == IntegrationKind.SECURITY) {
             // A property a security integration does not have is refused as no property of an integration, and
@@ -544,6 +593,11 @@ final class IntegrationRules {
                 throw new RuntimeException(SqlCompilationError.of("invalid property '" + key + "' for 'INTEGRATION - "
                     + integration.getType() + "'"));
             }
+        }
+        if (integration.getKind() == IntegrationKind.API) {
+            IntegrationValueShapes.requirePrefixes(integration.text("API_PROVIDER"), properties, region);
+        } else if (integration.getKind() == IntegrationKind.NOTIFICATION) {
+            IntegrationValueShapes.requireNotificationTargets(properties);
         }
     }
 

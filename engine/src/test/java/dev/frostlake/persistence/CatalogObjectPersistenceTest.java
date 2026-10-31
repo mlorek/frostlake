@@ -88,7 +88,7 @@ public class CatalogObjectPersistenceTest {
         assertSurvivesRestart(Arrays.asList(
             "CREATE API INTEGRATION it_api API_PROVIDER = aws_api_gateway"
                 + " API_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r' API_KEY = 'k1'"
-                + " API_ALLOWED_PREFIXES = ('https://a.example.com/', 'https://b.example.com/') ENABLED = TRUE"
+                + " API_ALLOWED_PREFIXES = ('https://a1.execute-api.us-east-1.amazonaws.com/', 'https://b1.execute-api.us-east-1.amazonaws.com/') ENABLED = TRUE"
                 + " COMMENT = 'c1'",
             "CREATE NOTIFICATION INTEGRATION it_ns TYPE = EMAIL ENABLED = FALSE",
             "CREATE CATALOG INTEGRATION ice_cat CATALOG_SOURCE = OBJECT_STORE TABLE_FORMAT = ICEBERG ENABLED = TRUE",
@@ -116,10 +116,10 @@ public class CatalogObjectPersistenceTest {
         assertKeepsEveryCell(Arrays.asList(
             "CREATE API INTEGRATION it_ident API_PROVIDER = aws_api_gateway"
                 + " API_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r'"
-                + " API_ALLOWED_PREFIXES = ('https://a.example.com/') ENABLED = TRUE",
+                + " API_ALLOWED_PREFIXES = ('https://a1.execute-api.us-east-1.amazonaws.com/') ENABLED = TRUE",
             "CREATE OR REPLACE API INTEGRATION it_ident API_PROVIDER = aws_api_gateway"
                 + " API_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r'"
-                + " API_ALLOWED_PREFIXES = ('https://a.example.com/') ENABLED = TRUE",
+                + " API_ALLOWED_PREFIXES = ('https://a1.execute-api.us-east-1.amazonaws.com/') ENABLED = TRUE",
             "CREATE EXTERNAL VOLUME ev_ident " + LOCATIONS),
             Arrays.asList("DESCRIBE INTEGRATION it_ident", "DESCRIBE EXTERNAL VOLUME ev_ident"));
     }
@@ -410,7 +410,7 @@ public class CatalogObjectPersistenceTest {
     public void creationTimesGrantTimesAndUrlIdsSurviveARestart() {
         assertKeepsEveryCell(Arrays.asList(
             "CREATE API INTEGRATION it_api API_PROVIDER = aws_api_gateway"
-                + " API_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r' API_ALLOWED_PREFIXES = ('https://a.example.com/')"
+                + " API_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r' API_ALLOWED_PREFIXES = ('https://a1.execute-api.us-east-1.amazonaws.com/')"
                 + " ENABLED = TRUE",
             "CREATE EXTERNAL VOLUME ev_a " + LOCATIONS,
             "CREATE COMPUTE POOL p1 MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = CPU_X64_XS"

@@ -74,8 +74,19 @@ public class CopyUnloadOptionSurfaceTest extends BaseDatabaseTest {
 
         final ResultSet listed = engine.executeQuery("LIST @ust PATTERN = '.*u1.*'");
         assertEquals("ust/u1/data_0_0_0.csv.gz", cell(listed, 0, "name"));
-        // A listing shows the size the stage stores the file at: its 28 bytes padded to the cipher's block.
-        assertEquals("32", String.valueOf(cell(listed, 0, "size")));
+        // A stage encrypted on the server side lists the file's own size.
+        assertEquals("28", String.valueOf(cell(listed, 0, "size")));
+    }
+
+    /** Any other internal stage lists the size it stores the file at: its 28 bytes padded to the cipher's block. */
+    @Test
+    public void aStageEncryptedOnTheClientSideListsTheSizeItStores() {
+        engine.execute("CREATE OR REPLACE STAGE ufull");
+        engine.executeQuery("COPY INTO @ufull/u1/ FROM ut");
+        assertEquals("32", String.valueOf(cell(engine.executeQuery("LIST @ufull"), 0, "size")));
+        engine.execute("CREATE OR REPLACE STAGE ufull ENCRYPTION = (TYPE = 'SNOWFLAKE_FULL')");
+        engine.executeQuery("COPY INTO @ufull/u1/ FROM ut");
+        assertEquals("32", String.valueOf(cell(engine.executeQuery("LIST @ufull"), 0, "size")));
     }
 
     @Test
@@ -97,7 +108,7 @@ public class CopyUnloadOptionSurfaceTest extends BaseDatabaseTest {
         assertEquals(1, listed.getRowCount());
         // The name is used verbatim — the gzipped bytes get no .gz suffix.
         assertEquals("ust/u7/out.csv", cell(listed, 0, "name"));
-        assertEquals("32", String.valueOf(cell(listed, 0, "size")));
+        assertEquals("28", String.valueOf(cell(listed, 0, "size")));
     }
 
     @Test

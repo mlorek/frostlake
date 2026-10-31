@@ -65,7 +65,8 @@ public class NextvalShapeReadTest extends MeasuredCellsTestSupport {
         assertAnswer("View SV8 successfully created.",
             "CREATE OR REPLACE VIEW sv8 AS SELECT sq8.NEXTVAL AS n, 1 AS one");
         assertAnswer("1", "SELECT one FROM sv8");
-        assertAnswer("Sequence SQ9 successfully created.", "CREATE OR REPLACE SEQUENCE sq9");
+        // ORDER hands the numbers out one after the other, where the default may jump from one batch to the next.
+        assertAnswer("Sequence SQ9 successfully created.", "CREATE OR REPLACE SEQUENCE sq9 ORDER");
         assertAnswer("View SV9 successfully created.", "CREATE OR REPLACE VIEW sv9 AS SELECT sq9.NEXTVAL AS n");
         assertAnswer("1", "SELECT n FROM sv9");
         assertAnswer("2", "SELECT n FROM sv9");

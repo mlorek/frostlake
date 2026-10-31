@@ -111,8 +111,7 @@ public class RestMissingObjectSentenceTest extends BaseRestTest {
                 + "primary role <ROLE> must have at least one privilege granted on cortex search service "
                 + "rest_ms.s1.nosuch_cs_r7rest."},
         {"GET", "/api/v2/users/NOSUCH_USER_R7REST",
-            "\nuser 'nosuch_user_r7rest' does not exist or not authorized. your primary role <ROLE> must "
-                + "have usage granted on account <ACCOUNT>."},
+            "\nuser 'nosuch_user_r7rest' does not exist or not authorized."},
         {"GET", "/api/v2/roles/NOSUCH_ROLE_R7REST/grants-of",
             "\nrole 'nosuch_role_r7rest' does not exist or not authorized. your primary role <ROLE> must "
                 + "have at least one privilege granted on role nosuch_role_r7rest."},

@@ -114,6 +114,7 @@ public class CreateNamespaceHandler implements CommandHandler {
             SystemDatabase.refuseChange(dbName);
         }
         final NamespaceProperties properties = NamespaceProperties.ofDatabase(ctx.databaseProperty());
+        properties.requireCatalogParameter(catalog);
         // AT | BEFORE is resolved, and the source required to have existed then, before anything changes, so a
         // refused point leaves even a database it would replace in place.
         final ClonePoint point = ctx.CLONE() != null && ctx.timeTravelClause() != null
@@ -316,6 +317,7 @@ public class CreateNamespaceHandler implements CommandHandler {
             return null;
         }
         final NamespaceProperties properties = NamespaceProperties.ofSchema(ctx.schemaProperty());
+        properties.requireCatalogParameter(catalog);
         final String schemaName = getText(ctx.qualifiedName(0));
         // A schema name has at most two parts (db..s counts three): live refuses a longer one with its
         // generic sentence, IF NOT EXISTS or not, and reads a leading locator of this account.
@@ -541,6 +543,7 @@ public class CreateNamespaceHandler implements CommandHandler {
             throw new RuntimeException("Unsupported feature 'CREATE OR ALTER SCHEMA with CLONE'.");
         }
         final NamespaceProperties properties = NamespaceProperties.ofSchema(ctx.schemaProperty());
+        properties.requireCatalogParameter(catalog);
         if (!properties.tags().isEmpty()) {
             throw new RuntimeException(SqlCompilationError.of("options CREATE OR ALTER and TAG are incompatible."));
         }

@@ -134,13 +134,34 @@ public class ExternalVolumeStatementsTest extends BaseDatabaseTest {
     @Test
     public void locationRefusals() {
         engine.executeQuery("CREATE EXTERNAL VOLUME ev_e STORAGE_LOCATIONS = ((NAME = 'only' STORAGE_PROVIDER = 'S3'"
-            + " STORAGE_BASE_URL = 's3://b/' STORAGE_AWS_ROLE_ARN = 'arn:r'))");
+            + " STORAGE_BASE_URL = 's3://b/' STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r'))");
         refused("ALTER EXTERNAL VOLUME ev_e ADD STORAGE_LOCATION = (NAME = 'only' STORAGE_PROVIDER = 'S3'"
-            + " STORAGE_BASE_URL = 's3://c/' STORAGE_AWS_ROLE_ARN = 'arn:r')", "Storage location 'only' already"
-            + " exists. Please supply a different name or remove the existing storage location first.");
+            + " STORAGE_BASE_URL = 's3://c/' STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::1:role/r')", "Storage location 'only'"
+            + " already exists. Please supply a different name or remove the existing storage location first.");
+        refused("ALTER EXTERNAL VOLUME ev_e ADD STORAGE_LOCATION = (NAME = 'only' STORAGE_PROVIDER = 'S3'"
+            + " STORAGE_BASE_URL = 's3://c/' STORAGE_AWS_ROLE_ARN = 'arn:r')",
+            "invalid value ''arn:r'' for property 'STORAGE_AWS_ROLE_ARN'");
         refused("ALTER EXTERNAL VOLUME ev_e REMOVE STORAGE_LOCATION 'only'", "Storage location 'only' is the only"
             + " storage location on this external volume and hence cannot be removed.");
         refused("UNDROP EXTERNAL VOLUME ev_never", "External_volume EV_NEVER did not exist or was purged.");
         engine.executeQuery("DROP EXTERNAL VOLUME ev_e");
+    }
+
+    /** A role's ARN names an IAM role of a numbered account, in any partition and any case. */
+    @Test
+    public void aRoleArnNamesAnIamRole() {
+        final String location = "CREATE EXTERNAL VOLUME ev_f STORAGE_LOCATIONS = ((NAME = 'only'"
+            + " STORAGE_PROVIDER = 'S3' STORAGE_BASE_URL = 's3://b/' STORAGE_AWS_ROLE_ARN = '%s'))";
+        final String[] notRoles = {"arn:r", "abc", "", "arn:aws:iam::1:user/r", "arn:aws:iam:::role/r",
+            "arn:aws:s3:::b", "arn:aws:iam::abc:role/r", "arn:aws:sts::1:role/r", "xarn:aws:iam::1:role/r"};
+        for (final String arn : notRoles) {
+            refused(String.format(location, arn), "invalid value ''" + arn + "'' for property 'STORAGE_AWS_ROLE_ARN'");
+        }
+        final String[] roles = {"arn:aws-us-gov:iam::1:role/r", "ARN:AWS:IAM::1:ROLE/R",
+            "arn:aws:iam::123456789012:role/a/b"};
+        for (final String arn : roles) {
+            engine.executeQuery(String.format(location, arn));
+            engine.executeQuery("DROP EXTERNAL VOLUME ev_f");
+        }
     }
 }

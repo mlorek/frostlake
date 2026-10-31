@@ -97,29 +97,52 @@ public class PasswordPolicyTest extends BaseDatabaseTest {
         engine.execute("ALTER PASSWORD POLICY IF EXISTS pp_c SET PASSWORD_HISTORY = 2");
     }
 
+    /**
+     * A policy is shown on what it is set on, and while it is set anywhere it cannot be dropped. A user's listing names
+     * only a policy set on the user itself: with none, it lists the built-in one, the account's policy notwithstanding.
+     * The account's policy is unset whatever happens, because on a live account it outlives the test and its database.
+     */
     @Test
     public void attachmentsAreRecordedAndShownOnTheirTarget() {
-        engine.execute("CREATE PASSWORD POLICY pp_d");
-        engine.execute("CREATE USER pp_user");
-        engine.execute("ALTER ACCOUNT SET PASSWORD POLICY pp_d");
-        ResultSet on = engine.executeQuery("SHOW PASSWORD POLICIES ON ACCOUNT");
-        assertEquals("ACCOUNT", cell(on, soleRowWhere(on, "name", "PP_D"), "set_on"));
-        engine.execute("ALTER USER pp_user SET PASSWORD POLICY test_db.test_schema.pp_d");
-        on = engine.executeQuery("SHOW PASSWORD POLICIES ON USER pp_user");
-        assertEquals("USER", cell(on, soleRowWhere(on, "name", "PP_D"), "set_on"));
-        assertEquals("Object PP_USER already has a PASSWORD_POLICY. Only one PASSWORD_POLICY is allowed at a time.",
-            refusal("ALTER USER pp_user SET PASSWORD POLICY pp_d"));
-        engine.execute("ALTER USER pp_user SET PASSWORD POLICY pp_d FORCE");
-        assertTrue(refusal("DROP PASSWORD POLICY pp_d").contains(
-            "Policy PP_D cannot be dropped/replaced as it is associated with one or more entities."));
-        engine.execute("ALTER USER pp_user UNSET PASSWORD POLICY");
-        on = engine.executeQuery("SHOW PASSWORD POLICIES ON USER pp_user");
-        assertEquals("ACCOUNT", cell(on, soleRowWhere(on, "name", "PP_D"), "set_on"), "the account's policy governs");
-        engine.execute("DROP PASSWORD POLICY pp_d");
-        on = engine.executeQuery("SHOW PASSWORD POLICIES ON ACCOUNT");
-        assertEquals("SYSTEM", cell(on, soleRowWhere(on, "name", "BUILT-IN"), "set_on"));
-        assertTrue(refusal("ALTER ACCOUNT SET PASSWORD POLICY pp_d").contains(
-            "Password policy 'TEST_DB.TEST_SCHEMA.PP_D' does not exist or not authorized."));
+        try {
+            engine.execute("CREATE PASSWORD POLICY pp_d");
+            engine.execute("CREATE USER pp_user");
+            engine.execute("ALTER ACCOUNT SET PASSWORD POLICY pp_d");
+            ResultSet on = engine.executeQuery("SHOW PASSWORD POLICIES ON ACCOUNT");
+            assertEquals("ACCOUNT", cell(on, soleRowWhere(on, "name", "PP_D"), "set_on"));
+            engine.execute("ALTER USER pp_user SET PASSWORD POLICY test_db.test_schema.pp_d");
+            on = engine.executeQuery("SHOW PASSWORD POLICIES ON USER pp_user");
+            assertEquals("USER", cell(on, soleRowWhere(on, "name", "PP_D"), "set_on"));
+            assertEquals("Object PP_USER already has a PASSWORD_POLICY. Only one PASSWORD_POLICY is allowed at a time.",
+                refusal("ALTER USER pp_user SET PASSWORD POLICY pp_d"));
+            engine.execute("ALTER USER pp_user SET PASSWORD POLICY pp_d FORCE");
+            assertTrue(refusal("DROP PASSWORD POLICY pp_d").contains(
+                "Policy PP_D cannot be dropped/replaced as it is associated with one or more entities."));
+            engine.execute("ALTER USER pp_user UNSET PASSWORD POLICY");
+            on = engine.executeQuery("SHOW PASSWORD POLICIES ON USER pp_user");
+            assertEquals("SYSTEM", cell(on, soleRowWhere(on, "name", "BUILT-IN"), "set_on"),
+                "a user with no policy of its own lists the built-in one");
+            assertTrue(refusal("DROP PASSWORD POLICY pp_d").contains(
+                "Policy PP_D cannot be dropped/replaced as it is associated with one or more entities."),
+                "the account still holds it");
+            engine.execute("ALTER ACCOUNT UNSET PASSWORD POLICY");
+            engine.execute("DROP PASSWORD POLICY pp_d");
+            on = engine.executeQuery("SHOW PASSWORD POLICIES ON ACCOUNT");
+            assertEquals("SYSTEM", cell(on, soleRowWhere(on, "name", "BUILT-IN"), "set_on"));
+            assertTrue(refusal("ALTER ACCOUNT SET PASSWORD POLICY pp_d").contains(
+                "Password policy 'TEST_DB.TEST_SCHEMA.PP_D' does not exist or not authorized."));
+        } finally {
+            unsetAccountPolicy();
+        }
+    }
+
+    /** Takes any password policy off the account, so none outlives the test. */
+    private void unsetAccountPolicy() {
+        try {
+            engine.execute("ALTER ACCOUNT UNSET PASSWORD POLICY");
+        } catch (final RuntimeException nothingSet) {
+            // Already unset: the statement has nothing to take off.
+        }
     }
 
     @Test

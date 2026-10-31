@@ -16,6 +16,8 @@
 
 package dev.frostlake.query;
 
+import java.nio.charset.StandardCharsets;
+
 import org.junit.jupiter.api.Test;
 
 /**
@@ -27,11 +29,11 @@ public class StagedFileColumnNamingTest extends MeasuredCellsTestSupport {
     @Test
     public void stagedRefusalColumns() {
         engine.execute("CREATE OR REPLACE STAGE st2489");
-        engine.execute("PUT file:///home/nous/.claude/jobs/6e695449/tmp/w240/enc2/bad.json @st2489 "
-            + "AUTO_COMPRESS=FALSE");
-        engine.execute("PUT file:///home/nous/.claude/jobs/6e695449/tmp/w240/enc2/bad.xml @st2489 AUTO_COMPRESS=FALSE");
-        engine.execute("PUT file:///home/nous/.claude/jobs/6e695449/tmp/w240/enc3/pos2.csv @st2489 "
-            + "AUTO_COMPRESS=FALSE");
+        // The fixtures, written by the test: a lone 0xE9 (Latin-1 e-acute, no UTF-8 sequence) inside a JSON
+        // string and an XML text, and a CSV field whose enclosure is followed by 'x' instead of the delimiter.
+        stageLocalBytes("st2489", "bad.json", latin1("{\"a\":\"caf\u00e9\",\"n\":1}\n"));
+        stageLocalBytes("st2489", "bad.xml", latin1("<root><a>caf\u00e9</a></root>"));
+        stageLocalBytes("st2489", "pos2.csv", latin1("b||2;\"a\"x||1;"));
         engine.execute("CREATE OR REPLACE FILE FORMAT fj2489 TYPE = JSON");
         engine.execute("CREATE OR REPLACE FILE FORMAT fx2489 TYPE = XML");
         engine.execute("CREATE OR REPLACE FILE FORMAT fc2489 TYPE = CSV FIELD_DELIMITER = '||' RECORD_DELIMITER = "
@@ -82,5 +84,10 @@ public class StagedFileColumnNamingTest extends MeasuredCellsTestSupport {
                 + "character 9 |   Row 2, column \"TRANSIENT_STAGE_TABLE\"[\"$1\":1]",
             "SELECT t.$1 FROM @st2489/pos2.csv (FILE_FORMAT => 'fc2489') t");
         engine.execute("ALTER SESSION UNSET USE_CACHED_RESULT");
+    }
+
+    /** The text's bytes in Latin-1, one byte a character, so that an e-acute is the single byte 0xE9. */
+    private static byte[] latin1(final String text) {
+        return text.getBytes(StandardCharsets.ISO_8859_1);
     }
 }

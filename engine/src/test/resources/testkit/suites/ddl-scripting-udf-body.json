@@ -96,9 +96,8 @@
       {"sql": "SELECT f_bad_cast()",
        "expect": {"error": {"messageContains": "Numeric value 'abc' is not recognized"}}}
     ]},
-    {"name": "semi-structured-return-type-is-rejected-at-call-time", "steps": [
-      {"sql": "CREATE FUNCTION f_variant() RETURNS VARIANT AS $$ BEGIN RETURN 1; END $$"},
-      {"sql": "SELECT f_variant()",
+    {"name": "semi-structured-return-type-is-rejected-at-create", "steps": [
+      {"sql": "CREATE FUNCTION f_variant() RETURNS VARIANT AS $$ BEGIN RETURN 1; END $$",
        "expect": {"error": {"messageContains": "Unsupported return type for Snowscript UDF: VARIANT"}}}
     ]},
     {"name": "scalar-return-types-other-than-semi-structured-work", "steps": [
@@ -176,7 +175,7 @@
     {"name": "table-function-with-a-block-body-is-rejected", "steps": [
       {"sql": "CREATE TABLE tf_src (v INTEGER)"},
       {"sql": "CREATE FUNCTION f_table() RETURNS TABLE(x INT) AS $$ BEGIN RETURN (SELECT COUNT(*) FROM tf_src); END $$",
-       "expect": {"error": {"messageContains": "Compilation of SQL UDF failed"}}}
+       "expect": {"error": {"messageContains": "Unsupported return type for Snowscript UDF: TABLE return type"}}}
     ]},
     {"name": "udf-variables-do-not-clobber-a-calling-procedure", "steps": [
       {"sql": "CREATE FUNCTION f_own_x() RETURNS INT AS $$ DECLARE x INT DEFAULT 999; BEGIN RETURN x; END $$"},

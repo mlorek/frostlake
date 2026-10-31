@@ -98,11 +98,8 @@ public final class MissingObjectHint {
 
     /** What a role must have to see a missing object of this kind, or null when the kind carries no hint. */
     private static String wanted(final String kind, final String name, final String account) {
-        if ("Column".equals(kind)) {
+        if ("Column".equals(kind) || "User".equals(kind)) {
             return null;
-        }
-        if ("User".equals(kind)) {
-            return "USAGE granted on ACCOUNT " + account;
         }
         if ("Network rule".equals(kind)) {
             return "MONITOR granted on ACCOUNT " + account;

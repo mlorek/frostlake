@@ -119,7 +119,7 @@ public final class IntegrationCommandHandler {
         }
         final IntegrationKind kind = createdKind(ctx.createdIntegrationKind());
         final Map<String, PropertyValue> properties = ObjectProperties.read(ctx.objectProperty());
-        IntegrationRules.checkCreate(kind, properties);
+        IntegrationRules.checkCreate(kind, properties, cloudRegion());
         if (kind == IntegrationKind.EXTERNAL_ACCESS) {
             resolveExternalAccess(properties);
         }
@@ -160,7 +160,7 @@ public final class IntegrationCommandHandler {
             }
         } else if (action.SET() != null) {
             final Map<String, PropertyValue> properties = ObjectProperties.read(action.objectProperty());
-            IntegrationRules.checkSet(integration, properties);
+            IntegrationRules.checkSet(integration, properties, cloudRegion());
             if (integration.getKind() == IntegrationKind.EXTERNAL_ACCESS) {
                 resolveExternalAccess(properties);
             }
@@ -655,6 +655,12 @@ public final class IntegrationCommandHandler {
         final String region = queryExecutor.getEngineConfig().getRegion().toUpperCase(Locale.ROOT);
         return region.startsWith("AWS_") ? region.substring("AWS_".length()).toLowerCase(Locale.ROOT).replace('_', '-')
             : "";
+    }
+
+    /** The account's region as a refusal names it: {@code aws-eu-west-1} for an account in AWS_EU_WEST_1. */
+    private String cloudRegion() {
+        final String region = queryExecutor.getEngineConfig().getRegion();
+        return region.substring(region.lastIndexOf('.') + 1).toLowerCase(Locale.ROOT).replace('_', '-');
     }
 
     /** The value with every secret it holds, at any depth, masked. */

@@ -30,43 +30,34 @@ public class UserNetworkPolicyPropertyTest extends MeasuredCellsTestSupport {
     public void thePropertyStandsAmongTheOthers() {
         try {
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized.",
                 "ALTER USER nosuch_user_p1308 SET NETWORK_POLICY = 'x'");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized.",
                 "ALTER USER nosuch_user_p1308 SET NETWORK_POLICY = x");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized.",
                 "ALTER USER nosuch_user_p1308 SET NETWORK_POLICY = x COMMENT = 'c'");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized.",
                 "ALTER USER nosuch_user_p1308 SET COMMENT = 'c' NETWORK_POLICY = x");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized.",
                 "ALTER USER nosuch_user_p1308 SET COMMENT = 'c', NETWORK_POLICY = x");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized.",
                 "ALTER USER nosuch_user_p1308 UNSET NETWORK_POLICY");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized.",
                 "ALTER USER nosuch_user_p1308 UNSET NETWORK_POLICY, COMMENT");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized.",
                 "ALTER USER nosuch_user_p1308 UNSET COMMENT, NETWORK_POLICY");
             assertAnswer(
                 "Statement executed successfully.",
                 "ALTER USER IF EXISTS nosuch_user_p1308 SET NETWORK_POLICY = x");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized.",
                 "SHOW PARAMETERS LIKE 'NETWORK_POLICY' IN USER nosuch_user_p1308");
             assertAnswer(
                 "REFUSED SQL compilation error: | invalid value [5] for parameter 'NETWORK_POLICY'",
@@ -94,12 +85,10 @@ public class UserNetworkPolicyPropertyTest extends MeasuredCellsTestSupport {
     public void listsCommasAndValues() {
         try {
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized.",
                 "ALTER USER nosuch_user_p1308 SET COMMENT = 'c', FIRST_NAME = 'f'");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized.",
                 "ALTER USER nosuch_user_p1308 SET COMMENT = 'c' FIRST_NAME = 'f'");
             assertAnswer(
                 "REFUSED SQL compilation error: | syntax error line 1 at position 33 unexpected 'COMMENT'.",
@@ -120,8 +109,7 @@ public class UserNetworkPolicyPropertyTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: | duplicate property 'COMMENT';",
                 "ALTER USER nosuch_user_p1308 SET COMMENT = 'c', COMMENT = 'd'");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized.",
                 "ALTER USER nosuch_user_p1308 SET NETWORK_POLICY = 'x', COMMENT = 'c', FIRST_NAME = 'f'");
             assertAnswer(
                 "Statement executed successfully.",
@@ -136,16 +124,13 @@ public class UserNetworkPolicyPropertyTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: | invalid value [TRUE] for parameter 'NETWORK_POLICY'",
                 "ALTER USER nosuch_user_p1308 SET NETWORK_POLICY = TRUE");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized.",
                 "ALTER USER nosuch_user_p1308 SET NETWORK_POLICY = NULL");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized.",
                 "ALTER USER nosuch_user_p1308 SET COMMENT = 'c' NETWORK_POLICY = 'a b'");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_P1308' does not exist or not authorized.",
                 "ALTER USER nosuch_user_p1308 SET NETWORK_POLICY = \"x y\" COMMENT = 'c'");
             assertAnswer(
                 "REFUSED SQL compilation error: | invalid property 'NOSUCH_PROPERTY' for 'USER'",

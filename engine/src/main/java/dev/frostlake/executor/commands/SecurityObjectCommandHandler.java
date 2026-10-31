@@ -913,8 +913,9 @@ public final class SecurityObjectCommandHandler {
         }
         // Dropping an object needs OWNERSHIP of it, with or without IF EXISTS.
         queryExecutor.requireOwnership(kind.name(), nameParts(ctx, kind, name), null);
-        if (kind == SecurityObjectKind.PASSWORD_POLICY && isAttached(PASSWORD_POLICY_PREFIX + "USER|",
-                display(kind, schema, name))) {
+        // A password policy set on a user or on the account cannot be dropped (live-verified).
+        if (kind == SecurityObjectKind.PASSWORD_POLICY
+                && isAttached(PASSWORD_POLICY_PREFIX, display(kind, schema, name))) {
             throw policyInUse(name);
         }
         if (kind == SecurityObjectKind.NETWORK_POLICY) {
@@ -1668,7 +1669,11 @@ public final class SecurityObjectCommandHandler {
         return new ResultSet(listing.getColumns(), ordered);
     }
 
-    /** SHOW PASSWORD POLICIES ON ACCOUNT | ON USER u: the policy attached there, if any. */
+    /**
+     * SHOW PASSWORD POLICIES ON ACCOUNT | ON USER u: the policy attached there, if any. A user's listing names only a
+     * policy set on the user itself: with none, it lists the built-in one even while the account's policy governs
+     * the user (live-verified).
+     */
     private ResultSet showPasswordPoliciesOn(final FrostlakeParser.SecurityObjectListingContext ctx) {
         final String target;
         final String setOn;
@@ -1681,19 +1686,14 @@ public final class SecurityObjectCommandHandler {
             setOn = ACCOUNT;
         }
         final List<Row> rows = new ArrayList<>();
-        String attached = catalog.getSecurityObjects().attachment(PASSWORD_POLICY_PREFIX + target);
-        String level = setOn;
-        if (attached == null && !ACCOUNT.equals(target)) {
-            attached = catalog.getSecurityObjects().attachment(PASSWORD_POLICY_PREFIX + ACCOUNT);
-            level = ACCOUNT;
-        }
+        final String attached = catalog.getSecurityObjects().attachment(PASSWORD_POLICY_PREFIX + target);
         if (attached != null) {
             final QualifiedName name = QualifiedName.of(SqlIdentifiers.canonicalTextParts(attached));
             final Schema schema = catalog.databaseExact(name.part(0)).schemaExact(name.part(1));
             final SecurityObject policy = schema.getSecurityObjects().get(SecurityObjectKind.PASSWORD_POLICY,
                 name.last());
             if (policy != null) {
-                rows.add(showRow(SecurityObjectKind.PASSWORD_POLICY, schema, policy, level));
+                rows.add(showRow(SecurityObjectKind.PASSWORD_POLICY, schema, policy, setOn));
             }
         }
         if (rows.isEmpty()) {

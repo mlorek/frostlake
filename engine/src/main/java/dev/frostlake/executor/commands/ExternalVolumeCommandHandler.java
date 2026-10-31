@@ -45,6 +45,7 @@ import java.util.Map;
 public final class ExternalVolumeCommandHandler {
 
     private static final List<String> PROVIDERS = Arrays.asList("S3", "S3GOV", "GCS", "AZURE", "S3COMPAT");
+
     private static final List<String> LOCATION_TAKES = Arrays.asList("NAME", "STORAGE_PROVIDER", "STORAGE_BASE_URL",
         "STORAGE_AWS_ROLE_ARN", "STORAGE_AWS_ACCESS_POINT_ARN", "STORAGE_AWS_EXTERNAL_ID", "ENCRYPTION",
         "USE_PRIVATELINK_ENDPOINT", "AZURE_TENANT_ID", "CREDENTIALS", "STORAGE_ENDPOINT");
@@ -205,6 +206,11 @@ public final class ExternalVolumeCommandHandler {
                 + "' for property 'STORAGE_PROVIDER'"));
         }
         properties.put("STORAGE_PROVIDER", PropertyValue.text(providerText));
+        final PropertyValue role = properties.get("STORAGE_AWS_ROLE_ARN");
+        if (role != null && (role.getText() == null || !IntegrationValueShapes.isIamRole(role.getText()))) {
+            throw new RuntimeException(SqlCompilationError.of("invalid value '" + role.getWritten()
+                + "' for property 'STORAGE_AWS_ROLE_ARN'"));
+        }
         final String name = properties.get("NAME").getText();
         for (final Map<String, PropertyValue> existing : volume.getStorageLocations()) {
             final PropertyValue existingName = existing.get("NAME");

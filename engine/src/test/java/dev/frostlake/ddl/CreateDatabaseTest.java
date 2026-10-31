@@ -31,10 +31,17 @@ public class CreateDatabaseTest extends BaseDatabaseTest {
 
     @Test
     public void testCreateDatabase() {
+        // Counted through SQL: engine.showDatabases() reads the in-memory catalog, which under SF_LIVE never sees
+        // the CREATE (see testMultipleDatabases).
         engine.execute("CREATE DATABASE new_db");
 
-        final ResultSet databases = engine.showDatabases();
-        assertTrue(databases.getRowCount() > 0, "Should have at least one database");
+        final ResultSet databases = engine.executeQuery("SHOW DATABASES LIKE 'NEW_DB'");
+        assertEquals(1, databases.getRowCount(), "The created database should be listed");
+
+        // CREATE DATABASE activates the new database, so step back before dropping it.
+        engine.execute("USE DATABASE test_db");
+        engine.execute("USE SCHEMA test_schema");
+        engine.execute("DROP DATABASE IF EXISTS new_db");
     }
 
     @Test

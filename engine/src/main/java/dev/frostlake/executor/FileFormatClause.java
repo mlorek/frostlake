@@ -44,14 +44,17 @@ public final class FileFormatClause {
     private final String formatName;
     private final String formatNameWritten;
     private final String comment;
+    private final WrittenFormatOption compression;
 
     private FileFormatClause(final FileFormat format, final String writtenType, final String formatName,
-                             final String formatNameWritten, final String comment) {
+                             final String formatNameWritten, final String comment,
+                             final WrittenFormatOption compression) {
         this.format = format;
         this.writtenType = writtenType;
         this.formatName = formatName;
         this.formatNameWritten = formatNameWritten;
         this.comment = comment;
+        this.compression = compression;
     }
 
     /**
@@ -71,7 +74,7 @@ public final class FileFormatClause {
         for (final FrostlakeParser.CopyFormatOptionContext option : options) {
             written.add(writtenOption(option));
         }
-        return apply(written, into, typeChangeable, namesAllowed);
+        return apply(written, into, typeChangeable, namesAllowed, true);
     }
 
     /**
@@ -89,7 +92,19 @@ public final class FileFormatClause {
         for (final FrostlakeParser.ParenOptionContext option : list.parenOption()) {
             written.add(writtenOption(option));
         }
-        return apply(written, into, true, namesAllowed);
+        return apply(written, into, true, namesAllowed, false);
+    }
+
+    /**
+     * Judge the COMPRESSION written beside a FORMAT_NAME by the type of the format it names, which the list itself
+     * could not tell (live-verified, on COPY's list).
+     *
+     * @param type the named format's type
+     */
+    public void judgeCompressionAs(final String type) {
+        if (compression != null) {
+            FileFormatSurfaces.requireLegalCompression(type, compression.value, compression.written);
+        }
     }
 
     /** The format the options were applied to. */
@@ -165,7 +180,8 @@ public final class FileFormatClause {
     }
 
     private static FileFormatClause apply(final List<WrittenFormatOption> options, final FileFormat into,
-                                          final boolean typeChangeable, final boolean namesAllowed) {
+                                          final boolean typeChangeable, final boolean namesAllowed,
+                                          final boolean codecByType) {
         final Set<String> seen = new HashSet<>();
         String writtenType = null;
         String formatName = null;
@@ -217,8 +233,10 @@ public final class FileFormatClause {
             }
         }
         if (compression != null) {
-            FileFormatSurfaces.requireLegalCompression(formatName == null || writtenType != null ? into.getType() : null,
-                compression.value, compression.written);
+            // A stage's list and a table's take any codec, whatever their type (live-verified).
+            final boolean typed = codecByType && (formatName == null || writtenType != null);
+            FileFormatSurfaces.requireLegalCompression(typed ? into.getType() : null, compression.value,
+                compression.written);
         }
         // Cross-type membership is judged against the EFFECTIVE type, wherever TYPE sat in the list; a list that
         // names a format and writes no type of its own is judged by the format it names.
@@ -230,6 +248,6 @@ public final class FileFormatClause {
                 }
             }
         }
-        return new FileFormatClause(into, writtenType, formatName, formatNameWritten, comment);
+        return new FileFormatClause(into, writtenType, formatName, formatNameWritten, comment, compression);
     }
 }

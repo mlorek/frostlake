@@ -2171,9 +2171,10 @@ public final class CopyCommandExecutor {
         if (targetColumns <= 1) {
             return;
         }
+        // XML is the one type MATCH_BY_COLUMN_NAME does not read, and the sentence leaves it out (live-verified).
         throw new RuntimeException("SQL compilation error:\n" + type + " file format can produce one and"
             + " only one column of type variant, object, or array. Load data into separate columns using"
-            + " the MATCH_BY_COLUMN_NAME copy option or copy with transformation.");
+            + ("XML".equals(type) ? "" : " the MATCH_BY_COLUMN_NAME copy option or") + " copy with transformation.");
     }
 
     private FileFormat resolveFileFormat(final String name) {
@@ -2513,6 +2514,9 @@ public final class CopyCommandExecutor {
         if (clause.formatName() != null) {
             FileFormatReference.require(executor.getCatalog(), SqlIdentifiers.canonicalText(clause.formatName()));
             takeNamedFormat(options, clause.formatName());
+            if (clause.writtenType() == null) {
+                clause.judgeCompressionAs(options.getType());
+            }
         }
         options.takeWritten(clause);
     }
@@ -2538,22 +2542,24 @@ public final class CopyCommandExecutor {
     }
 
     /**
-     * Refuse an unload to a type this engine cannot write, before anything is read or written. The account
-     * unloads CSV, JSON and PARQUET only (docs.snowflake.com, COPY INTO &lt;location&gt;: {@code TYPE = CSV | JSON |
-     * PARQUET}), so AVRO, ORC and XML are refused; PARQUET is the account's, but no Parquet writer ships here (the
-     * frostlake-formats module only reads it), so it is refused as this engine's limit rather than written as CSV.
+     * Refuse an unload to a type this engine cannot write, once the source and the stage are found and before
+     * anything is written. The account unloads CSV, JSON and PARQUET only, and names any other type as it was
+     * written, a type a format or a stage holds as that holds it (live-verified); PARQUET is the account's, but no
+     * Parquet writer ships here (the frostlake-formats module only reads it), so it is refused as this engine's
+     * limit rather than written as CSV.
      */
-    private static void requireUnloadableType(final String fileFormat) {
-        final String type = fileFormat.toUpperCase(Locale.ROOT);
+    private void requireUnloadableType(final String written, final String location) {
+        final String type = written.toUpperCase(Locale.ROOT);
         if ("CSV".equals(type) || "JSON".equals(type)) {
             return;
         }
+        executor.resolveStagePrefix(location);
         if ("PARQUET".equals(type)) {
             throw new RuntimeException("COPY INTO location: file format type 'PARQUET' is not supported by this"
                 + " engine for unloading (supported: CSV, JSON)");
         }
-        throw new RuntimeException("COPY INTO location: file format type '" + type
-            + "' cannot be unloaded (supported for unloading: CSV, JSON, PARQUET)");
+        throw new RuntimeException(SqlCompilationError.inline("Unload not yet implemented for file format '"
+            + written + "'"));
     }
 
     private Object executeCopyIntoStage(final FrostlakeParser.CopyIntoStatementContext ctx, final String location,
@@ -2645,7 +2651,6 @@ public final class CopyCommandExecutor {
         if (unloadOptions.getFileExtension() != null) {
             fileExtension = unloadOptions.getFileExtension();
         }
-        requireUnloadableType(fileFormat);
         final CsvUnloadWriter csv = new CsvUnloadWriter(unloadOptions,
             executor.getFunctionRegistry().getFunction("TO_VARCHAR"));
 
@@ -2654,7 +2659,7 @@ public final class CopyCommandExecutor {
         if (fromSelect != null) {
             data = executor.executeSelectFromContext(fromSelect);
         } else if (fromTable != null) {
-            final Table sourceTable = executor.getCatalog().resolveTable(fromTable);
+            final Table sourceTable = executor.getCatalog().resolveTableAsWritten(fromTable, "Object");
             // An unload reads its table as a query does, so it needs SELECT on it as the query form does
             // (documented: COPY INTO <location> requires SELECT on the table it unloads).
             executor.requireSelect(fromTable);
@@ -2675,6 +2680,8 @@ public final class CopyCommandExecutor {
         } else {
             throw new RuntimeException("COPY INTO " + location + " requires a FROM clause");
         }
+        requireUnloadableType(unloadOptions.getWrittenType() != null ? unloadOptions.getWrittenType() : fileFormat,
+            location);
 
         final boolean json = "JSON".equalsIgnoreCase(fileFormat);
         final int rowsUnloaded = data.getRows().size();

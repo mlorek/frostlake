@@ -69,15 +69,16 @@ public class ExternalFunctionAndGitRepositoryTest extends MeasuredCellsTestSuppo
     public void anExternalFunctionIsKeptAndItsCallRefused() {
         assumeFalse(isLiveSnowflake(), "no API integration is created on the account");
         answer("CREATE OR REPLACE API INTEGRATION ef_api1450 API_PROVIDER = aws_api_gateway API_AWS_ROLE_ARN = "
-            + "'arn:aws:iam::1:role/r' API_ALLOWED_PREFIXES = ('https://example.com/') ENABLED = TRUE");
+            + "'arn:aws:iam::1:role/r' API_ALLOWED_PREFIXES = ('https://a1.execute-api.us-east-1.amazonaws.com/') ENABLED = TRUE");
         answer("CREATE OR REPLACE API INTEGRATION ef_git1450 API_PROVIDER = git_https_api API_ALLOWED_PREFIXES = "
             + "('https://github.com/') ENABLED = TRUE");
         answer("CREATE OR REPLACE NOTIFICATION INTEGRATION ef_ns1450 TYPE = EMAIL ENABLED = TRUE");
         try {
             assertCells(new String[][] {
-                {F + "API_INTEGRATION = ef_api1450 AS 'https://example.com/x'", "Function F1450 successfully created."},
+                {F + "API_INTEGRATION = ef_api1450 AS 'https://a1.execute-api.us-east-1.amazonaws.com/x'",
+                    "Function F1450 successfully created."},
                 {"SELECT f1450(1)", "REFUSED External function F1450 cannot be called: the remote service at "
-                    + "https://example.com/x is not reached from this engine."},
+                    + "https://a1.execute-api.us-east-1.amazonaws.com/x is not reached from this engine."},
                 {F + "API_INTEGRATION = ef_ns1450 AS 'https://example.com/x'", "REFUSED SQL compilation error: | "
                     + "Integration 'EF_NS1450' is not an API integration."},
                 {F + "API_INTEGRATION = ef_git1450 AS 'https://example.com/x'", "REFUSED SQL compilation error: "

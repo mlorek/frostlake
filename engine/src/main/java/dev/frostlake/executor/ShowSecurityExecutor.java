@@ -28,6 +28,7 @@ import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import java.time.Instant;
@@ -266,6 +267,7 @@ final class ShowSecurityExecutor {
             {"SCIM_USER_NAME", "null", "null", "User name of an user (required for SCIM provisioning)"},
             {"PASSWORD_LAST_SET_TIME", "null", "null", "The timestamp on which the last non-null password was set for the user. Default to null if no password has been set yet."},
             {"MINS_TO_BYPASS_SESSION_POLICY", "null", "null", "Temporarily bypass session policy for the given number of minutes."},
+            {"MINS_TO_BYPASS_INGRESS_POLICY", "null", "null", "Temporarily bypass ingress policy for the given number of minutes."},
             {"CUSTOM_LANDING_PAGE_URL", "null", "null", "Custom Landing Page of the user"},
             {"CUSTOM_LANDING_PAGE_URL_FLUSH_NEXT_UI_LOAD", "false", "false", "Whether or not to flush the custom landing page of the user on next UI load"},
             {"IS_FROM_ORGANIZATION_USER", "false", "false", "Whether the user is imported from an organization user."},
@@ -461,7 +463,7 @@ final class ShowSecurityExecutor {
         );
         final List<Row> rows = new ArrayList<>();
         if ("PUBLIC".equals(role.getName())) {
-            return new ResultSet(columns, rows);
+            return withExpiry(columns, rows);
         }
         for (final User user : catalog.getAllUsers()) {
             if (user.getGrantedRoles().contains(role.getName())) {
@@ -478,7 +480,7 @@ final class ShowSecurityExecutor {
                     holder.hasExplicitRoleGrant(role.getName()) ? holder.getRoleGrantor(role.getName()) : "")));
             }
         }
-        return new ResultSet(columns, rows);
+        return withExpiry(columns, rows);
     }
 
     /**
@@ -513,7 +515,7 @@ final class ShowSecurityExecutor {
                     "false", user.getRoleGrantor(roleName))));
             }
         }
-        return new ResultSet(columns, rows);
+        return withExpiry(columns, rows);
     }
 
     /**
@@ -539,7 +541,8 @@ final class ShowSecurityExecutor {
         }
         final List<Row> rows = new ArrayList<>();
         if (toUser) {
-            final User user = catalog.getUserExact(targetName);
+            final User user = UserLookup.asking(catalog, facade.getSecurityManager(), targetName,
+                Privilege.MANAGE_GRANTS);
             for (final String roleName : user.getGrantedRoles()) {
                 // Live Snowflake never surfaces PUBLIC membership here — re-probed on a real account
                 //: a fresh user shows zero grants, and after an EXPLICIT
@@ -592,7 +595,24 @@ final class ShowSecurityExecutor {
             }
             rows.addAll(new AccessControlListings(catalog).grantsTo(role, "ROLE", role.getName()).getRows());
         }
-        return new ResultSet(columns, AccessControlListings.sortedGrants(namedAccount(rows)));
+        final List<Row> sorted = AccessControlListings.sortedGrants(namedAccount(rows));
+        return toUser ? withExpiry(columns, sorted) : new ResultSet(columns, sorted);
+    }
+
+    /**
+     * A listing of what a role or a user holds, ended by the {@code expires_on} column the account gives it; no grant
+     * here expires, so its cells are NULL.
+     */
+    private static ResultSet withExpiry(final List<ResultSetColumn> columns, final List<Row> rows) {
+        final List<ResultSetColumn> expiring = new ArrayList<>(columns);
+        expiring.add(new ResultSetColumn("expires_on", DateTimeType.TIMESTAMP_LTZ));
+        final List<Row> out = new ArrayList<>();
+        for (final Row row : rows) {
+            final List<Object> values = new ArrayList<>(row.getValues());
+            values.add(null);
+            out.add(new Row(values));
+        }
+        return new ResultSet(expiring, out);
     }
 
     /**

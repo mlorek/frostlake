@@ -47,6 +47,7 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.TypeCategory;
 import dev.frostlake.types.VariantType;
 
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -73,6 +74,8 @@ import java.util.Set;
  * via the {@code ddl} back-reference.
  */
 public class CreateRoutineHandler implements CommandHandler {
+
+    private static final String UNSUPPORTED_SNOWSCRIPT_RETURN = "Unsupported return type for Snowscript UDF: ";
 
     /** The external function options a parenthesized list follows: HEADERS = (…) and CONTEXT_HEADERS = (…). */
     private static final Set<String> EXTERNAL_FUNCTION_LISTS = new HashSet<String>(Arrays.asList("HEADERS",
@@ -298,6 +301,13 @@ public class CreateRoutineHandler implements CommandHandler {
         if (functionLanguage(ctx) == UdfLanguage.SQL && !namesService(ctx)) {
             BindsInDefinition.rejectInBody(queryExecutor,
                 ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null);
+        }
+        // A Snowscript UDF returns neither a table nor a semi-structured value; the account says so before it reads
+        // what the body holds (live-verified).
+        if (!namesService(ctx) && functionLanguage(ctx) == UdfLanguage.SQL && ctx.bodyDefinition() != null
+                && RoutineBodyCompiler.readsAsSnowscript(queryExecutor,
+                    ddl.extractBodyDefinition(ctx.bodyDefinition()))) {
+            rejectSnowscriptReturnType(ctx);
         }
         // Compile the body first, as Snowflake does: a SQL UDF whose body does not parse is rejected at CREATE
         // time. Deliberately OUTSIDE the try below — a compilation error is not an "already exists" condition
@@ -1336,6 +1346,24 @@ public class CreateRoutineHandler implements CommandHandler {
      * timestamp flavours, BINARY, VARIANT, OBJECT, ARRAY and GEOGRAPHY are taken (live-verified).
      * MEMOIZABLE's own language refusal comes first, which is why this runs after it.
      */
+    /** Refuses what a Snowscript UDF cannot return, a type by its whole spelling. */
+    private void rejectSnowscriptReturnType(final FrostlakeParser.CreateStatementContext ctx) {
+        if (ctx.returnType() == null) {
+            return;
+        }
+        if (ctx.returnType().TABLE() != null) {
+            throw new RuntimeException(UNSUPPORTED_SNOWSCRIPT_RETURN + "TABLE return type");
+        }
+        if (ctx.returnType().dataTypeName() == null) {
+            return;
+        }
+        final DataType returned = columnParser.parseRoutineDataType(ctx.returnType().dataTypeName(),
+            ctx.returnType().typeParameters());
+        if (returned.getCategory() == TypeCategory.SEMI_STRUCTURED) {
+            throw new RuntimeException(UNSUPPORTED_SNOWSCRIPT_RETURN + returned);
+        }
+    }
+
     /**
      * A SQL table function must declare its columns: {@code RETURNS TABLE ()} is refused at CREATE, counting
      * the columns its query body produces — {@code Mismatch between declared return signature column count (0)

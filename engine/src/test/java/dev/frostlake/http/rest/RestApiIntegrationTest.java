@@ -28,7 +28,7 @@ public class RestApiIntegrationTest extends BaseRestTest {
 
     private static final String AWS = "{\"name\":\"%s\",\"api_hook\":{\"type\":\"AWS\","
         + "\"api_provider\":\"AWS_API_GATEWAY\",\"api_aws_role_arn\":\"arn:aws:iam::1:role/r\",\"api_key\":\"k\"},"
-        + "\"api_allowed_prefixes\":[\"https://a.example.com/\"],\"enabled\":true,\"comment\":\"%s\"}";
+        + "\"api_allowed_prefixes\":[\"https://a1.execute-api.us-east-1.amazonaws.com/\"],\"enabled\":true,\"comment\":\"%s\"}";
 
     @Test
     public void anApiIntegrationIsCreatedFetchedListedAndDropped() throws Exception {
@@ -40,7 +40,7 @@ public class RestApiIntegrationTest extends BaseRestTest {
         assertEquals("AWS_API_GATEWAY", fetched.path("api_hook").path("api_provider").asString());
         assertEquals("arn:aws:iam::1:role/r", fetched.path("api_hook").path("api_aws_role_arn").asString());
         assertEquals("\u263A", fetched.path("api_hook").path("api_key").asString(), "the key comes back masked");
-        assertEquals("https://a.example.com/", fetched.path("api_allowed_prefixes").get(0).asString());
+        assertEquals("https://a1.execute-api.us-east-1.amazonaws.com/", fetched.path("api_allowed_prefixes").get(0).asString());
         assertTrue(fetched.path("api_blocked_prefixes").isNull(), fetched.toString());
         assertTrue(fetched.path("enabled").asBoolean());
         assertEquals("first", fetched.path("comment").asString());
@@ -74,7 +74,7 @@ public class RestApiIntegrationTest extends BaseRestTest {
 
         ok(post("/api/v2/api-integrations", "{\"name\":\"ri_azure\",\"api_hook\":{\"type\":\"AZURE\","
             + "\"api_provider\":\"AZURE_API_MANAGEMENT\",\"azure_tenant_id\":\"t\",\"azure_ad_application_id\":\"a\"},"
-            + "\"api_allowed_prefixes\":[\"https://z/\"],\"enabled\":true}"));
+            + "\"api_allowed_prefixes\":[\"https://z.azure-api.net/\"],\"enabled\":true}"));
         assertEquals("a", ok(get("/api/v2/api-integrations/ri_azure")).path("api_hook")
             .path("azure_ad_application_id").asString());
         error(400, post("/api/v2/api-integrations", "{\"name\":\"ri_bad\",\"api_hook\":{\"type\":\"AWS\","
@@ -88,11 +88,12 @@ public class RestApiIntegrationTest extends BaseRestTest {
         assertEquals("created", ok(get("/api/v2/api-integrations/ri_put")).path("comment").asString());
         ok(put("/api/v2/api-integrations/ri_put", "{\"name\":\"ri_put\",\"api_hook\":{\"type\":\"AWS\","
             + "\"api_provider\":\"AWS_API_GATEWAY\",\"api_aws_role_arn\":\"arn:aws:iam::1:role/r2\"},"
-            + "\"api_allowed_prefixes\":[\"https://b/\"],\"api_blocked_prefixes\":[\"https://b/x\"],"
+            + "\"api_allowed_prefixes\":[\"https://b1.execute-api.us-east-1.amazonaws.com/\"],"
+            + "\"api_blocked_prefixes\":[\"https://b1.execute-api.us-east-1.amazonaws.com/x\"],"
             + "\"enabled\":false}"));
         final JsonNode fetched = ok(get("/api/v2/api-integrations/ri_put"));
         assertEquals("arn:aws:iam::1:role/r2", fetched.path("api_hook").path("api_aws_role_arn").asString());
-        assertEquals("https://b/x", fetched.path("api_blocked_prefixes").get(0).asString());
+        assertEquals("https://b1.execute-api.us-east-1.amazonaws.com/x", fetched.path("api_blocked_prefixes").get(0).asString());
         assertFalse(fetched.path("enabled").asBoolean());
         assertTrue(fetched.path("comment").isNull(), "a comment the body leaves out is unset: " + fetched);
         error(400, put("/api/v2/api-integrations/ri_put", "{\"name\":\"ri_put\",\"api_hook\":{\"type\":\"GIT\"},"
@@ -105,11 +106,11 @@ public class RestApiIntegrationTest extends BaseRestTest {
         ok(put("/api/v2/api-integrations/ri_full", String.format(AWS, "ri_full", "created")));
         ok(put("/api/v2/api-integrations/ri_full", "{\"name\":\"ri_full\",\"api_hook\":{\"type\":\"AWS\","
             + "\"api_provider\":\"AWS_API_GATEWAY\",\"api_aws_role_arn\":\"arn:aws:iam::1:role/r3\","
-            + "\"api_key\":\"k\"},\"api_allowed_prefixes\":[\"https://c/\"],"
-            + "\"api_blocked_prefixes\":[\"https://c/x\"],\"enabled\":true,\"comment\":\"kept\"}"));
+            + "\"api_key\":\"k\"},\"api_allowed_prefixes\":[\"https://c1.execute-api.us-east-1.amazonaws.com/\"],"
+            + "\"api_blocked_prefixes\":[\"https://c1.execute-api.us-east-1.amazonaws.com/x\"],\"enabled\":true,\"comment\":\"kept\"}"));
         final JsonNode fetched = ok(get("/api/v2/api-integrations/ri_full"));
         assertEquals("arn:aws:iam::1:role/r3", fetched.path("api_hook").path("api_aws_role_arn").asString());
-        assertEquals("https://c/x", fetched.path("api_blocked_prefixes").get(0).asString());
+        assertEquals("https://c1.execute-api.us-east-1.amazonaws.com/x", fetched.path("api_blocked_prefixes").get(0).asString());
         assertEquals("kept", fetched.path("comment").asString());
     }
 

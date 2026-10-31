@@ -20,6 +20,7 @@ import dev.frostlake.executor.ContainerParameterCatalog;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
+import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.ObjectParameters;
 import dev.frostlake.parser.FrostlakeParser;
 
@@ -155,6 +156,14 @@ final class NamespaceProperties {
     /** Whether the statement asks for a managed access schema. */
     boolean managedAccess() {
         return managedAccess;
+    }
+
+    /** Judges the catalog a CATALOG property names, as an ALTER's is (see {@link IcebergTables}). */
+    void requireCatalogParameter(final Catalog catalog) {
+        final String named = parameters.get("CATALOG");
+        if (named != null) {
+            IcebergTables.requireCatalogParameter(named, catalog);
+        }
     }
 
     /** Sets every named parameter on the created container. */

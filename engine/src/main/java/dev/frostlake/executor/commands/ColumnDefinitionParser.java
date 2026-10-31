@@ -675,26 +675,29 @@ public class ColumnDefinitionParser implements CommandHandler {
                 // INTEGER_LITERALs under identityProperties). ORDER/NOORDER parse but don't change values.
                 final FrostlakeParser.IdentityPropertiesContext props = constraint.identityProperties();
                 if (props != null) {
-                    if (props.signedInteger().size() == 2) {
+                    if (props.identityPair() != null) {
                         // (start, step) paren form
-                        identityStart = parseSignedInteger(props.signedInteger(0));
-                        identityIncrement = parseSignedInteger(props.signedInteger(1));
+                        identityStart = parseSignedInteger(props.identityPair().signedInteger(0));
+                        identityIncrement = parseSignedInteger(props.identityPair().signedInteger(1));
                     }
-                    identityOrdered = props.ORDER() != null;
-                    int orderings = 0;
+                    // An option written twice is refused where the second one stands (live-verified). The sequence
+                    // behind the column hands its numbers out in order, or not.
+                    final Set<String> sequenceOptions = new HashSet<>();
+                    for (final FrostlakeParser.IdentityOrderingContext ordering : props.identityOrdering()) {
+                        requireOnce(sequenceOptions, "SEQUENCE_ORDER");
+                        identityOrdered = ordering.ORDER() != null;
+                    }
                     for (final FrostlakeParser.IdentityWordOptionContext opt : props.identityWordOption()) {
                         if (opt.START() != null) {
+                            requireOnce(sequenceOptions, "SEQUENCE_START");
                             identityStart = parseSignedInteger(opt.signedInteger());
                         } else if (opt.INCREMENT() != null) {
+                            requireOnce(sequenceOptions, "SEQUENCE_INCREMENT");
                             identityIncrement = parseSignedInteger(opt.signedInteger());
                         } else {
-                            // The sequence behind the column hands its numbers out in order, or not.
-                            orderings++;
+                            requireOnce(sequenceOptions, "SEQUENCE_ORDER");
                             identityOrdered = opt.ORDER() != null;
                         }
-                    }
-                    if (orderings > 1) {
-                        throw new RuntimeException(SqlCompilationError.of("duplicate property 'SEQUENCE_ORDER';"));
                     }
                 }
             } else if (constraint.DEFAULT() != null) {
@@ -1905,6 +1908,13 @@ public class ColumnDefinitionParser implements CommandHandler {
     }
 
     /** The value of a signedInteger context ({@code MINUS? INTEGER_LITERAL}). */
+    /** Takes one option of an identity column's sequence, which may stand once. */
+    private static void requireOnce(final Set<String> taken, final String option) {
+        if (!taken.add(option)) {
+            throw new RuntimeException(SqlCompilationError.duplicateProperty(option));
+        }
+    }
+
     private static long parseSignedInteger(final FrostlakeParser.SignedIntegerContext ctx) {
         final long value = Long.parseLong(ctx.INTEGER_LITERAL().getText());
         return ctx.MINUS() != null ? -value : value;

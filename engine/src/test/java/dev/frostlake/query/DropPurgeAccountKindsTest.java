@@ -53,8 +53,7 @@ public class DropPurgeAccountKindsTest extends MeasuredCellsTestSupport {
                 + "in Catalog-Linked Databases. Table: 'NOSUCH_PURGE_ZQ_7F3A91'.",
             "DROP USER IF EXISTS nosuch_purge_zq_7f3a91 PURGE");
         assertAnswer(
-            "REFUSED SQL compilation error: | User 'NOSUCH_PURGE_ZQ_7F3A91' does not exist or not authorized. "
-                + "Your primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+            "REFUSED SQL compilation error: | User 'NOSUCH_PURGE_ZQ_7F3A91' does not exist or not authorized.",
             "DROP USER nosuch_purge_zq_7f3a91 PURGE");
         assertAnswer(
             "REFUSED SQL Compilation Error: DROP TABLE ... PURGE is only supported for unmanaged Iceberg tables "

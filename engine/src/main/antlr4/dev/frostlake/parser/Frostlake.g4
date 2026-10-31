@@ -407,6 +407,11 @@ import java.util.List;
 }
 
 @parser::members {
+    /** Refuses a token a statement read only to refuse it, where it stands (sequenceStrayToken). */
+    private void refuseStrayToken(final Token stray, final ParserRuleContext node) {
+        notifyErrorListeners(stray, "unexpected '" + stray.getText() + "'", new RefusedWordFault(this, node, true));
+    }
+
     /** Whether a token is one of the words a script's variable may be named by beside a plain name (variableName). */
     private static boolean variableWord(final int type) {
         return type == CASE || type == WHEN || type == CAST || type == DEFAULT || type == CONSTRAINT || type == JOIN
@@ -3418,8 +3423,15 @@ pipeRefreshOption
     : identifier EQ STRING_LITERAL
     ;
 
+// A token after the options that neither continues them nor ends the statement is refused where it stands:
+// CREATE SEQUENCE s START 1 x is 'x', where a bare word first, or after a comma, is read as a property's name and
+// refused where its '=' should be (live-verified).
 sequenceOptions
-    : sequenceOption (COMMA? sequenceOption)*
+    : sequenceOption (COMMA? sequenceOption)* sequenceStrayToken?
+    ;
+
+sequenceStrayToken
+    : stray=~(SEMI | COMMA | COMMENT | FLOW_ARROW) {refuseStrayToken($stray, $ctx);}
     ;
 
 sequenceOption
@@ -4538,16 +4550,34 @@ columnConstraint
     | collateClause
     ;
 
-// AUTOINCREMENT / IDENTITY seed + step: (start, step), or any mix of START <n> / INCREMENT <n> /
-// ORDER / NOORDER word options in any order (each may appear alone); values may be negative.
+// AUTOINCREMENT / IDENTITY seed + step: (start, step) with ORDER or NOORDER after it, or one of them before it, or any
+// mix of START <n> / INCREMENT <n> / ORDER / NOORDER word options in any order (each may appear alone, and one written
+// twice is the handler's to refuse); values may be negative (live-verified).
 identityProperties
-    : LPAREN signedInteger COMMA signedInteger RPAREN (ORDER | NOORDER)?
+    : identityPair identityOrdering* identityPairStray?
+    | identityOrdering identityPair identityPairStray?
     | identityWordOption+
     ;
 
+// What opens a pair and is no number ends the account's report at that word (live-verified).
+identityPair
+    : LPAREN signedInteger COMMA signedInteger RPAREN
+    | LPAREN stray=~(MINUS | INTEGER_LITERAL) {refuseStrayToken($stray, $ctx);}
+    ;
+
+identityOrdering
+    : ORDER
+    | NOORDER
+    ;
+
+// No word option and no second pair follows a pair: the account's report ends at the word (live-verified).
+identityPairStray
+    : stray=(START | LPAREN | ORDER | NOORDER) {refuseStrayToken($stray, $ctx);}
+    ;
+
 identityWordOption
-    : START signedInteger
-    | INCREMENT signedInteger
+    : START WITH? EQ? signedInteger
+    | INCREMENT BY? EQ? signedInteger
     | ORDER
     | NOORDER
     ;

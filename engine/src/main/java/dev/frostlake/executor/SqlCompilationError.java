@@ -340,6 +340,19 @@ public final class SqlCompilationError {
     }
 
     /**
+     * {@link #doesNotExist} for a user named by a statement that works under an account privilege, whose hint asks
+     * the role for it (see {@link UserLookup}).
+     *
+     * @param name the user's canonical name
+     * @param privilege the privilege, in words
+     * @return the message as the driver hands it to a client
+     */
+    public static String userDoesNotExistAsking(final String name, final String privilege) {
+        return of("User '" + spelledForRefusal("User", name) + "' does not exist or not authorized."
+            + PrivilegeHint.toHoldOnAccount(privilege));
+    }
+
+    /**
      * {@link #doesNotExist} for a DESCRIBE NETWORK RULE, whose hint lists every account privilege that would let
      * the role read a rule, one sentence each, where an ALTER or a DROP of a missing rule asks for MONITOR alone
      * (live-verified).

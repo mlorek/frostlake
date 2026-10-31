@@ -576,8 +576,8 @@ public class SecurityManager {
     /**
      * Whether the session holds a privilege on the account: one of its roles (see {@link #sessionRights}) was granted
      * it on the account, or is a system role that holds it from the start - ACCOUNTADMIN every privilege on the
-     * account, USERADMIN, and so SECURITYADMIN above it, CREATE USER and CREATE ROLE (documented). The SYSTEM user
-     * holds every one, as does anything while security checks are off.
+     * account, SECURITYADMIN MANAGE GRANTS, USERADMIN, and so SECURITYADMIN above it, CREATE USER and CREATE ROLE
+     * (documented). The SYSTEM user holds every one, as does anything while security checks are off.
      *
      * @param privilege the privilege the statement needs
      * @return whether the statement may go on
@@ -599,6 +599,9 @@ public class SecurityManager {
         }
         if ((privilege == Privilege.CREATE_USER || privilege == Privilege.CREATE_ROLE) && roles.contains("USERADMIN")) {
             return true;
+        }
+        if (privilege == Privilege.MANAGE_GRANTS) {
+            return managesGrants(roles);
         }
         return holds(holdersUnder(roles), "ACCOUNT", "ACCOUNT", privilege);
     }

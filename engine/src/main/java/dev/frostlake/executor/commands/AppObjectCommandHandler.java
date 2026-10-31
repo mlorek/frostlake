@@ -209,6 +209,11 @@ public class AppObjectCommandHandler {
                 requireCopiedSource(literal(ctx.STRING_LITERAL()), mainFile,
                     SqlCompilationError.of("Missing MAIN_FILE."));
             }
+            for (final FrostlakeParser.StreamlitOptionContext option : ctx.streamlitOption()) {
+                if (option.ROOT_LOCATION() != null) {
+                    rootLocation(literal(option.STRING_LITERAL(0)), false);
+                }
+            }
             final AppObject object = startCreate(kind, nameCtx, ctx.or_replace() != null,
                 ctx.if_not_exists() != null);
             if (object == null) {
@@ -216,7 +221,7 @@ public class AppObjectCommandHandler {
             }
             object.setFromLocation(ctx.FROM() != null ? literal(ctx.STRING_LITERAL()) : null);
             for (final FrostlakeParser.StreamlitOptionContext option : ctx.streamlitOption()) {
-                applyStreamlitOption(object, option);
+                applyStreamlitOption(object, option, false);
             }
             if (object.getRootLocation() == null) {
                 object.addVersion();
@@ -248,7 +253,7 @@ public class AppObjectCommandHandler {
                 }
             }
             for (final FrostlakeParser.StreamlitOptionContext option : ctx.streamlitOption()) {
-                applyStreamlitOption(object, option);
+                applyStreamlitOption(object, option, true);
             }
         } else {
             AppObjectActions.refuseDuplicates(ctx.streamlitUnsetProperty());
@@ -270,8 +275,8 @@ public class AppObjectCommandHandler {
     /**
      * Judge the location a Streamlit app or a notebook is created FROM. The object copies the location's files as it
      * is created, so the location names a stage, a named one that exists, and the object's main file is among the
-     * files under it; a ROOT_LOCATION is taken as written and never looked at (live-verified). A stage that is not
-     * there is refused in the app's words for a notebook too.
+     * files under it (live-verified); a ROOT_LOCATION is judged by {@link #rootLocation}. A stage that is not there
+     * is refused in the app's words for a notebook too.
      *
      * @param from            the location as written
      * @param mainFile        the object's main file, relative to the location
@@ -333,9 +338,60 @@ public class AppObjectCommandHandler {
         }
     }
 
-    private void applyStreamlitOption(final AppObject object, final FrostlakeParser.StreamlitOptionContext option) {
+    /**
+     * A Streamlit app's ROOT_LOCATION as the app keeps it, judged as the account judges it: a location with no
+     * {@code @} is refused, and so is a named stage that is not there, in CREATE's own words or, for an ALTER … SET,
+     * as a stage that does not exist. The stage is kept by its name as the catalog holds it and the path after it as
+     * written, {@code @stg/old} as {@code @STG/old}; the path itself is never looked at (live-verified). A user or a
+     * table stage is taken as written.
+     *
+     * @param location the location as written
+     * @param altering whether an ALTER … SET gives it
+     * @return the location as the app keeps it
+     */
+    private String rootLocation(final String location, final boolean altering) {
+        if (!location.startsWith("@")) {
+            throw new RuntimeException(SqlCompilationError.of("invalid URL prefix found in: '" + location + "'"));
+        }
+        final String reference = location.substring(1);
+        final int slash = reference.indexOf('/');
+        final String stage = slash >= 0 ? reference.substring(0, slash) : reference;
+        if (stage.startsWith("~") || stage.startsWith("%")) {
+            return location;
+        }
+        final String canonical = SqlIdentifiers.canonicalText(stage);
+        final String stageName = SqlIdentifiers.canonicalText(QualifiedName.parse(stage).last());
+        final Schema schema = catalog.resolveOwningSchema(canonical);
+        // A replayed statement was judged when it first ran, against the stages there then.
+        if (!StatementClock.isReplay() && (schema == null || !schema.hasStageExact(stageName))) {
+            if (altering) {
+                throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", stagePath(canonical)));
+            }
+            throw new RuntimeException("The specified stage " + stageName + " does not exist or the current role"
+                + " does not have access. Owner of the Streamlit must have at least READ on the specified stage.");
+        }
+        final String path = slash >= 0 ? reference.substring(slash) : "";
+        return "@" + SqlIdentifiers.spellAlreadyCanonicalPath(canonical) + path;
+    }
+
+    /** A stage reference's whole path, the current database and schema supplying the parts it leaves out. */
+    private String stagePath(final String canonical) {
+        final String[] parts = SqlIdentifiers.canonicalTextParts(canonical);
+        final List<String> path = new ArrayList<>();
+        if (parts.length < 3) {
+            path.add(catalog.getCurrentDatabase());
+        }
+        if (parts.length < 2) {
+            path.add(catalog.getCurrentSchema());
+        }
+        path.addAll(Arrays.asList(parts));
+        return QualifiedName.join(path.toArray(new String[0]));
+    }
+
+    private void applyStreamlitOption(final AppObject object, final FrostlakeParser.StreamlitOptionContext option,
+                                      final boolean altering) {
         if (option.ROOT_LOCATION() != null) {
-            object.setRootLocation(literal(option.STRING_LITERAL(0)));
+            object.setRootLocation(rootLocation(literal(option.STRING_LITERAL(0)), altering));
         } else if (option.MAIN_FILE() != null) {
             object.setMainFile(literal(option.STRING_LITERAL(0)));
         } else if (option.QUERY_WAREHOUSE() != null) {

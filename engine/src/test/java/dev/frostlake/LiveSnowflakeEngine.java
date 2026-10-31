@@ -359,11 +359,7 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
         if (keyword.equals("BEGIN") || keyword.equals("START") || keyword.equals("ALTER")
                 || keyword.equals("USE") || keyword.equals("CREATE") || keyword.equals("DROP")
                 || keyword.equals("CALL") || keyword.equals("EXECUTE") || keyword.equals("DECLARE")) {
-            Token second = lexer.nextToken();
-            while (second.getType() != Token.EOF && second.getChannel() != Token.DEFAULT_CHANNEL) {
-                second = lexer.nextToken();
-            }
-            final String detail = second.getType() == Token.EOF ? "" : second.getText().toUpperCase(Locale.ROOT);
+            final String detail = objectWord(lexer, keyword);
             final boolean mutating;
             switch (keyword) {
                 case "BEGIN":
@@ -394,6 +390,16 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
                 LiveSnowflake.markSharedDirty();
             }
         }
+    }
+
+    /** The word after a statement's verb, past the OR REPLACE or OR ALTER of a CREATE, which name no object. */
+    private String objectWord(final FrostlakeLexer lexer, final String verb) {
+        final Token next = nextDefaultToken(lexer);
+        if (verb.equals("CREATE") && next.getText().equalsIgnoreCase("OR")) {
+            nextDefaultToken(lexer);
+            return nextDefaultToken(lexer).getText().toUpperCase(Locale.ROOT);
+        }
+        return next.getText().toUpperCase(Locale.ROOT);
     }
 
     /**

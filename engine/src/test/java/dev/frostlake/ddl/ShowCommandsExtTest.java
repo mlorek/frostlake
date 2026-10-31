@@ -328,6 +328,8 @@ public class ShowCommandsExtTest extends BaseDatabaseTest {
 
     @Test
     public void testShowAccounts() {
+        // An organization administrator is who the listing tells every column to.
+        engine.execute("USE ROLE ORGADMIN");
         final ResultSet rs = engine.executeQuery("SHOW ACCOUNTS");
         assertNotNull(rs);
         assertTrue(rs.getRowCount() >= 1, "Should return at least one account");

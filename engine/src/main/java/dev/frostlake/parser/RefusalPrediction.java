@@ -87,6 +87,11 @@ final class RefusalPrediction extends ParserATNSimulator {
             // The NULLS of ORDER BY ALL wants its FIRST or LAST: it begins no statement of its own.
             return ATN.INVALID_ALT_NUMBER;
         }
+        if (_dfa != null && _dfa.atnStartState.ruleIndex == FrostlakeParser.RULE_columnConstraint
+                && _input.get(_startIndex).getType() == FrostlakeParser.START) {
+            // The START of an identity column wants its number: it begins no statement of its own.
+            return ATN.INVALID_ALT_NUMBER;
+        }
         final Pair<ATNConfigSet, ATNConfigSet> split = splitAccordingToSemanticValidity(configs, outerContext);
         return getAltThatFinishedDecisionEntryRule(split.a);
     }

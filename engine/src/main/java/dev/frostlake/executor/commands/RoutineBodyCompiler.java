@@ -589,6 +589,34 @@ final class RoutineBodyCompiler {
         return first == FrostlakeLexer.BEGIN || first == FrostlakeLexer.DECLARE;
     }
 
+    /**
+     * Whether the account reads a SQL function's body as a Snowscript UDF: a block it can read, or one statement
+     * ending in its semicolon, whatever the statement is. Several statements are refused by their count instead, and a
+     * scripting statement alone is no body at all (live-verified).
+     *
+     * @param queryExecutor the executor creating the function
+     * @param body          the body as written
+     * @return whether the body takes a Snowscript UDF's return types
+     */
+    static boolean readsAsSnowscript(final QueryExecutor queryExecutor, final String body) {
+        final String trimmed = body.trim();
+        if (queryExecutor.statementCountOf(trimmed) > 1) {
+            return false;
+        }
+        final FrostlakeParser.BeginEndBlockContext block = queryExecutor.proceduralBlockOf(trimmed);
+        if (block != null) {
+            return block.blockEndWord() == null;
+        }
+        final FrostlakeParser.SqlScriptContext script = queryExecutor.scriptOf(trimmed);
+        if (!endsWithSemicolon(body) || script == null || script.flowChain().size() != 1
+                || script.flowChain().get(0).statement().size() != 1) {
+            return false;
+        }
+        final FrostlakeParser.ProceduralStatementContext scripting =
+            script.flowChain().get(0).statement().get(0).proceduralStatement();
+        return scripting == null || scripting.callStatement() != null;
+    }
+
     /** The one statement a script holds when it is neither a scripting statement nor a query, or null. */
     private static FrostlakeParser.StatementContext oneSqlStatement(final FrostlakeParser.SqlScriptContext script) {
         if (script == null || script.flowChain().size() != 1 || script.flowChain().get(0).statement().size() != 1) {
@@ -640,6 +668,12 @@ final class RoutineBodyCompiler {
                 : "") + SqlCompilationError.of(unknownTypes.sentence()));
         }
         final String trimmed = body.trim();
+        // A body of several statements is refused by their count, whatever the statements are.
+        final int statements = queryExecutor.statementCountOf(trimmed);
+        if (statements > 1) {
+            throw new RuntimeException("Actual statement count " + statements
+                + " did not match the desired statement count 1.");
+        }
 
         // A body written SELECT … INTO reads as the scripting statement, whose INTO clause a function cannot carry.
         final FrostlakeParser.SqlScriptContext script = queryExecutor.scriptOf(trimmed);
@@ -649,7 +683,7 @@ final class RoutineBodyCompiler {
         final FrostlakeParser.SqlScriptContext queryBody = queryExecutor.queryStatementOf(trimmed);
         if (queryBody != null) {
             rejectCaret(queryBody);
-            rejectQueryBodyEnding(queryExecutor, body, trimmed, tableFunction);
+            rejectQueryBodyEnding(body);
             rejectIntoClauses(queryBody);
             rejectUnknownTypedLiteral(queryBody);
             SideEffectFunctions.rejectInStoredQuery(queryBody);
@@ -676,13 +710,6 @@ final class RoutineBodyCompiler {
         final FrostlakeParser.BeginEndBlockContext block = read == null || read.blockEndWord() != null
             || !tableFunction && ScriptingUdfBodyValidator.holdsWhatNoBlockReads(read) ? null : read;
         if (block != null) {
-            if (tableFunction) {
-                // Live-verified: `RETURNS TABLE(x INT) AS $$ BEGIN RETURN TABLE(SELECT …); END $$` is a
-                // plain syntax error on the account — a block is a body shape only a SCALAR UDF has.
-                throw new RuntimeException("Compilation of SQL UDF failed: SQL compilation error: syntax error "
-                    + describe(AntlrExpressionParser.failurePoint(trimmed))
-                    + ". A table function body must be a query, not a Snowflake Scripting block.");
-            }
             try {
                 LimitValueSyntax.requireNumericValuesAsWritten(block);
             } catch (final RuntimeException uncompiled) {
@@ -792,6 +819,10 @@ final class RoutineBodyCompiler {
         SqlUdfBodyNames.rejectUnknownNames(body.equals(trimmed) ? expression : AntlrExpressionParser.parseTree(body),
             declared);
         SqlUdfBodyCalls.reject(queryExecutor, expression, trimmed, routineName, scopeDatabase, scopeSchema);
+        if (tableFunction) {
+            // A table function's body is a query; an expression is told so once its names and calls are found.
+            throw new RuntimeException("Table function definition expected a subquery, found '" + body + "'.");
+        }
         // A SQL function the body calls is expanded into it: a relation that function reads that is gone refuses
         // the CREATE. The body's own parameters are the values a call passes, read from no row here.
         final Set<String> parameterNames = new HashSet<String>();
@@ -957,33 +988,16 @@ final class RoutineBodyCompiler {
      * How a QUERY body may end. It is a SQL UDF body only WITHOUT a terminating semicolon. With one, the
      * account reads the body as a Snowscript UDF, where a query is not a statement: {@code $$ SELECT 1; $$}
      * is refused as "Unsupported statement type for Snowscript UDF: SELECT" — a CTE, a
-     * parenthesised query, a single-quoted body, a doubled {@code ;;} and a trailing comment alike. More
-     * than one statement is refused by COUNT before that, whatever the statements are ("Actual statement
-     * count 2 did not match the desired statement count 1."). A body that ends INSIDE a line comment,
-     * {@code $$ SELECT 1 -- c $$}, cannot be framed at all (see {@link #endsInsideLineComment}) and is a
-     * syntax error where the frame breaks — as is either other shape in a TABLE function, which has no
-     * Snowscript form. Live-verified, every cell.
+     * parenthesised query, a single-quoted body, a doubled {@code ;;} and a trailing comment alike; a table
+     * function has been refused for its return type by then (see {@link #readsAsSnowscript}). A body that ends
+     * INSIDE a line comment, {@code $$ SELECT 1 -- c $$}, cannot be framed at all (see
+     * {@link #endsInsideLineComment}) and is a syntax error where the frame breaks. Live-verified, every cell.
      */
-    private static void rejectQueryBodyEnding(final QueryExecutor queryExecutor, final String body,
-                                              final String trimmed, final boolean tableFunction) {
-        final int statements = queryExecutor.statementCountOf(trimmed);
-        final boolean terminated = endsWithSemicolon(body);
-        final boolean unframed = endsInsideLineComment(body);
-        if (tableFunction) {
-            if (terminated || statements > 1 || unframed) {
-                throw new RuntimeException("Compilation of SQL UDF failed: "
-                    + SqlCompilationError.of("syntax error " + misframedQueryBody(body) + "."));
-            }
-            return;
-        }
-        if (statements > 1) {
-            throw new RuntimeException("Actual statement count " + statements
-                + " did not match the desired statement count 1.");
-        }
-        if (terminated) {
+    private static void rejectQueryBodyEnding(final String body) {
+        if (endsWithSemicolon(body)) {
             throw new RuntimeException("Unsupported statement type for Snowscript UDF: SELECT");
         }
-        if (unframed) {
+        if (endsInsideLineComment(body)) {
             throw new RuntimeException("Compilation of SQL UDF failed: "
                 + SqlCompilationError.of("syntax error " + misframedQueryBody(body) + "."));
         }

@@ -41,8 +41,7 @@ public class UserAndAccountParameterListsTest extends MeasuredCellsTestSupport {
                 "QUERY_TAG||||String (up to 2000 characters) used to tag statements executed by the session|STRING",
                 "SHOW PARAMETERS LIKE 'QUERY_TAG' IN USER");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET QUERY_TAG = 'x'");
             assertAnswer(
                 "REFUSED SQL compilation error: | invalid value [5] for parameter 'QUERY_TAG'",
@@ -51,8 +50,7 @@ public class UserAndAccountParameterListsTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: | invalid property 'NOSUCH' for 'USER'",
                 "ALTER USER nosuch_user_x9 SET NOSUCH = 1");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 UNSET QUERY_TAG");
             assertAnswer(
                 "REFUSED SQL compilation error: | invalid property 'NOSUCH' for 'USER'",
@@ -82,8 +80,7 @@ public class UserAndAccountParameterListsTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: | duplicate property 'QUERY_TAG';",
                 "ALTER USER nosuch_user_x9 SET QUERY_TAG = 'a', QUERY_TAG = 'b'");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET QUERY_TAG = 'a', query_tag = 'b'");
             assertAnswer(
                 "REFUSED SQL compilation error: | invalid value [5] for parameter 'QUERY_TAG'",
@@ -98,31 +95,25 @@ public class UserAndAccountParameterListsTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: | duplicate property 'COMMENT';",
                 "ALTER USER nosuch_user_x9 SET COMMENT = 'c', COMMENT = 'd'");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET COMMENT = 'c' QUERY_TAG = 't'");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET QUERY_TAG = 't' COMMENT = 'c'");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET DEFAULT_ROLE = nosuch_role_x9 QUERY_TAG = 'x'");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET TIMEZONE = 'Nowhere/Land'");
             assertAnswer(
                 "REFUSED SQL compilation error: | invalid value [1] for parameter 'AUTOCOMMIT'",
                 "ALTER USER nosuch_user_x9 SET AUTOCOMMIT = 1");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET STATEMENT_TIMEOUT_IN_SECONDS = -1");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET QUERY_TAG = NULL");
             assertAnswer(
                 "REFUSED SQL compilation error: | invalid property '\"QUERY_TAG\"' for 'USER'",
@@ -131,48 +122,37 @@ public class UserAndAccountParameterListsTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: | invalid property '\"query_tag\"' for 'USER'",
                 "ALTER USER nosuch_user_x9 SET \"query_tag\" = 'x'");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET query_tag = 'x'");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET ABORT_DETACHED_QUERY = TRUE");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET DATA_RETENTION_TIME_IN_DAYS = 1");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET PREVENT_UNLOAD_TO_INLINE_URL = TRUE");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET ENABLE_UNREDACTED_QUERY_SYNTAX_ERROR = TRUE");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET LOCK_TIMEOUT = 5 QUERY_TAG = 't2'");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET LOCK_TIMEOUT = 5, QUERY_TAG = 't2'");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET QUERY_TAG = abc");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET LOCK_TIMEOUT = -1");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET MULTI_STATEMENT_COUNT = 0");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET TAG nosuch_tag_x9 = 'v'");
             assertAnswer(
                 "REFUSED SQL compilation error: | invalid property 'NOSUCH' for 'USER'",
@@ -181,8 +161,7 @@ public class UserAndAccountParameterListsTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: | invalid property 'NOSUCH' for 'USER'",
                 "ALTER USER nosuch_user_x9 UNSET NOSUCH, QUERY_TAG");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 UNSET COMMENT, QUERY_TAG");
             assertAnswer(
                 "REFUSED SQL compilation error: | duplicate property 'QUERY_TAG';",
@@ -194,8 +173,7 @@ public class UserAndAccountParameterListsTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: | invalid property '\"QUERY_TAG\"' for 'USER'",
                 "ALTER USER nosuch_user_x9 UNSET \"QUERY_TAG\"");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 UNSET query_tag");
             assertAnswer(
                 "REFUSED SQL compilation error: | syntax error line 1 at position 29 unexpected '<EOF>'.",
@@ -225,12 +203,10 @@ public class UserAndAccountParameterListsTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: | syntax error line 1 at position 30 unexpected '='.",
                 "ALTER USER nosuch_user_x9 SET = 5");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "SHOW PARAMETERS IN USER nosuch_user_x9");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "SHOW PARAMETERS LIKE 'QUERY_TAG' IN USER nosuch_user_x9");
             assertAnswer(
                 "QUERY_TAG||||String (up to 2000 characters) used to tag statements executed by the session|STRING",
@@ -329,12 +305,10 @@ public class UserAndAccountParameterListsTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: | invalid value [1] for parameter 'AUTOCOMMIT'",
                 "ALTER USER nosuch_user_x9 SET COMMENT = 5 AUTOCOMMIT = 1");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET COMMENT = abc");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET COMMENT = NULL");
             assertAnswer(
                 "REFUSED SQL compilation error: | invalid value [TRUE] for parameter 'COMMENT'",
@@ -361,12 +335,10 @@ public class UserAndAccountParameterListsTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: | invalid value [5] for parameter 'TYPE'",
                 "ALTER USER nosuch_user_x9 SET TYPE = 5");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET FIRST_NAME = abc");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET EMAIL = NULL");
             assertAnswer(
                 "REFUSED SQL compilation error: | duplicate property 'NOSUCH';",
@@ -396,12 +368,10 @@ public class UserAndAccountParameterListsTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: | syntax error line 1 at position 30 unexpected ','.",
                 "ALTER USER nosuch_user_x9 SET , QUERY_TAG = 'x'");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET QUERY_TAG = 'x' NETWORK_POLICY = nosuch_policy_x9");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET NETWORK_POLICY = nosuch_policy_x9 QUERY_TAG = 'x'");
             assertAnswer(
                 "REFUSED SQL compilation error: | invalid value [5.5] for parameter 'LOCK_TIMEOUT'",
@@ -417,16 +387,13 @@ public class UserAndAccountParameterListsTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: | invalid value [5] for parameter 'TIMEZONE'",
                 "ALTER USER nosuch_user_x9 SET TIMEZONE = 5");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET JSON_INDENT = 99");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET DATE_OUTPUT_FORMAT = 'nonsense'");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 SET WEEK_START = 9");
             assertAnswer(
                 "REFUSED SQL compilation error: | invalid value ['x'] for parameter 'DATA_RETENTION_TIME_IN_DAYS'",
@@ -456,8 +423,7 @@ public class UserAndAccountParameterListsTest extends MeasuredCellsTestSupport {
                     + "primary role <ROLE> must have at least one privilege granted on TAG NOSUCH_TAG_X9.",
                 "ALTER USER IF EXISTS nosuch_user_x9 UNSET TAG nosuch_tag_x9");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 UNSET TAG nosuch_tag_x9");
             assertAnswer(
                 "REFUSED SQL compilation error: | Cannot specify IF EXISTS when no object name is specified",
@@ -466,8 +432,7 @@ public class UserAndAccountParameterListsTest extends MeasuredCellsTestSupport {
                 "Statement executed successfully.",
                 "ALTER USER IF EXISTS nosuch_user_x9 RENAME TO nosuch_user_x9");
             assertAnswer(
-                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized. Your "
-                    + "primary role <ROLE> must have USAGE granted on ACCOUNT <ACCOUNT>.",
+                "REFUSED SQL compilation error: | User 'NOSUCH_USER_X9' does not exist or not authorized.",
                 "ALTER USER nosuch_user_x9 RENAME TO nosuch_user_y9");
             assertAnswer(
                 "QUERY_TAG||||String (up to 2000 characters) used to tag statements executed by the session|STRING",
