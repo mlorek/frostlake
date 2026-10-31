@@ -1221,8 +1221,10 @@ public class SnowparkRowAccessorTest extends MeasuredCellsTestSupport {
                 "E:com.snowflake.snowpark.SnowparkClientException: Error Code: 0400, Error message: Cannot cast "
                     + "java.lang.String(\"1\") to Float.",
                 "CALL java_cell2('SELECT ''1''::VARIANT', 'getFloat')");
+            // A handler prints a float with its own JVM's Float.toString, whose digits shorten from JDK 19 on; the
+            // account's is Java 11.
             assertAnswer(
-                "F:1.23456791E17",
+                "F:" + (isLiveSnowflake() ? "1.23456791E17" : String.valueOf((float) 123456789012345678L)),
                 "CALL java_cell2('SELECT 123456789012345678', 'getFloat')");
             assertAnswer(
                 "F:-1.0",
