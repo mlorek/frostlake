@@ -243,8 +243,10 @@ public final class FileFormatClause {
         if (formatName == null || writtenType != null) {
             for (final String key : into.getOptions().keySet()) {
                 if (!FileFormatSurfaces.isOptionValidFor(into.getType(), key)) {
+                    // The type is named as the list wrote it (live-verified).
                     throw new RuntimeException(SqlCompilationError.of("Option " + key.toUpperCase(Locale.ROOT)
-                        + " is not valid for file format type " + into.getType().toUpperCase(Locale.ROOT) + "."));
+                        + " is not valid for file format type "
+                        + (writtenType != null ? writtenType : into.getType().toUpperCase(Locale.ROOT)) + "."));
                 }
             }
         }

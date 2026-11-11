@@ -23,7 +23,8 @@ import dev.frostlake.types.StringType;
 
 /**
  * Whether a virtual column's declared type takes the type of its expression (see {@link VirtualColumnDefinitions}):
- * an exact number of the same scale and no more digits, a text no longer than the column's, and any other type only
+ * an exact number of the same scale and no more digits, a text no longer than the column's length where one is
+ * written, and any other type only
  * itself - a time or a timestamp of its own flavour and fractional precision. FLOAT, DECFLOAT and the exact numbers
  * are three types.
  */
@@ -33,18 +34,20 @@ final class VirtualColumnTypes {
     }
 
     /**
-     * @param declared the column's type
-     * @param found    the expression's
+     * @param declared      the column's type
+     * @param found         the expression's
+     * @param lengthWritten whether the column's type was written with a length: a text written with none takes a
+     *                      text of any length, {@code c VARCHAR AS (a || b)} over two texts as well (live-verified)
      * @return whether the column takes the expression
      */
-    static boolean matches(final DataType declared, final DataType found) {
+    static boolean matches(final DataType declared, final DataType found, final boolean lengthWritten) {
         if (exact(declared) && exact(found)) {
             final NumericType column = (NumericType) declared;
             final NumericType value = (NumericType) found;
             return value.getScale() == column.getScale() && value.getPrecision() <= column.getPrecision();
         }
         if (declared instanceof StringType && found instanceof StringType) {
-            return ((StringType) found).getMaxLength() <= ((StringType) declared).getMaxLength();
+            return !lengthWritten || ((StringType) found).getMaxLength() <= ((StringType) declared).getMaxLength();
         }
         return SqlTypeNames.canonical(declared).equals(SqlTypeNames.canonical(found));
     }

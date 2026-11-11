@@ -122,6 +122,52 @@ public class DropCommandHandler implements CommandHandler {
      * Whether IF EXISTS forgives a failed drop: it forgives the object's absence, never an access-control
      * refusal — dropping an object another role owns is refused with or without it.
      */
+    /**
+     * DROP PRIVACY POLICY and DROP STORAGE LIFECYCLE POLICY: the policy named exactly, refused while a table holds
+     * it, and refused for a name a policy of another kind holds: {@code Object found is of type 'PRIVACY_POLICY', not
+     * specified type 'STORAGE_LIFECYCLE_POLICY'.} (live-verified).
+     *
+     * @param ctx      the statement
+     * @param ifExists whether it says IF EXISTS
+     * @param storage  whether it drops a storage lifecycle policy
+     */
+    private void dropPrivacyOrLifecyclePolicy(final FrostlakeParser.DropStatementContext ctx, final boolean ifExists,
+                                              final boolean storage) {
+        final String[] parts = dropNameParts(ctx);
+        try {
+            final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+            final String policyName = parts[parts.length - 1];
+            final String kind = storage ? "STORAGE_LIFECYCLE_POLICY" : "PRIVACY_POLICY";
+            final boolean held = storage ? schema.hasStorageLifecyclePolicy(policyName)
+                : schema.hasPrivacyPolicy(policyName);
+            if (!held) {
+                final String holder = schema.policyKindHolding(policyName);
+                if (holder != null) {
+                    throw new RuntimeException(SqlCompilationError.PREFIX + " Object found is of type '" + holder
+                        + "', not specified type '" + kind + "'.");
+                }
+                throw new RuntimeException(SqlCompilationError.doesNotExist(
+                    storage ? "Storage lifecycle policy" : "Privacy policy", schema.qualifiedName(policyName)));
+            }
+            queryExecutor.requireOwnership(kind, parts, null);
+            if (catalog.isPrivacyOrLifecyclePolicyInUse(schema, policyName, storage)) {
+                throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
+                    + " cannot be dropped/replaced as it is associated with one or more entities.");
+            }
+            if (storage) {
+                schema.dropStorageLifecyclePolicy(policyName);
+            } else {
+                schema.dropPrivacyPolicy(policyName);
+            }
+            logger.trace("Dropped {}: {}", kind, dropNameText(ctx));
+        } catch (final RuntimeException e) {
+            if (!forgiven(ifExists, e)) {
+                throw e;
+            }
+            ConditionalDdlOutcome.dropSkipped();
+        }
+    }
+
     private static boolean forgiven(final boolean ifExists, final RuntimeException failure) {
         return ifExists && !String.valueOf(failure.getMessage()).startsWith(SqlAccessControlError.PREFIX);
     }
@@ -1017,6 +1063,10 @@ public class DropCommandHandler implements CommandHandler {
                     logger.trace("Dropped join policy: {}", dropNameText(ctx));
                 } catch (final RuntimeException e) { if (!forgiven(ifExists, e)) throw e;
                     ConditionalDdlOutcome.dropSkipped(); }
+            } else if (ctx.PRIVACY() != null && ctx.POLICY() != null) {
+                dropPrivacyOrLifecyclePolicy(ctx, ifExists, false);
+            } else if (ctx.lifecycle != null && ctx.POLICY() != null) {
+                dropPrivacyOrLifecyclePolicy(ctx, ifExists, true);
             } else if (ctx.AGGREGATION() != null && ctx.POLICY() != null) {
                 final String[] parts = dropNameParts(ctx);
                 try {

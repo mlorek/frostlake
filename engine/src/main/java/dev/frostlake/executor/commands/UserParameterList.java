@@ -16,7 +16,9 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.PrivilegeRefusal;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.User;
@@ -58,9 +60,18 @@ final class UserParameterList {
 
     private static final String LEVEL = "USER";
 
+    /**
+     * The policy bypasses a user has, which only the account's administrators may set: named here, refused for want
+     * of privilege once the user is found (live-verified).
+     */
+    static final List<String> POLICY_BYPASSES = Arrays.asList("MINS_TO_BYPASS_NETWORK_POLICY",
+        "MINS_TO_BYPASS_SESSION_POLICY", "MINS_TO_BYPASS_INGRESS_POLICY");
+
     private final List<FrostlakeParser.UserPropertyContext> properties;
     private final List<FrostlakeParser.UserPropertyAssignmentContext> propertyAssignments;
-    private final List<SessionParameterSetting> parameters;
+    private final List<SessionParameterSetting> written;
+    private final List<SessionParameterSetting> parameters = new ArrayList<SessionParameterSetting>();
+    private boolean bypasses;
     private final List<SessionParameterValue> propertyValues = new ArrayList<SessionParameterValue>();
 
     /**
@@ -69,7 +80,31 @@ final class UserParameterList {
     UserParameterList(final FrostlakeParser.UserActionContext action) {
         this.properties = action.userProperty();
         this.propertyAssignments = action.userPropertyAssignment();
-        this.parameters = LeveledParameterSettings.assignments(action.sessionAssignment());
+        this.written = LeveledParameterSettings.assignments(action.sessionAssignment());
+        for (final SessionParameterSetting setting : written) {
+            if (POLICY_BYPASSES.contains(setting.written().toUpperCase(Locale.ROOT))) {
+                bypasses = true;
+            } else {
+                parameters.add(setting);
+            }
+        }
+    }
+
+    /**
+     * Refuses a list that sets a policy bypass, for want of privilege on the user it names:
+     * {@code Insufficient privileges to operate on user 'U'.} (live-verified).
+     *
+     * @param user the user the statement alters
+     */
+    void requireBypassPrivilege(final User user) {
+        if (bypasses) {
+            throw bypassRefusal(user);
+        }
+    }
+
+    /** The refusal of a policy bypass on a user. */
+    static PrivilegeRefusal bypassRefusal(final User user) {
+        return new PrivilegeRefusal(SqlAccessControlError.insufficientPrivileges("user", user.getName()));
     }
 
     /** Whether the action writes anything this list judges. */
@@ -127,7 +162,7 @@ final class UserParameterList {
         for (final FrostlakeParser.UserPropertyAssignmentContext assignment : propertyAssignments) {
             names.add(nameOf(assignment));
         }
-        for (final SessionParameterSetting parameter : parameters) {
+        for (final SessionParameterSetting parameter : written) {
             names.add(parameter.written());
         }
         Collections.sort(names);

@@ -53,6 +53,8 @@ public class ProjectOperator implements Operator {
     private final Map<String, Object> lateralAliasSink;
     private final Map<String, Object> baseBindings;
     private WhereAliasValues whereAliasValues;
+    /** Index-aligned with the expressions: the select item each one is, or -1 for a column a star expands to. */
+    private List<Integer> selectItems;
 
     /**
      * Create a PROJECT operator.
@@ -144,6 +146,17 @@ public class ProjectOperator implements Operator {
         this.whereAliasValues = whereAliasValues;
     }
 
+    /**
+     * Names the select item each expression is, so a value a stage kept for an item with no alias — one a sort read
+     * by its position — is the value shown (see WhereAliasValues).
+     *
+     * @param selectItems index-aligned with the expressions: the item's place in the select list, from 0, or -1 for
+     *                    a column a star expands to
+     */
+    public void setSelectItems(final List<Integer> selectItems) {
+        this.selectItems = selectItems;
+    }
+
     /** The input-row slot item {@code index} reads, or -1 when it evaluates its expression. */
     private int slotOf(final int index) {
         return sourceSlots != null && index < sourceSlots.size() ? sourceSlots.get(index) : -1;
@@ -203,6 +216,10 @@ public class ProjectOperator implements Operator {
                 } else if (whereAliasValues != null && columnAliases != null && columnAliases.get(i) != null
                         && whereAliasValues.holds(row, columnAliases.get(i).toUpperCase(Locale.ROOT))) {
                     value = whereAliasValues.valueOf(row, columnAliases.get(i).toUpperCase(Locale.ROOT));
+                // A stage kept this item's value for the row by its place: the value it read is the value shown.
+                } else if (whereAliasValues != null && selectItems != null && selectItems.get(i).intValue() >= 0
+                        && whereAliasValues.holdsItem(row, selectItems.get(i).intValue())) {
+                    value = whereAliasValues.itemValueOf(row, selectItems.get(i).intValue());
                 } else {
                     // Note where this item began in the statement, so a message about an unresolvable
                     // column inside it can carry the position live always reports. A star-expanded

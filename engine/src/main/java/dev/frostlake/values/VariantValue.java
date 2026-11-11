@@ -169,6 +169,17 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
         return node().isArray();
     }
 
+    /**
+     * Whether the value is an array or an object, asked without making its text or reading its tree anew: a canonical
+     * text opens with the bracket of its kind.
+     */
+    public boolean isContainerValue() {
+        if (text != null) {
+            return !text.isEmpty() && (text.charAt(0) == '[' || text.charAt(0) == '{');
+        }
+        return node != null && node.isContainer();
+    }
+
     /** A VARIANT JSON null (the text {@code null}) — distinct from SQL NULL. */
     public boolean isJsonNull() {
         return text == null ? node.isNull() : "null".equals(text);

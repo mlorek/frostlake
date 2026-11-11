@@ -16,6 +16,8 @@
 
 package dev.frostlake.testkit;
 
+import dev.frostlake.LiveSnowflake;
+
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
@@ -24,6 +26,7 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * Runs statements over one JDBC connection: Frostlake's own driver in-process
@@ -37,6 +40,11 @@ public final class JdbcBackend implements Backend {
     private final Set<Capability> capabilities;
     private final Connection connection;
     private final Statement statement;
+    /** A statement that changes the session's parameters, which a live session keeps for every later case. */
+    private static final Pattern ALTERS_SESSION = Pattern.compile("\\bALTER\\s+SESSION\\b",
+        Pattern.CASE_INSENSITIVE);
+    /** Whether a statement since the last reset may have changed the session's parameters. */
+    private boolean sessionAltered;
     /** The role the session opened with, and the warehouse, so a case cannot take either away. */
     private final String openingRole;
     private final String openingWarehouse;
@@ -86,6 +94,7 @@ public final class JdbcBackend implements Backend {
     @Override
     public ExecResult execute(final String sql) {
         final ExecResult out = new ExecResult();
+        sessionAltered = sessionAltered || ALTERS_SESSION.matcher(sql).find();
         try {
             if (statement.execute(sql)) {
                 try (final ResultSet rs = statement.getResultSet()) {
@@ -145,6 +154,12 @@ public final class JdbcBackend implements Backend {
         if (openingWarehouse != null) {
             statement.execute("USE WAREHOUSE " + openingWarehouse);
         }
+        // A live case that altered the session leaves the change for every later case; the account's session goes
+        // back on the harness's parameters (an engine's sessions start each case clean already).
+        if (sessionAltered && "snowflake".equals(name)) {
+            LiveSnowflake.restoreSessionParameters(statement);
+        }
+        sessionAltered = false;
         for (final String sql : RESET_CONTEXT) {
             statement.execute(sql);
         }

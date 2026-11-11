@@ -37,7 +37,7 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
 /**
  * {@code ResultSetMetaData} answers a column's precision, scale and display size per type, as Snowflake's
  * driver does: a NUMBER(p,s) is p, s and p + 1 (one more with a fraction), a DOUBLE 0, 0 and 24, a DATE 10,
- * a TIME 8, a TIMESTAMP_NTZ 23 and an LTZ or TZ 29, each with its fractional digits as the scale, a BOOLEAN
+ * a TIME 8, a TIMESTAMP_NTZ 23 and an LTZ or TZ 25, each with its fractional digits as the scale, a BOOLEAN
  * displays at 5, a VECTOR at 25, text and binary at their length, and semi-structured values at 0. Both
  * transports answer alike: the HTTP wire carries a time or timestamp's fractional digits as the column's
  * scale. Live-verified.
@@ -54,8 +54,8 @@ public class DriverColumnMetricsTest extends BaseJdbcTest {
         SELECT '10:00:00'::TIME AS t, '10:00:00.123'::TIME(3) AS t3, '2024-01-01'::TIMESTAMP_NTZ(3) AS ntz3,
                '2024-01-01 00:00:00'::TIMESTAMP_LTZ AS ltz, '2024-01-01'::TIMESTAMP_LTZ(6) AS ltz6,
                '2024-01-01 00:00:00 +01:00'::TIMESTAMP_TZ(0) AS tz0""";
-    private static final String TEMPORAL_METRICS = "T 8 9 8 | T3 8 3 8 | NTZ3 23 3 23 | LTZ 29 9 29 | LTZ6 29 6 29"
-        + " | TZ0 29 0 29";
+    private static final String TEMPORAL_METRICS = "T 8 9 8 | T3 8 3 8 | NTZ3 23 3 23 | LTZ 25 9 25 | LTZ6 25 6 25"
+        + " | TZ0 25 0 25";
 
     /** Each column's label, precision, scale and display size, a bar between columns. */
     private static String metrics(final Statement on, final String sql) throws SQLException {
@@ -92,7 +92,7 @@ public class DriverColumnMetricsTest extends BaseJdbcTest {
         statement.execute("""
             CREATE OR REPLACE TABLE metrics_t (n NUMBER(5,2), f FLOAT, d DATE, ts TIMESTAMP_NTZ, b BOOLEAN, t TIME,
                 ltz TIMESTAMP_LTZ(3), tz TIMESTAMP_TZ, n38 NUMBER(38,0), v VARCHAR(20), bi BINARY(8), var VARIANT)""");
-        assertEquals("N 5 2 7 | F 0 0 24 | D 10 0 10 | TS 23 9 23 | B 0 0 5 | T 8 9 8 | LTZ 29 3 29 | TZ 29 9 29"
+        assertEquals("N 5 2 7 | F 0 0 24 | D 10 0 10 | TS 23 9 23 | B 0 0 5 | T 8 9 8 | LTZ 25 3 25 | TZ 25 9 25"
             + " | N38 38 0 39 | V 20 0 20 | BI 8 0 8 | VAR 0 0 0", metrics(statement, "SELECT * FROM metrics_t"));
     }
 

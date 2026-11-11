@@ -182,7 +182,8 @@ final class VirtualColumnDefinitions {
         } finally {
             ExpressionSource.end(displaced);
         }
-        if (found != null && !VirtualColumnTypes.matches(column.getDataType(), found)) {
+        if (found != null && !VirtualColumnTypes.matches(column.getDataType(), found,
+                definition.typeParameters() != null)) {
             final Token name = definition.columnDefName().getStart();
             final SourcePosition named = ExpressionSource.place(name.getLine(), name.getCharPositionInLine());
             throw new RuntimeException(SqlCompilationError.at(named.getLine(), named.getCharPositionInLine(),
@@ -218,6 +219,55 @@ final class VirtualColumnDefinitions {
                     + "' because virtual column" + (readers.size() > 1 ? "s " + String.join(", ", readers)
                     + " depend" : " " + readers.get(0) + " depends") + " on it"));
             }
+        }
+    }
+
+    /**
+     * Refuses a CREATE OR ALTER TABLE whose column list defines a virtual column, ahead of anything the column list
+     * holds (live-verified): {@code Unsupported feature 'CREATE OR ALTER with columns defined using 'AS <expr>''.}
+     *
+     * @param list the column list, or null
+     */
+    static void refuseOnOrAlter(final FrostlakeParser.ColumnListContext list) {
+        if (list == null) {
+            return;
+        }
+        for (final FrostlakeParser.ColumnOrConstraintContext item : list.columnOrConstraint()) {
+            if (item.columnDef() != null && item.columnDef().virtualColumnClause() != null) {
+                throw new RuntimeException("Unsupported feature 'CREATE OR ALTER with columns defined using "
+                    + "'AS <expr>''.");
+            }
+        }
+    }
+
+    /**
+     * Renames a column in the expressions of the virtual columns that read it, which read it by its new name from
+     * then on and tell it back so: {@code J AS (I + 1)} is {@code J AS (I2 + 1)} once I is renamed I2
+     * (live-verified).
+     *
+     * @param table    the table, its column already renamed
+     * @param was      the column's name before
+     * @param now      its name now
+     * @param executor the executor whose functions the expressions call
+     */
+    static void followRename(final Table table, final String was, final String now, final QueryExecutor executor) {
+        for (final TableColumn column : table.columnsView()) {
+            if (!column.isVirtual()) {
+                continue;
+            }
+            final String written = column.getVirtualExpression();
+            final String renamed = VirtualColumnRenames.renamed(written, was, now);
+            if (renamed.equals(written)) {
+                continue;
+            }
+            final List<TableColumn> scope = new ArrayList<>();
+            for (final TableColumn readable : table.columnsView()) {
+                final TableColumn copy = readable.copy();
+                copy.setStaticallyTyped(true);
+                scope.add(copy);
+            }
+            column.setVirtualExpression(renamed, told(ExpressionEvaluator.parse(renamed), renamed,
+                new Table("DUMMY", scope, false), executor));
         }
     }
 

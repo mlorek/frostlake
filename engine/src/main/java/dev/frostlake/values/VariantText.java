@@ -16,6 +16,7 @@
 
 package dev.frostlake.values;
 
+import tools.jackson.core.JacksonException;
 import tools.jackson.core.StreamWriteFeature;
 import tools.jackson.core.json.JsonFactory;
 import tools.jackson.core.json.JsonWriteFeature;
@@ -72,5 +73,35 @@ public final class VariantText {
      */
     public static String standard(final JsonNode node) {
         return STANDARD.writeValueAsString(node);
+    }
+
+    /**
+     * The beginning of a tree's canonical text, made without the rest of it: whole when it is shorter.
+     *
+     * @param node  the tree
+     * @param chars how many characters to read
+     * @return the text's first characters
+     */
+    public static String prefix(final JsonNode node, final int chars) {
+        final PrefixWriter writer = new PrefixWriter(chars);
+        try {
+            CANONICAL.writeValue(writer, node);
+        } catch (final JacksonException complete) {
+            // The writer stops the writing once it holds what was asked, which the mapper hands on wrapped.
+        }
+        return writer.kept();
+    }
+
+    /**
+     * Refuse a semi-structured value whose text cannot fit a text before it is made: an array of more elements than
+     * half the most characters a text holds spells at least that many, an element and a comma each (see
+     * {@link LobSize#requireConverted}).
+     *
+     * @param node the tree
+     */
+    public static void requireConvertible(final JsonNode node) {
+        if (node != null && node.isArray() && 2L * node.size() + 1 > LobSize.MAX_TEXT_BYTES) {
+            throw LobSize.tooLong(prefix(node, 201));
+        }
     }
 }

@@ -81,6 +81,9 @@ import org.antlr.v4.runtime.misc.IntervalSet;
  */
 final class ValueSubqueryLines {
 
+    /** The depth of calls whose query's CALL ends its lines at the name's parenthesis. */
+    private static final int THREE_CALLS = 3;
+
     private static final IntervalSet WORDS =
         FrostlakeParser._ATN.nextTokens(FrostlakeParser._ATN.ruleToStartState[FrostlakeParser.RULE_identifier]);
 
@@ -417,7 +420,8 @@ final class ValueSubqueryLines {
     /**
      * The lines after the SELECT of a faulty query used as a call's argument, or standing in a clause, whose FROM
      * reads a statement in its parentheses and is refused at its first word (see StatementWordInFromLines); null for
-     * any other query, and for the one an IN's list holds (all live-verified):
+     * any other query, and for the one an IN's list holds unless the statement follows a comma, which reads as a
+     * comparison's query does (all live-verified):
      *
      * <pre>
      *   SELECT UPPER((SELECT 1 FROM (DESCRIBE TABLE t)))           'SELECT', 'DESCRIBE', then 'TABLE': the token
@@ -438,10 +442,10 @@ final class ValueSubqueryLines {
     private static List<String> statementWordLines(final String sql, final List<Token> spoken, final int open,
                                                    final int close, final int[] found, final int end) {
         final int place = found[2];
-        if (place != ARGUMENT && place != CLAUSE || open < 1
-                || spoken.get(open - 1).getType() == FrostlakeLexer.IN) {
+        if (place != ARGUMENT && place != CLAUSE || open < 1) {
             return null;
         }
+        final boolean inList = spoken.get(open - 1).getType() == FrostlakeLexer.IN;
         final List<String> inside = queryReadAlone(sql, spoken, open, close);
         int word = -1;
         for (int i = open + 4; !inside.isEmpty() && i + 1 < close && word < 0; i++) {
@@ -470,7 +474,11 @@ final class ValueSubqueryLines {
         final List<String> lines = new ArrayList<>();
         if (reads == FrostlakeLexer.COMMA) {
             return doubled ? null : listedWordLines(spoken, word, place == ARGUMENT && calls == 1 && literalFirst,
-                place == CLAUSE && calls == 0 && literalFirst, place == ARGUMENT && calls == 1 && !literalFirst);
+                place == CLAUSE && calls == 0 && literalFirst, place == ARGUMENT && calls == 1 && !literalFirst,
+                place == ARGUMENT && literalFirst ? calls : 0);
+        }
+        if (inList) {
+            return null;
         }
         if (place == ARGUMENT && calls == 1 && literalFirst) {
             if (reads == FrostlakeLexer.JOIN) {
@@ -512,19 +520,30 @@ final class ValueSubqueryLines {
      *                                                         a USING there, then the token after the first ')'
      *   … WHERE 1 = (SELECT 1 FROM t, (UPDATE t SET a = 1))   'SELECT', 'UPDATE', then the token after the first ')'
      *   … WHERE 1 = (SELECT 1 FROM t, (CALL p(1)))            'SELECT', 'p', '1', then the token after the first ')'
-     *                                                         past it
+     *                                                         past it; an IN's query (NOT IN too) alike
+     *   SELECT ABS(ABS((SELECT 1 FROM t, (CALL p()))))        'SELECT', 'p', 'CALL', then 'p' again: two calls deep
+     *                                                         the token after the word, the word, that token again; a
+     *                                                         DESCRIBE's 'TABLE' alike
+     *   SELECT ABS(ABS(ABS((SELECT 1 FROM t, (CALL p())))))   'SELECT', 'p', 'CALL', then the '(' after the name
      * </pre>
      *
      * Null for any other word or place.
      */
     private static List<String> listedWordLines(final List<Token> spoken, final int word, final boolean argument,
-                                                final boolean compared, final boolean plain) {
+                                                final boolean compared, final boolean plain, final int calls) {
         final int type = spoken.get(word).getType();
         final Token after = StatementWordInFromLines.afterWord(spoken, word);
         final boolean described = type == FrostlakeLexer.DESCRIBE || type == FrostlakeLexer.DESC;
         final List<String> lines = new ArrayList<>();
         if (plain) {
             lines.add(SyntaxErrorListener.sentence(spoken.get(word)));
+            return lines;
+        }
+        if (after != null && (calls == 2 && (described || type == FrostlakeLexer.CALL)
+                || calls == THREE_CALLS && type == FrostlakeLexer.CALL && word + 2 < spoken.size())) {
+            lines.add(SyntaxErrorListener.sentence(after));
+            lines.add(SyntaxErrorListener.sentence(spoken.get(word)));
+            lines.add(SyntaxErrorListener.sentence(calls == 2 ? after : spoken.get(word + 2)));
             return lines;
         }
         if (after == null || !argument && !compared) {
@@ -702,6 +721,34 @@ final class ValueSubqueryLines {
             lines.add(SyntaxErrorListener.sentence(spoken.get(close)));
         }
         return lines;
+    }
+
+    /**
+     * The lines after the SELECT of the query an IN's list holds, when its FROM list reads a statement in its
+     * parentheses after a comma, refused at its word: as a compared query's (see listedWordLines), {@code a IN
+     * (SELECT 1 FROM t, (DESCRIBE TABLE t))} 'SELECT', then 'TABLE' (live-verified); null for any other query.
+     *
+     * @param sql    the text parsed
+     * @param spoken its default-channel tokens, end of input included
+     * @param open   the list's '('
+     * @return the lines, or null
+     */
+    static List<String> inListStatementWord(final String sql, final List<Token> spoken, final int open) {
+        final int close = closing(spoken, open, spoken.size() - 1);
+        if (close >= spoken.size() - 1 || open + 2 >= close || spoken.get(open + 1).getType() != FrostlakeLexer.SELECT
+                || !isLiteral(spoken.get(open + 2))) {
+            return null;
+        }
+        final List<String> inside = queryReadAlone(sql, spoken, open, close);
+        for (int i = open + 4; !inside.isEmpty() && i + 1 < close; i++) {
+            final Token at = spoken.get(i);
+            if (StatementWordInFromLines.opensStatement(at) && inside.get(0).equals(SyntaxErrorListener.sentence(at))
+                    && spoken.get(i - 1).getType() == FrostlakeLexer.LPAREN
+                    && spoken.get(i - 2).getType() == FrostlakeLexer.COMMA && inFromList(spoken, open, i - 2)) {
+                return listedWordLines(spoken, i, false, true, false, 0);
+            }
+        }
+        return null;
     }
 
     /**

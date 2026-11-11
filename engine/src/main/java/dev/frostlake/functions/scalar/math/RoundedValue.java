@@ -51,6 +51,9 @@ final class RoundedValue {
     /** The widest scale span a NUMBER is rounded across. */
     private static final int MAX_SPAN = 38;
 
+    /** The greatest power of ten a double holds exactly: 1E22. */
+    private static final int EXACT_POWERS = 22;
+
     private RoundedValue() {
     }
 
@@ -146,8 +149,14 @@ final class RoundedValue {
             // Infinity, where rounding through a long answered the long's bound.
             return value;
         }
+        // Within the powers of ten a double holds exactly, the value is shifted by one and shifted back by it, so the
+        // answer is the double nearest the rounded decimal (live-verified: ROUND(6.180339887498949::FLOAT, 9) equals
+        // 6.180339887::FLOAT, where multiplying by an inexact 1E-9 missed it). Past them the scale's own arithmetic
+        // stands, NaN included.
+        final boolean exact = Math.abs(scale) <= EXACT_POWERS;
+        final double power = Math.pow(10, Math.abs(scale));
         final double factor = Math.pow(10, -scale);
-        final double shifted = value / factor;
+        final double shifted = !exact ? value / factor : scale >= 0 ? value * power : value / power;
         final double rounded;
         if (mode == RoundingMode.CEILING) {
             rounded = Math.ceil(shifted);
@@ -155,17 +164,22 @@ final class RoundedValue {
             rounded = Math.floor(shifted);
         } else if (mode == RoundingMode.DOWN) {
             rounded = shifted < 0 ? Math.ceil(shifted) : Math.floor(shifted);
-        } else {
+        } else if (Double.isInfinite(shifted)) {
             // An infinity stays one, so a scale past the double's range ends as NaN as the other modes do
-            // (live-verified: ROUND(1.25::FLOAT, 32768) is NaN), where Math.round would hand back a long's bound.
-            rounded = Double.isInfinite(shifted) ? shifted : Math.round(shifted);
+            // (live-verified: ROUND(1.25::FLOAT, 32768) is NaN).
+            rounded = shifted;
+        } else {
+            // Half away from zero (live-verified: ROUND(-2.5::FLOAT, 0) is -3), judged on the shifted value's own
+            // fraction, with no 64-bit bound on the rounded units: ROUND(1E20::FLOAT, 2) is 1E20.
+            final double magnitude = Math.floor(Math.abs(shifted));
+            final double away = Math.abs(shifted) - magnitude >= 0.5 ? magnitude + 1 : magnitude;
+            rounded = shifted < 0 ? -away : away;
         }
         // CEIL and TRUNC of a small negative give a POSITIVE zero on the account — CEIL(-0.4::FLOAT)
-        // and TRUNC(-0.04::FLOAT, 1) are both 0 there — where IEEE ceiling hands back -0.0. Adding a
-        // positive zero turns only that value; FLOOR keeps the sign it computes, as live does.
-        final double result = rounded * factor;
-        return Double.valueOf(mode == RoundingMode.CEILING || mode == RoundingMode.DOWN
-            ? result + 0.0 : result);
+        // and TRUNC(-0.04::FLOAT, 1) are both 0 there — where IEEE ceiling hands back -0.0, and so does ROUND's.
+        // Adding a positive zero turns only that value; FLOOR keeps the sign it computes, as live does.
+        final double result = !exact ? rounded * factor : scale >= 0 ? rounded / power : rounded * power;
+        return Double.valueOf(mode == RoundingMode.FLOOR ? result : result + 0.0);
     }
 
     /**

@@ -31,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * A request whose own text only reads may still reach a write through what its names stand for: a SQL function
@@ -41,6 +42,7 @@ public class ReadOnlyBodiesTest extends BaseDatabaseTest {
 
     @Override
     protected void setupTest() {
+        assumeFalse(isLiveSnowflake(), "the judgement reads the engine's own catalog");
         engine.execute("CREATE OR REPLACE TABLE rbt (a INT)");
         engine.execute("INSERT INTO rbt VALUES (1), (2)");
         engine.execute("CREATE OR REPLACE SEQUENCE rbs");

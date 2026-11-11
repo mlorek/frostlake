@@ -40,6 +40,8 @@ public class FileFormat implements Named, SessionScoped {
 
     private String name;
     private String type;
+    /** The TYPE as the creating statement wrote it, or null where it wrote none (see {@link #getWrittenType}). */
+    private String writtenType;
     private final Map<String, String> options;
     private String comment;
     // The creating statement's instant, which a replayed statement reproduces (see SqlObject).
@@ -73,6 +75,21 @@ public class FileFormat implements Named, SessionScoped {
 
     public void setType(final String type) {
         this.type = type != null ? type.toUpperCase(Locale.ROOT) : null;
+    }
+
+    /**
+     * The TYPE as the creating statement wrote it, quotes taken off - {@code avro} for {@code TYPE = avro}, {@code Orc}
+     * for {@code TYPE = 'Orc'} - which a refusal naming the format's type names it by, where a listing shows the
+     * type upper-cased (live-verified); null where the statement wrote no TYPE.
+     *
+     * @return the written type, or null
+     */
+    public String getWrittenType() {
+        return writtenType;
+    }
+
+    public void setWrittenType(final String writtenType) {
+        this.writtenType = writtenType;
     }
 
     public Map<String, String> getOptions() {

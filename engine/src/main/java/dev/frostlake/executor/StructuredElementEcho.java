@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.BinaryOperationExpression;
 import dev.frostlake.executor.expressions.CallEcho;
 import dev.frostlake.executor.expressions.CastExpression;
 import dev.frostlake.executor.expressions.Expression;
@@ -23,6 +24,8 @@ import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.executor.expressions.ParsedEchoPrinter;
+import dev.frostlake.executor.expressions.UnaryOperationExpression;
+import dev.frostlake.executor.expressions.UnaryOperator;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
@@ -36,8 +39,11 @@ import java.util.Locale;
  * converts it, a text into a NUMBER(p,s) element as {@code TO_NUMBER(text, p, s)} and a number as written
  * (live-verified, for ARRAY_APPEND in a VALUES clause:
  * {@code ARRAY_APPEND(CAST(ARRAY_CONSTRUCT(1) AS ARRAY(NUMBER(10,2))), TO_NUMBER('zz', 10, 2))}). A conversion to
- * VARIANT is the cast it is, a number converted to FLOAT in it folded to that FLOAT: TO_VARIANT(0.1::FLOAT) is
- * {@code CAST(0.1 AS VARIANT)} (live-verified).
+ * VARIANT is the cast it is. A constant FLOAT anywhere in the item - a number converted to FLOAT, its negation, and
+ * arithmetic over it and number literals - is folded to the double it computes, written as the double prints:
+ * {@code TO_VARIANT(0.1::FLOAT)} is {@code CAST(0.1 AS VARIANT)}, {@code ARRAY_CONSTRUCT(0.1::FLOAT)}
+ * {@code ARRAY_CONSTRUCT(0.1)}, {@code 1e3::FLOAT} {@code 1000.0}, {@code 1e30::FLOAT} {@code 1.0E30},
+ * {@code 0.1::FLOAT + 1} {@code 1.1} and {@code -2.5::FLOAT} {@code -2.5} (live-verified).
  */
 public final class StructuredElementEcho implements CallEcho {
 
@@ -46,8 +52,7 @@ public final class StructuredElementEcho implements CallEcho {
         final String name = call.getFunctionName() == null ? "" : call.getFunctionName().toUpperCase(Locale.ROOT);
         if ((call.getNameParts() == null || call.getNameParts().size() == 1) && "TO_VARIANT".equals(name)
                 && call.getArguments().size() == 1) {
-            final String folded = floatConstant(call.getArguments().get(0));
-            return "CAST(" + (folded != null ? folded : printer.printed(call.getArguments().get(0))) + " AS VARIANT)";
+            return "CAST(" + printer.printed(call.getArguments().get(0)) + " AS VARIANT)";
         }
         if (!"ARRAY_APPEND".equals(name) || call.getArguments().size() != 2) {
             return null;
@@ -62,24 +67,75 @@ public final class StructuredElementEcho implements CallEcho {
             + printer.printed(value) + ", " + element.getPrecision() + ", " + element.getScale() + "))";
     }
 
+    @Override
+    public String spellConstant(final Expression expression, final ParsedEchoPrinter printer) {
+        final Double value = floatValue(expression);
+        return value == null || value.isInfinite() || value.isNaN() ? null : Double.toString(value.doubleValue());
+    }
+
     /**
-     * The FLOAT a number literal converted to FLOAT folds to, as the plan prints it — its shortest digits, never by
-     * its exponent: 0.1, 1e3 as 1000 — or null for any other expression.
+     * The double a constant FLOAT expression computes: a number literal converted to FLOAT, its negation, and the
+     * arithmetic of such a value with another or with a number literal; null for any other expression.
      */
-    private static String floatConstant(final Expression value) {
-        if (!(value instanceof CastExpression) || ((CastExpression) value).isTryMode()
-                || ((CastExpression) value).isTypedLiteral()
-                || !NumericType.isApproximate(((CastExpression) value).getTargetDataType())) {
+    private static Double floatValue(final Expression expression) {
+        if (expression instanceof CastExpression) {
+            final CastExpression cast = (CastExpression) expression;
+            if (cast.isTryMode() || cast.isTypedLiteral() || !NumericType.isApproximate(cast.getTargetDataType())) {
+                return null;
+            }
+            final BigDecimal number = numberLiteral(cast.getExpression());
+            return number == null ? null : Double.valueOf(number.doubleValue());
+        }
+        if (expression instanceof UnaryOperationExpression
+                && ((UnaryOperationExpression) expression).getOperator() == UnaryOperator.NEGATE) {
+            final Double operand = floatValue(((UnaryOperationExpression) expression).getOperand());
+            return operand == null ? null : Double.valueOf(-operand.doubleValue());
+        }
+        if (!(expression instanceof BinaryOperationExpression)) {
             return null;
         }
-        final Expression operand = ((CastExpression) value).getExpression();
-        if (!(operand instanceof LiteralExpression) || !(((LiteralExpression) operand).getValue() instanceof Number)
-                || ((LiteralExpression) operand).getType() != LiteralType.INTEGER
-                && ((LiteralExpression) operand).getType() != LiteralType.DECIMAL) {
+        final BinaryOperationExpression operation = (BinaryOperationExpression) expression;
+        final Double left = floatValue(operation.getLeft());
+        final Double right = floatValue(operation.getRight());
+        if (left == null && right == null) {
             return null;
         }
-        final double number = ((Number) ((LiteralExpression) operand).getValue()).doubleValue();
-        return Double.isInfinite(number) ? null : BigDecimal.valueOf(number).stripTrailingZeros().toPlainString();
+        final Double a = left != null ? left : numberValue(operation.getLeft());
+        final Double b = right != null ? right : numberValue(operation.getRight());
+        if (a == null || b == null) {
+            return null;
+        }
+        switch (operation.getOperator()) {
+            case ADD:
+                return Double.valueOf(a.doubleValue() + b.doubleValue());
+            case SUBTRACT:
+                return Double.valueOf(a.doubleValue() - b.doubleValue());
+            case MULTIPLY:
+                return Double.valueOf(a.doubleValue() * b.doubleValue());
+            case DIVIDE:
+                return Double.valueOf(a.doubleValue() / b.doubleValue());
+            default:
+                return null;
+        }
+    }
+
+    /** A number literal's double, or null for anything else. */
+    private static Double numberValue(final Expression expression) {
+        final BigDecimal number = numberLiteral(expression);
+        return number == null ? null : Double.valueOf(number.doubleValue());
+    }
+
+    /** A number literal's value, or null for anything else. */
+    private static BigDecimal numberLiteral(final Expression expression) {
+        if (!(expression instanceof LiteralExpression)) {
+            return null;
+        }
+        final LiteralExpression literal = (LiteralExpression) expression;
+        if (!(literal.getValue() instanceof Number)
+                || literal.getType() != LiteralType.INTEGER && literal.getType() != LiteralType.DECIMAL) {
+            return null;
+        }
+        return new BigDecimal(String.valueOf(literal.getValue()));
     }
 
     /** The NUMBER element type of a cast to a structured ARRAY, or null for any other array. */

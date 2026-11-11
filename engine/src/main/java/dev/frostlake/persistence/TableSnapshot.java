@@ -78,6 +78,11 @@ public class TableSnapshot implements Serializable {
     public Map<String, String> contacts;
     public String aggregationPolicyName;
     public String joinPolicyName;
+    // Null on snapshots predating privacy and storage lifecycle policies.
+    public String privacyPolicyName;
+    public List<String> privacyEntityKey;
+    public String storageLifecyclePolicyName;
+    public List<String> storageLifecycleColumns;
     public List<SearchOptimizationSnapshot> searchOptimization;
     public List<String> aggregationEntityKey;
     public String rowAccessPolicyName;

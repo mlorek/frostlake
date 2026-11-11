@@ -65,7 +65,8 @@ public final class GrantNames {
         "TABLE", "VIEW", "MATERIALIZED_VIEW", "DYNAMIC_TABLE", "EXTERNAL_TABLE", "EVENT_TABLE", "ICEBERG_TABLE",
         "HYBRID_TABLE", "SEQUENCE", "STAGE", "FILE_FORMAT", "FUNCTION", "PROCEDURE", "STREAM", "TASK", "PIPE",
         "ALERT", "MASKING_POLICY", "ROW_ACCESS_POLICY", "PROJECTION_POLICY", "AGGREGATION_POLICY", "JOIN_POLICY",
-        "PASSWORD_POLICY", "SESSION_POLICY", "AUTHENTICATION_POLICY", "PACKAGES_POLICY", "NETWORK_RULE", "SECRET",
+        "PRIVACY_POLICY", "STORAGE_LIFECYCLE_POLICY", "PASSWORD_POLICY", "SESSION_POLICY", "AUTHENTICATION_POLICY",
+        "PACKAGES_POLICY", "NETWORK_RULE", "SECRET",
         "TAG", "STREAMLIT", "NOTEBOOK", "MODEL", "SERVICE", "IMAGE_REPOSITORY", "CORTEX_SEARCH_SERVICE",
         "SEMANTIC_VIEW", "CONTACT", "DATASET", "GIT_REPOSITORY"));
 
@@ -81,7 +82,7 @@ public final class GrantNames {
     /** The policies and the contact {@link #present} looks up, each a member of its schema named exactly. */
     private static final Set<String> POLICIES = new HashSet<>(Arrays.asList("MASKING_POLICY", "ROW_ACCESS_POLICY",
         "AGGREGATION_POLICY", "JOIN_POLICY", "PROJECTION_POLICY", "PASSWORD_POLICY", "SESSION_POLICY",
-        "AUTHENTICATION_POLICY", "PACKAGES_POLICY", "CONTACT"));
+        "AUTHENTICATION_POLICY", "PACKAGES_POLICY", "PRIVACY_POLICY", "STORAGE_LIFECYCLE_POLICY", "CONTACT"));
 
     /** The part a set-aside name carries after the object's own: no object's name has four parts. */
     private static final String SET_ASIDE = "#COPY_GRANTS";
@@ -239,6 +240,10 @@ public final class GrantNames {
                 return schema.getAggregationPolicyExact(object) != null;
             case "JOIN_POLICY":
                 return schema.getJoinPolicy(object) != null;
+            case "PRIVACY_POLICY":
+                return schema.getPrivacyPolicy(object) != null;
+            case "STORAGE_LIFECYCLE_POLICY":
+                return schema.getStorageLifecyclePolicy(object) != null;
             case "PROJECTION_POLICY":
                 return schema.getProjectionPolicyExact(object) != null;
             case "CONTACT":

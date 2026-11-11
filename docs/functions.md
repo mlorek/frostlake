@@ -224,6 +224,7 @@ over `1`, `1.0`, `"1"`, `1e0` is 2. A SQL NULL stays outside the order (`NULLS L
 | `TO_GEOMETRY` / `TRY_TO_GEOMETRY` | `TO_GEOMETRY(input [, srid])` | GEOMETRY | Parses WKT or GeoJSON into a planar GEOMETRY (default SRID 0). |
 | `ST_MAKEPOINT` (`ST_POINT`) / `ST_MAKEGEOMPOINT` (`ST_GEOM_POINT`) | `ST_MAKEPOINT(lon, lat)` | GEOGRAPHY / GEOMETRY | Point constructors. |
 | `ST_ASTEXT` (`ST_ASWKT`) / `ST_ASGEOJSON` / `ST_ASWKB` (`ST_ASBINARY`) | `ST_ASTEXT(g)` | STRING / OBJECT / BINARY | Renderers: normalized WKT (`LINESTRING(0 0,1 0)`), the GeoJSON object, little-endian WKB. `ST_GEOGRAPHYFROMWKT`/`ST_GEOMETRYFROMWKT` (and `…FROMTEXT`) parse back. |
+| `ST_ASEWKT` | `ST_ASEWKT(g)` | STRING | The WKT behind the value's SRID: `SRID=4326;POINT(1 2)`. `TO_GEOMETRY` / `TO_GEOGRAPHY` read such EWKT back, a GEOGRAPHY in SRID 4326 alone. |
 | `ST_X` / `ST_Y` / `ST_SRID` / `ST_DIMENSION` / `ST_NPOINTS` (`ST_NUMPOINTS`) / `ST_XMIN`/`ST_XMAX`/`ST_YMIN`/`ST_YMAX` | `ST_X(g)` … | NUMBER | Accessors; `ST_X`/`ST_Y` raise Snowflake's type error on non-points. |
 | `ST_DISTANCE` / `ST_LENGTH` / `ST_AREA` / `ST_PERIMETER` | `ST_DISTANCE(g1, g2)` … | DOUBLE | Great-circle meters on Snowflake's sphere for GEOGRAPHY (spherical-excess areas), planar units for GEOMETRY; mixing kinds raises the argument-type error. `HAVERSINE(lat1,lon1,lat2,lon2)` returns km on R = 6371. |
 | `ST_CONTAINS` / `ST_WITHIN` / `ST_INTERSECTS` / `ST_DISJOINT` / `ST_DWITHIN` | `ST_CONTAINS(g1, g2)` … | BOOLEAN | Predicates (point-in-polygon with holes, segment crossings, distance bound in meters). |

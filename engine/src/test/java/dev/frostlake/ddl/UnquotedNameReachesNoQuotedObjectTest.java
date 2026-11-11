@@ -79,7 +79,7 @@ public class UnquotedNameReachesNoQuotedObjectTest extends BaseDatabaseTest {
         engine.execute("ALTER TABLE ux_t SET CHANGE_TRACKING = TRUE");
         engine.execute("CREATE STREAM \"lx_s\" ON TABLE ux_t");
         engine.execute("CREATE TASK \"lx_t\" AS SELECT 1");
-        engine.execute("CREATE ALERT \"lx_a\" IF (EXISTS (SELECT 1)) THEN SELECT 1");
+        engine.execute("CREATE ALERT \"lx_a\" SCHEDULE = '60 MINUTE' IF (EXISTS (SELECT 1)) THEN SELECT 1");
         engine.execute("CREATE STAGE \"lx_st\"");
         engine.execute("CREATE PIPE \"lx_p\" AS COPY INTO ux_t FROM @\"lx_st\"");
         engine.execute("CREATE FILE FORMAT \"lx_ff\" TYPE = CSV");
@@ -121,7 +121,7 @@ public class UnquotedNameReachesNoQuotedObjectTest extends BaseDatabaseTest {
     public void alertsMaterializedViewsJoinPoliciesViewsAndStagesReachOnlyTheExactName() {
         engine.execute("CREATE TABLE ux_t (id INT)");
         engine.execute("INSERT INTO ux_t VALUES (1)");
-        engine.execute("CREATE ALERT \"lx_a\" IF (EXISTS (SELECT 1)) THEN SELECT 1");
+        engine.execute("CREATE ALERT \"lx_a\" SCHEDULE = '60 MINUTE' IF (EXISTS (SELECT 1)) THEN SELECT 1");
         engine.execute("CREATE MATERIALIZED VIEW \"lx_mv\" AS SELECT id FROM ux_t");
         engine.execute("CREATE VIEW \"lx_v\" AS SELECT 1 x");
         engine.execute("CREATE STAGE \"lx_st\"");

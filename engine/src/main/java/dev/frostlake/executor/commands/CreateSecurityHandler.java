@@ -30,11 +30,13 @@ import dev.frostlake.metastore.model.Contact;
 import dev.frostlake.metastore.model.JoinPolicy;
 import dev.frostlake.metastore.model.MaskingPolicy;
 import dev.frostlake.metastore.model.Parameter;
+import dev.frostlake.metastore.model.PrivacyPolicy;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.ProjectionPolicy;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.RowAccessPolicy;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.StorageLifecyclePolicy;
 import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.metastore.model.User;
 import dev.frostlake.parser.FrostlakeParser;
@@ -58,6 +60,9 @@ import java.util.Locale;
 public class CreateSecurityHandler implements CommandHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(CreateSecurityHandler.class);
+
+    /** What a privacy policy answers, as its RETURNS names it. */
+    private static final String PRIVACY_BUDGET = "PRIVACY_BUDGET";
 
     /** What live accepts as a contact's address: one address, a dotted domain, no spaces. */
 
@@ -546,6 +551,144 @@ public class CreateSecurityHandler implements CommandHandler {
     }
 
     /**
+     * CREATE PRIVACY POLICY: no arguments, and a body answering a PRIVACY_BUDGET - {@code NO_PRIVACY_POLICY()} or
+     * {@code PRIVACY_BUDGET(BUDGET_NAME => ...)}. An argument is refused first, then a body of another type than the
+     * declared one, then a declared type other than PRIVACY_BUDGET, spelled as a type is: {@code Privacy policy
+     * return type 'VARCHAR(134217728)' is not PRIVACY_BUDGET.} (live-verified).
+     *
+     * @param ctx         the statement
+     * @param ifNotExists whether it says IF NOT EXISTS
+     * @return null: the status sentence is the executor's
+     */
+    public Object handleCreatePrivacyPolicy(final FrostlakeParser.CreateStatementContext ctx,
+                                            final boolean ifNotExists) {
+        final String qn = getText(ctx.qualifiedName(0));
+        final String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
+        final boolean orReplace = ctx.or_replace() != null;
+        if (ctx.parameterList() != null && !ctx.parameterList().parameterDef().isEmpty()) {
+            throw new RuntimeException("Privacy policy must have exactly zero arguments, got "
+                + ctx.parameterList().parameterDef().size() + " arguments.");
+        }
+        final String body = ctx.bodyDefinition() != null
+            ? ddl.getOriginalText(ctx.bodyDefinition()) : ddl.getOriginalText(ctx.booleanExpr());
+        final String returns = (ctx.dataTypeName() != null ? ctx.dataTypeName().getText()
+            : getText(ctx.identifier(0))).toUpperCase(Locale.ROOT);
+        if (PRIVACY_BUDGET.equals(returns)) {
+            RoutineReturnTypeChecker.checkConstraintBody(queryExecutor, catalog, "SYSTEM$" + PRIVACY_BUDGET, body);
+        } else {
+            final DataType declared = ctx.dataTypeName() != null
+                ? columnParser.parseRoutineDataType(ctx.dataTypeName(), null) : null;
+            if (declared != null) {
+                RoutineReturnTypeChecker.checkScalarSqlUdf(queryExecutor, catalog, "SQL", false, declared,
+                    new ArrayList<Parameter>(), body, null);
+            }
+            throw new RuntimeException("Privacy policy return type '"
+                + (declared != null ? RoutineReturnTypeChecker.spell(declared) : returns) + "' is not "
+                + PRIVACY_BUDGET + ".");
+        }
+        try {
+            final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+            // The name as written, as a join policy's is.
+            final String policyName = parts[parts.length - 1];
+            requirePolicyCreatable(schema, policyName, "PRIVACY_POLICY", parts, orReplace, ifNotExists,
+                Privilege.CREATE_PRIVACY_POLICY);
+            final boolean freshName = !schema.hasPrivacyPolicy(policyName);
+            if (orReplace) {
+                if (catalog.isPrivacyOrLifecyclePolicyInUse(schema, policyName, false)) {
+                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
+                        + " cannot be dropped/replaced as it is associated with one or more entities.");
+                }
+                if (!freshName) {
+                    schema.dropPrivacyPolicy(policyName);
+                }
+            } else if (!freshName) {
+                throw policyNameTaken(parts);
+            }
+            PolicyBodyCheck.requireNumericLimits(body);
+            final PrivacyPolicy policy = new PrivacyPolicy(policyName, body);
+            final String comment = ddl.extractCommentFromList(ctx.commentClause());
+            if (comment != null) {
+                policy.setComment(comment);
+            }
+            policy.setOwner(catalog.currentRoleForOwner());
+            schema.addPrivacyPolicy(policy);
+            takeName(freshName, "PRIVACY_POLICY", schema, policyName);
+            logger.trace("Created privacy policy: {}", qn);
+        } catch (final RuntimeException e) { ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0)); }
+        return null;
+    }
+
+    /**
+     * CREATE STORAGE LIFECYCLE POLICY: one argument at least, and a BOOLEAN body over them that tells which rows
+     * expire. A signature of no arguments is refused first, then a body of another type than the declared one, then
+     * a declared type other than BOOLEAN, and only then the properties (see StorageLifecycleProperties), all
+     * live-verified.
+     *
+     * @param ctx         the statement
+     * @param ifNotExists whether it says IF NOT EXISTS
+     * @return null: the status sentence is the executor's
+     */
+    public Object handleCreateStorageLifecyclePolicy(final FrostlakeParser.CreateStatementContext ctx,
+                                                     final boolean ifNotExists) {
+        final String qn = getText(ctx.qualifiedName(0));
+        final String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
+        final boolean orReplace = ctx.or_replace() != null;
+        if (ctx.parameterList() == null || ctx.parameterList().parameterDef().isEmpty()) {
+            throw new RuntimeException(SqlCompilationError.inline(
+                "Storage lifecycle policy must have at least one argument."));
+        }
+        final List<Parameter> params = new ArrayList<>();
+        for (final FrostlakeParser.ParameterDefContext p : ctx.parameterList().parameterDef()) {
+            params.add(columnParser.parsePolicyParameterDef(p));
+        }
+        final String body = ctx.bodyDefinition() != null
+            ? ddl.getOriginalText(ctx.bodyDefinition()) : ddl.getOriginalText(ctx.booleanExpr());
+        try {
+            final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
+            // The name as written, as a row access policy's is.
+            final String policyName = parts[parts.length - 1];
+            requirePolicyName(schema, policyName, parts, orReplace, ifNotExists,
+                Privilege.CREATE_STORAGE_LIFECYCLE_POLICY);
+            final DataType declared = ctx.dataTypeName() != null
+                ? columnParser.parseRoutineDataType(ctx.dataTypeName(), null) : null;
+            if (declared != null) {
+                PolicyBodyCheck.compile(queryExecutor, catalog, policyName, declared, params, body, schema);
+            }
+            if (!(declared instanceof BooleanType)) {
+                throw new RuntimeException(SqlCompilationError.inline("Storage lifecycle policy return type '"
+                    + (declared != null ? RoutineReturnTypeChecker.spell(declared)
+                        : getText(ctx.identifier(0)).toUpperCase(Locale.ROOT)) + "' is not BOOLEAN."));
+            }
+            final StorageLifecycleProperties properties =
+                StorageLifecycleProperties.read(ddl, ctx.storageLifecycleProperty());
+            requirePolicyKind(schema, policyName, StorageLifecycleProperties.KIND, parts, orReplace);
+            final boolean freshName = !schema.hasStorageLifecyclePolicy(policyName);
+            if (orReplace) {
+                if (catalog.isPrivacyOrLifecyclePolicyInUse(schema, policyName, true)) {
+                    throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
+                        + " cannot be dropped/replaced as it is associated with one or more entities.");
+                }
+                if (!freshName) {
+                    schema.dropStorageLifecyclePolicy(policyName);
+                }
+            } else if (!freshName) {
+                throw policyNameTaken(parts);
+            }
+            final StorageLifecyclePolicy policy = new StorageLifecyclePolicy(policyName, params, body);
+            if (properties.comment() != null) {
+                policy.setComment(properties.comment());
+            }
+            policy.setArchiveTier(properties.tier());
+            policy.setArchiveForDays(properties.days());
+            policy.setOwner(catalog.currentRoleForOwner());
+            schema.addStorageLifecyclePolicy(policy);
+            takeName(freshName, StorageLifecycleProperties.KIND, schema, policyName);
+            logger.trace("Created storage lifecycle policy: {}", qn);
+        } catch (final RuntimeException e) { ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0)); }
+        return null;
+    }
+
+    /**
      * CREATE AGGREGATION POLICY — the same shape as a projection policy, with its own two refusals
      * and a body answering AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => n) or NO_AGGREGATION_CONSTRAINT().
      */
@@ -684,6 +827,7 @@ public class CreateSecurityHandler implements CommandHandler {
                 throw policyNameTaken(parts);
             }
             final Contact contact = new Contact(contactName);
+            ContactProperties.judge(ctx.contactProperty(), catalog);
             for (final FrostlakeParser.ContactPropertyContext property : ctx.contactProperty()) {
                 ContactProperties.set(contact, property, catalog);
             }

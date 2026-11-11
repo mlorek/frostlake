@@ -71,6 +71,7 @@ import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.WholeNumbers;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.functions.scalar.ExtractionPathSyntax;
+import dev.frostlake.functions.scalar.FractionScale;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.functions.scalar.SysConnectByPath;
 import dev.frostlake.functions.scalar.WholeNumberArgument;
@@ -156,11 +157,13 @@ import dev.frostlake.values.DecfloatTextNode;
 import dev.frostlake.values.Decfloats;
 import dev.frostlake.values.FloatOriginNode;
 import dev.frostlake.values.HexDoubleText;
+import dev.frostlake.values.LobSize;
 import dev.frostlake.values.RelationStatistics;
 import dev.frostlake.values.StructuredElementRefusal;
 import dev.frostlake.values.UuidTextNode;
 import dev.frostlake.values.ValueRange;
 import dev.frostlake.values.VariantJsonNulls;
+import dev.frostlake.values.VariantText;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.VectorValue;
@@ -191,6 +194,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
+
+import org.antlr.v4.runtime.Token;
 
 /**
  * Evaluates expression AST using the visitor pattern
@@ -601,6 +606,13 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 && StreamSources.missingBaseOf(queryExecutor.getCatalog(), stream) != null) {
             // The changes it holds of tables replaced under their names are out of its reach (live-verified).
             return false;
+        }
+        // A re-bound stream whose range holds a time a table tracked nothing in answers whether that table holds rows,
+        // whatever versions it took: TRUE over a table a CREATE TABLE AS filled, FALSE once a DELETE emptied it
+        // (live-verified; see StreamSources.trackingGapOf).
+        final String gap = StreamSources.trackingGapOf(queryExecutor.getCatalog(), stream);
+        if (gap != null) {
+            return queryExecutor.storedRowCountOf(gap) > 0;
         }
         // A stream "has data" when it lists changes or its tables took a version past its offset (Stream#hasData),
         // NOT when a same-named table has rows (streams aren't stored as tables).
@@ -2345,6 +2357,23 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         final List<Expression> left = expr.getLeft();
         final List<Expression> right = expr.getRight();
         if (expr.isScalarLeft() || expr.isScalarRight()) {
+            // A subquery whose one item is a ROW and that reads a relation is refused that item as it compiles,
+            // at the ROW, ahead of the comparison's types (live-verified).
+            final Expression scalar = expr.isScalarRight() ? right.get(0) : left.get(0);
+            final Token rowItem = scalar instanceof SubqueryExpression && queryExecutor != null
+                ? SelectItemAccessors.soleRowItemPlace(
+                    queryExecutor.subqueryStatement(((SubqueryExpression) scalar).getSubquery())) : null;
+            if (rowItem != null) {
+                final SourcePosition query = ((SubqueryExpression) scalar).getPosition();
+                final SourcePosition at = query == null ? null : ExpressionSource.resolve(new SourcePosition(
+                    query.getLine() + rowItem.getLine() - 1, rowItem.getLine() == 1
+                        ? query.getCharPositionInLine() + rowItem.getCharPositionInLine()
+                        : rowItem.getCharPositionInLine()));
+                throw new RuntimeException(at != null
+                    ? SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(),
+                        "Unsupported: SELECT list element with multiple columns.")
+                    : SqlCompilationError.of("Unsupported: SELECT list element with multiple columns."));
+            }
             final String detail = "Invalid argument types for function '" + expr.getOperator() + "': ("
                 + sideTypeText(left, expr.isScalarLeft()) + ", " + sideTypeText(right, expr.isScalarRight()) + ")";
             final SourcePosition at = ExpressionSource.resolve(expr.getPosition());
@@ -2355,8 +2384,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         if (left.size() == right.size()) {
             return;
         }
-        throw new RuntimeException(SqlCompilationError.of("Can not convert parameter 'ROW(" + joinWritten(right)
-            + ")' of type [" + rowTypeText(right) + "] into expected type [" + rowTypeText(left) + "]"));
+        final String spelled = expr.getRightSpelled() != null ? expr.getRightSpelled()
+            : "ROW(" + joinWritten(right) + ")";
+        throw new RuntimeException(SqlCompilationError.of("Can not convert parameter '" + spelled
+            + "' of type [" + rowTypeText(right) + "] into expected type [" + rowTypeText(left) + "]"));
     }
 
     /** One side's type as an argument-type list names it: the scalar's own, or the ROW of the elements. */
@@ -2970,8 +3001,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 // Temporal operands render in Snowflake's default output forms (space + FF3), and an
                 // APPROXIMATE operand renders as a float — a stored FLOAT arrives as a BigDecimal and
                 // would otherwise concatenate as "3.0" where live gives "3".
-                return SharedFunctionHelpers.textOf(concatOperand(expr.getLeft(), left))
-                    + SharedFunctionHelpers.textOf(concatOperand(expr.getRight(), right));
+                return LobSize.requireConcatenated(SharedFunctionHelpers.textOf(concatOperand(expr.getLeft(), left))
+                    + SharedFunctionHelpers.textOf(concatOperand(expr.getRight(), right)));
             case LIKE:
             case NOT_LIKE:
             case ILIKE:
@@ -3997,11 +4028,14 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                             DateTimeUnitSlot.notAUnitRefusal(conversion != null ? conversion : strictText(arg),
                                 funcName)));
                     }
-                    if ("LAST_DAY".equals(funcName) && arg instanceof ColumnReferenceExpression
-                            && LastDay.partOf(unit) == null) {
-                        // A bare word naming no part, read where the call is evaluated inside another expression:
-                        // a block's own expression is refused for the name (see UnknownUnitWord).
-                        throw new UnknownUnitWord(SharedFunctionHelpers.notADateTimeComponent(unit, funcName), unit);
+                    if (arg instanceof ColumnReferenceExpression
+                            && boundBlockVariable((ColumnReferenceExpression) arg) == null
+                            && !UntypedNullFold.foldsOverNullArgument(expr)) {
+                        // A bare word naming no unit, read where the call is evaluated inside another expression:
+                        // a block's own expression is refused for the name (see UnknownUnitWord), as the call
+                        // written alone is (live-verified: DATEADD(nosuch, 1, d) IS NULL). A call over the bare
+                        // word NULL folds first, as it compiles.
+                        rejectUnknownDateUnit(funcName, callArguments);
                     }
                     // DATE_PART is the exception: it does not complain about the SHAPE of its unit, it
                     // takes whatever arrives and reports it in its own sentence — as the word "null".
@@ -4212,6 +4246,18 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             for (int position = 0; position < argValues.size() && position < expr.getArguments().size(); position++) {
                 if (func.holdsDeclaredWidth(position)) {
                     requireDeclaredBinaryWidth(funcName, expr.getArguments().get(position), argValues.get(position));
+                }
+            }
+            // A bare FF in TO_CHAR's format prints the scale of the temporal's own type (see FractionScale).
+            final int fraction = ("TO_CHAR".equals(funcName) || "TO_VARCHAR".equals(funcName))
+                && argValues.size() >= 2 && expr.getArguments().size() >= 2
+                ? temporalFractionScale(expr.getArguments().get(0)) : -1;
+            if (fraction >= 0) {
+                final int outerFraction = FractionScale.enter(fraction);
+                try {
+                    return func.evaluate(argValues);
+                } finally {
+                    FractionScale.exit(outerFraction);
                 }
             }
             // A TO_NUMBER of a column that can be NULL prints its type {nullable} in a range refusal (see ToNumber).
@@ -6546,6 +6592,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             Decfloats.toNumber((BigDecimal) value, number.getPrecision() > 0 ? number.getPrecision() : 38,
                 Math.max(0, number.getScale()));
         }
+        // A semi-structured value converts to its text only while the text fits one, an array too long to be
+        // spelled refused before its text is made (see LobSize).
+        final boolean semiToText = value instanceof VariantValue && isPlainStringTarget(expr.getTargetType());
+        if (semiToText) {
+            VariantText.requireConvertible(((VariantValue) value).node());
+        }
         // The source's nullability travels with the value: an out-of-range number prints it as part of
         // the type it could not fit, and this is the only frame that still holds the source expression.
         final Object converted = ValueCaster.castValue(value, expr.getTargetType(),
@@ -6568,6 +6620,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if (declaredWidth > 0 && CodePointText.length((String) converted) > declaredWidth) {
                 throw new ColumnLengthException(declaredWidth, (String) converted);
             }
+        }
+        if (semiToText && converted instanceof String) {
+            LobSize.requireConverted((String) converted);
         }
         return applyStructuredTarget(expr, converted);
     }
@@ -6606,10 +6661,44 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             && (isLiteralConstant(wrapped) || readsLiteralConstant(wrapped)) && !gainsScale(wrapped);
     }
 
+    /** The fraction digits of a time or a timestamp's static type, or -1 for any other expression. */
+    private int temporalFractionScale(final Expression argument) {
+        final DataType type;
+        try {
+            type = typeInferencer.infer(argument);
+        } catch (final RuntimeException untyped) {
+            return -1;
+        }
+        if (!(type instanceof DateTimeType) || "DATE".equals(type.getName())) {
+            return -1;
+        }
+        final int precision = ((DateTimeType) type).getPrecision();
+        return precision >= 0 && precision <= 9 ? precision : -1;
+    }
+
     /**
-     * Whether an expression reads a derived relation's column a FROM-less select's number or boolean literal made
-     * (see TableColumn#isLiteralConstant), on a side no outer join extends with NULLs: live folds the literal
-     * through the relation as it folds a wrap written in place.
+     * Whether an expression reads a column of a relation in scope whose values are drawn anew for each row (see
+     * TableColumn#isVolatileDraw).
+     *
+     * @param expression the expression
+     * @return true where it reads one
+     */
+    public boolean readsVolatileDraw(final Expression expression) {
+        final ColumnReferenceCollectWalk walk = new ColumnReferenceCollectWalk();
+        expression.accept(walk);
+        for (final ColumnReferenceExpression reference : walk.references()) {
+            final TableColumn column = resolveDeclaredColumn(reference);
+            if (column != null && column.isVolatileDraw()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether an expression reads a derived relation's column a select's number or boolean literal made (see
+     * TableColumn#isLiteralConstant), on a side no outer join extends with NULLs: live folds the literal through the
+     * relation as it folds a wrap written in place.
      */
     private boolean readsLiteralConstant(final Expression expression) {
         if (!(expression instanceof ColumnReferenceExpression)) {
@@ -6626,14 +6715,16 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     /**
-     * Whether a select item of a FROM-less select is a number or boolean literal, which a derived relation built from
-     * the result hands on as one (see TableColumn#isLiteralConstant).
+     * Whether a select item is a number or boolean literal, or reads a column a derived relation's literal made, which
+     * a derived relation built from the result hands on as one (see TableColumn#isLiteralConstant): live folds the
+     * literal through a select over a table, a view, a CTE and a derived relation over another alike, as through a
+     * FROM-less one (live-verified).
      *
      * @param expr a select item
      * @return true for such an item
      */
     public boolean projectsLiteralConstant(final Expression expr) {
-        if (!(table instanceof FromlessDual) || !isLiteralConstant(expr) || gainsScale(expr)) {
+        if (!isLiteralConstant(expr) && !readsLiteralConstant(expr) || gainsScale(expr)) {
             return false;
         }
         final DataType type = typeInferencer.infer(expr);
@@ -6759,17 +6850,30 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     /** The branch an IFF over a constant BOOLEAN condition takes, through any number of them; else the operand. */
     private static Expression takenBranch(final Expression operand) {
         Expression current = operand;
-        while (current instanceof FunctionCallExpression
-                && "IFF".equalsIgnoreCase(((FunctionCallExpression) current).getFunctionName())
-                && ((FunctionCallExpression) current).getArguments().size() == 3
-                && ((FunctionCallExpression) current).getArguments().get(0) instanceof LiteralExpression
-                && ((LiteralExpression) ((FunctionCallExpression) current).getArguments().get(0)).getValue()
-                    instanceof Boolean) {
-            final List<Expression> arguments = ((FunctionCallExpression) current).getArguments();
-            current = Boolean.TRUE.equals(((LiteralExpression) arguments.get(0)).getValue())
-                ? arguments.get(1) : arguments.get(2);
+        while (true) {
+            if (current instanceof FunctionCallExpression
+                    && "IFF".equalsIgnoreCase(((FunctionCallExpression) current).getFunctionName())
+                    && ((FunctionCallExpression) current).getArguments().size() == 3
+                    && ((FunctionCallExpression) current).getArguments().get(0) instanceof LiteralExpression
+                    && ((LiteralExpression) ((FunctionCallExpression) current).getArguments().get(0)).getValue()
+                        instanceof Boolean) {
+                final List<Expression> arguments = ((FunctionCallExpression) current).getArguments();
+                current = Boolean.TRUE.equals(((LiteralExpression) arguments.get(0)).getValue())
+                    ? arguments.get(1) : arguments.get(2);
+                continue;
+            }
+            // A searched CASE whose first condition is TRUE is the branch it takes: CASE WHEN TRUE THEN a END hands
+            // a's column on, as the IFF does (live-verified).
+            if (current instanceof CaseExpression && !((CaseExpression) current).getWhenClauses().isEmpty()) {
+                final WhenClause first = ((CaseExpression) current).getWhenClauses().get(0);
+                if (!first.isOperandMatch() && first.getCondition() instanceof LiteralExpression
+                        && Boolean.TRUE.equals(((LiteralExpression) first.getCondition()).getValue())) {
+                    current = first.getResult();
+                    continue;
+                }
+            }
+            return current;
         }
-        return current;
     }
 
     /** Whether a cast in the constant's chain gives it a scale the value underneath it does not carry. */
@@ -10500,9 +10604,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * rewritten argument list — are copied as measured (see {@link #rewrittenCallRefusal}).
      */
     /**
-     * A VARIANT is read at a number, a text, a BOOLEAN or a VARIANT: GET refuses a FLOAT, a DECFLOAT, a date or time
+     * A VARIANT is read at a number, a text, a BOOLEAN, a FLOAT or a VARIANT: GET refuses a DECFLOAT, a date or time
      * and a binary index by its type as the call compiles, the first argument named FILE, before the rule for an index
-     * an ARRAY refuses would name the VARIANT (live-verified).
+     * an ARRAY refuses would name the VARIANT; a FLOAT index reads nothing, as an ARRAY's does (live-verified).
      *
      * @param funcName the call's name, upper-cased
      * @param args     its arguments
@@ -10516,9 +10620,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
     }
 
-    /** Whether GET refuses an index of this type over a VARIANT: a FLOAT, a DECFLOAT, a date or time, a binary. */
+    /** Whether GET refuses an index of this type over a VARIANT: a DECFLOAT, a date or time, a binary. */
     private static boolean noVariantIndex(final DataType index) {
-        return index instanceof NumericType && (NumericType.isApproximate(index) || NumericType.isDecfloat(index))
+        return index instanceof NumericType && NumericType.isDecfloat(index)
             || index instanceof DateTimeType || index instanceof BinaryType;
     }
 
@@ -13893,11 +13997,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     private void rejectGeoCastSource(final CastExpression expr) {
         final DataType source = typeInferencer.infer(expr.getExpression());
         if (!GeoTypes.isGeo(source) || source.getName().equals(expr.getTargetBaseName())
-                && (isGeoNull(expr.getExpression())
+                && (!expr.isTryMode() || isGeoNull(expr.getExpression())
                     || ConstantArgumentWalk.isConstant(expr.getExpression(), functionRegistry))) {
-            // The geospatial source a cast takes is a constant cast to its own type, which the plan folds:
-            // CAST(CAST(NULL AS GEOGRAPHY) AS GEOGRAPHY) is NULL and TO_GEOGRAPHY('POINT(1 2)')::GEOGRAPHY the point,
-            // where a GEOGRAPHY column's CAST(g AS GEOGRAPHY) is refused (live-verified).
+            // A geospatial value cast to its own type is no conversion: a GEOGRAPHY column's CAST(g AS GEOGRAPHY)
+            // is the column (live-verified), and a constant's the constant the plan folds,
+            // CAST(CAST(NULL AS GEOGRAPHY) AS GEOGRAPHY) NULL and TO_GEOGRAPHY('POINT(1 2)')::GEOGRAPHY the point.
             return;
         }
         throw new RuntimeException(castSourceRejectionMessage(expr));
@@ -16666,8 +16770,9 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     /**
      * How an expression reads a stored table's column (see StoredRead): a reference to a catalog table's column reads
      * it whole, as does one to a derived relation's column that carries it, and an IFF whose condition is a constant
-     * reads as the branch it takes (the plan folds it away: {@code IFF(TRUE, a, NULL)} hands a's column on); an
-     * element or a path of any of them reads an element. Anything else, and anything past a grouping, reads none.
+     * or a searched CASE whose first condition is TRUE reads as the branch it takes (the plan folds it away:
+     * {@code IFF(TRUE, a, NULL)} and {@code CASE WHEN TRUE THEN a END} hand a's column on); an element or a path of
+     * any of them reads an element. Anything else, and anything past a grouping, reads none.
      *
      * @param expr the expression
      * @return how it reads one

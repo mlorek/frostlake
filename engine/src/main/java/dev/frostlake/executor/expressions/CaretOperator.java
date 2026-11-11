@@ -90,9 +90,23 @@ public final class CaretOperator {
         }
     }
 
-    /** Whether the tree holds a node of the kind. */
+    /**
+     * Whether a node is a task's statement, which the account does not compile as the task is created or altered:
+     * {@code CREATE TASK t ... AS SELECT 2 ^ 3}, {@code AS SELECT 1 | 2} and {@code ALTER TASK t MODIFY AS SELECT - -1}
+     * are accepted, while the task's WHEN condition is judged (live-verified).
+     *
+     * @param node a parse tree node
+     * @return true for a task's statement
+     */
+    static boolean isTaskStatement(final ParseTree node) {
+        return node instanceof FrostlakeParser.TaskBodyContext
+            && (node.getParent() instanceof FrostlakeParser.CreateStatementContext
+                || node.getParent() instanceof FrostlakeParser.TaskActionContext);
+    }
+
+    /** Whether the tree holds a node of the kind, a task's statement aside. */
     private static boolean writes(final ParseTree node, final Class<? extends ParseTree> kind) {
-        if (node == null) {
+        if (node == null || isTaskStatement(node)) {
             return false;
         }
         if (kind.isInstance(node)) {

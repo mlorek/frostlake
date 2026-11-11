@@ -35,6 +35,7 @@ final class PlanNode {
     private final List<PlanNode> children = new ArrayList<>();
     private final Set<String> names = new LinkedHashSet<>();
     private final Set<String> readColumns = new LinkedHashSet<>();
+    private boolean readUnlisted;
     private final List<String> conjuncts = new ArrayList<>();
     private List<PlanColumn> answered;
     private Long rows;
@@ -176,6 +177,16 @@ final class PlanNode {
     /** The columns a scan reads, by canonical name, in the order first read. */
     Set<String> getReadColumns() {
         return readColumns;
+    }
+
+    /** Records that a scan's rows are read for a column it does not list (see PlanRead#unlisted). */
+    void readsUnlisted() {
+        readUnlisted = true;
+    }
+
+    /** Whether a scan's rows are read for a column it does not list. */
+    boolean isReadUnlisted() {
+        return readUnlisted;
     }
 
     /**

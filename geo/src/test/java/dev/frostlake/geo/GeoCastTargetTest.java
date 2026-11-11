@@ -22,8 +22,8 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Casts into GEOGRAPHY and GEOMETRY from every kind of source: a TRY_CAST into a geospatial type is refused with
- * the geospatial parameter's sentence ahead of TRY_CAST's own argument-type one, and a constant geospatial value
- * casts to its own type, where a column's cast to it stays refused (all live-verified).
+ * the geospatial parameter's sentence ahead of TRY_CAST's own argument-type one, and a geospatial value, a constant's
+ * or a column's, casts to its own type as no conversion (all live-verified).
  */
 public class GeoCastTargetTest extends MeasuredCellsTestSupport {
 
@@ -169,6 +169,8 @@ public class GeoCastTargetTest extends MeasuredCellsTestSupport {
         assertAnswer("1", "INSERT INTO gg (g) SELECT v FROM gs");
         assertAnswer("POINT(1 2)|POINT(3 4) ;; POINT(1 2)|POINT(1 2) ;; POINT(1 2)|null",
             "SELECT ST_ASWKT(g), ST_ASWKT(m) FROM gg ORDER BY 1");
+        assertAnswer("POINT(1 2)|POINT(3 4) ;; POINT(1 2)|POINT(1 2) ;; POINT(1 2)|null",
+            "SELECT ST_ASWKT(CAST(g AS GEOGRAPHY)), ST_ASWKT(m::GEOMETRY) FROM gg ORDER BY 1");
         assertAnswer("3|0", "UPDATE gg SET g = 'POINT(5 6)'");
         assertAnswer("POINT(5 6) ;; POINT(5 6) ;; POINT(5 6)", "SELECT ST_ASWKT(g) FROM gg ORDER BY 1");
         assertAnswer("REFUSED SQL compilation error: | invalid type [CAST('POINT(1 2)' AS GEOGRAPHY)] for parameter "

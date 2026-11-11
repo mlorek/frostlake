@@ -21,5 +21,5 @@ package dev.frostlake.metastore;
  * projection policies, a table its row access, aggregation and join policies, and a view its row access policy.
  */
 public enum PolicyKind {
-    MASKING, PROJECTION, ROW_ACCESS, AGGREGATION, JOIN
+    MASKING, PROJECTION, ROW_ACCESS, AGGREGATION, JOIN, PRIVACY, STORAGE_LIFECYCLE
 }

@@ -28,9 +28,12 @@ public final class SnowparkOutcome {
 
     private final String refusal;
 
-    private SnowparkOutcome(final PythonResultSet result, final String refusal) {
+    private final String queryId;
+
+    private SnowparkOutcome(final PythonResultSet result, final String refusal, final String queryId) {
         this.result = result;
         this.refusal = refusal;
+        this.queryId = queryId;
     }
 
     /**
@@ -38,7 +41,7 @@ public final class SnowparkOutcome {
      * @return the outcome of a statement that ran
      */
     static SnowparkOutcome of(final PythonResultSet result) {
-        return new SnowparkOutcome(result, null);
+        return new SnowparkOutcome(result, null, null);
     }
 
     /**
@@ -46,7 +49,16 @@ public final class SnowparkOutcome {
      * @return the outcome of a statement the engine refused
      */
     static SnowparkOutcome refusedWith(final String refusal) {
-        return new SnowparkOutcome(null, refusal);
+        return new SnowparkOutcome(null, refusal, null);
+    }
+
+    /**
+     * @param refusal the engine's refusal, as Snowpark's exception reads it
+     * @param queryId the ID of the statement the engine ran and refused
+     * @return the outcome of a statement the engine ran and refused
+     */
+    static SnowparkOutcome refusedWith(final String refusal, final String queryId) {
+        return new SnowparkOutcome(null, refusal, queryId);
     }
 
     /** @return whether the engine refused the statement */
@@ -57,6 +69,11 @@ public final class SnowparkOutcome {
     /** @return the engine's refusal, or null when the statement ran */
     public String refusal() {
         return refusal;
+    }
+
+    /** @return the ID of the statement the engine ran and refused, or null for any other outcome */
+    public String queryId() {
+        return queryId;
     }
 
     /** @return what the statement answered, or null when it was refused */

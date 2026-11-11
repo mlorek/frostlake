@@ -131,10 +131,10 @@ final class IcebergTables {
         String named = copied ? metadata.getCatalog() : null;
         String policy = null;
         for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
-            if (tail.optionKey() == null || tail.copyOptionValue() == null) {
+            if (tail.propertyName() == null || tail.copyOptionValue() == null) {
                 continue;
             }
-            final String key = tail.optionKey().getText().toUpperCase(Locale.ROOT);
+            final String key = tail.propertyName().getText().toUpperCase(Locale.ROOT);
             final String value = optionValue(tail.copyOptionValue());
             if ("EXTERNAL_VOLUME".equals(key)) {
                 // The empty text names none.
@@ -203,8 +203,8 @@ final class IcebergTables {
         table.setIcebergMetadata(metadata);
         // An Iceberg table always tracks its changes.
         for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
-            if (tail.optionKey() != null && tail.copyOptionValue() != null
-                    && "CHANGE_TRACKING".equalsIgnoreCase(tail.optionKey().getText())
+            if (tail.propertyName() != null && tail.copyOptionValue() != null
+                    && "CHANGE_TRACKING".equalsIgnoreCase(tail.propertyName().getText())
                     && "FALSE".equalsIgnoreCase(tail.copyOptionValue().getText())) {
                 throw new RuntimeException(SqlCompilationError.of(CHANGE_TRACKING_REFUSAL));
             }
@@ -356,12 +356,12 @@ final class IcebergTables {
         }
         boolean turnedOff = false;
         if (action.tableUnsetProperties() != null) {
-            for (final FrostlakeParser.OptionKeyContext key : action.tableUnsetProperties().optionKey()) {
+            for (final FrostlakeParser.PropertyNameContext key : action.tableUnsetProperties().propertyName()) {
                 turnedOff = turnedOff || "CHANGE_TRACKING".equalsIgnoreCase(key.getText());
             }
         }
         for (final FrostlakeParser.TableSetPropertyContext property : action.tableSetProperty()) {
-            turnedOff = turnedOff || "CHANGE_TRACKING".equalsIgnoreCase(property.optionKey().getText())
+            turnedOff = turnedOff || "CHANGE_TRACKING".equalsIgnoreCase(property.propertyName().getText())
                 && property.copyOptionValue() != null
                 && "FALSE".equalsIgnoreCase(property.copyOptionValue().getText());
         }

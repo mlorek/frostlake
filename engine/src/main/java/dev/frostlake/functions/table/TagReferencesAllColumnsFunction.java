@@ -22,6 +22,7 @@ import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.Taggable;
+import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.MaterializedView;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
@@ -127,6 +128,9 @@ public class TagReferencesAllColumnsFunction extends TableFunction {
             }
         } else if (object instanceof MaterializedView && ((MaterializedView) object).hasResolvedColumns()) {
             columns.addAll(((MaterializedView) object).getResolvedColumns());
+        } else if (object instanceof DynamicTable && ((DynamicTable) object).getResolvedColumns() != null) {
+            // A dynamic table's columns carry the tags its own column list sets (live-verified).
+            columns.addAll(((DynamicTable) object).getResolvedColumns());
         }
         return columns;
     }

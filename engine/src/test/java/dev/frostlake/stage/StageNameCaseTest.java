@@ -113,8 +113,11 @@ public class StageNameCaseTest extends BaseDatabaseTest {
         final String lower = answer("SELECT GET_STAGE_LOCATION('@\"st\"')");
         final String mixed = answer("SELECT GET_STAGE_LOCATION('@\"St\"')");
 
-        assertTrue(upper.endsWith(".ST/") && !upper.contains("~"), upper);
-        assertTrue(lower.contains(".st~") && mixed.contains(".St~"), lower + " | " + mixed);
+        // The directory names are the engine's own layout; an account's are paths of its own.
+        if (!isLiveSnowflake()) {
+            assertTrue(upper.endsWith(".ST/") && !upper.contains("~"), upper);
+            assertTrue(lower.contains(".st~") && mixed.contains(".St~"), lower + " | " + mixed);
+        }
         assertFalse(upper.equalsIgnoreCase(lower), upper + " | " + lower);
         assertFalse(lower.equalsIgnoreCase(mixed), lower + " | " + mixed);
     }

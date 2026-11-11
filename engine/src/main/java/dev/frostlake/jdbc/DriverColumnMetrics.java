@@ -32,7 +32,7 @@ import java.util.Locale;
  *   DATE                               10          0       10
  *   TIME(f)                            8           f       8
  *   TIMESTAMPNTZ(f)                    23          f       23
- *   TIMESTAMPLTZ(f), TIMESTAMPTZ(f)    29          f       29
+ *   TIMESTAMPLTZ(f), TIMESTAMPTZ(f)    25          f       25
  *   BOOLEAN                            0           0       5
  *   VECTOR                             0           0       25
  *   INTERVAL_DAY_TIME, _YEAR_MONTH     0           fields  25
@@ -74,7 +74,7 @@ final class DriverColumnMetrics {
                 return 23;
             case "TIMESTAMPLTZ":
             case "TIMESTAMPTZ":
-                return 29;
+                return 25;
             default:
                 return 0;
         }

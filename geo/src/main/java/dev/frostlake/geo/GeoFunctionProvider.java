@@ -36,6 +36,7 @@ public class GeoFunctionProvider implements FunctionProvider {
         registry.register(new StMakePoint());
         registry.register(new StMakeGeomPoint());
         registry.register(new StAsText());
+        registry.register(new StAsEwkt());
         registry.register(new StAsGeojson());
         registry.register(new StAsWkb());
         registry.register(new StX());

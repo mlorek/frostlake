@@ -87,6 +87,10 @@ public class DynamicTableSnapshot implements Serializable {
     public List<Long> refreshImagePartitions;
     /** Each input's micro-partitions as the last refresh read them, by the input's name; null on older snapshots. */
     public HashMap<String, HashMap<Long, Long>> inputPartitions;
+    /** When each base table the last refresh read was made; null on older snapshots. */
+    public HashMap<String, Instant> inputCreatedTimes;
+    /** Whether a failed refresh asked the next one to reinitialize the table. */
+    public boolean reinitRequested;
     /** The refreshes the table keeps for time travel, oldest first: where each fell, when it ran, its rows. */
     public List<Long> refreshSequences;
     public List<Long> refreshMillis;

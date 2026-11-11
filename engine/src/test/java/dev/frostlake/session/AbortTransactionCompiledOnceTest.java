@@ -1108,10 +1108,10 @@ public class AbortTransactionCompiledOnceTest extends MeasuredCellsTestSupport {
             "Bad transaction id",
             "SELECT SYSTEM$ABORT_TRANSACTION(POWER(10, 400))");
         assertAnswer(
-            "Bad transaction id",
+            "Could not abort txn: 18",
             "SELECT SYSTEM$ABORT_TRANSACTION(TO_NUMBER('12', 'XX'))");
         assertAnswer(
-            "Bad transaction id",
+            "Could not abort txn: 255",
             "SELECT SYSTEM$ABORT_TRANSACTION(TO_NUMBER('ff', 'XX'))");
         assertAnswer(
             "Bad transaction id",

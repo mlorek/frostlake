@@ -39,6 +39,7 @@ public class RowComparisonExpression implements Expression {
     private final boolean scalarRight;
     /** Where the operator token sits, for a refusal; null when unknown. */
     private SourcePosition position;
+    private String rightSpelled;
 
     /**
      * @param left     the elements written on the left
@@ -82,6 +83,19 @@ public class RowComparisonExpression implements Expression {
     /** Where the operator token sits; null when unknown. */
     public SourcePosition getPosition() {
         return position;
+    }
+
+    /**
+     * The right side as a refusal names it when it was written as a subquery of one ROW item: the query the account
+     * plans, {@code (SELECT ROW(1, 'x') AS "(1, 'X')" FROM (VALUES (null)) DUAL)}; null when the side was written as
+     * a row.
+     */
+    public String getRightSpelled() {
+        return rightSpelled;
+    }
+
+    public void setRightSpelled(final String rightSpelled) {
+        this.rightSpelled = rightSpelled;
     }
 
     public void setPosition(final SourcePosition position) {

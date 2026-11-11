@@ -217,6 +217,7 @@ public class CreateTableHandler implements CommandHandler {
             }
             if (ctx.or_alter() != null) {
                 OrAlterPolicies.refuseTable(ctx, queryExecutor);
+                VirtualColumnDefinitions.refuseOnOrAlter(ctx.columnList());
             }
             // Every table in a transient schema or database is transient (documented), TRANSIENT written or not
             // (a schema in a transient database is itself transient). A temporary table stays temporary and a
@@ -433,6 +434,9 @@ public class CreateTableHandler implements CommandHandler {
                 }
                 if (comment != null) {
                     table.setComment(comment);
+                } else if (writesNullComment(ctx)) {
+                    // COMMENT = NULL clears the comment the clone would keep (live-verified).
+                    table.setComment(null);
                 }
 
                 // The clone keeps the clustering key with automatic clustering suspended (documented).
@@ -453,6 +457,7 @@ public class CreateTableHandler implements CommandHandler {
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
+            new PrivacyLifecycleAttachments(catalog).attachOnCreate(ctx.tableTailOption(), table);
                 schema.addTable(table);
                 grantsOfNew.apply();
 
@@ -505,6 +510,7 @@ public class CreateTableHandler implements CommandHandler {
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
+            new PrivacyLifecycleAttachments(catalog).attachOnCreate(ctx.tableTailOption(), table);
                 schema.addTable(table);
                 grantsOfNew.apply();
 
@@ -594,6 +600,7 @@ public class CreateTableHandler implements CommandHandler {
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
+            new PrivacyLifecycleAttachments(catalog).attachOnCreate(ctx.tableTailOption(), table);
                 schema.addTable(table);
                 grantsOfNew.apply();
 
@@ -704,6 +711,7 @@ public class CreateTableHandler implements CommandHandler {
                 attachRowAccessPolicy(ctx, table);
             attachAggregationPolicy(ctx, table);
             attachJoinPolicy(ctx, table);
+            new PrivacyLifecycleAttachments(catalog).attachOnCreate(ctx.tableTailOption(), table);
                 schema.addTable(table);
                 grantsOfNew.apply();
 
@@ -1086,16 +1094,16 @@ public class CreateTableHandler implements CommandHandler {
         // free, and a repeated CLUSTER BY stays legal — only the key=value family is checked here.
         final List<String> keys = new ArrayList<>();
         for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
-            if (tail.optionKey() != null) {
-                keys.add(tail.optionKey().getText());
+            if (tail.propertyName() != null) {
+                keys.add(tail.propertyName().getText());
             }
         }
         PropertyDuplicates.reject(keys);
         for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
-            if (tail.optionKey() == null || tail.copyOptionValue() == null) {
+            if (tail.propertyName() == null || tail.copyOptionValue() == null) {
                 continue;
             }
-            final String key = tail.optionKey().getText();
+            final String key = tail.propertyName().getText();
             final String valueText = tail.copyOptionValue().getText();
             // The values the account refuses inline, live-measured: a negative retention (the
             // bracketed invalid-value shape) and an extension time past the 90-day cap.
@@ -1136,7 +1144,8 @@ public class CreateTableHandler implements CommandHandler {
 
     /** Whether a property written name = value names the table's COMMENT. */
     private static boolean writesComment(final FrostlakeParser.TableTailOptionContext tail) {
-        return tail.optionKey() != null && COMMENT.equals(ParameterRegistry.canonical(tail.optionKey().getText()));
+        return tail.propertyName() != null
+            && COMMENT.equals(ParameterRegistry.canonical(tail.propertyName().getText()));
     }
 
     /** A comment written as a word, read as a name is ({@code abc} is ABC), or null when the value is no word. */
@@ -1238,6 +1247,17 @@ public class CreateTableHandler implements CommandHandler {
         return comments;
     }
 
+    /** Whether a CREATE TABLE writes its comment as NULL: {@code COMMENT = NULL}. */
+    private static boolean writesNullComment(final FrostlakeParser.CreateStatementContext ctx) {
+        for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
+            if (writesComment(tail) && tail.tablePropertyConstant() != null
+                    && tail.tablePropertyConstant().NULL() != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static List<FrostlakeParser.ClusterByClauseContext> tailClusterBy(final FrostlakeParser.CreateStatementContext ctx) {
         final List<FrostlakeParser.ClusterByClauseContext> clauses = new ArrayList<>();
         for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
@@ -1249,7 +1269,9 @@ public class CreateTableHandler implements CommandHandler {
     }
 
     /** The first CLUSTER BY clause's expressions — the clause FL applies — for validation. */
-    private static List<FrostlakeParser.ExpressionContext> clusterExpressions(final FrostlakeParser.CreateStatementContext ctx) {
+    /** The expressions of a CREATE TABLE's CLUSTER BY, wherever it stands; none when the statement has none. */
+    static List<FrostlakeParser.ExpressionContext> clusterExpressions(
+            final FrostlakeParser.CreateStatementContext ctx) {
         final List<FrostlakeParser.ClusterByClauseContext> clauses = tailClusterBy(ctx);
         return clauses.isEmpty()
             ? new ArrayList<>()
@@ -1361,12 +1383,11 @@ public class CreateTableHandler implements CommandHandler {
         return null;
     }
 
-    /** The query a parenthesized statement holds — one operand in parentheses and nothing beside it — or null. */
     /**
      * Refuses a bracketed template query that reads no table function — before anything else of the statement is
      * judged, the kind of statement a SQL function's block body refuses included (live-verified: {@code BEGIN CREATE
-     * TABLE z USING TEMPLATE (SELECT 1); …} is refused for the template, not as a CREATE_TABLE). A query that is no
-     * bracketed SELECT is left to the statement's own reading.
+     * TABLE z USING TEMPLATE (SELECT 1); …} is refused for the template, not as a CREATE_TABLE), its properties too.
+     * A query that is no bracketed SELECT is left to the statement's own reading.
      *
      * @param ctx the CREATE … USING TEMPLATE statement
      */
@@ -1381,6 +1402,7 @@ public class CreateTableHandler implements CommandHandler {
         }
     }
 
+    /** The query a parenthesized statement holds — one operand in parentheses and nothing beside it — or null. */
     private static FrostlakeParser.SelectStatementContext parenthesized(
             final FrostlakeParser.SelectStatementContext statement) {
         if (statement.withClause() != null || statement.selectOperand().size() != 1

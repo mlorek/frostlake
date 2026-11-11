@@ -100,6 +100,28 @@ public class CopyUnloadFormatTypeTest extends BaseDatabaseTest {
         assertEquals(notImplemented("AVRO"), refusal("COPY INTO @sn/a5 FROM (SELECT 1 a)"));
     }
 
+    /**
+     * A named format and a stage keep the TYPE as they were created with it, and the refusal names that: a format's
+     * own spelling, a stage's list's, and a named format a stage holds by name (live-verified).
+     */
+    @Test
+    public void aFormatOrAStageKeepsTheSpellingItWasCreatedWith() {
+        engine.execute("CREATE OR REPLACE FILE FORMAT fl TYPE = avro");
+        assertEquals(notImplemented("avro"),
+            refusal("COPY INTO @s0/b1 FROM (SELECT 1 a) FILE_FORMAT = (FORMAT_NAME = fl)"));
+        engine.execute("CREATE OR REPLACE FILE FORMAT fm TYPE = 'Orc'");
+        assertEquals(notImplemented("Orc"),
+            refusal("COPY INTO @s0/b2 FROM (SELECT 1 a) FILE_FORMAT = (FORMAT_NAME = fm)"));
+        engine.execute("CREATE OR REPLACE STAGE sl FILE_FORMAT = (TYPE = avro)");
+        assertEquals(notImplemented("avro"), refusal("COPY INTO @sl/b3 FROM (SELECT 1 a)"));
+        engine.execute("CREATE OR REPLACE STAGE sm FILE_FORMAT = (TYPE = 'Xml')");
+        assertEquals(notImplemented("Xml"), refusal("COPY INTO @sm/b4 FROM (SELECT 1 a)"));
+        engine.execute("CREATE OR REPLACE STAGE sn2 FILE_FORMAT = fl");
+        assertEquals(notImplemented("avro"), refusal("COPY INTO @sn2/b5 FROM (SELECT 1 a)"));
+        engine.execute("ALTER STAGE s0 SET FILE_FORMAT = (TYPE = xml)");
+        assertEquals(notImplemented("xml"), refusal("COPY INTO @s0/b6 FROM (SELECT 1 a)"));
+    }
+
     /** An option, the source and the stage are all judged before the type is. */
     @Test
     public void theTypeIsJudgedLast() {

@@ -2268,13 +2268,21 @@ public class SyntaxErrorListener extends BaseErrorListener {
         // ★ A TIME-ZONE PHRASE A TYPE CANNOT TAKE, and a COMMENT target of two words — see WordedTypeFaultLines.
         // ★ A LATER SHOW'S KEYWORD SCOPE, and the end of input after IF NOT's semicolon — see LaterReadingLines.
         // ★ A WORD AFTER A STRING INSIDE BRACKETS ends the report — see BracketedStringWordLines.
-        return BracketedStringWordLines.lines(spoken,
+        // ★ A TASK'S CLAUSES, A CONTACT AND A LIST INSIDE A PROPERTY'S VALUE are read further — see TaskClauseLines.
+        // ★ A STAR MODIFIER IN A CASE, A COMPARED SUBQUERY OR AN EXISTS ITEM is read on — see StarModifierContextLines.
+        // ★ A PACKAGES POLICY OUT OF ITS ORDER, AND DESCRIBE DATASET'S WORDS, are read on — see PackagesPolicyLines.
+        // ★ A PIVOT AGGREGATE THAT IS NO CALL OF ONE NAME is read on — see PivotCallShapeLines.
+        // ★ A DYNAMIC TABLE'S COLUMN IT CANNOT READ is refused at the column's name — see DynamicTableColumnLines.
+        return DynamicTableColumnLines.lines(spoken, offendingIndexes,
+            PivotCallShapeLines.lines(spoken, offendingIndexes, PackagesPolicyLines.lines(spoken, offendingIndexes,
+            StarModifierContextLines.lines(spoken, offendingIndexes,
+            TaskClauseLines.lines(spoken, offendingIndexes, BracketedStringWordLines.lines(spoken,
             LaterReadingLines.lines(spoken, WordedTypeFaultLines.lines(spoken, offendingIndexes.get(0).intValue(),
             AlterPropertyListLines.lines(spoken, offendingIndexes.get(0).intValue(),
                 AlertConditionLines.lines(spoken, offendingIndexes.get(0).intValue(),
                     MissingOperandLines.readOn(sql, spoken, offendingIndexes.get(0).intValue(),
                         RowLimitWordLines.withBothReadings(sql, spoken, offendingIndexes.get(0).intValue(),
-                            lines)))))));
+                            lines))))))))))));
     }
 
     private List<String> reportedLinesOfTheParse(final boolean firstOnly) {
@@ -2291,6 +2299,13 @@ public class SyntaxErrorListener extends BaseErrorListener {
             if (blockCall != null) {
                 blockCallsRead = true;
                 return blockCall;
+            }
+            // ★ AN OBJECT CONSTANT'S KEY THAT IS NO TEXT is told with the value after each ':' from its pair on — see
+            // ObjectConstantKeyLines.
+            final List<String> objectKey = offendingIndexes.isEmpty() || firstOnly ? null
+                : ObjectConstantKeyLines.lines(sql, opening, offendingIndexes.get(0).intValue());
+            if (objectKey != null) {
+                return objectKey;
             }
             // A BEGIN before a literal opens no block: see RunInStatementLines.
             final List<String> begun = opening.isEmpty() || opening.get(0).getType() != FrostlakeLexer.BEGIN ? null

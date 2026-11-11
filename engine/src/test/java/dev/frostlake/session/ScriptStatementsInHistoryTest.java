@@ -106,16 +106,17 @@ public class ScriptStatementsInHistoryTest {
         engine.executeQuery("SELECT 'mark'");
         final String[] ids = first("BEGIN SELECT 'one'; INSERT INTO t VALUES (3); CREATE TABLE t2 (a INT);"
             + " RETURN LAST_QUERY_ID(-3) || ',' || LAST_QUERY_ID(-2) || ',' || LAST_QUERY_ID(-1); END").split(",");
-        assertEquals("SELECT 'one';", historyColumn("query_text", ids[0]));
-        assertEquals("INSERT INTO t VALUES (3);", historyColumn("query_text", ids[1]));
-        assertEquals("CREATE TABLE t2 (a INT);", historyColumn("query_text", ids[2]));
+        // Each is listed without the semicolon that ends it (live-verified).
+        assertEquals("SELECT 'one'", historyColumn("query_text", ids[0]));
+        assertEquals("INSERT INTO t VALUES (3)", historyColumn("query_text", ids[1]));
+        assertEquals("CREATE TABLE t2 (a INT)", historyColumn("query_text", ids[2]));
         assertEquals("INSERT", historyColumn("query_type", ids[1]));
         // A block's write produces its table's rows once it is done, as one sent on its own does (live-verified).
         assertEquals("3", historyColumn("rows_produced", ids[1]));
         assertEquals("CREATE_TABLE", historyColumn("query_type", ids[2]));
         assertEquals("SUCCESS", historyColumn("execution_status", ids[2]));
         // Each completes, and is listed, before the block it ran in.
-        assertEquals("[SELECT 'one';, INSERT INTO t VALUES (3);, CREATE TABLE t2 (a INT);, BEGIN SELECT 'one';"
+        assertEquals("[SELECT 'one', INSERT INTO t VALUES (3), CREATE TABLE t2 (a INT), BEGIN SELECT 'one';"
             + " INSERT INTO t VALUES (3); CREATE TABLE t2 (a INT); RETURN LAST_QUERY_ID(-3) || ',' || LAST_QUERY_ID(-2)"
             + " || ',' || LAST_QUERY_ID(-1); END]", String.valueOf(rowsAfter("SELECT 'mark'")));
     }
@@ -124,24 +125,25 @@ public class ScriptStatementsInHistoryTest {
     public void executeImmediateOfABlockAndProcedureBodiesAlike() {
         engine.executeQuery("SELECT 'mark ei'");
         first("EXECUTE IMMEDIATE $$ BEGIN SELECT 'ei'; INSERT INTO t VALUES (4); END; $$");
-        assertEquals("[SELECT 'ei';, INSERT INTO t VALUES (4);, EXECUTE IMMEDIATE $$ BEGIN SELECT 'ei';"
+        assertEquals("[SELECT 'ei', INSERT INTO t VALUES (4), EXECUTE IMMEDIATE $$ BEGIN SELECT 'ei';"
             + " INSERT INTO t VALUES (4); END; $$]", String.valueOf(rowsAfter("SELECT 'mark ei'")));
 
         engine.execute("CREATE PROCEDURE p() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN SELECT 'in p'; RETURN 'x'; END $$");
         engine.executeQuery("SELECT 'mark call'");
         first("CALL p()");
-        assertEquals("[SELECT 'in p';, CALL p()]", String.valueOf(rowsAfter("SELECT 'mark call'")));
+        assertEquals("[SELECT 'in p', CALL p()]", String.valueOf(rowsAfter("SELECT 'mark call'")));
 
         engine.executeQuery("SELECT 'mark block call'");
         first("BEGIN CALL p(); END");
-        assertEquals("[SELECT 'in p';, CALL p();, BEGIN CALL p(); END]",
+        assertEquals("[SELECT 'in p', CALL p(), BEGIN CALL p(); END]",
             String.valueOf(rowsAfter("SELECT 'mark block call'")),
             "a CALL a block makes is a child statement too, completing after the statements the procedure ran");
     }
 
+    /** A text of one statement runs as the EXECUTE IMMEDIATE itself: one row, listed as the text (live-verified). */
     @Test
     public void anExecuteImmediatesTextIsAChildStatement() {
-        final String id = first("BEGIN EXECUTE IMMEDIATE 'SELECT ''dyn'''; RETURN LAST_QUERY_ID(-2); END");
+        final String id = first("BEGIN EXECUTE IMMEDIATE 'SELECT ''dyn'''; RETURN LAST_QUERY_ID(); END");
         assertEquals("SELECT 'dyn'", historyColumn("query_text", id));
         assertEquals("dyn", first("SELECT * FROM TABLE(RESULT_SCAN('" + id + "'))"));
     }
@@ -150,11 +152,11 @@ public class ScriptStatementsInHistoryTest {
     public void aFailedStatementOfABlockIsAFailedRow() {
         final String id = first("BEGIN SELECT 1/0; EXCEPTION WHEN OTHER THEN RETURN LAST_QUERY_ID(); END");
         assertEquals("FAILED_WITH_ERROR", historyColumn("execution_status", id));
-        assertEquals("SELECT 1/0;", historyColumn("query_text", id));
+        assertEquals("SELECT 1/0", historyColumn("query_text", id));
 
         final String inHandler = first("BEGIN SELECT 1/0; EXCEPTION WHEN OTHER THEN INSERT INTO t VALUES (5);"
             + " RETURN LAST_QUERY_ID(); END");
-        assertEquals("INSERT INTO t VALUES (5);", historyColumn("query_text", inHandler),
+        assertEquals("INSERT INTO t VALUES (5)", historyColumn("query_text", inHandler),
             "a handler's statements are child statements too");
     }
 
@@ -170,7 +172,7 @@ public class ScriptStatementsInHistoryTest {
         engine.execute("CREATE FUNCTION f() RETURNS NUMBER AS 'SELECT MAX(a) FROM t'");
         engine.executeQuery("SELECT 'mark'");
         first("BEGIN LET x := f(); SELECT f(); RETURN x; END");
-        assertEquals("[SELECT f();, BEGIN LET x := f(); SELECT f(); RETURN x; END]",
+        assertEquals("[SELECT f(), BEGIN LET x := f(); SELECT f(); RETURN x; END]",
             String.valueOf(rowsAfter("SELECT 'mark'")),
             "the UDF's body and the LET's evaluation are no statements of the session's");
     }

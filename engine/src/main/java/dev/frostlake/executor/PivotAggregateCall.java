@@ -23,6 +23,7 @@ import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.metastore.model.Table;
+import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
@@ -43,7 +44,8 @@ import java.util.Set;
  *
  * <pre>
  *   PIVOT (COUNT(DISTINCT score) FOR …)   syntax error … unexpected 'DISTINCT'.
- *   PIVOT (SUM(score + 1) FOR …)          syntax error … unexpected '+'.
+ *   PIVOT (SUM(score + 1) FOR s …)        syntax error … unexpected '+'. twice, / … unexpected 's'.
+ *   PIVOT (IDENTIFIER('c') FOR …)         syntax error … unexpected 'FOR'.
  *   PIVOT (MAX(UPPER(note)) FOR …)        syntax error … unexpected '('.
  *   PIVOT ("SUM"(score) FOR …)            invalid function '"SUM"'
  *   PIVOT (nosuch_fn(score) FOR …)        invalid function 'nosuch_fn'
@@ -99,7 +101,18 @@ final class PivotAggregateCall {
         collect(call.expression(), argument);
         final Expression parsed = AntlrExpressionParser.parse(ParseTreeText.getOriginalText(call.expression()));
         if (!(parsed instanceof ColumnReferenceExpression) || argument.size() > 1 && !isQualified(parsed)) {
-            // A name is read and what follows it is not the closing parenthesis; anything else is no name at all.
+            // A name is read and what follows it is not the closing parenthesis; anything else is no name at all. An
+            // operator after the name is refused twice, and the column after FOR after it (live-verified).
+            if ("IDENTIFIER".equalsIgnoreCase(written) && argument.size() == 1
+                    && argument.get(0).getType() == FrostlakeLexer.STRING_LITERAL) {
+                // IDENTIFIER('name') is read whole, and the FOR after it is refused (live-verified).
+                throw unexpected(pivot.FOR().getSymbol());
+            }
+            if (argument.size() > 1 && startsName(argument.get(0)) && isOperator(argument.get(1))) {
+                final String twice = lineOf(argument.get(1));
+                throw new RuntimeException(SqlCompilationError.of(twice + "\n" + twice + "\n"
+                    + lineOf(pivot.pivotColumn.getStart())));
+            }
             throw unexpected(argument.size() > 1 && startsName(argument.get(0)) ? argument.get(1) : argument.get(0));
         }
         requireAggregate(call, functions);
@@ -190,8 +203,19 @@ final class PivotAggregateCall {
     }
 
     private static RuntimeException unexpected(final Token token) {
+        return new RuntimeException(SqlCompilationError.of(lineOf(token)));
+    }
+
+    /** A syntax error's line for a token. */
+    private static String lineOf(final Token token) {
         final int[] shown = LeadingCommentOffset.rebase(token.getLine(), token.getCharPositionInLine());
-        return new RuntimeException(SqlCompilationError.of("syntax error line " + shown[0] + " at position "
-            + shown[1] + " unexpected '" + token.getText() + "'."));
+        return "syntax error line " + shown[0] + " at position " + shown[1] + " unexpected '" + token.getText() + "'.";
+    }
+
+    /** Whether a token is an arithmetic operator. */
+    private static boolean isOperator(final Token token) {
+        final int type = token.getType();
+        return type == FrostlakeLexer.PLUS || type == FrostlakeLexer.MINUS || type == FrostlakeLexer.STAR
+            || type == FrostlakeLexer.SLASH;
     }
 }

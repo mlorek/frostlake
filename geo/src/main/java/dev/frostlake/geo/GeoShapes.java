@@ -69,9 +69,16 @@ public final class GeoShapes {
                     return GeoValue.ofNode(model, geography, geography ? 4326 : 0);
                 }
             } else {
-                final JsonNode model = parseWkt(trimmed);
+                // EWKT: an SRID written ahead of the WKT, in any case and with blanks after its semicolon, which a
+                // GEOMETRY keeps and a GEOGRAPHY takes as 4326 alone (live-verified).
+                final int srid = ewktSrid(trimmed);
+                final String wkt = srid < 0 ? trimmed : trimmed.substring(trimmed.indexOf(';') + 1).trim();
+                if (srid >= 0 && geography && srid != 4326) {
+                    throw new IllegalArgumentException("a GEOGRAPHY is read in SRID 4326 alone");
+                }
+                final JsonNode model = parseWkt(wkt);
                 if (model != null) {
-                    return GeoValue.ofNode(model, geography, geography ? 4326 : 0);
+                    return GeoValue.ofNode(model, geography, geography ? 4326 : Math.max(srid, 0));
                 }
             }
         } catch (final RuntimeException notGeo) {
@@ -79,6 +86,24 @@ public final class GeoShapes {
         }
         throw new RuntimeException("Error parsing Geo input: " + input
             + ". Did not recognize valid GeoJSON, (E)WKT or (E)WKB.");
+    }
+
+    /** The SRID an EWKT text writes ahead of its WKT ({@code SRID=4326;POINT(1 2)}), or -1 where it writes none. */
+    private static int ewktSrid(final String text) {
+        final int semicolon = text.indexOf(';');
+        if (semicolon < 6 || !text.regionMatches(true, 0, "SRID=", 0, 5)) {
+            return -1;
+        }
+        final String digits = text.substring(5, semicolon).trim();
+        if (digits.isEmpty()) {
+            return -1;
+        }
+        for (int i = 0; i < digits.length(); i++) {
+            if (!Character.isDigit(digits.charAt(i))) {
+                return -1;
+            }
+        }
+        return Integer.parseInt(digits);
     }
 
     /** The value as a GeoValue, or null when it is not one (callers raise their own type errors). */

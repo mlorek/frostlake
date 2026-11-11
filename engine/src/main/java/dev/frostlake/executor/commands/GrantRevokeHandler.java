@@ -1297,6 +1297,8 @@ public class GrantRevokeHandler implements CommandHandler {
             case "EXTERNAL_VOLUME":
             case "INTEGRATION":
                 return securityObjectPrivileges(objectType);
+            case "CORTEX_SEARCH_SERVICE":
+                return List.of("OPERATE", "USAGE");
             default:
                 return List.of("ALL");
         }

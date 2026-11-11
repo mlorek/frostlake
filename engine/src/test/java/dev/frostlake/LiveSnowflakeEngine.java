@@ -91,8 +91,24 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
+    /** Whether the test's teardown runs, which passes over a statement held back rather than skip the test. */
+    private boolean tearingDown;
+
+    /** Marks the test's teardown begun: a statement held back from the account is passed over from now on. */
+    public void beginTeardown() {
+        tearingDown = true;
+    }
+
     @Override
     public ExecutionResult execute(final String sql) {
+        // A statement that would change the account's roles, users or grants is not sent (see LiveAccountStatements).
+        final String heldBack = LiveAccountStatements.sent() ? null : LiveAccountStatements.heldBack(sql);
+        if (heldBack != null) {
+            if (tearingDown) {
+                return new ExecutionResult(true, new ArrayList<ResultSet>(), null, null);
+            }
+            LiveAccountStatements.skipOver(heldBack);
+        }
         markDirtyIfSessionMutating(sql);
         final List<ResultSet> results = new ArrayList<ResultSet>();
         String queryId = null;

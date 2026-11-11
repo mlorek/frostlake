@@ -99,7 +99,14 @@ final class BlockVariableBinding {
             return new CastExpression(parsed, type);
         }
         final String text = valueText(declared, value);
-        return text == null ? null : new CastExpression(new LiteralExpression(text, LiteralType.STRING), type);
+        if (text == null) {
+            return null;
+        }
+        final CastExpression binding = new CastExpression(new LiteralExpression(text, LiteralType.STRING), type);
+        if (declared instanceof NumericType && !NumericType.isApproximate(declared)) {
+            binding.markBlockBinding();
+        }
+        return binding;
     }
 
     /** The text of a value the binding converts, or null for a value it writes no text of. */

@@ -1110,7 +1110,7 @@ final class ShowRoutineExecutor {
      * quoted lower-case name follows every upper-case one — JPA, JPB, JPC_JP, jpa — and a rename moves the policy
      * to its new name's place (live-verified for join, masking, row access, aggregation and projection policies).
      */
-    private static <T extends Named> List<T> byName(final List<T> policies) {
+    static <T extends Named> List<T> byName(final List<T> policies) {
         final List<T> ordered = new ArrayList<T>(policies);
         Collections.sort(ordered, new Comparator<T>() {
             @Override
@@ -1282,7 +1282,7 @@ final class ShowRoutineExecutor {
         }
     }
 
-    private List<ResultSetColumn> projectionPolicyColumns() {
+    static List<ResultSetColumn> projectionPolicyColumns() {
         return Arrays.asList(
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
@@ -1360,10 +1360,9 @@ final class ShowRoutineExecutor {
                 "ROLE",
                 contact.getEmailDistributionList(),
                 contact.getUrl(),
-                // A contact reaches users through its email list; Frostlake models the list itself,
-                // so there are no user entries to count and the cells stay at live's empty shape.
-                0L,
-                null,
+                // The users it names, counted and listed in brackets (live-verified for one user).
+                (long) contact.getUsers().size(),
+                contact.getUsers().isEmpty() ? null : "[" + String.join(", ", contact.getUsers()) + "]",
                 "[]"
             )));
         }
@@ -1406,7 +1405,7 @@ final class ShowRoutineExecutor {
      * type, a structured type with its shape and the types inside it bare — {@code (X OBJECT(a NUMBER), Y
      * ARRAY(NUMBER))} — and a VECTOR with its element type and its size (live-verified).
      */
-    private static String describedSignature(final List<Parameter> params) {
+    static String describedSignature(final List<Parameter> params) {
         final StringBuilder sb = new StringBuilder("(");
         for (int i = 0; i < params.size(); i++) {
             final DataType type = params.get(i).getDataType();

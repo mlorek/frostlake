@@ -64,7 +64,7 @@ public class SqlidTest {
     public void sqlidIsTheLastStatementsQueryId() {
         final String id = first("BEGIN SELECT 'one'; RETURN SQLID; END");
         assertEquals("one", first("SELECT * FROM TABLE(RESULT_SCAN('" + id + "'))"));
-        assertEquals("SELECT 'one';", historyText(id), "the ID names the statement's own history row");
+        assertEquals("SELECT 'one'", historyText(id), "the ID names the statement's own history row");
         assertEquals("one", first("EXECUTE IMMEDIATE $$ BEGIN SELECT 'one'; LET q := SQLID;"
             + " LET r RESULTSET := (SELECT * FROM TABLE(RESULT_SCAN(:q))); RETURN TABLE(r); END; $$"));
     }
@@ -93,8 +93,8 @@ public class SqlidTest {
     public void aCallIsTheLastStatementOnceItReturns() {
         engine.execute("CREATE PROCEDURE p() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN SELECT 'in p'; RETURN SQLID; END $$");
         final String inside = first("CALL p()");
-        assertEquals("SELECT 'in p';", historyText(inside), "inside the procedure, its own SELECT");
-        assertEquals("CALL p();", historyText(first("BEGIN CALL p(); RETURN SQLID; END")));
+        assertEquals("SELECT 'in p'", historyText(inside), "inside the procedure, its own SELECT");
+        assertEquals("CALL p()", historyText(first("BEGIN CALL p(); RETURN SQLID; END")));
     }
 
     @Test

@@ -34,7 +34,7 @@ import org.junit.jupiter.api.Test;
  *
  * <p>★ THE COUNT IS DELIBERATELY NOT ASSERTED. An account with a different edition lists a different
  * number of parameters, and pinning 160 would make this test a report on the account rather than on the
- * engine (the same trap #325 recorded for system compute pools).
+ * engine (the same trap the listing of system compute pools holds).
  */
 public class ShowParametersCatalogTest extends BaseDatabaseTest {
 
@@ -79,9 +79,13 @@ public class ShowParametersCatalogTest extends BaseDatabaseTest {
         assertRow("AUTOCOMMIT", "true", "true", "", "BOOLEAN");
         assertRow("BINARY_OUTPUT_FORMAT", "HEX", "HEX", "", "STRING");
         assertRow("LOCK_TIMEOUT", "43200", "43200", "", "NUMBER");
-        // The account sets TIMEZONE, as qa-develop does: UTC at level ACCOUNT, the documented default beside it
-        // (live-verified).
-        assertRow("TIMEZONE", "UTC", "America/Los_Angeles", "ACCOUNT", "STRING");
+        // The engine's account sets TIMEZONE: UTC at level ACCOUNT, the documented default beside it. An account
+        // that leaves it lists the default as the value too, so there only the default is the engine's to match.
+        if (isLiveSnowflake()) {
+            assertEquals("America/Los_Angeles", String.valueOf(soleRow("TIMEZONE").getValue(2)));
+        } else {
+            assertRow("TIMEZONE", "UTC", "America/Los_Angeles", "ACCOUNT", "STRING");
+        }
         // An empty default is empty, not null — QUERY_TAG starts unset.
         assertRow("QUERY_TAG", "", "", "", "STRING");
     }

@@ -31,6 +31,7 @@ import dev.frostlake.metastore.model.MaskingPolicy;
 import dev.frostlake.metastore.model.MaterializedView;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Pipe;
+import dev.frostlake.metastore.model.PrivacyPolicy;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.ProjectionPolicy;
 import dev.frostlake.metastore.model.RowAccessPolicy;
@@ -38,6 +39,7 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SecurityObject;
 import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.Sequence;
+import dev.frostlake.metastore.model.StorageLifecyclePolicy;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.Tag;
@@ -265,6 +267,14 @@ final class SchemaDdl {
         }
         for (final JoinPolicy policy : schema.getJoinPolicies()) {
             add(policies, policy.getName(), ObjectDdl.joinPolicy(policy, names.object(schema, policy.getName())));
+        }
+        for (final PrivacyPolicy policy : schema.getPrivacyPolicies()) {
+            add(policies, policy.getName(),
+                ObjectDdl.privacyPolicy(policy, names.object(schema, policy.getName())));
+        }
+        for (final StorageLifecyclePolicy policy : schema.getStorageLifecyclePolicies()) {
+            add(policies, policy.getName(),
+                ObjectDdl.storageLifecyclePolicy(policy, names.object(schema, policy.getName())));
         }
         for (final SecurityObject policy : schema.getSecurityObjects().list(SecurityObjectKind.PASSWORD_POLICY)) {
             add(policies, policy.getName(),

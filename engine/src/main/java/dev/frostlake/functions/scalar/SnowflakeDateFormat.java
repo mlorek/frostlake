@@ -157,7 +157,9 @@ public final class SnowflakeDateFormat {
     }
 
     public static String format(final Object value, final String snowflakeFormat) {
-        final String text = formatterFor(snowflakeFormat).format(toTemporal(value));
+        final int scale = FractionScale.current();
+        final String text = (scale < 0 ? formatterFor(snowflakeFormat) : scaledFormatterFor(snowflakeFormat, scale))
+            .format(toTemporal(value));
         if (text.indexOf(TZD_SENTINEL) < 0) {
             return text;
         }
@@ -228,6 +230,30 @@ public final class SnowflakeDateFormat {
             }
         }
         FORMATTER_CACHE.put(snowflakeFormat, built);
+        return built;
+    }
+
+    /**
+     * A formatter whose bare FF prints {@code scale} fraction digits, none for a scale of 0 (see FractionScale).
+     * Cached by the format text and the scale.
+     */
+    private static DateTimeFormatter scaledFormatterFor(final String snowflakeFormat, final int scale) {
+        final String key = snowflakeFormat + "\u0000" + scale;
+        final DateTimeFormatter existing = FORMATTER_CACHE.get(key);
+        if (existing != null) {
+            return existing;
+        }
+        final String javaPattern = toJavaPattern(snowflakeFormat, scale);
+        final DateTimeFormatter built = nextBuiltElement(javaPattern, 0) < 0
+            ? DateTimeFormatter.ofPattern(javaPattern, Locale.US) : withEraYears(javaPattern);
+        if (FORMATTER_CACHE.size() >= FORMATTER_CACHE_CAPACITY) {
+            final Iterator<String> it = FORMATTER_CACHE.keySet().iterator();
+            if (it.hasNext()) {
+                it.next();
+                it.remove();
+            }
+        }
+        FORMATTER_CACHE.put(key, built);
         return built;
     }
 
@@ -308,6 +334,11 @@ public final class SnowflakeDateFormat {
     }
 
     private static String toJavaPattern(final String format) {
+        return toJavaPattern(format, -1);
+    }
+
+    /** {@link #toJavaPattern(String)} with a bare FF printing {@code scale} digits, or nine for a scale of -1. */
+    private static String toJavaPattern(final String format, final int scale) {
         final StringBuilder out = new StringBuilder();
         final StringBuilder literal = new StringBuilder();
         for (final FormatPiece piece : pieces(format)) {
@@ -315,7 +346,11 @@ public final class SnowflakeDateFormat {
                 literal.append(piece.literal());
                 continue;
             }
-            final String pattern = javaPatternFor(piece.element());
+            final String pattern = scale >= 0 && "FF".equals(piece.element()) ? "S".repeat(scale)
+                : javaPatternFor(piece.element());
+            if (pattern.isEmpty()) {
+                continue;
+            }
             // The TZD sentinel is literal TEXT, not a pattern letter — it joins the surrounding
             // literal run so the quoting stays a single well-formed span.
             if (pattern.length() == 1 && pattern.charAt(0) == TZD_SENTINEL) {

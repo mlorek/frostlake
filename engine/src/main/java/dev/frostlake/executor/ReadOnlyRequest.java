@@ -160,11 +160,23 @@ public final class ReadOnlyRequest {
      * @return the refusal, or null when the text calls none of them
      */
     static String tokenRefusal(final String sql) {
+        return tokenRefusal(sql, true);
+    }
+
+    /**
+     * {@link #tokenRefusal(String)} with or without a NEXTVAL, which a read that only plans looks at without moving
+     * the sequence (see ExplainPlan).
+     *
+     * @param sql       the text
+     * @param sequences whether a NEXTVAL counts
+     * @return the refusal, or null when the text calls none of them
+     */
+    static String tokenRefusal(final String sql, final boolean sequences) {
         for (final Token token : tokens(sql)) {
             final int type = token.getType();
             final String text = token.getText();
-            if (type == FrostlakeLexer.NEXTVAL || type == FrostlakeLexer.QUOTED_IDENTIFIER
-                    && "\"NEXTVAL\"".equalsIgnoreCase(text)) {
+            if (sequences && (type == FrostlakeLexer.NEXTVAL || type == FrostlakeLexer.QUOTED_IDENTIFIER
+                    && "\"NEXTVAL\"".equalsIgnoreCase(text))) {
                 return PREFIX + "NEXTVAL moves a sequence.";
             }
             if ("TO_QUERY".equalsIgnoreCase(text) || type == FrostlakeLexer.QUOTED_IDENTIFIER

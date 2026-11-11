@@ -143,7 +143,10 @@ public class CorrelatedInKeysTest extends MeasuredCellsTestSupport {
                 + "LAST, ka.v");
     }
 
-    /** The members are computed over every inner row, so the fault of a row no outer key reads is raised too. */
+    /**
+     * The members are computed over the inner rows of every key the outer table holds, so the fault of a row no outer
+     * row the query keeps reads is raised too.
+     */
     @Test
     public void aMemberFaultInAnotherKeysRowRefusesTheStatement() {
         assertAnswer("Table KB successfully created.", "CREATE OR REPLACE TABLE kb (k INT, z INT)");
@@ -162,5 +165,22 @@ public class CorrelatedInKeysTest extends MeasuredCellsTestSupport {
             "SELECT ka.id, (SELECT MAX(10 / kb.z) FROM kb WHERE kb.k = ka.v) FROM ka WHERE ka.v = 20");
         assertAnswer("REFUSED Division by zero",
             "SELECT ka.id, (SELECT MAX(10 / kb.z) FROM kb WHERE kb.k = ka.v) FROM ka");
+    }
+
+    /** No inner row of a key the outer table does not hold is computed, so its fault is never met. */
+    @Test
+    public void aRowOfAKeyTheOuterTableDoesNotHoldIsNeverComputed() {
+        assertAnswer("Table KB775 successfully created.", "CREATE OR REPLACE TABLE kb775 (k INT, z INT)");
+        assertAnswer("2", "INSERT INTO kb775 VALUES (10, 0), (20, 1)");
+        assertAnswer("Table KA775 successfully created.", "CREATE OR REPLACE TABLE ka775 (id INT, v INT)");
+        assertAnswer("1", "INSERT INTO ka775 VALUES (3, 20)");
+        final String in = "ka775.id IN (SELECT 10 / kb775.z FROM kb775 WHERE kb775.k = ka775.v)";
+        assertAnswer("3|false", "SELECT ka775.id, " + in + " FROM ka775 WHERE ka775.v = 20");
+        assertAnswer("3|false", "SELECT ka775.id, " + in + " FROM ka775");
+        assertAnswer("3|false", "SELECT ka775.id, " + in + " FROM ka775 WHERE ka775.id = 3");
+        assertAnswer("3|true", "SELECT ka775.id, ka775.id NOT IN (SELECT 10 / kb775.z FROM kb775 WHERE kb775.k = "
+            + "ka775.v) FROM ka775 WHERE ka775.v = 20");
+        assertAnswer("", "SELECT ka775.id FROM ka775 WHERE ka775.v = 20 AND " + in);
+        assertAnswer("", "SELECT ka775.id FROM ka775 WHERE " + in);
     }
 }

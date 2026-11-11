@@ -31,8 +31,9 @@ import java.util.Set;
 
 /**
  * How a refused VALUES item spells the calls the plan holds in another form (live-verified): a conversion to an
- * ARRAY is the cast it is, {@code TO_ARRAY(1)} as {@code CAST(1 AS ARRAY)}; a text made of a semi-structured value
- * is a cast to the widest text, {@code TO_VARCHAR(PARSE_JSON('1'))} as {@code CAST(PARSE_JSON('1') AS
+ * ARRAY or an OBJECT is the cast it is, {@code TO_ARRAY(1)} as {@code CAST(1 AS ARRAY)} and
+ * {@code TO_OBJECT(PARSE_JSON('{}'))} as {@code CAST(PARSE_JSON('{}') AS OBJECT)}; a text made of a semi-structured
+ * value is a cast to the widest text, {@code TO_VARCHAR(PARSE_JSON('1'))} as {@code CAST(PARSE_JSON('1') AS
  * VARCHAR(134217728))}; and a call that reads a VARIANT converts an argument of any other type to one,
  * {@code TYPEOF([1])} as {@code TYPEOF(CAST(ARRAY_CONSTRUCT(1) AS VARIANT))} and {@code TO_JSON(1)} as
  * {@code TO_JSON(CAST(1 AS VARIANT))}. What a structured element converts is spelled as {@link StructuredElementEcho}
@@ -53,6 +54,11 @@ final class ValuesItemEcho implements CallEcho {
     }
 
     @Override
+    public String spellConstant(final Expression expression, final ParsedEchoPrinter printer) {
+        return structured.spellConstant(expression, printer);
+    }
+
+    @Override
     public String spell(final FunctionCallExpression call, final ParsedEchoPrinter printer) {
         final String spelled = structured.spell(call, printer);
         if (spelled != null || call.getFunctionName() == null || call.getArguments().size() != 1
@@ -63,6 +69,9 @@ final class ValuesItemEcho implements CallEcho {
         final Expression argument = call.getArguments().get(0);
         if ("TO_ARRAY".equals(name)) {
             return "CAST(" + printer.printed(argument) + " AS ARRAY)";
+        }
+        if ("TO_OBJECT".equals(name)) {
+            return "CAST(" + printer.printed(argument) + " AS OBJECT)";
         }
         if (("TO_VARCHAR".equals(name) || "TO_CHAR".equals(name))
                 && ValuesSemiStructuredParts.isSemiStructured(typeOf(argument))) {

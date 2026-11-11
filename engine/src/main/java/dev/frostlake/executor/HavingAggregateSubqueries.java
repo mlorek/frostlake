@@ -852,8 +852,54 @@ final class HavingAggregateSubqueries {
             inner = name + "(" + planned.getText() + ")";
             decorrelated = inner;
         }
+        String correlated = outerSummed(outerName, name, beside, planned, decorrelated);
+        if (!beside.isEmpty() && listedDecimal(argument, planned)) {
+            // A VALUES list's decimal column beside a literal is cast to its type (live-verified); a table's is not.
+            correlated = "CAST(" + correlated + " AS " + typeName(planned.getType()) + ")";
+        }
         return "Aggregate functions cannot be nested: [" + inner + "] nested in [" + outerName + "(CORRELATION("
-            + decorrelated + ")" + beside + ")]";
+            + correlated + ")" + beside + ")]";
+    }
+
+    /** Whether a value is a column of an outer VALUES list holding decimals. */
+    private boolean listedDecimal(final ParseTree argument, final PrintedPlanValue planned) {
+        final ParseTree node = valueOf(argument);
+        if (!(node instanceof FrostlakeParser.QualifiedNameExprContext) || !(planned.getType() instanceof NumericType)
+                || NumericType.isApproximate(planned.getType()) || ((NumericType) planned.getType()).getScale() <= 0) {
+            return false;
+        }
+        final String[] parts = ParseTreeText.qualifiedNameParts(((FrostlakeParser.QualifiedNameExprContext) node)
+            .qualifiedName());
+        for (final Map.Entry<String, Table> relation : outerRelations.entrySet()) {
+            if ((parts.length == 1 || relation.getKey().equalsIgnoreCase(parts[0]))
+                    && relation.getValue().getColumn(parts[parts.length - 1]) != null) {
+                return !relation.getValue().isCatalogResident();
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The correlated value an outer SUM adds: cast to the type its own aggregate answers - a MAX's or a MIN's its
+     * argument's, a SUM's twelve digits wider at the same scale - NUMBER(38,0) included (live-verified: SUM((SELECT
+     * MAX(t.id) FROM g …)) over an INT column is SUM(CORRELATION(CAST(MAX(T.ID) AS NUMBER(38,0))))). Beside a literal,
+     * under another outer aggregate, or for an AVG or a COUNT, it is as it stands.
+     */
+    private static String outerSummed(final String outerName, final String innerName, final String beside,
+                                      final PrintedPlanValue planned, final String decorrelated) {
+        if (!"SUM".equals(outerName) || !beside.isEmpty() || !(planned.getType() instanceof NumericType)
+                || NumericType.isApproximate(planned.getType())) {
+            return decorrelated;
+        }
+        final NumericType type = (NumericType) planned.getType();
+        if ("SUM".equals(innerName)) {
+            return "CAST(" + decorrelated + " AS " + typeName(new NumericType("NUMBER",
+                Math.min(38, type.getPrecision() + 12), Math.max(0, type.getScale()))) + ")";
+        }
+        if ("MAX".equals(innerName) || "MIN".equals(innerName)) {
+            return "CAST(" + decorrelated + " AS " + typeName(type) + ")";
+        }
+        return decorrelated;
     }
 
     /** Whether a value is a literal, as the nesting prints it beside the aggregate. */

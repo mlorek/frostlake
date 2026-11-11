@@ -28,7 +28,8 @@ import java.util.Set;
  * is no constant — a column, a subquery, a context function such as CURRENT_TRANSACTION(), a NULL cast to a type —
  * with {@code argument 1 to function SYSTEM$ABORT_TRANSACTION needs to be constant, found '…'}. Of the constants
  * only some name an id: a literal, a signed one, a session variable, a block's variable, a text cast or converted
- * to a number, a number or a text cast to FLOAT, and what a text function or {@code ||} builds. Any other —
+ * to a number, by a format too, a number or a text cast to FLOAT, and what a text function or {@code ||} builds. Any
+ * other —
  * arithmetic, a number cast to NUMBER or to text, IFF, a VARIANT — answers {@code Bad transaction id}.
  */
 final class TransactionAbortArgument {
@@ -155,8 +156,14 @@ final class TransactionAbortArgument {
                 // NULL matches NULL before the plan too: DECODE(NULL, NULL, 12, 13) names 12.
                 return read(call.getArguments().get(2), value, visitor, inBlock);
             }
+            if (NUMBER_CONVERSIONS.contains(name) && call.getArguments().size() == 2
+                    && isTextLiteral(call.getArguments().get(1)) && value instanceof Number) {
+                // A conversion by a format names the number it reads: TO_NUMBER('12', 'XX') names 18
+                // (live-verified).
+                return TransactionAbort.byValue(value);
+            }
             if (NUMBER_CONVERSIONS.contains(name) && call.getArguments().size() > 1) {
-                // A conversion by a format, or to a width, names no id.
+                // A conversion to a width names no id.
                 return TransactionAbort.BAD;
             }
             if (NUMBER_CONVERSIONS.contains(name) && !call.getArguments().isEmpty()) {
@@ -226,6 +233,12 @@ final class TransactionAbortArgument {
     private static boolean isBareNull(final Expression expression) {
         return expression instanceof LiteralExpression
             && ((LiteralExpression) expression).getType() == LiteralType.NULL;
+    }
+
+    /** Whether an argument is a text literal, as a conversion's format is written. */
+    private static boolean isTextLiteral(final Expression expression) {
+        return expression instanceof LiteralExpression
+            && ((LiteralExpression) expression).getType() == LiteralType.STRING;
     }
 
     /** A type's name without its parameters, upper-cased: NUMBER of NUMBER(10,2), DOUBLE of DOUBLE PRECISION. */

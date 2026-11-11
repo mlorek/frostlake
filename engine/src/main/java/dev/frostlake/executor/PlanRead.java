@@ -25,18 +25,37 @@ final class PlanRead {
 
     private final PlanNode scan;
     private final String column;
+    private final boolean listed;
 
     /**
      * @param scan   the scan of the table the column belongs to
      * @param column the column's canonical name
      */
     PlanRead(final PlanNode scan, final String column) {
+        this(scan, column, true);
+    }
+
+    private PlanRead(final PlanNode scan, final String column, final boolean listed) {
         this.scan = scan;
         this.column = column;
+        this.listed = listed;
+    }
+
+    /**
+     * The same read made without the column being listed: the scan reads its rows all the same.
+     *
+     * @return the read
+     */
+    PlanRead unlisted() {
+        return new PlanRead(scan, column, false);
     }
 
     /** Records the read on its scan. */
     void mark() {
-        scan.reads(column);
+        if (listed) {
+            scan.reads(column);
+        } else {
+            scan.readsUnlisted();
+        }
     }
 }

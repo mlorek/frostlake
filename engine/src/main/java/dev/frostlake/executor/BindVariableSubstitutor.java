@@ -487,6 +487,14 @@ public class BindVariableSubstitutor {
         return before == FrostlakeParser.KW_IDENTIFIER_REF || before == FrostlakeParser.KW_IDENTIFIER_OPEN;
     }
 
+    /** Whether the bind at {@code colonIndex} is the whole operand of a TABLE( literal. */
+    private static boolean isTableArgument(final List<Token> toks, final int colonIndex) {
+        return colonIndex >= 2 && colonIndex + 2 < toks.size()
+            && toks.get(colonIndex - 1).getType() == FrostlakeLexer.LPAREN
+            && toks.get(colonIndex - 2).getType() == FrostlakeLexer.TABLE
+            && toks.get(colonIndex + 2).getType() == FrostlakeLexer.RPAREN;
+    }
+
     /**
      * The value as a literal, cast to its declared NUMBER type when the name carries one and a cast may stand there;
      * a NULL cast to whatever type the name is declared with.
@@ -510,6 +518,11 @@ public class BindVariableSubstitutor {
                 // itself, as written: "Object '"s"' does not exist or not authorized." (live-verified).
                 return SqlStringLiterals.encode('"' + name.replace("\"", "\"\"") + '"');
             }
+        }
+        if (value == null && isTableArgument(toks, colonIndex)) {
+            // TABLE(:v) reads its value as IDENTIFIER(:v) does: a variable holding NULL names itself, as written
+            // (live-verified: Object '"v"' does not exist or not authorized.).
+            return SqlStringLiterals.encode('"' + name.replace("\"", "\"\"") + '"');
         }
         if (value == null) {
             // A NULL keeps its declared type where live binds it so (TypedNullBind) and a cast may stand.

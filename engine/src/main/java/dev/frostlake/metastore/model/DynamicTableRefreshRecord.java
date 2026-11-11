@@ -44,6 +44,9 @@ public final class DynamicTableRefreshRecord {
     private final List<DynamicTableRefreshInput> inputs;
     private final String dependency;
     private final Instant dependencyTimestamp;
+    private String failureCode;
+    private String failureMessage;
+    private String reinitReason;
 
     /**
      * A refresh that ran.
@@ -150,5 +153,49 @@ public final class DynamicTableRefreshRecord {
 
     public Instant getDependencyTimestamp() {
         return dependencyTimestamp;
+    }
+
+    /**
+     * Marks the refresh failed.
+     *
+     * @param code    the failure's code, six digits as the history writes it ({@code 100051})
+     * @param message the failure's message
+     * @return this record
+     */
+    public DynamicTableRefreshRecord failed(final String code, final String message) {
+        this.failureCode = code;
+        this.failureMessage = message;
+        return this;
+    }
+
+    /**
+     * Notes why the refresh reinitialized the table.
+     *
+     * @param reason the reason, as the history writes it
+     * @return this record
+     */
+    public DynamicTableRefreshRecord reinitialized(final String reason) {
+        this.reinitReason = reason;
+        return this;
+    }
+
+    /** @return whether the refresh failed */
+    public boolean isFailed() {
+        return failureCode != null;
+    }
+
+    /** @return the failure's code, or null for a refresh that succeeded */
+    public String getFailureCode() {
+        return failureCode;
+    }
+
+    /** @return the failure's message, or null for a refresh that succeeded */
+    public String getFailureMessage() {
+        return failureMessage;
+    }
+
+    /** @return why the refresh reinitialized the table, or null */
+    public String getReinitReason() {
+        return reinitReason;
     }
 }

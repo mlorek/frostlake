@@ -32,6 +32,7 @@ import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.GrantNames;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.RoleCycle;
 import dev.frostlake.metastore.SystemDatabase;
 import dev.frostlake.metastore.TagAssignments;
 import dev.frostlake.metastore.Taggable;
@@ -401,8 +402,9 @@ public final class AccessControlHandler {
                     + shown(role.getDatabase(), role.getName()) + "' to itself."));
             }
             if (holdsDatabaseRole(role, holder.getQualifiedName(), new HashSet<String>())) {
-                // A grant that closes a loop is refused as an account role's is: the hierarchy stays one.
-                throw new RuntimeException("Cannot grant database role: would create circular role hierarchy");
+                // A grant that closes a loop is refused, the two roles named with their database (live-verified).
+                throw new RuntimeException(RoleCycle.refusal(shown(role.getDatabase(), role.getName()),
+                    shown(holder.getDatabase(), holder.getName())));
             }
             requireDatabaseRoleAuthority(role);
             holder.grantDatabaseRole(role.getQualifiedName(), grantor);
@@ -734,12 +736,12 @@ public final class AccessControlHandler {
         } else {
             if (existing == null) {
                 // An account that is not there is refused as one the role may not operate on, by the
-                // organization privilege it would need on the current account (live-verified).
+                // privilege it would need on the current account, MANAGE ACCOUNTS (live-verified).
                 final SecurityManager security = queryExecutor.getSecurityManager();
                 throw new PrivilegeRefusal(SqlAccessControlError.privilegeRequired("ACCOUNT", name,
                     security == null ? null : security.getSessionContext().getCurrentRole(),
                     security != null && security.getSessionContext().isSecondaryRolesInUse(),
-                    "MANAGE ORGANIZATION ACCOUNTS", catalog.getAccountLocator()));
+                    "MANAGE ACCOUNTS", catalog.getAccountLocator()));
             }
             if (!existing.isDropped()) {
                 throw new RuntimeException(SqlCompilationError.of("Object '" + name + "' already exists."));

@@ -17,6 +17,8 @@
 package dev.frostlake.metastore.model;
 
 import dev.frostlake.metastore.SqlObject;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Snowflake CONTACT — a schema-level object naming who to reach about an object, attached to tables
@@ -24,12 +26,13 @@ import dev.frostlake.metastore.SqlObject;
  *
  * <p>It carries no behaviour: nothing about a contact changes how a query runs. What it does carry is
  * a small property surface — a single email address (the property is named for a list, but live takes
- * exactly one), a URL, and a comment.
+ * exactly one), a URL, the users it names - each once, by the name the account holds - and a comment.
  */
 public class Contact extends SqlObject {
 
     private String url;
     private String emailDistributionList;
+    private final List<String> users = new ArrayList<>();
 
     public Contact(final String name) {
         super(name);
@@ -41,6 +44,19 @@ public class Contact extends SqlObject {
     public String getEmailDistributionList() { return emailDistributionList; }
     public void setEmailDistributionList(final String emailDistributionList) {
         this.emailDistributionList = emailDistributionList;
+    }
+
+    /** @return the users the contact names, in the order first named; empty for none */
+    public List<String> getUsers() {
+        return new ArrayList<>(users);
+    }
+
+    /** @param named the users the contact names, or null for none */
+    public void setUsers(final List<String> named) {
+        users.clear();
+        if (named != null) {
+            users.addAll(named);
+        }
     }
 
     @Override

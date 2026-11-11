@@ -217,8 +217,13 @@ public class DDLCommandHandler implements CommandHandler {
             // Live-verified Snowflake rejection, for every object type.
             throw new RuntimeException("options IF NOT EXISTS and OR REPLACE are incompatible.");
         }
-        // A table's properties are judged first of all: before its name, and before an Iceberg table's column types.
-        if (ctx.TABLE() != null && ctx.DYNAMIC() == null && ctx.EVENT() == null && ctx.STREAM() == null) {
+        // A template's query must read a table function, which is judged ahead of the properties (live-verified).
+        if (ctx.TABLE() != null && ctx.TEMPLATE() != null) {
+            CreateTableHandler.requireTemplateTableFunction(ctx);
+        }
+        // A table's properties are judged first of all: before its name, and before an Iceberg table's column types;
+        // an event table's too.
+        if (ctx.TABLE() != null && ctx.DYNAMIC() == null && ctx.STREAM() == null) {
             CreatedObjectProperties.requireTableProperties(ctx);
         }
         // An Iceberg table's column types are judged before anything else the statement names (live-verified).
@@ -278,6 +283,10 @@ public class DDLCommandHandler implements CommandHandler {
                 return securityHandler.handleCreateAggregationPolicy(ctx, ifNotExists);
             } else if (ctx.JOIN() != null && ctx.POLICY() != null) {
                 return securityHandler.handleCreateJoinPolicy(ctx, ifNotExists);
+            } else if (ctx.PRIVACY() != null && ctx.POLICY() != null) {
+                return securityHandler.handleCreatePrivacyPolicy(ctx, ifNotExists);
+            } else if (ctx.lifecycle != null && ctx.POLICY() != null) {
+                return securityHandler.handleCreateStorageLifecyclePolicy(ctx, ifNotExists);
             } else if (ctx.FUNCTION() != null && ctx.EXTERNAL() != null) {
                 return routineHandler.handleCreateExternalFunction(ctx);
             } else if (ctx.FUNCTION() != null) {
@@ -1033,8 +1042,8 @@ public class DDLCommandHandler implements CommandHandler {
                 mv.setComment(AlteredViewProperties.commentOf(action.viewSetItem()));
                 logger.trace("Set comment on materialized view: {}", qualifiedName);
             }
-        } else if (!action.optionKey().isEmpty()) {
-            if (AlteredViewProperties.judgeUnset(action.optionKey(),
+        } else if (!action.propertyName().isEmpty()) {
+            if (AlteredViewProperties.judgeUnset(action.propertyName(),
                     action.COMMA().isEmpty() ? null : action.COMMA(0).getSymbol(), true, mv.getName(),
                     getOriginalText(ctx))) {
                 mv.setComment(null);
@@ -1205,7 +1214,7 @@ public class DDLCommandHandler implements CommandHandler {
     /** Whether an ALTER TABLE … SET names a parameter among its properties. */
     private static boolean setsTableParameter(final FrostlakeParser.TableActionContext action) {
         for (final FrostlakeParser.TableSetPropertyContext property : action.tableSetProperty()) {
-            if (ParameterRegistry.isTableParameter(ParameterRegistry.canonical(property.optionKey().getText()))) {
+            if (ParameterRegistry.isTableParameter(ParameterRegistry.canonical(property.propertyName().getText()))) {
                 return true;
             }
         }
@@ -1243,7 +1252,7 @@ public class DDLCommandHandler implements CommandHandler {
 
     /** Whether an UNSET names the COMMENT alone. */
     private static boolean unsetsCommentAlone(final FrostlakeParser.TableUnsetPropertiesContext unset) {
-        for (final FrostlakeParser.OptionKeyContext key : unset.optionKey()) {
+        for (final FrostlakeParser.PropertyNameContext key : unset.propertyName()) {
             if (!"COMMENT".equalsIgnoreCase(key.getText())) {
                 return false;
             }
@@ -1418,6 +1427,8 @@ public class DDLCommandHandler implements CommandHandler {
     private Object handleAlterSequence(final FrostlakeParser.AlterStatementContext ctx) {
         final String qualifiedName = getText(ctx.qualifiedName());
         final String[] parts = qualifiedNameParts(ctx.qualifiedName());
+        // The names it sets or unsets are judged before the sequence is looked up (live-verified).
+        CreatedObjectProperties.judgeSequenceAlterNames(ctx.sequenceAction());
 
         final Schema schema;
         final Sequence sequence;
@@ -1436,11 +1447,14 @@ public class DDLCommandHandler implements CommandHandler {
             queryExecutor.requirePrivilege(Privilege.MODIFY, "SEQUENCE",
                 new String[] {schema.getDatabaseName(), schema.getName(), sequence.getName()}, null);
         }
+        if (CreatedObjectProperties.namesSequenceParameter(action)) {
+            throw new RuntimeException(SqlAccessControlError.insufficientPrivileges("sequence", sequence.getName()));
+        }
 
         if (action.RENAME() != null) {
             renameSequence(schema, sequence, qualifiedNameParts(action.qualifiedName()));
         } else if (action.UNSET() != null) {
-            if (action.COMMENT().size() > 1) {
+            if (action.propertyName().size() > 1) {
                 throw new RuntimeException(SqlCompilationError.of("duplicate property 'COMMENT';"));
             }
             sequence.setComment(null);
@@ -1470,11 +1484,13 @@ public class DDLCommandHandler implements CommandHandler {
             if (option.INCREMENT() != null && steps) {
                 throw new RuntimeException(SqlCompilationError.of("duplicate property 'SEQUENCE_INCREMENT';"));
             }
-            if (option.COMMENT() != null && comments) {
+            // A comment given as a word reads as a property named COMMENT, still the comment.
+            final boolean comment = option.COMMENT() != null || option.propertyName() != null;
+            if (comment && comments) {
                 throw new RuntimeException(SqlCompilationError.of("duplicate property 'COMMENT';"));
             }
             steps = steps || option.INCREMENT() != null;
-            comments = comments || option.COMMENT() != null;
+            comments = comments || comment;
         }
         for (final FrostlakeParser.SequenceAlterOptionContext option : options) {
             if (option.START() != null) {
@@ -1494,6 +1510,8 @@ public class DDLCommandHandler implements CommandHandler {
                 sequence.setIncrement(option.MINUS() != null ? -value : value);
             } else if (option.NOORDER() != null) {
                 sequence.setOrder(false);
+            } else if (option.propertyName() != null) {
+                sequence.setComment(option.copyOptionValue() != null ? option.copyOptionValue().getText() : null);
             } else if (option.COMMENT() != null) {
                 if (option.NULL() != null) {
                     sequence.setComment(null);

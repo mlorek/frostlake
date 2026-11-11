@@ -34,6 +34,7 @@ import dev.frostlake.metastore.model.JoinPolicy;
 import dev.frostlake.metastore.model.MaskingPolicy;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Pipe;
+import dev.frostlake.metastore.model.PrivacyPolicy;
 import dev.frostlake.metastore.model.ProjectionPolicy;
 import dev.frostlake.metastore.model.RowAccessPolicy;
 import dev.frostlake.metastore.model.Schema;
@@ -42,6 +43,7 @@ import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.SecurityPropertySpec;
 import dev.frostlake.metastore.model.SecurityPropertySpecs;
 import dev.frostlake.metastore.model.SecurityPropertyType;
+import dev.frostlake.metastore.model.StorageLifecyclePolicy;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamType;
 import dev.frostlake.metastore.model.Tag;
@@ -447,6 +449,28 @@ final class ObjectDdl {
 
     static String joinPolicy(final JoinPolicy policy, final String name) {
         return policyDdl("join policy", name, "()", "JOIN_CONSTRAINT", policy.getBody(), policy.getComment(), false);
+    }
+
+    static String privacyPolicy(final PrivacyPolicy policy, final String name) {
+        return policyDdl("privacy policy", name, "()", "PRIVACY_BUDGET", policy.getBody(), policy.getComment(),
+            false);
+    }
+
+    /**
+     * A storage lifecycle policy's DDL: the shape every expression policy shares, its archive days and tier on lines
+     * of their own after the COMMENT, each where it is set (live-verified).
+     */
+    static String storageLifecyclePolicy(final StorageLifecyclePolicy policy, final String name) {
+        final String shared = policyDdl("storage lifecycle policy", name, policySignature(policy.getParameters()),
+            "BOOLEAN", policy.getBody(), policy.getComment(), false);
+        final StringBuilder archive = new StringBuilder();
+        if (policy.getArchiveForDays() != null) {
+            archive.append("ARCHIVE_FOR_DAYS=").append(policy.getArchiveForDays()).append('\n');
+        }
+        if (policy.getArchiveTier() != null) {
+            archive.append("ARCHIVE_TIER=").append(quoted(policy.getArchiveTier())).append('\n');
+        }
+        return shared.substring(0, shared.length() - 1) + archive + ";";
     }
 
     /**

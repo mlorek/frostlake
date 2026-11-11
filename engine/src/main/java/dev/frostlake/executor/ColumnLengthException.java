@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.values.LobSize;
+
 /**
  * A value too long for its {@code VARCHAR(n)} column, rejected on the write path.
  *
@@ -26,7 +28,7 @@ package dev.frostlake.executor;
  * <ul>
  *   <li>DML — INSERT, {@code INSERT … SELECT}, UPDATE and MERGE all reported
  *       {@code String 'abcdefgh' is too long and would be truncated}, which is what {@link #getMessage()}
- *       returns;</li>
+ *       returns, a value past 200 characters shown by its first 200 and {@code ...};</li>
  *   <li>COPY — the per-file result's {@code first_error} reported
  *       {@code User character length limit (3) exceeded by string 'abcdefgh'} instead.</li>
  * </ul>
@@ -49,7 +51,7 @@ public final class ColumnLengthException extends RuntimeException {
     private final String value;
 
     public ColumnLengthException(final int limit, final String value) {
-        this("String '" + value + "' is too long and would be truncated", limit, value);
+        this("String '" + LobSize.shown(value) + "' is too long and would be truncated", limit, value);
     }
 
     private ColumnLengthException(final String message, final int limit, final String value) {

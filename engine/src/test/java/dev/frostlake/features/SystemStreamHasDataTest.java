@@ -141,15 +141,19 @@ public class SystemStreamHasDataTest extends BaseDatabaseTest {
      */
     @Test
     public void anAppendOnlyStreamHasDataAfterAChangeItDoesNotList() {
-        Assumptions.assumeFalse(isLiveSnowflake(), "measured for a view stream only");
-        engine.execute("INSERT INTO events VALUES (1, 'click')");
+        Assumptions.assumeFalse(isLiveSnowflake(), "the two-sided cells are in StreamHasDataVersionsTest");
+        engine.execute("INSERT INTO events VALUES (1, 'click'), (2, 'view')");
         engine.execute("CREATE STREAM events_ao ON TABLE events APPEND_ONLY = TRUE");
         assertEquals(Boolean.FALSE, scalar("SELECT SYSTEM$STREAM_HAS_DATA('events_ao')"));
-        engine.execute("DELETE FROM events");
+        // A DELETE that leaves rows rewrote them, which the function counts though the stream lists nothing.
+        engine.execute("DELETE FROM events WHERE id = 1");
         assertEquals(0L, ((Number) scalar("SELECT COUNT(*) FROM events_ao")).longValue());
         assertEquals(Boolean.TRUE, scalar("SELECT SYSTEM$STREAM_HAS_DATA('events_ao')"));
         engine.execute("CREATE TABLE events_sink (id INTEGER)");
         engine.execute("INSERT INTO events_sink SELECT id FROM events_ao");
+        assertEquals(Boolean.FALSE, scalar("SELECT SYSTEM$STREAM_HAS_DATA('events_ao')"));
+        // One that leaves none removed rows alone, which an append-only stream does not count (live-verified).
+        engine.execute("DELETE FROM events");
         assertEquals(Boolean.FALSE, scalar("SELECT SYSTEM$STREAM_HAS_DATA('events_ao')"));
     }
 

@@ -172,6 +172,8 @@ final class EventTableCommandHandler {
             }
         }
         final Table table = new Table(tableName, columns(), false, false);
+        // A clustering key reads the event table's own columns, a name of none refused where it stands (live-verified).
+        ClusterKeyValidation.requireResolvable(CreateTableHandler.clusterExpressions(ctx), table);
         // The grants ON FUTURE EVENT TABLES cover it, held as a table's (live-verified).
         final CreationGrants grantsOfNew = FutureGrants.ofNew(catalog, "EVENT_TABLE", "TABLE", schema,
             tableName);

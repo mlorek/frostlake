@@ -75,13 +75,13 @@ final class AlteredViewProperties {
         for (final FrostlakeParser.ViewSetItemContext item : items) {
             if (item.copyOptionValue() == null && item.NULL() == null) {
                 final boolean secureFirst = !hasValue(items.get(0)) && items.size() > 1
-                    && "SECURE".equalsIgnoreCase(items.get(0).optionKey().getText());
+                    && "SECURE".equalsIgnoreCase(items.get(0).propertyName().getText());
                 throw syntaxError(items.get(secureFirst ? 1 : 0).getStart(), sql);
             }
         }
         final List<String> names = new ArrayList<String>();
         for (final FrostlakeParser.ViewSetItemContext item : items) {
-            names.add(item.optionKey().getText());
+            names.add(item.propertyName().getText());
         }
         if (!materialized) {
             rejectDuplicates(names);
@@ -155,8 +155,8 @@ final class AlteredViewProperties {
      * @param keys the names, judged
      * @return whether one of them is CHANGE_TRACKING
      */
-    static boolean unsetsChangeTracking(final List<FrostlakeParser.OptionKeyContext> keys) {
-        for (final FrostlakeParser.OptionKeyContext key : keys) {
+    static boolean unsetsChangeTracking(final List<FrostlakeParser.PropertyNameContext> keys) {
+        for (final FrostlakeParser.PropertyNameContext key : keys) {
             if (CHANGE_TRACKING.equals(ParameterRegistry.canonical(key.getText()))) {
                 return true;
             }
@@ -168,7 +168,7 @@ final class AlteredViewProperties {
                                                                final String key) {
         FrostlakeParser.ViewSetItemContext last = null;
         for (final FrostlakeParser.ViewSetItemContext item : items) {
-            if (key.equals(ParameterRegistry.canonical(item.optionKey().getText()))) {
+            if (key.equals(ParameterRegistry.canonical(item.propertyName().getText()))) {
                 last = item;
             }
         }
@@ -190,10 +190,10 @@ final class AlteredViewProperties {
      * @param sql          the statement, for a syntax error
      * @return whether the comment is unset
      */
-    static boolean judgeUnset(final List<FrostlakeParser.OptionKeyContext> keys, final Token firstComma,
+    static boolean judgeUnset(final List<FrostlakeParser.PropertyNameContext> keys, final Token firstComma,
                               final boolean materialized, final String name, final String sql) {
         final List<String> names = new ArrayList<String>();
-        for (final FrostlakeParser.OptionKeyContext key : keys) {
+        for (final FrostlakeParser.PropertyNameContext key : keys) {
             names.add(key.getText());
         }
         if (firstComma != null && "SECURE".equalsIgnoreCase(names.get(0)) && !names.get(0).startsWith("\"")) {
@@ -268,8 +268,8 @@ final class AlteredViewProperties {
      * @param keys the names, judged
      * @return whether one of them is DATA_METRIC_SCHEDULE
      */
-    static boolean unsetsDataMetricSchedule(final List<FrostlakeParser.OptionKeyContext> keys) {
-        for (final FrostlakeParser.OptionKeyContext key : keys) {
+    static boolean unsetsDataMetricSchedule(final List<FrostlakeParser.PropertyNameContext> keys) {
+        for (final FrostlakeParser.PropertyNameContext key : keys) {
             if (DATA_METRIC_SCHEDULE.equals(ParameterRegistry.canonical(key.getText()))) {
                 return true;
             }

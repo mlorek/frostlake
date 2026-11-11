@@ -54,7 +54,6 @@ enum UnmodelledListing {
     SESSION_POLICIES("created_on@ name database_name schema_name kind owner comment owner_role_type options", false),
     AUTHENTICATION_POLICIES(SESSION_POLICIES.spec, false),
     PACKAGES_POLICIES(SESSION_POLICIES.spec, false),
-    PRIVACY_POLICIES(SESSION_POLICIES.spec, false),
     FUNCTIONS("""
         created_on@ name schema_name is_builtin is_aggregate is_ansi min_num_arguments# max_num_arguments# arguments
         description catalog_name is_table_function valid_for_clustering is_secure secrets external_access_integrations

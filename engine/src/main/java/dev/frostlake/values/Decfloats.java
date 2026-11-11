@@ -56,10 +56,11 @@ public final class Decfloats {
 
     /**
      * A decimal as a DECFLOAT holds it: rounded to 38 significant digits, its trailing zeros dropped, and a whole
-     * number written out in full. Its last digit's exponent lies between -16383 and 16384: a value finer than
-     * 1e-16383 rounds at it, half away from zero, so {@code DECFLOAT '1e-16400'} is 0; a value whose last digit
-     * stands higher keeps it at 16384 with the coefficient grown, {@code DECFLOAT '1e16385'} being 10e16384; and one
-     * whose coefficient would then pass 38 digits is past the range (live-verified).
+     * number written out in full while that takes at most 38 digits; one past that keeps its significant digits and
+     * its exponent, {@code 1E+40}, as a client reads it (live-verified). Its last digit's exponent lies between -16383
+     * and 16384: a value finer than 1e-16383 rounds at it, half away from zero, so {@code DECFLOAT '1e-16400'} is 0; a
+     * value whose last digit stands higher keeps it at 16384 with the coefficient grown, {@code DECFLOAT '1e16385'}
+     * being 10e16384; and one whose coefficient would then pass 38 digits is past the range (live-verified).
      *
      * @param value the decimal
      * @return the value held
@@ -81,7 +82,8 @@ public final class Decfloats {
         if (-stripped.scale() > MAX_EXPONENT && stripped.precision() - stripped.scale() - MAX_EXPONENT > DIGITS) {
             throw new DecfloatRangeException();
         }
-        return stripped.scale() < 0 ? stripped.setScale(0) : stripped;
+        return stripped.scale() < 0 && stripped.precision() - stripped.scale() <= DIGITS ? stripped.setScale(0)
+            : stripped;
     }
 
     /**

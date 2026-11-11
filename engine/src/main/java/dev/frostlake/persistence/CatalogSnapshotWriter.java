@@ -38,6 +38,7 @@ import dev.frostlake.metastore.model.JoinPolicy;
 import dev.frostlake.metastore.model.MaskingPolicy;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Pipe;
+import dev.frostlake.metastore.model.PrivacyPolicy;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.ProjectionPolicy;
@@ -47,6 +48,7 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.SearchOptimizationExpression;
 import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Stage;
+import dev.frostlake.metastore.model.StorageLifecyclePolicy;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamRecord;
 import dev.frostlake.metastore.model.StreamSourceType;
@@ -348,6 +350,10 @@ final class CatalogSnapshotWriter {
             }
             tableSnapshot.aggregationPolicyName = table.getAggregationPolicyName();
             tableSnapshot.joinPolicyName = table.getJoinPolicyName();
+            tableSnapshot.privacyPolicyName = table.getPrivacyPolicyName();
+            tableSnapshot.privacyEntityKey = new ArrayList<>(table.getPrivacyEntityKey());
+            tableSnapshot.storageLifecyclePolicyName = table.getStorageLifecyclePolicyName();
+            tableSnapshot.storageLifecycleColumns = new ArrayList<>(table.getStorageLifecycleColumns());
             tableSnapshot.searchOptimization = new ArrayList<>();
             for (final SearchOptimizationExpression expression : table.getSearchOptimization()) {
                 final SearchOptimizationSnapshot soSnapshot = new SearchOptimizationSnapshot();
@@ -593,6 +599,29 @@ final class CatalogSnapshotWriter {
             schemaSnapshot.joinPolicies.add(policySnapshot);
         }
 
+        // Save privacy policies (a name and a body, as a join policy's) and storage lifecycle policies
+        for (final PrivacyPolicy policy : schema.getPrivacyPolicies()) {
+            final ProjectionPolicySnapshot policySnapshot = new ProjectionPolicySnapshot();
+            policySnapshot.name = policy.getName();
+            policySnapshot.body = policy.getBody();
+            policySnapshot.comment = policy.getComment();
+            policySnapshot.owner = policy.getOwner();
+            policySnapshot.createdAt = policy.getCreatedTime();
+            schemaSnapshot.privacyPolicies.add(policySnapshot);
+        }
+        for (final StorageLifecyclePolicy policy : schema.getStorageLifecyclePolicies()) {
+            final StorageLifecyclePolicySnapshot policySnapshot = new StorageLifecyclePolicySnapshot();
+            policySnapshot.name = policy.getName();
+            policySnapshot.parameters = snapshotParameters(policy.getParameters());
+            policySnapshot.body = policy.getBody();
+            policySnapshot.comment = policy.getComment();
+            policySnapshot.owner = policy.getOwner();
+            policySnapshot.archiveForDays = policy.getArchiveForDays();
+            policySnapshot.archiveTier = policy.getArchiveTier();
+            policySnapshot.createdAt = policy.getCreatedTime();
+            schemaSnapshot.storageLifecyclePolicies.add(policySnapshot);
+        }
+
         // Save aggregation policies (same shape as a projection policy: a name and a body)
         for (final AggregationPolicy policy : schema.getAggregationPolicies()) {
             final ProjectionPolicySnapshot policySnapshot = new ProjectionPolicySnapshot();
@@ -624,6 +653,7 @@ final class CatalogSnapshotWriter {
             contactSnapshot.comment = contact.getComment();
             contactSnapshot.url = contact.getUrl();
             contactSnapshot.emailDistributionList = contact.getEmailDistributionList();
+            contactSnapshot.users = contact.getUsers();
             contactSnapshot.owner = contact.getOwner();
             contactSnapshot.createdAt = contact.getCreatedTime();
             schemaSnapshot.contacts.add(contactSnapshot);
@@ -660,6 +690,7 @@ final class CatalogSnapshotWriter {
             final FileFormatSnapshot ffSnapshot = new FileFormatSnapshot();
             ffSnapshot.name = ff.getName();
             ffSnapshot.type = ff.getType();
+            ffSnapshot.writtenType = ff.getWrittenType();
             ffSnapshot.options = new LinkedHashMap<>(ff.getOptions());
             ffSnapshot.comment = ff.getComment();
             ffSnapshot.owner = ff.getOwner();
@@ -797,6 +828,8 @@ final class CatalogSnapshotWriter {
             for (final Map.Entry<String, Map<Long, Long>> input : dt.getAllInputPartitions().entrySet()) {
                 dtSnapshot.inputPartitions.put(input.getKey(), new HashMap<>(input.getValue()));
             }
+            dtSnapshot.inputCreatedTimes = new HashMap<>(dt.getAllInputCreatedTimes());
+            dtSnapshot.reinitRequested = dt.isReinitRequested();
             // The refreshes it keeps for time travel, so a read at a point before a restart still reaches them.
             dtSnapshot.refreshSequences = new ArrayList<>();
             dtSnapshot.refreshMillis = new ArrayList<>();

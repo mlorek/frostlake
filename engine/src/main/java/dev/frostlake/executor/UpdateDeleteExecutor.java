@@ -137,8 +137,14 @@ final class UpdateDeleteExecutor {
             }
             compileNames(ctx, table, ctx.identifier() != null ? executor.getIdentifier(ctx.identifier()) : null,
                 ctx.assignmentList().assignment(), ctx.whereClause(), ctx.tableReference(), ctx.joinClause());
+            requireDefaultsOfNoColumns(table, assignments);
             // A SQL function the statement calls is expanded into it once its names have resolved.
             CalledRoutineSources.require(ctx, executor);
+            if (ctx.tableReference() == null || ctx.tableReference().isEmpty()) {
+                // A correlated subquery the account cannot evaluate is refused before any row is read.
+                DmlCorrelationJudgement.require(executor, table, ctx.objectName(), ctx.identifier(),
+                    ctx.whereClause());
+            }
             // What the SET list writes is judged by a projection policy as a projection is (an UPDATE ... FROM once
             // its sources are known); the WHERE only uses the column.
             final List<FrostlakeParser.ExpressionContext> assignedValues = new ArrayList<>();
@@ -238,6 +244,11 @@ final class UpdateDeleteExecutor {
                 new ArrayList<FrostlakeParser.AssignmentContext>(), ctx.whereClause(), ctx.tableReference(),
                 ctx.joinClause());
             CalledRoutineSources.require(ctx, executor);
+            if (ctx.tableReference() == null || ctx.tableReference().isEmpty()) {
+                // A correlated subquery the account cannot evaluate is refused before any row is read.
+                DmlCorrelationJudgement.require(executor, table, ctx.objectName(), ctx.identifier(),
+                    ctx.whereClause());
+            }
             if (planning) {
                 return null;
             }
@@ -356,6 +367,24 @@ final class UpdateDeleteExecutor {
             }
         }
         return nullable;
+    }
+
+    /**
+     * Refuse {@code SET c = DEFAULT} for a column whose default reads other columns, as the statement compiles,
+     * whatever rows it would reach (see ColumnReadingDefaults).
+     */
+    private void requireDefaultsOfNoColumns(final Table table, final Map<String, String> assignments) {
+        for (final Map.Entry<String, String> assignment : assignments.entrySet()) {
+            if (!(ExpressionEvaluator.parse(assignment.getValue()) instanceof DefaultMarkerExpression)) {
+                continue;
+            }
+            final TableColumn column = table.findColumn(assignment.getKey());
+            final List<String> read = column == null ? null
+                : ColumnReadingDefaults.columnsRead(column.getDefaultValue());
+            if (read != null && !read.isEmpty()) {
+                throw ColumnReadingDefaults.inUpdate(column.getName(), read.get(0));
+            }
+        }
     }
 
     private Map<String, Integer> setIndexes(final Table table, final Map<String, String> assignments) {

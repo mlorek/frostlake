@@ -353,12 +353,21 @@ final class ShowRelationalExecutor {
             }
         }
         if (history) {
-            for (final DroppedObject dropped : catalog.droppedOfKind("SCHEMA")) {
-                if (dropped.getObject() instanceof Schema
-                        && database.getName().equals(((Schema) dropped.getObject()).getDatabaseName())
-                        && databaseSeen && seenSchema(database.getName(), (Schema) dropped.getObject())) {
-                    rows.add(schemaRow(database.getName(), (Schema) dropped.getObject(), false, true,
-                        dropped.getDroppedOn()));
+            // A schema purged with a retention of 0 is listed too, the newest of its name: dropping the name again
+            // forgets it (see Catalog#listedOnlyVersions). Read first, as reading the versions purges again.
+            final List<DroppedObject> dropped = new ArrayList<>();
+            for (final Map.Entry<String, DroppedObject> entry : catalog.listedOnlyVersions().entrySet()) {
+                if (entry.getKey().startsWith("SCHEMA:")) {
+                    dropped.add(entry.getValue());
+                }
+            }
+            dropped.addAll(catalog.droppedOfKind("SCHEMA"));
+            for (final DroppedObject version : dropped) {
+                if (version.getObject() instanceof Schema
+                        && database.getName().equals(((Schema) version.getObject()).getDatabaseName())
+                        && databaseSeen && seenSchema(database.getName(), (Schema) version.getObject())) {
+                    rows.add(schemaRow(database.getName(), (Schema) version.getObject(), false, true,
+                        version.getDroppedOn()));
                 }
             }
             sortByName(rows, 1);

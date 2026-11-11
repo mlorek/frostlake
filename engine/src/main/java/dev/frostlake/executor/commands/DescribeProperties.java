@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.FlowChainRefusal;
 import dev.frostlake.executor.LeadingCommentOffset;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
@@ -69,7 +70,8 @@ final class DescribeProperties {
         for (final FrostlakeParser.DescribePropertyContext property : properties) {
             final FrostlakeParser.DescribeParameterContext parameter = property.describeParameter();
             if (!isType(property)) {
-                throw new RuntimeException(SqlCompilationError.of(
+                // Refused as the request compiles: a chain it is a stage of is refused as a whole (live-verified).
+                throw new FlowChainRefusal(SqlCompilationError.of(
                     "invalid parameter '" + parameter.getChild(0).getText() + "'"));
             }
             final Object variable = parameter == null ? null : variableValue(parameter, queryExecutor);

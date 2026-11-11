@@ -1198,6 +1198,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
                     simpleName);
             fileFormat.setOwner(grantsOfNew == null ? catalog.currentRoleForOwner() : grantsOfNew.owner());
             final FileFormatClause written = FileFormatClause.read(ctx.copyFormatOption(), fileFormat, true, false);
+            fileFormat.setWrittenType(written.writtenType());
             if (written.comment() != null) {
                 fileFormat.setComment(written.comment());
             }

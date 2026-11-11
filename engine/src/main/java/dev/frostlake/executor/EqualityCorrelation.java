@@ -68,7 +68,20 @@ public final class EqualityCorrelation {
      *         first
      */
     public String membersQuery() {
-        return "SELECT " + String.join(", ", innerKeys) + ", " + memberItem + " FROM " + from + filter();
+        return membersQuery(null);
+    }
+
+    /**
+     * @param heldKeys a conjunct read ahead of the other conjuncts, or null for none
+     * @return {@link #membersQuery()} over the rows the conjunct keeps as well
+     */
+    public String membersQuery(final String heldKeys) {
+        return "SELECT " + String.join(", ", innerKeys) + ", " + memberItem + " FROM " + from + filter(heldKeys);
+    }
+
+    /** @return the equalities' sides over the subquery's relations, as written */
+    public List<String> getInnerKeys() {
+        return new ArrayList<>(innerKeys);
     }
 
     /**
@@ -105,7 +118,15 @@ public final class EqualityCorrelation {
      * @return the query of the inner keys the subquery's other conjuncts keep, one row for each row they keep
      */
     public String keysQuery() {
-        return "SELECT " + String.join(", ", innerKeys) + " FROM " + from + filter();
+        return keysQuery(null);
+    }
+
+    /**
+     * @param heldKeys a conjunct read ahead of the other conjuncts, or null for none
+     * @return {@link #keysQuery()} over the rows the conjunct keeps as well
+     */
+    public String keysQuery(final String heldKeys) {
+        return "SELECT " + String.join(", ", innerKeys) + " FROM " + from + filter(heldKeys);
     }
 
     /**
@@ -114,16 +135,22 @@ public final class EqualityCorrelation {
      */
     public String groupedQuery() {
         final String keys = String.join(", ", innerKeys);
-        return "SELECT " + keys + ", " + aggregateItem + " FROM " + from + filter() + " GROUP BY " + keys;
+        return "SELECT " + keys + ", " + aggregateItem + " FROM " + from + filter(null) + " GROUP BY " + keys;
     }
 
-    private String filter() {
-        if (otherConjuncts.isEmpty()) {
+    /** The WHERE of the other conjuncts, a conjunct read ahead of them first where one is given. */
+    private String filter(final String heldKeys) {
+        final List<String> conjuncts = new ArrayList<>();
+        if (heldKeys != null) {
+            conjuncts.add(heldKeys);
+        }
+        conjuncts.addAll(otherConjuncts);
+        if (conjuncts.isEmpty()) {
             return "";
         }
         final StringBuilder where = new StringBuilder(" WHERE ");
-        for (int i = 0; i < otherConjuncts.size(); i++) {
-            where.append(i > 0 ? " AND (" : "(").append(otherConjuncts.get(i)).append(')');
+        for (int i = 0; i < conjuncts.size(); i++) {
+            where.append(i > 0 ? " AND (" : "(").append(conjuncts.get(i)).append(')');
         }
         return where.toString();
     }

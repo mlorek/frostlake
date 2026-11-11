@@ -297,6 +297,7 @@ public final class SetOperations {
                     continue;
                 }
             }
+            final boolean nullable = anyBranchNullable(branchColumns, col);
             for (final List<Row> rows : branchRows) {
                 for (int r = 0; r < rows.size(); r++) {
                     final Row row = rows.get(r);
@@ -309,7 +310,7 @@ public final class SetOperations {
                     }
                     Object converted;
                     try {
-                        converted = toUnifiedColumnValue(value, target);
+                        converted = toUnifiedColumnValue(value, target, nullable);
                     } catch (final RuntimeException unconvertible) {
                         if (!DeferredFault.deferrable(unconvertible)) {
                             throw unconvertible;
@@ -495,7 +496,36 @@ public final class SetOperations {
     }
 
     /** One value converted to the unified column type ({@code null} and already-fitting values pass). */
+    /**
+     * Whether a set operation's column may hold NULL: one of its branches' columns may, as a table's column does, where
+     * a literal's may not. A value the column's type cannot hold is refused naming the column so (live-verified).
+     */
+    private static boolean anyBranchNullable(final List<List<ResultSetColumn>> branchColumns, final int col) {
+        for (final List<ResultSetColumn> columns : branchColumns) {
+            if (col >= columns.size()) {
+                continue;
+            }
+            final Boolean derived = columns.get(col).getDerivedNullable();
+            if (derived != null ? derived.booleanValue() : columns.get(col).isNullable()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static Object toUnifiedColumnValue(final Object value, final DataType target) {
+        return toUnifiedColumnValue(value, target, false);
+    }
+
+    /**
+     * One branch's value under the set operation's unified column type.
+     *
+     * @param value    the value
+     * @param target   the unified type
+     * @param nullable whether the column may hold NULL, which a refusal of a value it cannot hold names
+     * @return the value converted
+     */
+    private static Object toUnifiedColumnValue(final Object value, final DataType target, final boolean nullable) {
         if (value == null) {
             return null;
         }
@@ -555,7 +585,7 @@ public final class SetOperations {
                     // A branch's number the unified type cannot hold is refused at its row, as a cast to the type
                     // is: 11 beside 0.333… of 37 places (live-verified).
                     throw new RuntimeException(NumericRangeRefusal.typed(SignedStorageWidth.tagOf(scaled,
-                        numeric.getScale()), numeric.getPrecision(), numeric.getScale(), false,
+                        numeric.getScale()), numeric.getPrecision(), numeric.getScale(), nullable,
                         DecimalText.parse(value.toString())));
                 }
                 if (numeric.getScale() == 0 && !(value instanceof BigDecimal)

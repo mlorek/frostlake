@@ -952,7 +952,9 @@ final class ValueRangeInferencer {
             case "SEQ1":
                 return ValueRange.between(BigDecimal.valueOf(Byte.MIN_VALUE), BigDecimal.valueOf(Byte.MAX_VALUE));
             case "REDUCE":
-                return ReduceAccumulatorRange.of(this, call);
+                // The accumulator carries no interval, whatever its start and its body hand back: the result
+                // keeps its declared width (live-verified).
+                return null;
             default:
                 // A SQL function's body is read as if the call were inlined — see udfCallRange.
                 return visitor.getFunctionRegistry().getFunction(name) == null ? visitor.udfCallRange(call) : null;

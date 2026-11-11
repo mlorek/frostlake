@@ -121,6 +121,10 @@ public class Table extends SqlObject implements SessionScoped, ContactHolder {
     private String rowAccessPolicyName;  // qualified name of attached row access policy, or null
     private String aggregationPolicyName;  // qualified name of attached aggregation policy, or null
     private String joinPolicyName;  // qualified name of attached join policy, or null
+    private String privacyPolicyName;  // qualified name of the attached privacy policy, or null
+    private List<String> privacyEntityKey = new ArrayList<>();
+    private String storageLifecyclePolicyName;  // qualified name of the attached storage lifecycle policy, or null
+    private List<String> storageLifecycleColumns = new ArrayList<>();
     // SEARCH OPTIMIZATION: the configured expressions, and the next number to hand out. Numbers are
     // never reused, so dropping one leaves the others as they were (live-verified).
     private final List<SearchOptimizationExpression> searchOptimization = new ArrayList<>();
@@ -172,6 +176,8 @@ public class Table extends SqlObject implements SessionScoped, ContactHolder {
     private boolean changeTracking;
     /** Where change tracking was last turned on; see {@link #getChangeTrackingSince()}. */
     private long changeTrackingSince;
+    /** Whether a statement had written the table when change tracking was last turned on; see wasWrittenUntracked. */
+    private boolean writtenUntracked;
     private boolean schemaEvolution;
     private boolean reclusterSuspended;
     // Set only on a USING / NATURAL join's merged relation: the join-key column names (upper-cased,
@@ -409,6 +415,10 @@ public class Table extends SqlObject implements SessionScoped, ContactHolder {
         copy.aggregationPolicyName = aggregationPolicyName;
         copy.aggregationEntityKey = new ArrayList<>(aggregationEntityKey);
         copy.joinPolicyName = joinPolicyName;
+        copy.privacyPolicyName = privacyPolicyName;
+        copy.privacyEntityKey = new ArrayList<>(privacyEntityKey);
+        copy.storageLifecyclePolicyName = storageLifecyclePolicyName;
+        copy.storageLifecycleColumns = new ArrayList<>(storageLifecycleColumns);
         for (final SearchOptimizationExpression expression : searchOptimization) {
             copy.restoreSearchOptimization(expression);
         }
@@ -1297,8 +1307,21 @@ public class Table extends SqlObject implements SessionScoped, ContactHolder {
     public void setChangeTracking(final boolean changeTracking) {
         if (changeTracking && !this.changeTracking) {
             changeTrackingSince = SnapshotSequence.mark();
+            writtenUntracked = lastDataChange != null || lastDml != null;
         }
         this.changeTracking = changeTracking;
+    }
+
+    /**
+     * Whether a statement had written the table when its change tracking was last turned on: a CREATE TABLE AS, an
+     * INSERT, an UPDATE, a DELETE or a MERGE, one that changed no row too. A re-bound view stream reading the table
+     * then finds the time before tracking began in every range it reads, and is refused whatever the table takes
+     * later; over a table nothing wrote, the first change closes the gap (live-verified).
+     *
+     * @return true for such a table, false while tracking is off
+     */
+    public boolean wasWrittenUntracked() {
+        return changeTracking && writtenUntracked;
     }
 
     /**
@@ -2250,6 +2273,28 @@ public class Table extends SqlObject implements SessionScoped, ContactHolder {
     public String getJoinPolicyName() { return joinPolicyName; }
     public void setJoinPolicyName(final String name) { this.joinPolicyName = name; }
     public boolean hasJoinPolicy() { return joinPolicyName != null && !joinPolicyName.isEmpty(); }
+
+    /** @return the attached privacy policy's full name, or null */
+    public String getPrivacyPolicyName() { return privacyPolicyName; }
+    public void setPrivacyPolicyName(final String name) { this.privacyPolicyName = name; }
+    public boolean hasPrivacyPolicy() { return privacyPolicyName != null && !privacyPolicyName.isEmpty(); }
+    /** @return the columns the attached privacy policy's entity key names */
+    public List<String> getPrivacyEntityKey() { return new ArrayList<>(privacyEntityKey); }
+    public void setPrivacyEntityKey(final List<String> columns) {
+        this.privacyEntityKey = columns == null ? new ArrayList<String>() : new ArrayList<>(columns);
+    }
+
+    /** @return the attached storage lifecycle policy's full name, or null */
+    public String getStorageLifecyclePolicyName() { return storageLifecyclePolicyName; }
+    public void setStorageLifecyclePolicyName(final String name) { this.storageLifecyclePolicyName = name; }
+    public boolean hasStorageLifecyclePolicy() {
+        return storageLifecyclePolicyName != null && !storageLifecyclePolicyName.isEmpty();
+    }
+    /** @return the columns the attached storage lifecycle policy is given, in its arguments' order */
+    public List<String> getStorageLifecycleColumns() { return new ArrayList<>(storageLifecycleColumns); }
+    public void setStorageLifecycleColumns(final List<String> columns) {
+        this.storageLifecycleColumns = columns == null ? new ArrayList<String>() : new ArrayList<>(columns);
+    }
 
     public List<String> getAggregationEntityKey() { return new ArrayList<>(aggregationEntityKey); }
     public void setAggregationEntityKey(final List<String> columns) {

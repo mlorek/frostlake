@@ -302,8 +302,8 @@ final class SignatureRecovery {
             return -1;
         }
         for (final Token token : spokenTokens(sql)) {
-            // One statement alone: a script of several is read statement by statement.
-            if (token.getType() == FrostlakeLexer.SEMI) {
+            // One statement alone: a script of several, or a chain, is read statement by statement.
+            if (endsStatement(token)) {
                 return -1;
             }
         }
@@ -382,7 +382,7 @@ final class SignatureRecovery {
                 if (open == null) {
                     open = token;
                 }
-                if (token.getType() == Token.EOF || token.getType() == FrostlakeLexer.SEMI) {
+                if (token.getType() == Token.EOF || endsStatement(token)) {
                     ends = token;
                     break;
                 }
@@ -406,18 +406,16 @@ final class SignatureRecovery {
                 }
                 region.add(token);
                 stage = stage || token.getType() == FrostlakeLexer.AT;
-                if (token.getType() == FrostlakeLexer.SEMI) {
+                if (endsStatement(token)) {
                     break;
                 }
             }
             final Token last = region.get(region.size() - 1);
-            // Both readings end at the same ';', or both run on to the end of the text.
-            final boolean sameEnd = ends != null && (last.getType() == FrostlakeLexer.SEMI
-                && ends.getType() == FrostlakeLexer.SEMI && last.getStartIndex() == ends.getStartIndex()
-                || last.getType() != FrostlakeLexer.SEMI && ends.getType() == Token.EOF);
-            if (stage && !sameEnd || ends == null
-                    || (last.getType() == FrostlakeLexer.SEMI) != (ends.getType() == FrostlakeLexer.SEMI)
-                    || last.getType() == FrostlakeLexer.SEMI && last.getStartIndex() != ends.getStartIndex()) {
+            // Both readings end at the same ';' or chain arrow, or both run on to the end of the text.
+            final boolean sameEnd = ends != null && (endsStatement(last) && endsStatement(ends)
+                && last.getStartIndex() == ends.getStartIndex() || !endsStatement(last) && ends.getType() == Token.EOF);
+            if (stage && !sameEnd || ends == null || endsStatement(last) != endsStatement(ends)
+                    || endsStatement(last) && last.getStartIndex() != ends.getStartIndex()) {
                 // A stage reference, whose ';' the account reads otherwise, or a statement the account ends elsewhere
                 // than this parse does: left to the parse.
                 continue;
@@ -473,6 +471,11 @@ final class SignatureRecovery {
     }
 
     /** The text's tokens on the default channel, or none when this lexer cannot read it whole. */
+    /** Whether a token ends the statement before it: its ';', or the arrow of the chain it stands in. */
+    private static boolean endsStatement(final Token token) {
+        return token.getType() == FrostlakeLexer.SEMI || token.getType() == FrostlakeLexer.FLOW_ARROW;
+    }
+
     private static List<Token> spokenTokens(final String sql) {
         final boolean[] unlexed = new boolean[1];
         final FrostlakeLexer lexer = new FrostlakeLexer(SqlCharStream.of(sql));
@@ -848,6 +851,9 @@ final class SignatureRecovery {
             if (child instanceof FrostlakeParser.DropInstanceNameContext) {
                 return ((FrostlakeParser.DropInstanceNameContext) child).objectName();
             }
+            if (child instanceof FrostlakeParser.GrantsObjectNameContext) {
+                return (ParserRuleContext) child;
+            }
             if (child instanceof FrostlakeParser.ObjectSignatureContext) {
                 break;
             }
@@ -863,13 +869,26 @@ final class SignatureRecovery {
             return describe.STAGE() != null || describe.FUNCTION() != null || describe.PROCEDURE() != null
                 || describe.INTEGRATION() != null || describe.VOLUME() != null || describe.USER() != null
                 || describe.OPTIMIZATION() != null || describe.RESULT() != null || describe.ACCOUNT() != null
-                || describe.REPOSITORY() != null || describe.IDENTIFIER() != null ? null : describe;
+                || describe.REPOSITORY() != null || describe.IDENTIFIER() != null && describe.lifecycle == null
+                ? null : describe;
         }
         final FrostlakeParser.SecurityObjectListingContext listing = statement.securityObjectListing();
         if (listing != null) {
             return listing.DESCRIBE() != null || listing.DESC() != null ? listing : null;
         }
         final FrostlakeParser.ShowStatementContext show = statement.showStatement();
+        if (show != null && show.GRANTS() != null) {
+            // The object SHOW GRANTS ON names, and the role or the user it lists the grants TO or OF, read a signature
+            // after the name as a DROP's object does: ON DATABASE d(1) is refused at the 1 (live-verified). A
+            // routine's parentheses are the types it is found by.
+            final FrostlakeParser.ShowGrantsTargetContext target = show.showGrantsTarget();
+            if (target != null) {
+                return target.grantsObjectName() != null && (target.securableKind() == null
+                    || target.securableKind().FUNCTION() == null && target.securableKind().PROCEDURE() == null)
+                    ? target : null;
+            }
+            return show.grantsPrincipal();
+        }
         if (show != null) {
             // A listing's scope reads a signature after its name as a DROP reads one after its object's; what
             // follows the signature is the listing's own tail (see lines).
@@ -1980,7 +1999,8 @@ final class SignatureRecovery {
             FrostlakeLexer.FILE_URL, FrostlakeLexer.LINE_COMMENT,
             FrostlakeLexer.BLOCK_COMMENT, FrostlakeLexer.WS, FrostlakeLexer.REVOKE_CURRENT_GRANTS,
             FrostlakeLexer.RESUME_IF_SUSPENDED, FrostlakeLexer.ABORT_ALL_QUERIES);
-        assign(table, SEMI, FrostlakeLexer.SEMI);
+        // A chain's arrow ends its statement as a ';' does.
+        assign(table, SEMI, FrostlakeLexer.SEMI, FrostlakeLexer.FLOW_ARROW);
         assign(table, LPAREN, FrostlakeLexer.LPAREN);
         assign(table, RPAREN, FrostlakeLexer.RPAREN);
         assign(table, COMMA, FrostlakeLexer.COMMA);

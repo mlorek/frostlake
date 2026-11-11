@@ -112,7 +112,9 @@ final class StatementHistoryCells {
     static void failed(final QueryHistory row, final FrostlakeParser.StatementContext statement,
                        final QueryExecutor executor, final Throwable failure, final String lastBefore,
                        final String lastAfter, final TransactionManager transactions, final Catalog catalog) {
-        final String kind = statement != null ? QueryTypeNames.of(statement, executor) : null;
+        // A text of more statements than the session lets it hold is refused unread (live-verified).
+        final String kind = statement == null ? null
+            : countRefused(failure) ? QueryTypeNames.UNKNOWN : QueryTypeNames.of(statement, executor);
         if (kind != null) {
             row.setQueryTypeName(kind);
         }
@@ -121,6 +123,16 @@ final class StatementHistoryCells {
         final boolean ran = failure.getMessage() == null || !failure.getMessage().startsWith(COMPILATION_ERROR);
         row.setTransactionId(ran ? transactionOf(transactions, lastBefore, lastAfter, kind) : 0L);
         row.setWarehouseSize(ran ? warehouseSize(catalog) : null);
+    }
+
+    /** Whether a failure is, or was caused by, the refusal of a text's statement count. */
+    private static boolean countRefused(final Throwable failure) {
+        for (Throwable at = failure; at != null; at = at.getCause() == at ? null : at.getCause()) {
+            if (at instanceof StatementCountMismatch) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

@@ -135,10 +135,21 @@ final class OrderByExecutor {
 
         // The alias each key names, where the key is the alias and the projection shows its kept value.
         final String[] keptAliases = new String[orderColumns.size()];
+        // The select item each key names by its alias or its position where computing it draws anew: computed once a
+        // row here, whatever reads it after, and kept for the projection to show (see SortItemValues).
+        final int[] keptItems = new int[orderColumns.size()];
+        Arrays.fill(keptItems, -1);
+        final FrostlakeParser.SelectClauseContext keyedClause = aliasValues == null ? null : firstClauseOf(ctx);
+        final SortItemValues itemValues = keyedClause == null || keyedClause.selectList() == null ? null
+            : new SortItemValues(executor, keyedClause, table, aliasToTable, allTables, aliasValues);
         if (aliasValues != null) {
             int k = 0;
+            // Over a join only a drawn item's value is kept; any other is read as the key reads it, as it always was.
+            final boolean oneRelation = allTables == null || allTables.size() <= 1;
             for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
-                keptAliases[k] = keptAlias(item, orderColumns.get(k), ctx);
+                final int named = keptItem(item, orderColumns.get(k), ctx);
+                keptItems[k] = itemValues != null && itemValues.keeps(named) ? named : -1;
+                keptAliases[k] = oneRelation ? keptAlias(item, orderColumns.get(k), ctx) : null;
                 k++;
             }
         }
@@ -188,7 +199,9 @@ final class OrderByExecutor {
                             : ExpressionSource.beginNested(keyOrigins.get(i));
                         try {
                             final Object value;
-                            if (keptAliases[i] != null && aliasValues.holds(row, keptAliases[i])) {
+                            if (keptItems[i] >= 0) {
+                                value = itemValues.valueOf(row, keptItems[i]);
+                            } else if (keptAliases[i] != null && aliasValues.holds(row, keptAliases[i])) {
                                 value = aliasValues.valueOf(row, keptAliases[i]);
                             } else {
                                 value = resolveOrderValuePlanned(row, orderColumns.get(i), table, aliasToTable,
@@ -592,6 +605,50 @@ final class OrderByExecutor {
             }
         }
         return null;
+    }
+
+    /**
+     * The place in the select list of the item an ORDER BY key names, where the key is a bare name the select list
+     * gives an item as its alias, or a position counting to an item, and was resolved to that item's expression; -1
+     * for any other key.
+     */
+    private static int keptItem(final FrostlakeParser.OrderItemContext item, final String resolved,
+                                final FrostlakeParser.SelectStatementContext ctx) {
+        final FrostlakeParser.SelectClauseContext clause = firstClauseOf(ctx);
+        final String written = ParseTreeText.getOriginalText(KeyContexts.of(item));
+        if (clause == null || clause.selectList() == null || resolved.equals(written)) {
+            return -1;
+        }
+        final List<FrostlakeParser.SelectItemContext> items = clause.selectList().selectItem();
+        final long position = OrdinalLiteral.positionOf(written);
+        if (position != OrdinalLiteral.NOT_AN_ORDINAL) {
+            // A position counts the items one by one only where no star widens one of them.
+            for (final FrostlakeParser.SelectItemContext selectItem : items) {
+                if (!SelectItemAccessors.isExprItem(selectItem)) {
+                    return -1;
+                }
+            }
+            return position < 1 || position > items.size() ? -1 : (int) position - 1;
+        }
+        ParseTree node = KeyContexts.of(item);
+        while (node.getChildCount() == 1 && !(node instanceof FrostlakeParser.QualifiedNameExprContext)) {
+            node = node.getChild(0);
+        }
+        if (!(node instanceof FrostlakeParser.QualifiedNameExprContext)) {
+            return -1;
+        }
+        final String[] parts =
+            ParseTreeText.qualifiedNameParts(((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName());
+        if (parts.length != 1) {
+            return -1;
+        }
+        for (int k = 0; k < items.size(); k++) {
+            final String alias = SelectItemAccessors.getItemAlias(items.get(k));
+            if (alias != null && alias.equals(parts[0])) {
+                return k;
+            }
+        }
+        return -1;
     }
 
     static FrostlakeParser.SelectClauseContext firstClauseOf(final FrostlakeParser.SelectStatementContext ctx) {

@@ -226,6 +226,10 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
 
     @Override
     public String visitBinaryOperation(final BinaryOperationExpression expr) {
+        final String folded = spelled == null ? null : spelled.spellConstant(expr, this);
+        if (folded != null) {
+            return folded;
+        }
         final BinaryOperator operator = expr.getOperator();
         if (operator == BinaryOperator.LIKE || operator == BinaryOperator.ILIKE) {
             return like(expr, operator == BinaryOperator.LIKE ? "LIKE" : "ILIKE");
@@ -299,6 +303,10 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
 
     @Override
     public String visitUnaryOperation(final UnaryOperationExpression expr) {
+        final String folded = spelled == null ? null : spelled.spellConstant(expr, this);
+        if (folded != null) {
+            return folded;
+        }
         final Expression operand = expr.getOperand();
         switch (expr.getOperator()) {
             case EXISTS:
@@ -524,6 +532,10 @@ public final class ParsedEchoPrinter extends AstPrinterVisitor {
 
     @Override
     public String visitCast(final CastExpression expr) {
+        final String folded = spelled == null ? null : spelled.spellConstant(expr, this);
+        if (folded != null) {
+            return folded;
+        }
         final String value = expr.getExpression().accept(this);
         if (expr.isTypedLiteral()) {
             // A DECFLOAT literal is echoed as written, its word in lower case: decfloat '1' (live-verified).

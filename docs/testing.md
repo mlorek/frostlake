@@ -36,6 +36,7 @@ SF_LIVE=1 SF_USER=… SF_PASS=… SF_URL=… mvn -pl engine test -Dtest=ClassNam
 | `SF_USER`, `SF_PASS` | the login |
 | `SF_URL` | the account host, e.g. `myorg-myaccount.snowflakecomputing.com` |
 | `SF_WAREHOUSE` | optional: the warehouse to use; without it, the user's default warehouse |
+| `SF_LIVE_ACCOUNT_STATEMENTS` | optional: `1` sends the statements that change the account's roles, users and grants, which a live run otherwise holds back (below) |
 
 The same suite then checks that Frostlake and Snowflake answer alike. A live run is stateful: every test
 recreates `test_db` on the account. The test bases' teardown drops the account-level objects — databases, roles,
@@ -45,6 +46,13 @@ an object. The corpus runner on `snowflake` does the same for its cases: it read
 case, and before each case — and once more at the end — drops the account-level objects the cases before created,
 from the role and the warehouse the session opened with. Tests that read engine internals (the catalog,
 the managers) still exercise the embedded engine.
+
+A `BaseDatabaseTest` test never sends the account a statement that would change its roles, users or grants:
+GRANT, REVOKE, USE ROLE, USE SECONDARY ROLES, and CREATE, ALTER or DROP of a role, a database role or a user,
+wherever one begins in the text — inside a block, or in the text an `EXECUTE IMMEDIATE` runs or a routine's body
+holds. The test is skipped instead, before the statement is sent, its reason naming the statement; one that caught
+the skip as a refusal is skipped all the same when it ends, and a teardown's such statement is passed over. Set
+`SF_LIVE_ACCOUNT_STATEMENTS=1` to send them, against an account whose role takes them.
 
 ### One live run per account
 

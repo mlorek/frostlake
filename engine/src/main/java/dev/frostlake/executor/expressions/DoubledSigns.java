@@ -56,7 +56,7 @@ public final class DoubledSigns {
      * @param node a parse tree, or null
      */
     public static void rejectIn(final ParseTree node) {
-        if (node == null) {
+        if (node == null || CaretOperator.isTaskStatement(node)) {
             return;
         }
         if (node instanceof FrostlakeParser.UnaryExprContext) {
@@ -71,6 +71,76 @@ public final class DoubledSigns {
         for (int i = 0; i < node.getChildCount(); i++) {
             rejectIn(node.getChild(i));
         }
+    }
+
+    /**
+     * Refuse a statement whose walk meets two signs in a row ahead of any caret or bar (see
+     * {@link #rejectSignAheadOfOperator}); a text whose lexer read no sign pair, or neither operator, is not searched.
+     *
+     * @param statement the statement as parsed
+     */
+    public static void rejectAheadOfCaret(final ParserRuleContext statement) {
+        final Token first = statement == null ? null : statement.getStart();
+        if (first != null && first.getTokenSource() instanceof FrostlakeLexer
+                && ((FrostlakeLexer) first.getTokenSource()).hasReadSignPair()
+                && ((FrostlakeLexer) first.getTokenSource()).hasReadCaret()) {
+            rejectSignAheadOfOperator(statement);
+        }
+    }
+
+    /**
+     * Refuse a tree whose walk meets two signs in a row before any caret or bar: the account reads each operator
+     * ahead of its operands and the operands left to right, so {@code - -1 + 2 ^ 3} and {@code - -1 + (1 | 2)} name the
+     * sign, while {@code 2 ^ 3 + - -1}, {@code 1 | 2 + - -1} and {@code - -1 ^ 2}, whose caret holds the signs, name
+     * the operator (live-verified). A tree that meets an operator first, or neither, is left to the operator's rule.
+     *
+     * @param node a parse tree, or null
+     */
+    public static void rejectSignAheadOfOperator(final ParseTree node) {
+        final String met = firstMet(node);
+        if (met != null && !met.isEmpty()) {
+            throw refusal(met);
+        }
+    }
+
+    /**
+     * Refuse a tree that writes the bar, the caret or two signs in a row, as a statement is refused for them: a doubled
+     * sign the walk meets first, then a bar anywhere, then a caret, then any doubled sign.
+     *
+     * @param node a parse tree, or null
+     */
+    public static void rejectWithOperators(final ParseTree node) {
+        rejectSignAheadOfOperator(node);
+        CaretOperator.rejectIn(node);
+        rejectIn(node);
+    }
+
+    /**
+     * What a walk of a tree meets first, each node before its children: the sign naming a doubled sign, an empty text
+     * for a caret or a bar, or null for neither. A task's statement is not walked.
+     */
+    private static String firstMet(final ParseTree node) {
+        if (node == null || CaretOperator.isTaskStatement(node)) {
+            return null;
+        }
+        if (node instanceof FrostlakeParser.CaretExprContext || node instanceof FrostlakeParser.BarExprContext) {
+            return "";
+        }
+        if (node instanceof FrostlakeParser.UnaryExprContext
+                && isSign(((FrostlakeParser.UnaryExprContext) node).expression())) {
+            return ((FrostlakeParser.UnaryExprContext) node).op.getText();
+        }
+        if (node instanceof FrostlakeParser.TildeExprContext
+                && isSign(((FrostlakeParser.TildeExprContext) node).expression())) {
+            return "~";
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final String met = firstMet(node.getChild(i));
+            if (met != null) {
+                return met;
+            }
+        }
+        return null;
     }
 
     /** Whether an operand is itself signed: a sign or a tilde straight before it, no parenthesis between. */

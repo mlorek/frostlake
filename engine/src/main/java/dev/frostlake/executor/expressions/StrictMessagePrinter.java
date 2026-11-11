@@ -710,6 +710,11 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
                 if (operator != BinaryOperator.MULTIPLY && l.getScale() != r.getScale()) {
                     final boolean leftLower = l.getScale() < r.getScale();
                     final boolean arithmetic = isArithmetic(operator);
+                    final String beside = arithmetic ? besideBlockBinding(operator, left, l, right, r, leftLower)
+                        : null;
+                    if (beside != null) {
+                        return beside;
+                    }
                     return (leftLower ? rescaled(left, l, r, arithmetic) : operand(left)) + " " + symbol(operator)
                         + " " + (leftLower ? operand(right) : rescaled(right, r, l, arithmetic));
                 }
@@ -1171,6 +1176,73 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
     private String rescaled(final Expression lower, final NumericType lowType, final NumericType highType,
                             final boolean arithmetic) {
         return "(" + rescaledValue(lower, lowType, highType, arithmetic) + ")";
+    }
+
+    /**
+     * A sum, a difference or a remainder whose higher-scale side a block's exact NUMBER variable gives its scale -
+     * the variable, or arithmetic or a call over it - beside a number written out: the written number is printed as
+     * it is written, unrescaled and without its own cast, so {@code n + 1} over a NUMBER(10,2) holding 2 is
+     * {@code 2 + 1} and {@code n + 1::NUMBER(4,1)} too; the variable itself is printed at its declared type where the
+     * written number has more whole digits than the type takes, {@code CAST(2 AS NUMBER(4,2)) + 1000}
+     * (live-verified). Null for any other operation.
+     */
+    private String besideBlockBinding(final BinaryOperator operator, final Expression left, final NumericType l,
+                                      final Expression right, final NumericType r, final boolean leftLower) {
+        final Expression higher = leftLower ? right : left;
+        final Expression written = writtenNumber(leftLower ? left : right);
+        if (written == null || !holdsBlockBinding(higher)) {
+            return null;
+        }
+        final NumericType writtenType = leftLower ? l : r;
+        String higherText = operand(higher);
+        if (higher instanceof FoldedConstantExpression
+                && ((FoldedConstantExpression) higher).getDeclaredType() instanceof NumericType) {
+            final NumericType declared = (NumericType) ((FoldedConstantExpression) higher).getDeclaredType();
+            if (writtenType.getPrecision() - writtenType.getScale() > declared.getPrecision() - declared.getScale()) {
+                higherText = "(CAST(" + higher.accept(this) + " AS NUMBER(" + declared.getPrecision() + ","
+                    + declared.getScale() + ")))";
+            }
+        }
+        final String writtenText = operand(written);
+        return leftLower ? writtenText + " " + symbol(operator) + " " + higherText
+            : higherText + " " + symbol(operator) + " " + writtenText;
+    }
+
+    /** A number written out - a literal, or one cast to another NUMBER - as the literal, or null for anything else. */
+    private static Expression writtenNumber(final Expression expression) {
+        final Expression literal = expression instanceof CastExpression
+            && !((CastExpression) expression).isBlockBinding() ? ((CastExpression) expression).getExpression()
+            : expression;
+        if (!(literal instanceof LiteralExpression) || literal instanceof FoldedConstantExpression) {
+            return null;
+        }
+        final LiteralType type = ((LiteralExpression) literal).getType();
+        return type == LiteralType.INTEGER || type == LiteralType.DECIMAL ? literal : null;
+    }
+
+    /** Whether an expression holds a block's folded exact NUMBER variable, under operators, casts and calls. */
+    private static boolean holdsBlockBinding(final Expression expression) {
+        if (expression instanceof FoldedConstantExpression) {
+            return ((FoldedConstantExpression) expression).isBlockBinding();
+        }
+        if (expression instanceof BinaryOperationExpression) {
+            return holdsBlockBinding(((BinaryOperationExpression) expression).getLeft())
+                || holdsBlockBinding(((BinaryOperationExpression) expression).getRight());
+        }
+        if (expression instanceof UnaryOperationExpression) {
+            return holdsBlockBinding(((UnaryOperationExpression) expression).getOperand());
+        }
+        if (expression instanceof CastExpression) {
+            return holdsBlockBinding(((CastExpression) expression).getExpression());
+        }
+        if (expression instanceof FunctionCallExpression) {
+            for (final Expression argument : ((FunctionCallExpression) expression).getArguments()) {
+                if (holdsBlockBinding(argument)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** {@link #rescaled} unbracketed, as an argument is printed. */

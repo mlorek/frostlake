@@ -18,6 +18,7 @@ package dev.frostlake.persistence;
 
 import java.io.Serializable;
 import java.time.Instant;
+import java.util.List;
 
 /** Serializable snapshot of a CONTACT (its three properties and its owner). */
 public class ContactSnapshot implements Serializable {
@@ -27,6 +28,8 @@ public class ContactSnapshot implements Serializable {
     public String comment;
     public String url;
     public String emailDistributionList;
+    // The users the contact names; null on snapshots written before they were kept.
+    public List<String> users;
     public String owner;
     // When the object was created. Null on snapshots written before it was saved, which restore it as new.
     public Instant createdAt;

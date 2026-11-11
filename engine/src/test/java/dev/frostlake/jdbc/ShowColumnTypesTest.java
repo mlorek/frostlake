@@ -37,7 +37,7 @@ public class ShowColumnTypesTest extends BaseJdbcTest {
 
     private static final String WIDE = "NUMBER 38 0";
     private static final String COUNT = "NUMBER 9 0";
-    private static final String INSTANT = "TIMESTAMPLTZ 29 3";
+    private static final String INSTANT = "TIMESTAMPLTZ 25 3";
 
     @Override
     protected void setupTest() throws SQLException {

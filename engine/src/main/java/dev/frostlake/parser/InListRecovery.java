@@ -93,6 +93,12 @@ final class InListRecovery {
                 lines.addAll(called);
                 return lines;
             }
+            // A statement its FROM list reads after a comma is refused as in a compared query.
+            final List<String> worded = ValueSubqueryLines.inListStatementWord(sql, spoken, in + 1);
+            if (worded != null) {
+                lines.addAll(worded);
+                return lines;
+            }
             int close = -1;
             for (int i = opener + 1; i < spoken.size() && close < 0; i++) {
                 if (spoken.get(i).getType() == FrostlakeLexer.RPAREN) {

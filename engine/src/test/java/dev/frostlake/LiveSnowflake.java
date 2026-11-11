@@ -501,6 +501,20 @@ public final class LiveSnowflake {
         }
     }
 
+    /**
+     * Puts a session of the account back on the harness's parameters, as a reset of the shared session does: the
+     * baseline re-applied, every other parameter a statement set at the session's level unset. For a harness that
+     * keeps one session of its own across many cases, the corpus's: a case that unsets JSON_INDENT leaves the
+     * account's default of two spaces, and every semi-structured answer after it pretty-printed.
+     *
+     * @param statement a statement of the session
+     * @throws SQLException when the session refuses a reset statement
+     */
+    public static void restoreSessionParameters(final Statement statement) throws SQLException {
+        applySessionParameters(statement);
+        clearSessionParameters(statement);
+    }
+
     private static void applySessionParameters(final Statement statement) throws SQLException {
         // The result format is not set here: the connection asks for JSON results (see connect), and a
         // reset leaves that standing (see HARNESS_PARAMETERS).

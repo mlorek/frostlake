@@ -36,6 +36,9 @@ public final class LobSize {
     /** The most bytes a binary value holds, 64 MB. */
     public static final long MAX_BINARY_BYTES = 67_108_864L;
 
+    /** The most characters a refusal shows of a value too long for its place. */
+    private static final int SHOWN = 200;
+
     private LobSize() {
     }
 
@@ -61,5 +64,59 @@ public final class LobSize {
         if (bytes > maximum) {
             throw new RuntimeException("String '(padded string)' is too long and would be truncated");
         }
+    }
+
+    /**
+     * A value as a refusal of it as too long shows it: whole up to 200 characters, its first 200 and {@code ...} past
+     * them, {@code String 'abbb…bbb...' is too long and would be truncated} (live-verified).
+     *
+     * @param value the value
+     * @return what the refusal shows of it
+     */
+    public static String shown(final String value) {
+        if (value.length() <= SHOWN || value.codePointCount(0, value.length()) <= SHOWN) {
+            return value;
+        }
+        return value.substring(0, value.offsetByCodePoints(0, SHOWN)) + "...";
+    }
+
+    /**
+     * Refuse a text longer than a text can be, as the concatenation that made it: {@code TO_JSON(a) || 'x'} over an
+     * array whose text passes the size is {@code String '[1,2,...' is too long and would be truncated in 'CONCAT'}
+     * (live-verified).
+     *
+     * @param text the concatenation
+     * @return the text, when it fits
+     */
+    public static String requireConcatenated(final String text) {
+        if (text.length() > MAX_TEXT_BYTES && text.codePointCount(0, text.length()) > MAX_TEXT_BYTES) {
+            throw new RuntimeException("String '" + shown(text) + "' is too long and would be truncated in 'CONCAT'");
+        }
+        return text;
+    }
+
+    /**
+     * Refuse a text a semi-structured value converts to that is longer than a text can be: {@code
+     * ARRAY_INSERT([1, 2], 14000000, 9)::VARCHAR} is {@code String '[1,2,undefined,...' is too long and would be
+     * truncated}, where a text that fits, at thirteen million holes, converts whole (live-verified).
+     *
+     * @param text the converted text
+     * @return the text, when it fits
+     */
+    public static String requireConverted(final String text) {
+        if (text.length() > MAX_TEXT_BYTES && text.codePointCount(0, text.length()) > MAX_TEXT_BYTES) {
+            throw tooLong(text);
+        }
+        return text;
+    }
+
+    /**
+     * The refusal of a text too long for its place, showing as much of it as the account shows.
+     *
+     * @param text the text, or as much of its beginning as is past 200 characters
+     * @return the refusal
+     */
+    public static RuntimeException tooLong(final String text) {
+        return new RuntimeException("String '" + shown(text) + "' is too long and would be truncated");
     }
 }

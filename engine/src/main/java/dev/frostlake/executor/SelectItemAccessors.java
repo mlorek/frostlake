@@ -202,6 +202,26 @@ public final class SelectItemAccessors {
     }
 
     /**
+     * The ROW a query's one select item is, where the query is one SELECT that reads no relation and filters nothing,
+     * so that it answers that ROW once: {@code (a, b) = (SELECT (1, 'x'))} compares as {@code (a, b) = (1, 'x')}
+     * (live-verified). Null for any other query.
+     *
+     * @param query the query, or null
+     * @return the ROW, or null
+     */
+    public static FrostlakeParser.RowExprContext fromlessRowItem(final FrostlakeParser.SelectStatementContext query) {
+        if (!readsNoRelation(query)) {
+            return null;
+        }
+        final FrostlakeParser.SelectClauseContext select = soleSelect(query);
+        if (select.selectList().selectItem().size() != 1
+                || !(select.selectList().selectItem(0) instanceof FrostlakeParser.ExprItemContext)) {
+            return null;
+        }
+        return rowOf(((FrostlakeParser.ExprItemContext) select.selectList().selectItem(0)).booleanExpr());
+    }
+
+    /**
      * The query with its one select item, a ROW, written as the ROW's members, an item each: the query whose columns
      * type a subquery of that ROW as {@code ROW(<each member's type>)}. Null for any other query.
      *
@@ -252,6 +272,40 @@ public final class SelectItemAccessors {
     }
 
     /** The ROW an expression is, behind any parentheses around it; null for any other expression. */
+    /**
+     * Where a query's one select item, a ROW, is refused as it compiles: at its alias when it has one, at the ROW's
+     * own parenthesis otherwise (see rejectRowItem). Null for a query that is not one SELECT of one ROW item.
+     *
+     * @param query the query, or null
+     * @return the token the refusal stands at, or null
+     */
+    public static Token soleRowItemPlace(final FrostlakeParser.SelectStatementContext query) {
+        final FrostlakeParser.SelectClauseContext select = soleSelect(query);
+        if (select == null || select.selectList().selectItem().size() != 1
+                || !(select.selectList().selectItem(0) instanceof FrostlakeParser.ExprItemContext)) {
+            return null;
+        }
+        final FrostlakeParser.ExprItemContext item =
+            (FrostlakeParser.ExprItemContext) select.selectList().selectItem(0);
+        final FrostlakeParser.RowExprContext row = rowOf(item.booleanExpr());
+        if (row == null) {
+            return null;
+        }
+        return item.aliasName() != null ? item.aliasName().getStart() : item.identifier() != null
+            ? item.identifier().getStart() : item.bareAliasWord() != null ? item.bareAliasWord().getStart()
+                : row.getStart();
+    }
+
+    /**
+     * The ROW an expression is as written, however many parentheses stand around it; null for any other expression.
+     *
+     * @param written the expression
+     * @return the ROW, or null
+     */
+    public static FrostlakeParser.RowExprContext rowOfWritten(final ParseTree written) {
+        return rowOf(written);
+    }
+
     static FrostlakeParser.RowExprContext rowOf(final ParseTree written) {
         if (written instanceof FrostlakeParser.RowExprContext) {
             return (FrostlakeParser.RowExprContext) written;

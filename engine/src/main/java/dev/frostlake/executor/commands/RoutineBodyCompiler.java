@@ -28,6 +28,7 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.executor.expressions.CaretOperator;
+import dev.frostlake.executor.expressions.DoubledSigns;
 import dev.frostlake.executor.expressions.OuterJoinOperandException;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SqlUdfBodyFrame;
@@ -227,8 +228,9 @@ final class RoutineBodyCompiler {
             }
         }
         // The caret between two values is refused as the procedure is created, in a block and in a statement
-        // written without one (see CaretOperator).
-        CaretOperator.rejectIn(written);
+        // written without one (see CaretOperator), and so are two signs in a row, in a branch that never runs too,
+        // whichever the body's walk meets first (see DoubledSigns).
+        DoubledSigns.rejectWithOperators(written);
         // So is a positional argument written after a named one, at the argument in the body's own text
         // (live-verified).
         StrayArguments.require(queryExecutor.uncompiledScriptOf(body));
@@ -475,12 +477,13 @@ final class RoutineBodyCompiler {
      * @param routineName   the routine's own unqualified name, so the validator can see a self-call.
      */
     /**
-     * A function's expression or query that writes the caret between two values is refused as the function's
-     * compilation failing, by the operator alone (see {@link CaretOperator}); a block's is refused bare.
+     * A function's expression or query that writes the caret between two values, or two signs in a row, is refused as
+     * the function's compilation failing, by the operator alone (see {@link CaretOperator}) or the invalid function
+     * the signs make (see {@link DoubledSigns}); a block's is refused bare.
      */
     private static void rejectCaret(final ParseTree body) {
         try {
-            CaretOperator.rejectIn(body);
+            DoubledSigns.rejectWithOperators(body);
         } catch (final RuntimeException refused) {
             throw new RuntimeException("Compilation of SQL UDF failed: " + refused.getMessage(), refused);
         }

@@ -100,6 +100,8 @@ public final class FileFormatOptions {
     public void takeFormat(final FileFormat format) {
         take("TYPE", format.getType());
         takeAll(format.getOptions());
+        // A named format's type is named as the format was created with it (live-verified).
+        writtenType = format.getWrittenType();
     }
 
     /**
@@ -123,6 +125,10 @@ public final class FileFormatOptions {
     public void takeAll(final Map<String, String> options) {
         for (final Map.Entry<String, String> option : options.entrySet()) {
             take(option.getKey(), option.getValue());
+        }
+        // A stage keeps its own list's TYPE as it was written, and its type is named so (live-verified).
+        if (options.get("TYPE") != null) {
+            writtenType = options.get("TYPE");
         }
     }
 
@@ -277,7 +283,10 @@ public final class FileFormatOptions {
         }
     }
 
-    /** The format's TYPE, upper-cased; CSV until a format says otherwise. */
+    /**
+     * The TYPE as the format it came from was written - the statement's own list, a stage's or a named format's -
+     * or null where none wrote one.
+     */
     public String getWrittenType() {
         return writtenType;
     }

@@ -35,12 +35,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  *              surrogate ('\uD800'-'\uDBFF').
  * </pre>
  *
- * <p>THE POSITION IS THE LITERAL'S OWN START, not the call around it — which is how the refusal
- * announces that it came from the reader. That is asserted at seven different offsets and onto a second
- * line rather than at one, because a single statement cannot tell a literal-anchored rule from a
- * statement- or call-anchored one. The offset had to be RESOLVED against the enclosing fragment: an
- * expression is re-parsed on its own, so the token's raw position is 0 for a literal that begins the
- * fragment, whatever column it really sits in.
+ * <p>THE SENTENCE STANDS ALONE: no compilation-error heading and no place, wherever the literal sits — at seven
+ * different offsets and onto a second line alike.
  *
  * <p>THE FIRST offending code unit decides, scanning left to right — {@code '\uDC00\uD800'} is two
  * unpaired halves and reports the LOW one. The echo is always four UPPER-case hex digits whatever case
@@ -86,63 +82,58 @@ public class UnpairedSurrogateLiteralTest extends BaseDatabaseTest {
         }
     }
 
-    private String highRefusal(final int position, final String escape) {
-        return "SQL compilation error: error line 1 at position " + position
-            + "|Invalid Unicode string literal; high surrogate '" + escape
+    private String highRefusal(final String escape) {
+        return "Invalid Unicode string literal; high surrogate '" + escape
             + "' must be followed by a low surrogate ('\\uDC00'-'\\uDFFF').";
     }
 
-    private String lowRefusal(final int position, final String escape) {
-        return "SQL compilation error: error line 1 at position " + position
-            + "|Invalid Unicode string literal; low surrogate '" + escape
+    private String lowRefusal(final String escape) {
+        return "Invalid Unicode string literal; low surrogate '" + escape
             + "' must be preceded by a high surrogate ('\\uD800'-'\\uDBFF').";
     }
 
     /** Each half has its own sentence. */
     @Test
     public void eachHalfHasItsOwnSentence() {
-        assertEquals(highRefusal(7, "\\uD800"), outcome("SELECT " + HIGH));
-        assertEquals(lowRefusal(7, "\\uDC00"), outcome("SELECT " + LOW));
-        assertEquals(highRefusal(7, "\\uD800"), outcome("SELECT " + HIGH + " FROM pu"));
+        assertEquals(highRefusal("\\uD800"), outcome("SELECT " + HIGH));
+        assertEquals(lowRefusal("\\uDC00"), outcome("SELECT " + LOW));
+        assertEquals(highRefusal("\\uD800"), outcome("SELECT " + HIGH + " FROM pu"));
     }
 
     /** The FIRST offending unit decides, and the echo carries its own value. */
     @Test
     public void theFirstOffendingUnitDecides() {
-        assertEquals(highRefusal(7, "\\uD800"), outcome("SELECT '\\uD800\\uD800'"),
+        assertEquals(highRefusal("\\uD800"), outcome("SELECT '\\uD800\\uD800'"),
             "two highs — the first one is named");
-        assertEquals(lowRefusal(7, "\\uDC00"), outcome("SELECT '\\uDC00\\uD800'"),
+        assertEquals(lowRefusal("\\uDC00"), outcome("SELECT '\\uDC00\\uD800'"),
             "a LOW first, so the low sentence wins");
-        assertEquals(highRefusal(7, "\\uD800"), outcome("SELECT '\\uD800A'"));
-        assertEquals(highRefusal(7, "\\uD800"), outcome("SELECT 'A\\uD800'"),
-            "and text before it does not move the POSITION, which is the literal's start");
-        assertEquals(highRefusal(7, "\\uD8FF"), outcome("SELECT '\\uD8FF'"));
-        assertEquals(lowRefusal(7, "\\uDFFF"), outcome("SELECT '\\uDFFF'"));
+        assertEquals(highRefusal("\\uD800"), outcome("SELECT '\\uD800A'"));
+        assertEquals(highRefusal("\\uD800"), outcome("SELECT 'A\\uD800'"),
+            "and text before it changes nothing");
+        assertEquals(highRefusal("\\uD8FF"), outcome("SELECT '\\uD8FF'"));
+        assertEquals(lowRefusal("\\uDFFF"), outcome("SELECT '\\uDFFF'"));
     }
 
     /** The echo is UPPER-case hex however the escape was written. */
     @Test
     public void theEchoIsAlwaysUpperCase() {
-        assertEquals(highRefusal(7, "\\uD800"), outcome("SELECT '\\ud800'"));
-        assertEquals(highRefusal(7, "\\uD8FF"), outcome("SELECT '\\ud8Ff'"));
+        assertEquals(highRefusal("\\uD800"), outcome("SELECT '\\ud800'"));
+        assertEquals(highRefusal("\\uD8FF"), outcome("SELECT '\\ud8Ff'"));
     }
 
-    /** The position follows the LITERAL wherever it is written, onto a second line included. */
+    /** No place is named wherever the literal is written, onto a second line included. */
     @Test
-    public void thePositionIsTheLiteralsOwnStart() {
-        assertEquals(highRefusal(21, "\\uD800"),
+    public void theSentenceNamesNoPlace() {
+        assertEquals(highRefusal("\\uD800"),
             outcome("SELECT VALIDATE_UTF8(" + HIGH + ") FROM pu"));
-        assertEquals(highRefusal(25, "\\uD800"),
+        assertEquals(highRefusal("\\uD800"),
             outcome("SELECT TRY_VALIDATE_UTF8(" + HIGH + ") FROM pu"),
-            "the two spellings differ only by their own name lengths — the call is not the anchor");
-        assertEquals(highRefusal(10, "\\uD800"), outcome("SELECT 1, " + HIGH));
-        assertEquals(highRefusal(23, "\\uD800"),
+            "the call around it names no place either");
+        assertEquals(highRefusal("\\uD800"), outcome("SELECT 1, " + HIGH));
+        assertEquals(highRefusal("\\uD800"),
             outcome("SELECT i FROM pu WHERE " + HIGH + " = 'x'"));
-        assertEquals(highRefusal(15, "\\uD800"), outcome("SELECT 'ab' || " + HIGH));
-        assertEquals("SQL compilation error: error line 2 at position 2"
-            + "|Invalid Unicode string literal; high surrogate '\\uD800'"
-            + " must be followed by a low surrogate ('\\uDC00'-'\\uDFFF').",
-            outcome("SELECT 1,\n  " + HIGH), "a second LINE moves the line as well as the column");
+        assertEquals(highRefusal("\\uD800"), outcome("SELECT 'ab' || " + HIGH));
+        assertEquals(highRefusal("\\uD800"), outcome("SELECT 1,\n  " + HIGH), "nor does a second line");
     }
 
     /** A correctly PAIRED surrogate is untouched — this is how an emoji is written. */

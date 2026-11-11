@@ -17,6 +17,7 @@
 package dev.frostlake.udf;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.metastore.model.Task;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
@@ -34,7 +35,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * code or closure cell, whether the statement succeeded or failed. So too for the standard library's modules
  * imported when the interpreter was made: a member a routine replaced or deleted is back, as is the module on
  * {@code sys.modules}, a module a routine made itself or anything else it put there is gone while one it imported
- * stays, and the working directory and the decimal context are as they were.
+ * stays, and the working directory and the decimal context are as they were. A statement of a task's run ends the same
+ * way, though it runs on the scheduler's thread below any statement of the session's.
  */
 public class PythonSharedStateTest {
 
@@ -183,6 +185,20 @@ public class PythonSharedStateTest {
             assertEquals("tampered", scalar(engine, "SELECT tamper()"));
             assertEquals("None|None|False", scalar(engine, "SELECT peek()"));
             assertEquals("7", scalar(engine, "CALL runs_sql()"));
+        } finally {
+            engine.shutdown();
+        }
+    }
+
+    @Test
+    public void aTaskRunsStatementPutsTheStateBackAsItEnds() {
+        final DatabaseEngine engine = engineWith(TAMPERS, READS);
+        try {
+            engine.execute("CREATE TASK tamper_task SCHEDULE = '60 MINUTE' AS SELECT tamper()");
+            final Task task = engine.getCatalog().getDatabase("D").getSchema("PUBLIC").getTask("TAMPER_TASK");
+            engine.getTaskScheduler().executeTaskNow("D.PUBLIC.TAMPER_TASK", task);
+            assertEquals("SUCCEEDED", task.getExecutionHistory().get(0).getState());
+            assertEquals("None|None|False", scalar(engine, "SELECT peek()"));
         } finally {
             engine.shutdown();
         }

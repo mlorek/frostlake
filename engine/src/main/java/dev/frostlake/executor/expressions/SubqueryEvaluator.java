@@ -32,6 +32,7 @@ import dev.frostlake.executor.RelationShapeOnly;
 import dev.frostlake.executor.ScalarBodyRowItems;
 import dev.frostlake.executor.SelectItemAccessors;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StoredColumnValues;
 import dev.frostlake.executor.SubqueryAhead;
 import dev.frostlake.executor.SubqueryCompilation;
@@ -347,7 +348,9 @@ final class SubqueryEvaluator {
         if (correlation == null || !correlation.answersARowPerKeptRow()) {
             return null;
         }
-        final String keysQuery = correlation.keysQuery();
+        // Computed over the keys the outer table holds (see heldKeysConjunct); a row's fault there runs the subquery
+        // per outer row instead.
+        final String keysQuery = correlation.keysQuery(heldKeysConjunct(correlation, key));
         PreparedKeySet keys = memo.cachedKeySet(keysQuery);
         if (keys == null) {
             final ResultSet computed = computedOnce(key, keysQuery, correlation.keyCount(), correlation.keyCount());
@@ -543,6 +546,54 @@ final class SubqueryEvaluator {
         return values;
     }
 
+    /**
+     * The conjunct keeping an equality correlation's inner rows to the keys its outer relation's table holds, or null
+     * where the key is not traced. Live computes an IN's members over the inner rows whose key some row of the outer
+     * TABLE holds, before the outer query's filters and those of a derived table over it, and over no row of another
+     * key: a member's fault in a row of a held key refuses the statement, whichever outer rows the query keeps, and one
+     * in a row of a key the table does not hold is never met (live-verified). A key traced is one stored column of the
+     * outer row, read directly or passed through a derived relation; any other key leaves every inner row. A table a
+     * row access policy guards, and a key column a masking or a projection policy reads, are not read for it.
+     */
+    private String heldKeysConjunct(final EqualityCorrelation correlation, final String key) {
+        final List<Expression> outer = outerKeys.get(key);
+        if (correlation.keyCount() != 1 || outer == null || outer.size() != 1
+                || !(outer.get(0) instanceof ColumnReferenceExpression)) {
+            return null;
+        }
+        final ColumnReferenceExpression reference = (ColumnReferenceExpression) outer.get(0);
+        try {
+            final Table owner = scopeRelationCarrying(reference.getTableName(), reference.getColumnName());
+            if (owner == null) {
+                return null;
+            }
+            Table stored = owner.residentSource();
+            String column = reference.getColumnName();
+            if (stored == null) {
+                final DerivedColumnLineage lineage = DerivedColumnLineage.of(owner, column);
+                if (lineage == null || lineage.storedTable() == null) {
+                    return null;
+                }
+                stored = lineage.storedTable();
+                column = lineage.storedColumn();
+            }
+            final String table = stored.getQualifiedName();
+            if (table == null || column == null || stored.hasRowAccessPolicy()) {
+                // A table a row access policy guards is read through it, which may run this very membership again.
+                return null;
+            }
+            final TableColumn keyColumn = stored.columnAt(stored.getColumnIndex(column));
+            if (keyColumn.hasMaskingPolicy() || keyColumn.hasProjectionPolicy()) {
+                return null;
+            }
+            return "(" + correlation.getInnerKeys().get(0) + ") IN (SELECT "
+                + SqlIdentifiers.spellCanonical(keyColumn.getName()) + " FROM "
+                + SqlIdentifiers.spellAlreadyCanonicalPath(table) + ")";
+        } catch (final RuntimeException untraced) {
+            return null;
+        }
+    }
+
     /** Whether one of a probe's keys is NULL, which no inner key equals. */
     private static boolean holdsNull(final List<Object> probe) {
         for (final Object value : probe) {
@@ -724,7 +775,7 @@ final class SubqueryEvaluator {
         if (correlation == null || !correlation.answersARowPerKeptRow() || correlation.getMemberItem() == null) {
             return NOT_KEYED;
         }
-        final String membersQuery = correlation.membersQuery();
+        final String membersQuery = correlation.membersQuery(heldKeysConjunct(correlation, key));
         PreparedKeyedMembers members = memo.cachedKeyedMembers(membersQuery);
         if (members == null) {
             final ResultSet computed = computedOnce(key, membersQuery, correlation.keyCount() + 1,
@@ -1213,6 +1264,9 @@ final class SubqueryEvaluator {
         }
         final QueryExecutor queryExecutor = visitor.getQueryExecutor();
         final FrostlakeParser.SelectStatementContext parsed = queryExecutor.subqueryStatement(run.getSubquery());
+        if (parsed != null && scalar && opensWithOuterAggregate(queryExecutor, parsed)) {
+            throw unsupported(true, place);
+        }
         if (parsed != null && !outerHoldsOneRowAtMost(queryExecutor)) {
             final Set<String> outerNames = new HashSet<>();
             for (final String name : buildLateralContext().keySet()) {
@@ -1258,17 +1312,25 @@ final class SubqueryEvaluator {
             if (scalar ? rule.refusesScalar(parsed)
                     : rule.refusesMembership(parsed, in, in && !not, subject == null ? null : printed(subject),
                         in && not)) {
-                final Function called = scalar ? visitor.sqlFunctionBeingCalled() : null;
-                if (called != null) {
-                    throw UnsupportedSubqueryException.inside(called);
-                }
-                final SourcePosition at = ExpressionSource.resolve(place);
-                throw new UnsupportedSubqueryException(SqlCompilationError.of("Unsupported subquery type cannot be evaluated"
-                    + (at == null ? "" : " at line " + at.getLine() + ", position " + at.getCharPositionInLine())));
+                throw unsupported(scalar, place);
             }
         }
         judgedCorrelations.add(key);
         return false;
+    }
+
+    /**
+     * The refusal of a correlated subquery live cannot turn into a join: placed where it is written, or naming the SQL
+     * function whose body holds a scalar one.
+     */
+    private UnsupportedSubqueryException unsupported(final boolean scalar, final SourcePosition place) {
+        final Function called = scalar ? visitor.sqlFunctionBeingCalled() : null;
+        if (called != null) {
+            return UnsupportedSubqueryException.inside(called);
+        }
+        final SourcePosition at = ExpressionSource.resolve(place);
+        return new UnsupportedSubqueryException(SqlCompilationError.of("Unsupported subquery type cannot be evaluated"
+            + (at == null ? "" : " at line " + at.getLine() + ", position " + at.getCharPositionInLine())));
     }
 
     /** An expression written back as text the rule can read, or null where it cannot be printed. */
@@ -1389,10 +1451,41 @@ final class SubqueryEvaluator {
     }
 
     /**
+     * Whether a scalar subquery opens with the outer query's aggregate (see
+     * {@link CorrelatedSubqueryRule#opensWithOuterAggregate}) over a row drawn from catalog tables, which live refuses
+     * whatever the tables hold: neither {@link #outerHoldsOneRowAtMost} nor the statistics pinning the names it reads
+     * spare it. Over a derived table's row the call is judged as any other (live-verified).
+     */
+    private boolean opensWithOuterAggregate(final QueryExecutor queryExecutor,
+                                            final FrostlakeParser.SelectStatementContext parsed) {
+        final List<Table> relations = new ArrayList<>();
+        if (visitor.getMultiTableAllTables() != null && !visitor.getMultiTableAllTables().isEmpty()) {
+            relations.addAll(visitor.getMultiTableAllTables());
+        } else if (visitor.getTable() != null) {
+            relations.add(visitor.getTable());
+        }
+        if (relations.isEmpty()) {
+            return false;
+        }
+        for (final Table relation : relations) {
+            if (!relation.isCatalogResident()) {
+                return false;
+            }
+        }
+        final Set<String> outerNames = new HashSet<>();
+        for (final String name : buildLateralContext().keySet()) {
+            outerNames.add(name.toUpperCase(Locale.ROOT));
+        }
+        return new CorrelatedSubqueryRule(queryExecutor, outerNames, visitor.scopeRelations())
+            .opensWithOuterAggregate(parsed);
+    }
+
+    /**
      * Whether every catalog table the evaluated row is drawn from holds at most one row. Live evaluates a
      * correlated subquery row by row over such an outer relation instead of planning it as a join, so no
      * shape is refused there, and a second inner row surfaces as the single-row fault instead. A table
-     * function beside the table does not count.
+     * function beside the table does not count. A scalar subquery opening with the outer query's aggregate is refused
+     * all the same (see {@link #opensWithOuterAggregate}).
      */
     private boolean outerHoldsOneRowAtMost(final QueryExecutor queryExecutor) {
         final List<Table> relations = new ArrayList<>();

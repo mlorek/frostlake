@@ -103,6 +103,9 @@ public class CopyFileFormatClauseTest {
             refusal("COPY INTO t FROM @data_stage FILE_FORMAT = (TYPE = CSV BOGUS_OPT = 1)"));
         assertEquals("SQL compilation error:\nOption FIELD_DELIMITER is not valid for file format type JSON.",
             refusal("COPY INTO t FROM @data_stage FILE_FORMAT = (TYPE = JSON FIELD_DELIMITER = '|')"));
+        // The type is named as the list wrote it (live-verified).
+        assertEquals("SQL compilation error:\nOption FIELD_DELIMITER is not valid for file format type json.",
+            refusal("COPY INTO t FROM @data_stage FILE_FORMAT = (TYPE = json FIELD_DELIMITER = '|')"));
         assertEquals("SQL compilation error:\ninvalid value [-1] for parameter 'SKIP_HEADER'",
             refusal("COPY INTO t FROM @data_stage FILE_FORMAT = (TYPE = CSV SKIP_HEADER = -1)"));
         assertEquals("SQL compilation error:\ninvalid value ['yes'] for parameter 'TRIM_SPACE'",

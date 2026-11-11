@@ -209,6 +209,7 @@ public class DatabaseEngine {
                     return results;
                 } finally {
                     RunningEngine.leave(displaced);
+                    scheduledStatementEnded();
                 }
             }
 
@@ -232,6 +233,7 @@ public class DatabaseEngine {
                         return results;
                     } finally {
                         RunningEngine.leave(displaced);
+                        scheduledStatementEnded();
                     }
                 }
             }
@@ -790,6 +792,17 @@ public class DatabaseEngine {
      * thread; one a statement started — EXECUTE TASK, EXECUTE ALERT — when that statement ends, so a recovery
      * starts after the run and does not run its body a second time.
      */
+    /**
+     * A statement of a task's or an alert's run ends as an outermost statement does for the language runtimes: what a
+     * handler left in a runtime's thread state is put back, so the scheduler thread's next statement starts clean. A
+     * run inside a statement — EXECUTE TASK — leaves that to the statement's own end.
+     */
+    private void scheduledStatementEnded() {
+        if (statementDepth.get().intValue() == 0) {
+            UdfRuntimes.statementEnded();
+        }
+    }
+
     private void runCompleted() {
         if (wal == null || replaying) {
             return;
@@ -1254,8 +1267,8 @@ public class DatabaseEngine {
         } catch (final RuntimeException e) {
             catalog.createUser(defaultUser);
         }
-        catalog.grantRoleToUser("ORGADMIN", defaultUser);
-        catalog.grantRoleToUser("ACCOUNTADMIN", defaultUser);
+        catalog.grantRoleToUserBySystem("ORGADMIN", defaultUser);
+        catalog.grantRoleToUserBySystem("ACCOUNTADMIN", defaultUser);
         sessionContext.setDisplayUser(defaultUser);
     }
 
@@ -1768,6 +1781,15 @@ public class DatabaseEngine {
     /** The query-result cache backing RESULT_SCAN and LAST_QUERY_ID. */
     public QueryResultCache getQueryResultCache() {
         return queryExecutor.getResultCache();
+    }
+
+    /**
+     * The ID of the statement this engine's session ran last, a failed one included: what LAST_QUERY_ID() answers.
+     *
+     * @return the ID, or null before any statement
+     */
+    public String lastQueryId() {
+        return queryExecutor.getResultCache().getLastQueryId();
     }
 
     public Catalog getCatalog() {

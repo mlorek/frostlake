@@ -194,7 +194,8 @@ public class DroppedVersionsSurviveSnapshotsTest {
         assertEquals("Table T did not exist or was purged.", refusal(engine, "UNDROP TABLE t"));
         engine.execute("CREATE SCHEMA s DATA_RETENTION_TIME_IN_DAYS = 0");
         engine.execute("DROP SCHEMA s");
-        assertEquals(List.of(), column(engine, "SHOW SCHEMAS HISTORY LIKE 'S' IN DATABASE d", "name"));
+        // Still listed, as a table dropped so is, while UNDROP no longer finds it (live-verified).
+        assertEquals(List.of("S"), column(engine, "SHOW SCHEMAS HISTORY LIKE 'S' IN DATABASE d", "name"));
         assertEquals("Schema S did not exist or was purged.", refusal(engine, "UNDROP SCHEMA s"));
         // A table that declares no retention of its own keeps its schema's.
         engine.execute("CREATE SCHEMA keep DATA_RETENTION_TIME_IN_DAYS = 0");

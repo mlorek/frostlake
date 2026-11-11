@@ -30,11 +30,11 @@ public class UndropAccountRefusalTest extends MeasuredCellsTestSupport {
             "CREATE OR REPLACE TABLE t (a INT)");
         assertAnswer(
             "REFUSED SQL access control error: | Insufficient privileges to operate on account 'NOSUCH_ACCT_W7'. "
-                + "Your primary role <ROLE> must have MANAGE ORGANIZATION ACCOUNTS granted on ACCOUNT <ACCOUNT>.",
+                + "Your primary role <ROLE> must have MANAGE ACCOUNTS granted on ACCOUNT <ACCOUNT>.",
             "UNDROP ACCOUNT nosuch_acct_w7");
         assertAnswer(
             "REFUSED SQL access control error: | Insufficient privileges to operate on account 'nosuch_acct_w7'. "
-                + "Your primary role <ROLE> must have MANAGE ORGANIZATION ACCOUNTS granted on ACCOUNT <ACCOUNT>.",
+                + "Your primary role <ROLE> must have MANAGE ACCOUNTS granted on ACCOUNT <ACCOUNT>.",
             "UNDROP ACCOUNT \"nosuch_acct_w7\"");
         assertAnswer(
             "REFUSED Cannot specify qualifier for account.",

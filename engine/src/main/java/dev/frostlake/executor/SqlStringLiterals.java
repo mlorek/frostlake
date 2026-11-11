@@ -122,8 +122,8 @@ public final class SqlStringLiterals {
     /**
      * Refuses a decoded literal holding an UNPAIRED surrogate. A {@code \\uD800} escape builds half of
      * a character, and live will not have it — the refusal comes from the READER, so it fires wherever
-     * the literal is written and names the literal's own place in the statement rather than the call
-     * around it. Two sentences, one per half, live-verified:
+     * the literal is written, in its sentence alone: no compilation-error heading and no place named. Two
+     * sentences, one per half, live-verified:
      *
      * <pre>
      *   '\\uD800'   Invalid Unicode string literal; high surrogate '\\uD800' must be followed by a low

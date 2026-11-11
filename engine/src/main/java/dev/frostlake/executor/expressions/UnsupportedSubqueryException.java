@@ -66,6 +66,18 @@ public class UnsupportedSubqueryException extends RuntimeException {
     }
 
     /**
+     * The refusal of a subquery a row access policy's body holds, as a statement reading the table the policy
+     * protects is refused: it names the kind of policy and gives no place, so {@code (SELECT MAX(val || m.v) FROM m)
+     * IS NOT NULL} and a correlated subquery with a GROUP BY or a LIMIT are refused so (live-verified).
+     *
+     * @return the refusal
+     */
+    public static UnsupportedSubqueryException insideRowAccessPolicy() {
+        return new UnsupportedSubqueryException(SqlCompilationError.of(
+            "Unsupported subquery type cannot be evaluated inside ROW ACCESS POLICY"));
+    }
+
+    /**
      * Whether this refusal names the function its subquery is an argument of.
      *
      * @return true for a refusal made by {@link #inside}

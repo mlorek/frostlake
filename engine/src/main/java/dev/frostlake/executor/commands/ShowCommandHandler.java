@@ -22,6 +22,7 @@ import dev.frostlake.executor.PrivilegeRefusal;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.RelationShapeOnly;
 import dev.frostlake.executor.SchemaObjectName;
+import dev.frostlake.executor.ShapeReadPolicies;
 import dev.frostlake.executor.ShowCommandExecutor;
 import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlAccessControlError;
@@ -694,6 +695,17 @@ public class ShowCommandHandler implements CommandHandler {
                 return showExecutor.showFileFormatsInDatabase(scope.name());
             }
             return showExecutor.showFileFormats(scope.name());
+        } else if ((ctx.PRIVACY() != null || ctx.lifecycle != null) && ctx.POLICIES() != null) {
+            final boolean storage = ctx.lifecycle != null;
+            final ShowListingScope scope = listingScope(ctx,
+                storage ? ShowListing.STORAGE_LIFECYCLE_POLICIES : ShowListing.PRIVACY_POLICIES, forced);
+            if (scope.isAccount()) {
+                return showExecutor.showPrivacyOrLifecyclePoliciesInAccount(storage);
+            }
+            if (scope.isDatabase()) {
+                return showExecutor.showPrivacyOrLifecyclePoliciesInDatabase(scope.name(), storage);
+            }
+            return showExecutor.showPrivacyOrLifecyclePolicies(scope.name(), storage);
         } else if (ctx.JOIN() != null && ctx.POLICIES() != null) {
             final ShowListingScope scope = listingScope(ctx, ShowListing.JOIN_POLICIES, forced);
             if (scope.isAccount()) {
@@ -1052,12 +1064,14 @@ public class ShowCommandHandler implements CommandHandler {
             @Override
             public ResultSet getResultSet() {
                 final boolean previous = RelationShapeOnly.begin();
+                final boolean describing = ShapeReadPolicies.begin();
                 try {
                     final List<ResultSet> results =
                         queryExecutor.executeUnrecorded("SELECT * FROM "
                             + SqlIdentifiers.spellAlreadyCanonicalPathEscaped(dtName) + " LIMIT 0");
                     return results.get(results.size() - 1);
                 } finally {
+                    ShapeReadPolicies.end(describing);
                     RelationShapeOnly.end(previous);
                 }
             }
@@ -1203,7 +1217,8 @@ public class ShowCommandHandler implements CommandHandler {
             return new AppObjectListing(catalog).describe(ctx.NOTEBOOK() != null ? AppObjectKind.NOTEBOOK
                 : AppObjectKind.STREAMLIT, ctx.qualifiedName());
         }
-        if (ctx.IDENTIFIER() != null) {
+        // A storage lifecycle policy's kind word is a plain word too, where its own alternative reads it.
+        if (ctx.IDENTIFIER() != null && ctx.lifecycle == null) {
             if (UnmodelledKindWords.readsDescribeTail(ctx.IDENTIFIER())) {
                 // A kind the account knows judges the properties first, as every modelled kind does, and then
                 // misses its object.
@@ -1349,6 +1364,10 @@ public class ShowCommandHandler implements CommandHandler {
             return showExecutor.describeSearchOptimization(getText(ctx.qualifiedName()));
         } else if (ctx.JOIN() != null) {
             return showExecutor.describeJoinPolicy(getText(ctx.qualifiedName()));
+        } else if (ctx.PRIVACY() != null) {
+            return showExecutor.describePrivacyOrLifecyclePolicy(getText(ctx.qualifiedName()), false);
+        } else if (ctx.lifecycle != null) {
+            return showExecutor.describePrivacyOrLifecyclePolicy(getText(ctx.qualifiedName()), true);
         } else if (ctx.AGGREGATION() != null) {
             return showExecutor.describeAggregationPolicy(getText(ctx.qualifiedName()));
         } else if (ctx.PROJECTION() != null) {
@@ -1626,8 +1645,12 @@ public class ShowCommandHandler implements CommandHandler {
                 // The word alone is the account itself, never a table of that name (live-verified).
                 return showExecutor.showGrantsOnAccount();
             }
+            if (target.USER() != null && parts.length > 1) {
+                // A user belongs to the account: a qualified name names nothing (live-verified).
+                throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+            }
             final String objectType = target.securableKind() != null ? SecurableKinds.of(target.securableKind())
-                : target.VOLUME() != null ? "EXTERNAL_VOLUME" : null;
+                : target.VOLUME() != null ? "EXTERNAL_VOLUME" : target.USER() != null ? "USER" : null;
             if (objectType == null) {
                 // A bare name is a relation of any kind, and anything else is no object at all; a relation kind
                 // other than TABLE and VIEW finds the relation of the name whatever its own kind (live-verified).

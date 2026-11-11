@@ -426,7 +426,8 @@ public final class CorrelationPlanJudgement {
         if (bound != null) {
             return bound;
         }
-        final boolean spared = pruned() || readRowByRow();
+        final boolean pruned = pruned();
+        final boolean spared = pruned || readRowByRow();
         final Set<String> outerNames = outerNames();
         RuntimeException earlyInSelectList = null;
         RuntimeException earlyElsewhere = null;
@@ -442,7 +443,8 @@ public final class CorrelationPlanJudgement {
                 && !(judged instanceof FrostlakeParser.QualifyClauseContext)
                 && !(judged instanceof FrostlakeParser.OrderByClauseContext);
             for (final ParseTree subquery : subqueries(judged)) {
-                final boolean kept = spared && keptThroughTableFunction(subquery, outerNames);
+                final boolean kept = spared && (keptThroughTableFunction(subquery, outerNames)
+                    || !pruned && refusedOverAnyOuter(subquery, outerNames));
                 if (spared && !kept) {
                     continue;
                 }
@@ -585,6 +587,16 @@ public final class CorrelationPlanJudgement {
             }
         }
         return null;
+    }
+
+    /**
+     * Whether a membership is refused over a relation read row by row as over any other (see
+     * {@link CorrelatedSubqueryRule#refusesMembershipOverAnyOuter}).
+     */
+    private boolean refusedOverAnyOuter(final ParseTree node, final Set<String> outerNames) {
+        return node instanceof FrostlakeParser.InSubqueryExprContext
+            && new CorrelatedSubqueryRule(executor, outerNames, relations, null).refusesMembershipOverAnyOuter(
+                ((FrostlakeParser.InSubqueryExprContext) node).selectStatement());
     }
 
     /** The select a judged subquery node runs. */

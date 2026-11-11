@@ -91,6 +91,22 @@ public final class StreamVersion {
     }
 
     /**
+     * Whether SYSTEM$STREAM_HAS_DATA counts the version as data for a stream (live-verified): an INSERT and a MERGE
+     * always, one that changed no row too; any other version where it left the table rows, or, for a stream that reads
+     * more than inserts, where it removed some. So a DELETE of every row and a TRUNCATE count for a standard stream
+     * alone, and an UPDATE or a DELETE that changed no row and a TRUNCATE of an empty table for none.
+     *
+     * @param appendOnly whether the stream reads inserts alone
+     * @return whether the version counts
+     */
+    public boolean countsAsData(final boolean appendOnly) {
+        if (kind == StreamVersionKind.INSERT || kind == StreamVersionKind.MERGE) {
+            return true;
+        }
+        return rowsAdded > 0 || !appendOnly && rowsRemoved > 0;
+    }
+
+    /**
      * The change records the account estimates the version holds for a stream (live-verified): the rows an INSERT
      * inserted, none for a TRUNCATE, and three in ten of the rows added and removed for any other change, rounded half
      * up; an append-only stream reads none of an UPDATE, the rows a DELETE left, and the rows a MERGE left where the

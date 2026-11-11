@@ -95,13 +95,13 @@ public class PivotTwoArgumentAggregatesTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: error line 0 at position -1 | not enough arguments for function "
                 + "[APPROX_PERCENTILE(IFF('Math' = FLAGS.SUBJECT, FLAGS.SCORE, SYSTEM$NULL_TO_FIXED(null)))], "
                 + "expected 2, got 1"},
-            {"SELECT * FROM flags PIVOT (ARRAY_AGG(student) FOR subject IN ('Math', 'Art'))",
+            {"SELECT * FROM flags PIVOT (ARRAY_AGG(student) FOR subject IN ('Math', 'Art')) ORDER BY score DESC",
                 "true|90|[1]|2024-01-01|1.5|[\"ann\"]|[] ;; false|70|[2]|2024-01-02|2.5|[]|[\"bob\"]"},
-            {"SELECT * FROM flags PIVOT (MEDIAN(score) FOR subject IN ('Math', 'Art'))",
+            {"SELECT * FROM flags PIVOT (MEDIAN(score) FOR subject IN ('Math', 'Art')) ORDER BY student",
                 "ann|true|[1]|2024-01-01|1.5|90.000|null ;; bob|false|[2]|2024-01-02|2.5|null|70.000"},
-            {"SELECT * FROM flags PIVOT (COUNT_IF(ok) FOR subject IN ('Math', 'Art'))",
+            {"SELECT * FROM flags PIVOT (COUNT_IF(ok) FOR subject IN ('Math', 'Art')) ORDER BY student",
                 "ann|90|[1]|2024-01-01|1.5|1|0 ;; bob|70|[2]|2024-01-02|2.5|0|0"},
-            {"SELECT * FROM flags PIVOT (BITAND_AGG(score) FOR subject IN ('Math', 'Art'))",
+            {"SELECT * FROM flags PIVOT (BITAND_AGG(score) FOR subject IN ('Math', 'Art')) ORDER BY student",
                 "ann|true|[1]|2024-01-01|1.5|90|null ;; bob|false|[2]|2024-01-02|2.5|null|70"},
             {"SELECT * FROM flags PIVOT (FIRST_VALUE(score) FOR subject IN ('Math', 'Art'))",
                 "REFUSED SQL compilation error: | syntax error line 1 at position 38 unexpected '('. | syntax error "

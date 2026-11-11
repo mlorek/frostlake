@@ -29,6 +29,7 @@ import java.sql.Connection;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Types;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -105,7 +106,9 @@ public class StreamLockWaitTest extends BaseDatabaseTest {
                 final Statement statement = ("A".equals(side) ? connA : connB).createStatement();
                 try {
                     if (!statement.execute(sql)) {
-                        return "count " + statement.getUpdateCount();
+                        // The account's driver answers a DML statement with its count, which the engine gives as
+                        // the statement's one row.
+                        return String.valueOf(statement.getUpdateCount());
                     }
                     final java.sql.ResultSet rows = statement.getResultSet();
                     final ResultSetMetaData columns = rows.getMetaData();
@@ -113,7 +116,8 @@ public class StreamLockWaitTest extends BaseDatabaseTest {
                     while (rows.next()) {
                         out.append(out.length() == 0 ? "" : " ;; ");
                         for (int i = 1; i <= columns.getColumnCount(); i++) {
-                            out.append(i == 1 ? "" : "|").append(rows.getString(i));
+                            out.append(i == 1 ? "" : "|").append(columns.getColumnType(i) == Types.BOOLEAN
+                                ? String.valueOf(rows.getBoolean(i)) : rows.getString(i));
                         }
                     }
                     return out.toString();

@@ -383,7 +383,8 @@ final class PlanExpressionText extends AstPrinterVisitor {
         }
         final String name = expr.getFunctionName().toUpperCase(Locale.ROOT);
         final List<Expression> order = expr.getOrderKeys();
-        final boolean ordered = order != null && !order.isEmpty();
+        // A ROWS frame of the whole partition is read in no order (see WindowFunctionExpression#isWholeRowsFramed).
+        final boolean ordered = order != null && !order.isEmpty() && !expr.isWholeRowsFramed();
         final StringBuilder text = new StringBuilder();
         if ("COUNT_IF".equals(name) && expr.getArguments().size() == 1 && !expr.isDistinct()) {
             text.append(countedIf(expr.getArguments().get(0)));
@@ -412,11 +413,20 @@ final class PlanExpressionText extends AstPrinterVisitor {
         }
         if (ordered) {
             text.append(partition.isEmpty() ? "" : " ").append("ORDER BY ");
+            // A frame of the whole partition prints its order and reads its rows, but lists no column for it, and a
+            // frame the plan turns about prints it reversed (live-verified; see
+            // WindowFunctionExpression#isOrderReversedInPlan).
+            final int readsBefore = reads.size();
+            final boolean reversed = expr.isOrderReversedInPlan();
             for (int i = 0; i < order.size(); i++) {
                 final boolean ascending = expr.getOrderAscending() == null
                     || !Boolean.FALSE.equals(expr.getOrderAscending().get(i));
                 final Boolean nullsFirst = expr.getOrderNullsFirst() == null ? null : expr.getOrderNullsFirst().get(i);
-                text.append(i > 0 ? ", " : "").append(sortKey(spell(order.get(i)), ascending, nullsFirst));
+                text.append(i > 0 ? ", " : "").append(sortKey(spell(order.get(i)), reversed != ascending,
+                    nullsFirst == null || !reversed ? nullsFirst : Boolean.valueOf(!nullsFirst.booleanValue())));
+            }
+            for (int i = readsBefore; expr.isWholeFramed() && i < reads.size(); i++) {
+                reads.set(i, reads.get(i).unlisted());
             }
         }
         final String spelled = text.append(')').toString();

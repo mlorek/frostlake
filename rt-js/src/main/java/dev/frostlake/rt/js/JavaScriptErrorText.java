@@ -43,7 +43,16 @@ import java.util.List;
  */
 final class JavaScriptErrorText {
 
+    /** The refusal of dynamic code, which a direct eval earns. */
+    private static final String EVAL_REFUSED = "EvalError: Dynamic code evaluation disallowed";
+
     private static final String STACK = "\nstackstrace: \n";
+
+    /** What a stack that overflowed is refused with. */
+    private static final String OVERFLOW = "RangeError: Maximum call stack size exceeded";
+
+    /** How many frames the account lists of a stack that overflowed. */
+    private static final int OVERFLOW_FRAMES = 9;
 
     private JavaScriptErrorText() {
     }
@@ -125,18 +134,45 @@ final class JavaScriptErrorText {
         if (json != null) {
             final int call = begin + new JavaScriptSourceScan(section).callPlace();
             return "JavaScript execution error: Uncaught " + told + " in " + name + " at '" + json.line()
-                + "' position " + json.column() + STACK + frames(roots, starts, sources, name, lines, call, table);
+                + "' position " + json.column() + STACK
+                + frames(roots, starts, sources, name, lines, call, table, body);
         }
-        final int origin = Math.min(place(told, own != null || unplaced, section, begin, scan, body, unplaced),
+        final int placed = Math.min(place(told, own != null || unplaced, section, begin, scan, body, unplaced),
             body.length());
+        // A direct eval's refusal stands at the last place recorded before the call (see JavaScriptEvalPlace).
+        final int origin = told.startsWith(EVAL_REFUSED) ? JavaScriptEvalPlace.of(scan, body, placed) : placed;
         final int site = thrownAt(origin, own == null && builds(section), starts, sources,
             new JavaScriptThrowSite(scan, body));
         final int line = lineOf(lines, site);
+        final String overflowed = told.startsWith(OVERFLOW) ? overflowFrames(roots, table) : null;
         return "JavaScript execution error: Uncaught "
             + JavaScriptFaultWording.of(told, section, lines[lineOf(lines, origin) - 1], body,
                 around(scan, body, begin))
             + " in " + name + " at '" + lines[line - 1] + "' position " + (site - lineStart(lines, line)) + STACK
-            + frames(roots, starts, sources, name, lines, origin, table);
+            + (overflowed != null ? overflowed : frames(roots, starts, sources, name, lines, origin, table, body));
+    }
+
+    /**
+     * The frames of a stack that overflowed, as the account lists them: nine, each a function's name at line 0, the
+     * innermost first, and none for the handler — over the recursion of a function, of an arrow and of a method alike
+     * (live-verified). Where the engine kept fewer of the recursion's frames, its names are repeated in their order.
+     *
+     * @param roots the names of the frames inside the body, innermost first, the handler's last
+     * @param table whether the body is a table function's handler object, which has no frame of its own
+     * @return the frames, or null when no function's frame lies inside the body
+     */
+    private static String overflowFrames(final List<String> roots, final boolean table) {
+        final int functions = table ? roots.size() : roots.size() - 1;
+        if (functions <= 0) {
+            return null;
+        }
+        final StringBuilder listed = new StringBuilder();
+        for (int i = 0; i < OVERFLOW_FRAMES; i++) {
+            final String root = roots.get(i % functions);
+            listed.append(i > 0 ? "\n" : "").append(root == null || root.startsWith(":") ? "" : root)
+                .append(" line: 0");
+        }
+        return listed.toString();
     }
 
     /**
@@ -379,16 +415,36 @@ final class JavaScriptErrorText {
      * function's handler object has no frame of its own: each frame is a function's, at its line counted from 0.
      */
     private static String frames(final List<String> roots, final List<Integer> starts, final List<String> sources,
-                                 final String name, final String[] lines, final int origin, final boolean table) {
+                                 final String name, final String[] lines, final int origin, final boolean table,
+                                 final String body) {
         final StringBuilder listed = new StringBuilder();
+        final JavaScriptSourceScan scan = new JavaScriptSourceScan(body);
         for (int i = 0; i < roots.size(); i++) {
             final int at = i == 0 ? origin : starts.get(i) + new JavaScriptSourceScan(sources.get(i)).callPlace();
             final String root = roots.get(i);
             final boolean handler = !table && i == roots.size() - 1;
-            listed.append(i > 0 ? "\n" : "").append(handler ? name : root == null || root.startsWith(":") ? "" : root)
+            final boolean unnamed = root == null || root.startsWith(":") || invokedWhereWritten(scan, body, at);
+            listed.append(i > 0 ? "\n" : "").append(handler ? name : unnamed ? "" : root)
                 .append(" line: ").append(table ? lineOf(lines, at) - 1 : lineOf(lines, at));
         }
         return roots.isEmpty() ? name + " line: " + lineOf(lines, origin) : listed.toString();
+    }
+
+    /**
+     * Whether the function around a place is a function expression without a name of its own that is called where it
+     * is written, {@code var a = function () { … }()}: the account lists its frame without a name, where this engine
+     * names it after the variable (live-verified). A function called through the variable keeps the variable's name.
+     */
+    private static boolean invokedWhereWritten(final JavaScriptSourceScan scan, final String body, final int place) {
+        final int brace = scan.functionAround(place);
+        final int parameters = brace < 0 ? -1 : scan.lastBefore(brace);
+        if (parameters < 0 || body.charAt(parameters) != ')' || scan.opening(parameters) < 0
+                || !"function".equals(scan.wordBefore(scan.opening(parameters)))) {
+            return false;
+        }
+        final int end = scan.closing(brace);
+        final int next = end < 0 ? -1 : scan.firstFrom(end + 1);
+        return next >= 0 && next < body.length() && body.charAt(next) == '(';
     }
 
     /** Whether a location lies in the handler's body: in the evaluated source, on one of the body's lines. */

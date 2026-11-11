@@ -166,6 +166,7 @@ final class ExplainPlan {
      */
     static ResultSet answer(final QueryExecutor executor, final FrostlakeParser.ExplainStatementContext ctx) {
         final String format = formatOf(ctx);
+        UnsupportedSetOperatorAll.requireNone(ctx);
         final List<PlanOperator> operators = new ArrayList<>();
         // A plan is asked for and nothing is carried out: what a relation calls to learn its shape runs no
         // procedure while this compiles (see planning).
@@ -446,13 +447,16 @@ final class ExplainPlan {
 
     /**
      * Whether reading a query's rows writes nothing, as a request that only reads is judged (see
-     * {@link ReadOnlyRequest}): no NEXTVAL, TO_QUERY or system function that acts on the server in its text or in a
-     * body its names stand for, and no stream, whose read inside a transaction holds it.
+     * {@link ReadOnlyRequest}): no TO_QUERY or system function that acts on the server in its text, no NEXTVAL or
+     * such call in a body its names stand for, and no stream, whose read inside a transaction holds it.
      */
     private static boolean readsOnly(final QueryExecutor executor, final String text) {
         final Catalog catalog = executor.getCatalog();
         final SessionSettings session = executor.boundSessionSettings();
-        return ReadOnlyRequest.tokenRefusal(text) == null && !ReadOnlyBodies.reachWrite(catalog, text, session)
+        // A NEXTVAL the query writes is looked at, not drawn, while a plan is asked for (see planning), so its
+        // rows are read all the same: a correlated subquery beside it is refused as a run refuses it
+        // (live-verified).
+        return ReadOnlyRequest.tokenRefusal(text, false) == null && !ReadOnlyBodies.reachWrite(catalog, text, session)
             && !ReadOnlyBodies.namesStream(catalog, text, session);
     }
 

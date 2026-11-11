@@ -129,7 +129,7 @@ public class ProceduralBlockBuilder {
         // For all non-procedural SQL statements, wrap in SqlStatement so they execute
         // conditionally (respecting IF/WHILE/FOR control flow).
         // Use getOriginalText to preserve whitespace correctly.
-        final String rawSql = BlockFlowChains.ownText(ctx, visitor.getOriginalText(ctx));
+        final String rawSql = BlockFlowChains.ownText(ctx, BlockStatementText.of(ctx, visitor.getOriginalText(ctx)));
         if (rawSql != null && !rawSql.isBlank()) {
             final SqlStatement statement = new SqlStatement(rawSql);
             statement.chainedAs(BlockFlowChains.followsAStage(ctx), BlockFlowChains.feedsTheNext(ctx));
@@ -229,11 +229,13 @@ public class ProceduralBlockBuilder {
         }
         if (ctx.callStatement() != null && ctx.callStatement().systemFunctionName() != null) {
             // A CALL of a SYSTEM$ function runs as the statement it is written as.
-            return new SqlStatement(visitor.getOriginalText(ctx.callStatement()));
+            return new SqlStatement(BlockStatementText.of(ctx.callStatement(),
+                visitor.getOriginalText(ctx.callStatement())));
         }
         if (ctx.callStatement() != null) {
             // A procedure's CALL runs as the statement it is written as too, its :names bound from the block.
-            return new CallStatement(visitor.getOriginalText(ctx.callStatement()), null);
+            return new CallStatement(BlockStatementText.of(ctx.callStatement(),
+                visitor.getOriginalText(ctx.callStatement())), null);
         }
 
         if (ctx.asyncStatement() != null) {

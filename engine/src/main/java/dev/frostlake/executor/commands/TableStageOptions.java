@@ -52,10 +52,10 @@ final class TableStageOptions {
                 continue;
             }
             final FrostlakeParser.TableTailOptionContext tail = (FrostlakeParser.TableTailOptionContext) option;
-            if (tail.optionKey() == null) {
+            if (tail.propertyName() == null) {
                 continue;
             }
-            final String key = tail.optionKey().getText().toUpperCase(Locale.ROOT);
+            final String key = tail.propertyName().getText().toUpperCase(Locale.ROOT);
             if ("STAGE_FILE_FORMAT".equals(key) && tail.parenOptionList() != null) {
                 keepFormat(tail.parenOptionList(), table.getStageFileFormat());
             } else if ("STAGE_COPY_OPTIONS".equals(key) && tail.stageCopyOptionList() != null) {

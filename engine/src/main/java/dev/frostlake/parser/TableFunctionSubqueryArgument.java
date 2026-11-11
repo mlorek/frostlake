@@ -121,7 +121,8 @@ public final class TableFunctionSubqueryArgument {
             }
         }
         if (firstSubquery != null) {
-            final List<String> enclosed = enclosedLines(tokens, firstReference);
+            final List<String> enclosed = enclosedLines(tokens, firstReference, firstSubquery, firstClose,
+                firstTableClose);
             if (enclosed != null) {
                 throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", enclosed)), enclosed, sql);
             }
@@ -130,10 +131,13 @@ public final class TableFunctionSubqueryArgument {
     }
 
     /**
-     * The lines of a call in the FROM of a query written in brackets as a value: a select item's whole value or the
-     * list of an IN. Null for a call in any other query.
+     * The lines of a call in the FROM of a query written in brackets as a value: a select item's value, whole or an
+     * operand of it, or the list of an IN. Null for a call in any other query. A select item's whole value whose list
+     * opens with no name reads on from the query's fault as the statement's own FROM does (live-verified).
      */
-    private static List<String> enclosedLines(final TokenStream tokens, final ParserRuleContext reference) {
+    private static List<String> enclosedLines(final TokenStream tokens, final ParserRuleContext reference,
+                                              final ParserRuleContext subquery, final Token close,
+                                              final Token tableClose) {
         ParseTree node = reference.getParent();
         while (node != null && !(node instanceof FrostlakeParser.SelectStatementContext)) {
             node = node.getParent();
@@ -148,6 +152,15 @@ public final class TableFunctionSubqueryArgument {
         if (bracket instanceof FrostlakeParser.ScalarSubqueryExprContext
                 && isWholeItem((ParserRuleContext) bracket)) {
             second = afterName(tokens, first.getTokenIndex());
+            if (second < 0) {
+                final List<String> lines = new ArrayList<>();
+                lines.add(SyntaxErrorListener.sentence(first));
+                lines.addAll(statementLines(tokens, subquery, close, tableClose, false));
+                return lines;
+            }
+        } else if (bracket instanceof FrostlakeParser.ScalarSubqueryExprContext
+                && inItem((ParserRuleContext) bracket)) {
+            second = afterName(tokens, first.getTokenIndex());
         } else if (bracket instanceof FrostlakeParser.InSubqueryExprContext) {
             second = afterClose(tokens, first.getTokenIndex());
         } else {
@@ -159,6 +172,21 @@ public final class TableFunctionSubqueryArgument {
             lines.add(SyntaxErrorListener.sentence(tokens.get(second)));
         }
         return lines;
+    }
+
+    /** Whether a bracket stands in a select item's value, as an operand of it, outside any other query. */
+    private static boolean inItem(final ParserRuleContext bracket) {
+        for (ParseTree node = bracket.getParent(); node != null; node = node.getParent()) {
+            if (node instanceof FrostlakeParser.ExprItemContext) {
+                return true;
+            }
+            if (node instanceof FrostlakeParser.SelectStatementContext
+                    || node instanceof FrostlakeParser.WhereClauseContext
+                    || node instanceof FrostlakeParser.HavingClauseContext) {
+                return false;
+            }
+        }
+        return false;
     }
 
     /** Whether a bracket is the whole value of a select item. */
@@ -261,6 +289,16 @@ public final class TableFunctionSubqueryArgument {
 
     private static void refuse(final TokenStream tokens, final ParserRuleContext subquery, final Token close,
                                final Token tableClose, final String sql) {
+        final List<String> lines = statementLines(tokens, subquery, close, tableClose, true);
+        throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", lines)), lines, sql);
+    }
+
+    /**
+     * The lines of a call in the FROM of the statement's own query, read from the fault after the query in its
+     * argument; the brackets around the query holding the call counted where {@code around} says so.
+     */
+    private static List<String> statementLines(final TokenStream tokens, final ParserRuleContext subquery,
+                                               final Token close, final Token tableClose, final boolean around) {
         final int fault = next(tokens, subquery.getStop().getTokenIndex());
         final Token refused = tokens.get(fault);
         final List<String> lines = new ArrayList<>();
@@ -275,12 +313,17 @@ public final class TableFunctionSubqueryArgument {
                 lines.add(SyntaxErrorListener.sentence(close));
             }
         } else if (tableClose != null && !holdsCall(tokens, fault, close.getTokenIndex())) {
-            final int second = closingBracket(tokens, closingBracket(tokens, fault));
+            // The second closing bracket after the fault, one more for each bracket around the query holding the
+            // call - a derived table, a CTE, an EXISTS (live-verified).
+            int second = closingBracket(tokens, closingBracket(tokens, fault));
+            for (int count = around ? bracketsAround(subquery) : 0; count > 0 && second >= 0; count--) {
+                second = closingBracket(tokens, second);
+            }
             if (second >= 0) {
                 lines.add(SyntaxErrorListener.sentence(tokens.get(second)));
             }
         }
-        throw new SqlSyntaxException(SqlCompilationError.of(String.join("\n", lines)), lines, sql);
+        return lines;
     }
 
     /**
@@ -371,6 +414,31 @@ public final class TableFunctionSubqueryArgument {
             }
         }
         return -1;
+    }
+
+    /**
+     * How many brackets stand around the query whose FROM holds the call: a derived table's, a CTE's and an EXISTS's,
+     * each one; none for a statement's own query.
+     */
+    private static int bracketsAround(final ParserRuleContext argument) {
+        int brackets = 0;
+        boolean inCallFrom = false;
+        for (ParseTree at = argument; at != null; at = at.getParent()) {
+            if (at instanceof FrostlakeParser.TableReferenceContext) {
+                inCallFrom = true;
+                continue;
+            }
+            if (!inCallFrom) {
+                continue;
+            }
+            if (at instanceof FrostlakeParser.TableSourceContext
+                    && ((FrostlakeParser.TableSourceContext) at).selectStatement() != null
+                    || at instanceof FrostlakeParser.CteDefinitionContext
+                    || at instanceof FrostlakeParser.ExistsExprContext) {
+                brackets++;
+            }
+        }
+        return brackets;
     }
 
     /** The next default-channel token after {@code from}, the end of input excluded, or -1. */

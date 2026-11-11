@@ -21,6 +21,7 @@ import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.LobSize;
 
 import java.util.List;
 
@@ -58,7 +59,8 @@ public class Concat extends TextArgumentFunction {
         for (final Object arg : args) {
             result.append(SharedFunctionHelpers.textOf(arg));
         }
-        return result.toString();
+        // A text past the most a text holds is refused as the concatenation's (live-verified).
+        return LobSize.requireConcatenated(result.toString());
     }
 
     private boolean isAllBinary(final List<Object> args) {

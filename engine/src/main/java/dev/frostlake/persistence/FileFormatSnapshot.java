@@ -30,6 +30,9 @@ public class FileFormatSnapshot implements Serializable {
 
     public String name;
     public String type;
+    // The TYPE as the creating statement wrote it. Null on snapshots written before it was saved, and where the
+    // statement wrote none.
+    public String writtenType;
     public Map<String, String> options = new LinkedHashMap<>();
     public String comment;
     // The owning role. Null on snapshots written before it was saved, which restore the default owner.

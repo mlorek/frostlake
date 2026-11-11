@@ -81,6 +81,12 @@ final class DropPurge {
             if (ctx.JOIN() != null) {
                 return owner(parts, catalog).hasJoinPolicy(parts[parts.length - 1]);
             }
+            if (ctx.PRIVACY() != null) {
+                return owner(parts, catalog).hasPrivacyPolicy(parts[parts.length - 1]);
+            }
+            if (ctx.lifecycle != null) {
+                return owner(parts, catalog).hasStorageLifecyclePolicy(parts[parts.length - 1]);
+            }
             if (ctx.AGGREGATION() != null) {
                 return owner(parts, catalog).hasAggregationPolicy(parts[parts.length - 1].toUpperCase(Locale.ROOT));
             }

@@ -830,7 +830,10 @@ Not provided (`501`): a `template` in the create body (alert templates, `CREATE 
 On the SQL side, a new alert is suspended; `ALTER ALERT … RESUME` arms its schedule on the engine's task scheduler
 (starting it when it is not running), after which the condition is evaluated every interval or at each CRON
 instant and the action runs when the condition returns rows. `EXECUTE ALERT` evaluates it once, whatever its state.
-Every evaluation is recorded for `INFORMATION_SCHEMA.ALERT_HISTORY`.
+Every evaluation is recorded for `INFORMATION_SCHEMA.ALERT_HISTORY`. An alert written without a `schedule` is an
+alert on new data: its condition must read a table or a view (`Streaming alert condition must not call a stored
+procedure or query from a VALUES clause` otherwise), `EXECUTE ALERT` refuses it (`Execute Alert is not supported for a
+streaming alert.`), and the engine does not yet run it when its table takes new rows.
 
 ### Notebooks and Streamlit (`notebook.yaml`, `streamlit.yaml`)
 

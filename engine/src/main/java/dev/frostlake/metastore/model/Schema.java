@@ -86,6 +86,9 @@ public class Schema extends SqlObject {
     private final NamedObjects<AggregationPolicy> aggregationPolicies =
         new NamedObjects<>(this, "Aggregation policy");
     private final NamedObjects<JoinPolicy> joinPolicies = new NamedObjects<>(this, "Join policy");
+    private final NamedObjects<PrivacyPolicy> privacyPolicies = new NamedObjects<>(this, "Privacy policy");
+    private final NamedObjects<StorageLifecyclePolicy> storageLifecyclePolicies =
+        new NamedObjects<>(this, "Storage lifecycle policy");
     private final NamedObjects<RowAccessPolicy> rowAccessPolicies = new NamedObjects<>(this, "Row access policy");
     private final NamedObjects<Tag> tags = new NamedObjects<>(this, "Tag");
     private final NamedObjects<Stage> stages = new NamedObjects<>(this, "Stage");
@@ -748,6 +751,39 @@ public class Schema extends SqlObject {
     public List<JoinPolicy> getJoinPolicies() { return joinPolicies.values(); }
     public void renameJoinPolicy(final String oldName, final String newName) {
         NamedObjects.rename(joinPolicies, oldName, newName);
+    }
+
+    // Privacy Policies and Storage Lifecycle Policies: each holds exactly its own name, as a join policy does.
+    public void addPrivacyPolicy(final PrivacyPolicy policy) {
+        privacyPolicies.put(policy);
+    }
+    public void dropPrivacyPolicy(final String name) {
+        if (privacyPolicies.hasExact(name)) {
+            privacyPolicies.dropExact(name);
+        }
+    }
+    public PrivacyPolicy getPrivacyPolicy(final String name) { return privacyPolicies.findExact(name); }
+    public boolean hasPrivacyPolicy(final String name) { return privacyPolicies.hasExact(name); }
+    public List<PrivacyPolicy> getPrivacyPolicies() { return privacyPolicies.values(); }
+    public void renamePrivacyPolicy(final String oldName, final String newName) {
+        NamedObjects.rename(privacyPolicies, oldName, newName);
+    }
+
+    public void addStorageLifecyclePolicy(final StorageLifecyclePolicy policy) {
+        storageLifecyclePolicies.put(policy);
+    }
+    public void dropStorageLifecyclePolicy(final String name) {
+        if (storageLifecyclePolicies.hasExact(name)) {
+            storageLifecyclePolicies.dropExact(name);
+        }
+    }
+    public StorageLifecyclePolicy getStorageLifecyclePolicy(final String name) {
+        return storageLifecyclePolicies.findExact(name);
+    }
+    public boolean hasStorageLifecyclePolicy(final String name) { return storageLifecyclePolicies.hasExact(name); }
+    public List<StorageLifecyclePolicy> getStorageLifecyclePolicies() { return storageLifecyclePolicies.values(); }
+    public void renameStorageLifecyclePolicy(final String oldName, final String newName) {
+        NamedObjects.rename(storageLifecyclePolicies, oldName, newName);
     }
 
     // Aggregation Policies
@@ -1627,6 +1663,7 @@ public class Schema extends SqlObject {
             clonedContact.setComment(contact.getComment());
             clonedContact.setUrl(contact.getUrl());
             clonedContact.setEmailDistributionList(contact.getEmailDistributionList());
+            clonedContact.setUsers(contact.getUsers());
             clonedSchema.contacts.put(clonedContact);
         }
         // Each policy keeps its comment, owner and tags.
@@ -1641,6 +1678,17 @@ public class Schema extends SqlObject {
         for (final JoinPolicy policy : joinPolicies.all()) {
             clonedSchema.joinPolicies.put(
                 withPolicyDetails(policy, new JoinPolicy(policy.getName(), policy.getBody())));
+        }
+        for (final PrivacyPolicy policy : privacyPolicies.all()) {
+            clonedSchema.privacyPolicies.put(
+                withPolicyDetails(policy, new PrivacyPolicy(policy.getName(), policy.getBody())));
+        }
+        for (final StorageLifecyclePolicy policy : storageLifecyclePolicies.all()) {
+            final StorageLifecyclePolicy cloned = new StorageLifecyclePolicy(policy.getName(),
+                policy.getParameters(), policy.getBody());
+            cloned.setArchiveForDays(policy.getArchiveForDays());
+            cloned.setArchiveTier(policy.getArchiveTier());
+            clonedSchema.storageLifecyclePolicies.put(withPolicyDetails(policy, cloned));
         }
         for (final MaskingPolicy policy : maskingPolicies.all()) {
             final MaskingPolicy clonedPolicy = new MaskingPolicy(policy.getName(), policy.getParameters(),
@@ -1673,6 +1721,7 @@ public class Schema extends SqlObject {
                 continue;
             }
             final FileFormat clonedFormat = new FileFormat(fileFormat.getName(), fileFormat.getType());
+            clonedFormat.setWrittenType(fileFormat.getWrittenType());
             for (final Map.Entry<String, String> option : fileFormat.getOptions().entrySet()) {
                 clonedFormat.setOption(option.getKey(), option.getValue());
             }
@@ -2068,6 +2117,12 @@ public class Schema extends SqlObject {
         }
         if (hasJoinPolicy(name)) {
             return "JOIN_POLICY";
+        }
+        if (hasPrivacyPolicy(name)) {
+            return "PRIVACY_POLICY";
+        }
+        if (hasStorageLifecyclePolicy(name)) {
+            return "STORAGE_LIFECYCLE_POLICY";
         }
         if (getAggregationPolicyExact(name) != null) {
             return "AGGREGATION_POLICY";

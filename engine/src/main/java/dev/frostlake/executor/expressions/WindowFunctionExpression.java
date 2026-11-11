@@ -45,6 +45,10 @@ public class WindowFunctionExpression implements Expression {
     private boolean ownFramed;
     /** Whether the frame written runs from the partition's first row to its last. */
     private boolean wholeFramed;
+    /** Whether that whole frame is counted in ROWS. */
+    private boolean wholeRowsFramed;
+    /** Whether a plan reads the window in its reversed order. */
+    private boolean orderReversedInPlan;
     private boolean distinct;
     /** The OVER clause's keys, or null when the call was not described that far (a star call). */
     private List<Expression> partitionKeys;
@@ -123,6 +127,39 @@ public class WindowFunctionExpression implements Expression {
     /** Mark the frame as the whole partition — see {@link #isWholeFramed()}. */
     public void markWholeFramed() {
         this.wholeFramed = true;
+    }
+
+    /**
+     * Whether the frame written is the whole partition counted in ROWS, which a plan reads in no order at all: its
+     * window prints no ORDER BY (live-verified: {@code COUNT(*) OVER (ORDER BY b ROWS BETWEEN UNBOUNDED PRECEDING AND
+     * UNBOUNDED FOLLOWING)} plans as {@code COUNT(*) OVER ()}).
+     *
+     * @return true for a ROWS frame of the whole partition
+     */
+    public boolean isWholeRowsFramed() {
+        return wholeRowsFramed;
+    }
+
+    /** Mark the frame as the whole partition in ROWS — see {@link #isWholeRowsFramed()}. */
+    public void markWholeRowsFramed() {
+        this.wholeRowsFramed = true;
+    }
+
+    /**
+     * Whether a plan reads the window in its reversed order: a ROWS frame that ends after the current row and does not
+     * start at the partition's first row, which the plan turns about so that it ends at or before the row
+     * (live-verified: {@code ORDER BY b ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING} plans as
+     * {@code ORDER BY ET58.B DESC NULLS FIRST}).
+     *
+     * @return true where the plan reverses the order
+     */
+    public boolean isOrderReversedInPlan() {
+        return orderReversedInPlan;
+    }
+
+    /** Mark the window as read in its reversed order — see {@link #isOrderReversedInPlan()}. */
+    public void markOrderReversedInPlan() {
+        this.orderReversedInPlan = true;
     }
 
     /**

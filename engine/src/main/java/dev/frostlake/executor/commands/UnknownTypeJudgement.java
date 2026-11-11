@@ -31,7 +31,8 @@ import java.util.List;
 
 /**
  * What a statement says of its types besides a word that names none, judged before the word is refused. The
- * account resolves such a word once the statement has parsed, so the widths of the types it does know come first:
+ * account resolves such a word once the statement has parsed, so a table's properties and the widths of the types it
+ * does know come first:
  * {@code CREATE TABLE t (n nosuch, v VARCHAR(0))} is refused for the length. An Iceberg table's column list is
  * read column by column instead, the word and every earlier column's own refusal in the order written:
  * {@code (v VARCHAR(10), n nosuch)} is refused for the length the format does not take, {@code (n nosuch, v
@@ -62,6 +63,7 @@ public final class UnknownTypeJudgement {
             return refused;
         }
         try {
+            judgeTableProperties(tree);
             if (reading.isIceberg()) {
                 judgeColumns(tree, reading, parser);
             } else {
@@ -73,6 +75,24 @@ public final class UnknownTypeJudgement {
                 ? ahead : refused;
         }
         return refused;
+    }
+
+    /**
+     * A table's properties, their names and their values, which the account judges before any of its column types:
+     * {@code CREATE TABLE t (a nosuch) x = 1} is refused for the property 'x', and {@code CHANGE_TRACKING = 'x'} for
+     * its value (live-verified).
+     */
+    private static void judgeTableProperties(final ParseTree tree) {
+        final List<FrostlakeParser.CreateStatementContext> creates = new ArrayList<>();
+        collect(tree, FrostlakeParser.CreateStatementContext.class, creates, true);
+        if (creates.size() != 1) {
+            return;
+        }
+        final FrostlakeParser.CreateStatementContext create = creates.get(0);
+        if (create.TABLE() != null && create.DYNAMIC() == null && create.EVENT() == null
+                && create.STREAM() == null) {
+            CreatedObjectProperties.requireTableProperties(create);
+        }
     }
 
     /** Every type the statement names that is no stand-in for a word, read in the order written. */

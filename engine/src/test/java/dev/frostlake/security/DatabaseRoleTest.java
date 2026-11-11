@@ -183,9 +183,11 @@ public class DatabaseRoleTest extends BaseDatabaseTest {
         engine.executeQuery("CREATE DATABASE ROLE test_db.dr_c3");
         engine.executeQuery("GRANT DATABASE ROLE test_db.dr_c1 TO DATABASE ROLE test_db.dr_c2");
         engine.executeQuery("GRANT DATABASE ROLE test_db.dr_c2 TO DATABASE ROLE test_db.dr_c3");
-        assertEquals("Cannot grant database role: would create circular role hierarchy",
+        assertEquals("SQL execution error: Circular role grants not allowed. Granting role TEST_DB.DR_C3 to "
+                + "TEST_DB.DR_C1 would create a cycle.",
             refusal("GRANT DATABASE ROLE test_db.dr_c3 TO DATABASE ROLE test_db.dr_c1"));
-        assertEquals("Cannot grant database role: would create circular role hierarchy",
+        assertEquals("SQL execution error: Circular role grants not allowed. Granting role TEST_DB.DR_C2 to "
+                + "TEST_DB.DR_C1 would create a cycle.",
             refusal("GRANT DATABASE ROLE test_db.dr_c2 TO DATABASE ROLE test_db.dr_c1"));
         engine.executeQuery("GRANT DATABASE ROLE test_db.dr_c1 TO DATABASE ROLE test_db.dr_c3");
     }

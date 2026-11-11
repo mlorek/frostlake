@@ -34,6 +34,7 @@ import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.metastore.model.DefaultValueExpression;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.StreamVersionKind;
 import dev.frostlake.metastore.model.Table;
@@ -935,8 +936,14 @@ final class InsertExecutor {
             } else {
                 // An OMITTED column and an explicit DEFAULT take the same path — live writes the
                 // declared default for both, the AUTOINCREMENT value where there is one, and NULL when
-                // the column has neither (which a NOT NULL column then refuses, as live does).
-                rowValues.add(executor.insertColumnValue(cols.get(c), fullyQualifiedName, null));
+                // the column has neither (which a NOT NULL column then refuses, as live does). A default that
+                // reads the columns before it reads this row's, and is no value a VALUES list may name.
+                final Object declared = cols.get(c).getDefaultValue();
+                if (at >= 0 && declared instanceof DefaultValueExpression
+                        && !ColumnReadingDefaults.columnsRead(declared).isEmpty()) {
+                    throw ColumnReadingDefaults.inValues((DefaultValueExpression) declared);
+                }
+                rowValues.add(executor.insertColumnValue(cols.get(c), fullyQualifiedName, null, table, rowValues));
             }
         }
         return new Row(rowValues);

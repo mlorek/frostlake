@@ -99,6 +99,22 @@ final class CreatedObjectProperties {
     /** The logging levels, which a view is refused as it is refused a table's parameters. */
     private static final Set<String> VIEW_LEVELS = new HashSet<String>(Arrays.asList("LOG_LEVEL", "TRACE_LEVEL"));
 
+    /** What a dynamic table takes of its own, beside a table's properties and parameters. */
+    private static final Set<String> DYNAMIC_TABLE_PROPERTIES = new HashSet<String>(Arrays.asList("TARGET_LAG",
+        "WAREHOUSE", "REFRESH_MODE", "INITIALIZE", "SCHEDULER"));
+
+    /** A table's names a dynamic table knows of none. */
+    private static final Set<String> NO_DYNAMIC_TABLE_PROPERTY = new HashSet<String>(Arrays.asList(
+        "CHANGE_TRACKING", "ERROR_LOGGING", "QUERY_TAG"));
+
+    /** What a dynamic table's kind refuses as a feature, judged by the name alone. */
+    private static final Set<String> DYNAMIC_TABLE_UNSUPPORTED = new HashSet<String>(Arrays.asList(
+        "ENABLE_SCHEMA_EVOLUTION", "BASE_LOCATION"));
+
+    /** The refresh modes a dynamic table is made with. */
+    private static final Set<String> REFRESH_MODES = new HashSet<String>(Arrays.asList("AUTO", "FULL",
+        "INCREMENTAL"));
+
     static {
         TABLE_PROPERTIES.put("CHANGE_TRACKING", BOOLEAN);
         TABLE_PROPERTIES.put("ENABLE_SCHEMA_EVOLUTION", BOOLEAN);
@@ -113,8 +129,14 @@ final class CreatedObjectProperties {
     private CreatedObjectProperties() {
     }
 
-    /** Judges the properties written around a CREATE TABLE's columns. */
+    /**
+     * Judges the properties written around a CREATE TABLE's columns, or an event table's: an event table takes a
+     * table's properties but ROW_TIMESTAMP and ERROR_LOGGING, is refused BASE_LOCATION and ENABLE_SCHEMA_EVOLUTION as
+     * features, reads a CATALOG as an integration's name, and refuses a parameter at 'EVENT_TABLE', but the log and
+     * trace levels at 'TABLE' (live-verified).
+     */
     static void requireTableProperties(final FrostlakeParser.CreateStatementContext ctx) {
+        final boolean event = ctx.EVENT() != null;
         final List<String> names = new ArrayList<String>();
         final List<FrostlakeParser.CopyOptionValueContext> values =
             new ArrayList<FrostlakeParser.CopyOptionValueContext>();
@@ -123,8 +145,8 @@ final class CreatedObjectProperties {
         final List<FrostlakeParser.ParenOptionListContext> lists =
             new ArrayList<FrostlakeParser.ParenOptionListContext>();
         for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
-            if (tail.optionKey() != null) {
-                names.add(tail.optionKey().getText());
+            if (tail.propertyName() != null) {
+                names.add(tail.propertyName().getText());
                 values.add(tail.copyOptionValue());
                 constants.add(tail.tablePropertyConstant());
                 lists.add(tail.parenOptionList());
@@ -132,6 +154,13 @@ final class CreatedObjectProperties {
                     // Judged before anything is made or replaced (see StageCopyOptions).
                     StageCopyOptions.read(tail.stageCopyOptionList());
                 }
+            } else if (tail.commentClause() != null) {
+                // A comment written as a text is a property like the others, and counts among the repeated, which
+                // are refused before any name is judged (live-verified).
+                names.add("COMMENT");
+                values.add(null);
+                constants.add(null);
+                lists.add(null);
             }
         }
         rejectDuplicates(names);
@@ -166,16 +195,24 @@ final class CreatedObjectProperties {
             }
             if ("BASE_LOCATION".equals(key)) {
                 // Where its files are kept is an Iceberg table's to say.
-                throw new RuntimeException(SqlCompilationError.of(ICEBERG_OPTION));
+                throw new RuntimeException(event ? "Unsupported feature '" + key + "'."
+                    : SqlCompilationError.of(ICEBERG_OPTION));
+            }
+            if (event && ("ROW_TIMESTAMP".equals(key) || "ERROR_LOGGING".equals(key))) {
+                throw ParameterRegistry.invalidProperty(key, "EVENT_TABLE");
+            }
+            if (event && "ENABLE_SCHEMA_EVOLUTION".equals(key)) {
+                throw new RuntimeException("Unsupported feature '" + key + "'.");
             }
             if (!TABLE_PROPERTIES.containsKey(key) && !takenByTable(key)) {
-                throw cannotSet(key, "TABLE");
+                // An event table refuses a parameter at its own kind, but the log and trace levels at a table's.
+                throw cannotSet(key, event && !VIEW_LEVELS.contains(key) ? "EVENT_TABLE" : "TABLE");
             }
         }
         requireMetricSchedule(names, values, true);
         for (final Integer i : order) {
             refuseOtherTableKindParameter(ParameterRegistry.canonical(names.get(i)), values.get(i), createdName(ctx),
-                false);
+                false, event);
         }
     }
 
@@ -193,11 +230,33 @@ final class CreatedObjectProperties {
      */
     static void refuseOtherTableKindParameter(final String key, final FrostlakeParser.CopyOptionValueContext value,
                                               final String tableName, final boolean atAlter) {
+        refuseOtherTableKindParameter(key, value, tableName, atAlter, false);
+    }
+
+    /**
+     * Refuses a parameter a table of the kind takes no value of, as {@link #refuseOtherTableKindParameter(String,
+     * FrostlakeParser.CopyOptionValueContext, String, boolean)} does; a dynamic or an event table reads a CATALOG as
+     * the integration it names, {@code Catalog integration x is not valid. ...}, where a table's is a legacy
+     * Iceberg table's (live-verified).
+     *
+     * @param key          the parameter's name, canonical
+     * @param value        its value as written, or null
+     * @param tableName    the table's name, as its last written part reads
+     * @param atAlter      whether an ALTER … SET writes it
+     * @param namedCatalog whether a CATALOG names an integration
+     */
+    static void refuseOtherTableKindParameter(final String key, final FrostlakeParser.CopyOptionValueContext value,
+                                              final String tableName, final boolean atAlter,
+                                              final boolean namedCatalog) {
         final String text = value == null ? null : value.STRING_LITERAL() != null
             ? SqlStringLiterals.decode(value.STRING_LITERAL().getText()) : value.getText();
         final boolean empty = text == null || text.isEmpty();
         switch (key) {
             case "CATALOG":
+                if (namedCatalog) {
+                    throw new RuntimeException("Catalog integration " + text
+                        + " is not valid. Please ensure required properties are valid.");
+                }
                 throw new RuntimeException(empty && !atAlter
                     ? SqlCompilationError.inline("Iceberg tables require a catalog integration to be specified")
                     : "Catalog integration cannot be set for legacy iceberg tables");
@@ -239,6 +298,142 @@ final class CreatedObjectProperties {
         }
     }
 
+    /**
+     * Judges the properties a CREATE DYNAMIC TABLE is written with, as a table's are and in the dynamic table's own
+     * words, before the warehouse is looked for (live-verified): a name written twice, its own TARGET_LAG among them,
+     * is a duplicate; a name it does not know, CHANGE_TRACKING, ERROR_LOGGING and QUERY_TAG among them, is
+     * {@code invalid property 'x' for 'DYNAMIC_TABLE'}, the first of a table hashed by name; a value of another type
+     * is refused as a table's is, a word no refresh mode as {@code invalid value 'X' for property 'REFRESH_MODE'};
+     * ENABLE_SCHEMA_EVOLUTION, BASE_LOCATION and another kind of table's properties are unsupported features; and a
+     * parameter it takes no value of is refused at 'DYNAMIC_TABLE'. Its log and trace levels, SCHEDULER, a table's
+     * parameters, its staging properties and a storage serialization policy are taken.
+     *
+     * @param ctx    the statement
+     * @param dtName the dynamic table's name, as its last written part reads
+     */
+    static void requireDynamicTableProperties(final FrostlakeParser.CreateStatementContext ctx, final String dtName) {
+        if (ctx.dynamicTableOptions() == null) {
+            return;
+        }
+        final List<String> names = new ArrayList<String>();
+        final List<FrostlakeParser.CopyOptionValueContext> values =
+            new ArrayList<FrostlakeParser.CopyOptionValueContext>();
+        final List<FrostlakeParser.TablePropertyConstantContext> constants =
+            new ArrayList<FrostlakeParser.TablePropertyConstantContext>();
+        final List<FrostlakeParser.ParenOptionListContext> lists =
+            new ArrayList<FrostlakeParser.ParenOptionListContext>();
+        for (final FrostlakeParser.DynamicTableOptionContext option : ctx.dynamicTableOptions().dynamicTableOption()) {
+            if (option.CLUSTER() != null) {
+                continue;
+            }
+            names.add(option.propertyName() != null ? option.propertyName().getText() : option.getStart().getText());
+            values.add(option.propertyName() != null ? option.copyOptionValue() : null);
+            constants.add(option.tablePropertyConstant());
+            lists.add(option.parenOptionList());
+        }
+        final Set<String> seen = new HashSet<String>();
+        for (final String name : names) {
+            final String key = ParameterRegistry.canonical(name);
+            if (!seen.add(key)) {
+                throw new RuntimeException(SqlCompilationError.duplicateProperty(TABLE_PROPERTIES.containsKey(key)
+                    || PARAMETER_TYPES.containsKey(key) || DYNAMIC_TABLE_PROPERTIES.contains(key) ? key : name));
+            }
+        }
+        final List<Integer> order = judgedOrder(names);
+        for (final Integer i : order) {
+            final String key = ParameterRegistry.canonical(names.get(i));
+            if (NO_DYNAMIC_TABLE_PROPERTY.contains(key) || !DYNAMIC_TABLE_PROPERTIES.contains(key)
+                    && !TABLE_PROPERTIES.containsKey(key) && !PARAMETER_TYPES.containsKey(key)
+                    && !ParameterRegistry.isTableParameter(key) && !OTHER_TABLE_KIND_PROPERTIES.contains(key)
+                    && !COPY.equals(key)) {
+                throw ParameterRegistry.invalidProperty(names.get(i), "DYNAMIC_TABLE");
+            }
+        }
+        rejectListsOfAnotherType(names, constants, lists, order);
+        final Set<String> unread = new HashSet<String>();
+        for (final String name : names) {
+            final String key = ParameterRegistry.canonical(name);
+            if (DYNAMIC_TABLE_UNSUPPORTED.contains(key)
+                    || OTHER_TABLE_KIND_PROPERTIES.contains(key) && !"REFRESH_MODE".equals(key)) {
+                unread.add(key);
+            }
+        }
+        for (final Integer i : order) {
+            requireOwnValue(ParameterRegistry.canonical(names.get(i)), values.get(i), constants.get(i));
+        }
+        rejectValuesOfAnotherType(names, values, constants, order, unread);
+        for (final Integer i : order) {
+            final String key = ParameterRegistry.canonical(names.get(i));
+            if (unread.contains(key)) {
+                throw new RuntimeException("Unsupported feature '" + key + "'.");
+            }
+        }
+        for (final Integer i : order) {
+            final String key = ParameterRegistry.canonical(names.get(i));
+            if (!DYNAMIC_TABLE_PROPERTIES.contains(key) && !TABLE_PROPERTIES.containsKey(key) && !takenByTable(key)
+                    && !VIEW_LEVELS.contains(key) && !"STORAGE_SERIALIZATION_POLICY".equals(key)) {
+                throw cannotSet(key, "DYNAMIC_TABLE");
+            }
+        }
+        for (final Integer i : order) {
+            final String key = ParameterRegistry.canonical(names.get(i));
+            if (!"STORAGE_SERIALIZATION_POLICY".equals(key)) {
+                refuseOtherTableKindParameter(key, values.get(i), dtName, false, true);
+            }
+        }
+    }
+
+    /**
+     * A dynamic table's own property given a value its own form does not read: TARGET_LAG, SCHEDULER and INITIALIZE
+     * take a text, as {@code invalid value [5] for parameter 'TARGET_LAG'} says of a number, and REFRESH_MODE a mode,
+     * as a word or a text, {@code invalid value 'X' for property 'REFRESH_MODE'} (live-verified).
+     */
+    private static void requireOwnValue(final String key, final FrostlakeParser.CopyOptionValueContext value,
+                                        final FrostlakeParser.TablePropertyConstantContext constant) {
+        if (!DYNAMIC_TABLE_PROPERTIES.contains(key) || "WAREHOUSE".equals(key)) {
+            return;
+        }
+        final String written = value != null ? value.getText() : constant != null ? constant.getText() : null;
+        if (written == null) {
+            return;
+        }
+        if ("REFRESH_MODE".equals(key)) {
+            final String mode = (value != null && value.STRING_LITERAL() != null
+                ? SqlStringLiterals.decode(value.STRING_LITERAL().getText()) : written).toUpperCase(Locale.ROOT);
+            if (!REFRESH_MODES.contains(mode)) {
+                throw new RuntimeException(SqlCompilationError.of("invalid value '" + mode
+                    + "' for property 'REFRESH_MODE'"));
+            }
+            return;
+        }
+        if (value == null || value.STRING_LITERAL() == null) {
+            throw new RuntimeException(SqlCompilationError.invalidValueForParameter(written, key));
+        }
+        final String text = SqlStringLiterals.decode(value.STRING_LITERAL().getText()).toUpperCase(Locale.ROOT);
+        if ("INITIALIZE".equals(key) && !"ON_CREATE".equals(text) && !"ON_SCHEDULE".equals(text)) {
+            throw new RuntimeException(SqlCompilationError.of("invalid value '" + text
+                + "' for property 'INITIALIZE'"));
+        }
+    }
+
+    /**
+     * The value a dynamic table's own property is given through the property form, as its own form would read it:
+     * a text's content or a word; null where the statement gives the name no such value.
+     *
+     * @param option the option as written
+     * @param key    the property's name, canonical
+     * @return the value, or null
+     */
+    static String ownValue(final FrostlakeParser.DynamicTableOptionContext option, final String key) {
+        if (option.propertyName() == null || option.copyOptionValue() == null
+                || !key.equals(ParameterRegistry.canonical(option.propertyName().getText()))) {
+            return null;
+        }
+        final FrostlakeParser.CopyOptionValueContext value = option.copyOptionValue();
+        return value.STRING_LITERAL() != null ? SqlStringLiterals.decode(value.STRING_LITERAL().getText())
+            : value.getText();
+    }
+
     /** The name a CREATE TABLE makes, as its last written part reads. */
     private static String createdName(final FrostlakeParser.CreateStatementContext ctx) {
         final String[] parts = ctx.objectName() != null && ctx.objectName().qualifiedName() != null
@@ -252,7 +447,7 @@ final class CreatedObjectProperties {
         final List<FrostlakeParser.CopyOptionValueContext> values =
             new ArrayList<FrostlakeParser.CopyOptionValueContext>();
         for (final FrostlakeParser.ViewPropertyContext property : ctx.viewProperty()) {
-            names.add(property.optionKey().getText());
+            names.add(property.propertyName().getText());
             values.add(property.copyOptionValue());
         }
         requireViewKindProperties(names, values, schemaName, false);
@@ -274,7 +469,7 @@ final class CreatedObjectProperties {
                 values.add(null);
             } else if (child instanceof FrostlakeParser.ViewPropertyContext) {
                 final FrostlakeParser.ViewPropertyContext property = (FrostlakeParser.ViewPropertyContext) child;
-                names.add(property.optionKey().getText());
+                names.add(property.propertyName().getText());
                 values.add(property.copyOptionValue());
             }
         }
@@ -387,15 +582,16 @@ final class CreatedObjectProperties {
         final List<FrostlakeParser.CopyOptionValueContext> values =
             new ArrayList<FrostlakeParser.CopyOptionValueContext>();
         for (final FrostlakeParser.SequenceOptionContext option : ctx.sequenceOptions().sequenceOption()) {
-            if (option.optionKey() != null) {
-                names.add(option.optionKey().getText());
+            if (option.propertyName() != null) {
+                names.add(option.propertyName().getText());
                 values.add(option.copyOptionValue());
             }
         }
         rejectDuplicates(names);
-        for (final String name : names) {
-            if (!PARAMETER_TYPES.containsKey(ParameterRegistry.canonical(name))) {
-                throw ParameterRegistry.invalidProperty(name, "SEQUENCE");
+        // Of several names no parameter, the first of a table hashed by name is refused (live-verified).
+        for (final Integer i : judgedOrder(names)) {
+            if (!PARAMETER_TYPES.containsKey(ParameterRegistry.canonical(names.get(i)))) {
+                throw ParameterRegistry.invalidProperty(names.get(i), "SEQUENCE");
             }
         }
         final List<Integer> written = new ArrayList<Integer>();
@@ -406,6 +602,64 @@ final class CreatedObjectProperties {
         if (!names.isEmpty()) {
             throw cannotSet(ParameterRegistry.canonical(names.get(0)), "SEQUENCE");
         }
+    }
+
+    /**
+     * Judges the names an ALTER SEQUENCE sets or unsets beside its own, before the sequence is looked up
+     * (live-verified): a name no parameter, the first of a table hashed by name, is {@code invalid property 'x' for
+     * 'SEQUENCE'}, and a value of another type than its name's is refused as a table's is.
+     *
+     * @param action the ALTER's action
+     */
+    static void judgeSequenceAlterNames(final FrostlakeParser.SequenceActionContext action) {
+        final List<String> names = new ArrayList<String>();
+        final List<FrostlakeParser.CopyOptionValueContext> values =
+            new ArrayList<FrostlakeParser.CopyOptionValueContext>();
+        final List<FrostlakeParser.TablePropertyConstantContext> constants =
+            new ArrayList<FrostlakeParser.TablePropertyConstantContext>();
+        for (final FrostlakeParser.SequenceAlterOptionContext option : action.sequenceAlterOption()) {
+            if (option.propertyName() != null) {
+                names.add(option.propertyName().getText());
+                values.add(option.copyOptionValue());
+                constants.add(option.tablePropertyConstant());
+            }
+        }
+        for (final FrostlakeParser.PropertyNameContext name : action.propertyName()) {
+            names.add(name.getText());
+            values.add(null);
+            constants.add(null);
+        }
+        final List<Integer> order = judgedOrder(names);
+        for (final Integer i : order) {
+            final String key = ParameterRegistry.canonical(names.get(i));
+            if (!"COMMENT".equals(key) && !PARAMETER_TYPES.containsKey(key)) {
+                throw ParameterRegistry.invalidProperty(names.get(i), "SEQUENCE");
+            }
+        }
+        rejectValuesOfAnotherType(names, values, constants, order, new HashSet<String>());
+    }
+
+    /**
+     * Whether an ALTER SEQUENCE sets or unsets a parameter, which the account refuses as an operation the sequence
+     * does not allow: {@code Insufficient privileges to operate on sequence 'S'} (live-verified).
+     *
+     * @param action the ALTER's action, its names judged
+     * @return whether it names a parameter
+     */
+    static boolean namesSequenceParameter(final FrostlakeParser.SequenceActionContext action) {
+        final List<FrostlakeParser.PropertyNameContext> names = new ArrayList<FrostlakeParser.PropertyNameContext>(
+            action.propertyName());
+        for (final FrostlakeParser.SequenceAlterOptionContext option : action.sequenceAlterOption()) {
+            if (option.propertyName() != null) {
+                names.add(option.propertyName());
+            }
+        }
+        for (final FrostlakeParser.PropertyNameContext name : names) {
+            if (!"COMMENT".equals(ParameterRegistry.canonical(name.getText()))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** A name written twice is refused as it is written: an unquoted one whatever its case, a quoted one exactly. */
@@ -506,8 +760,9 @@ final class CreatedObjectProperties {
 
     /**
      * A list given a name that takes no list (live-verified): a list of properties is {@code invalid value
-     * [TOK_PROPERTY_LIST] for parameter 'CHANGE_TRACKING'}, and a list of constants given for STAGE_FILE_FORMAT is
-     * read as the name of a format, {@code File format 'TOK_CONSTANT_LIST' does not exist}.
+     * [TOK_PROPERTY_LIST] for parameter 'CHANGE_TRACKING'}, an empty one given a switch {@code Invalid value specified
+     * for property 'CHANGE_TRACKING'}, and a list of constants given for STAGE_FILE_FORMAT is read as the name of a
+     * format, {@code File format 'TOK_CONSTANT_LIST' does not exist}.
      */
     private static void rejectListsOfAnotherType(final List<String> names,
                                                  final List<FrostlakeParser.TablePropertyConstantContext> constants,
@@ -515,6 +770,10 @@ final class CreatedObjectProperties {
                                                  final List<Integer> order) {
         for (final Integer i : order) {
             final String key = ParameterRegistry.canonical(names.get(i));
+            if (lists.get(i) != null && lists.get(i).parenOption().isEmpty() && BOOLEAN.equals(typeOf(key))) {
+                // An empty list is no value of a switch at all (live-verified).
+                throw new RuntimeException("Invalid value specified for property '" + key + "'");
+            }
             if (lists.get(i) != null && typeOf(key) != null) {
                 throw new RuntimeException(SqlCompilationError.invalidValueForParameter(ListValues.PROPERTY_LIST,
                     key));
@@ -524,6 +783,49 @@ final class CreatedObjectProperties {
                 throw new RuntimeException(SqlCompilationError.doesNotExist("File format", ListValues.CONSTANT_LIST));
             }
         }
+    }
+
+    /**
+     * Judges a parenthesized list ALTER … SET gives a name, as CREATE judges one (live-verified): a list of constants
+     * given a parameter of any type but text is {@code invalid value [TOK_CONSTANT_LIST] for parameter 'K'}, given a
+     * switch {@code Invalid value specified for property 'K'}, and given STAGE_FILE_FORMAT it names a format that does
+     * not exist; a list of properties given a name that takes no list is {@code invalid value [TOK_PROPERTY_LIST] for
+     * parameter 'K'}, an empty list a switch's invalid value or a parameter's TOK_CONSTANT_LIST. A text parameter takes
+     * a list of constants, and a text property a list of properties, each holding the parser's word for the list:
+     * {@code TOK_CONSTANT_LIST}, {@code TOK_PROPERTY_LIST}.
+     *
+     * @param property the property as written
+     * @return the word the name holds where the statement takes the list, null where the value is no list
+     */
+    public static String judgeAlterList(final FrostlakeParser.TableSetPropertyContext property) {
+        final String key = ParameterRegistry.canonical(property.propertyName().getText());
+        final String type = typeOf(key);
+        if (property.constantList() != null) {
+            if ("STAGE_FILE_FORMAT".equals(key)) {
+                throw new RuntimeException(SqlCompilationError.doesNotExist("File format", ListValues.CONSTANT_LIST));
+            }
+            if (TABLE_PROPERTIES.containsKey(key) && BOOLEAN.equals(type)) {
+                throw new RuntimeException("Invalid value specified for property '" + key + "'");
+            }
+            if (type != null && STRING.equals(type) && !TABLE_PROPERTIES.containsKey(key)) {
+                return ListValues.CONSTANT_LIST;
+            }
+            throw new RuntimeException(SqlCompilationError.invalidValueForParameter(ListValues.CONSTANT_LIST, key));
+        }
+        final FrostlakeParser.ParenOptionListContext list = property.parenOptionList();
+        if (list == null || type == null) {
+            return null;
+        }
+        if (list.parenOption().isEmpty()) {
+            if (BOOLEAN.equals(type)) {
+                throw new RuntimeException("Invalid value specified for property '" + key + "'");
+            }
+            throw new RuntimeException(SqlCompilationError.invalidValueForParameter(ListValues.CONSTANT_LIST, key));
+        }
+        if (STRING.equals(type)) {
+            return ListValues.PROPERTY_LIST;
+        }
+        throw new RuntimeException(SqlCompilationError.invalidValueForParameter(ListValues.PROPERTY_LIST, key));
     }
 
     /** The type of value a table's property or a parameter takes, or null when its value is judged elsewhere. */

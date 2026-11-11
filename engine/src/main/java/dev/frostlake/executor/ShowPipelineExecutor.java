@@ -32,6 +32,7 @@ import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamSourceType;
 import dev.frostlake.metastore.model.StreamType;
+import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -958,8 +959,9 @@ final class ShowPipelineExecutor {
         final String[] parts = QualifiedName.parse(tableName).parts();
         final String dbName = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
         final String scName = parts.length >= 2 ? parts[parts.length - 2] : catalog.getCurrentSchema();
-        final List<DynamicTableColumn> declared = catalog.databaseExact(dbName).schemaExact(scName)
-            .getDynamicTable(parts[parts.length - 1]).getDeclaredColumns();
+        final DynamicTable described = catalog.databaseExact(dbName).schemaExact(scName)
+            .getDynamicTable(parts[parts.length - 1]);
+        final List<DynamicTableColumn> declared = described.getDeclaredColumns();
 
         final List<ResultSetColumn> columns = ShowRelationalExecutor.describeColumns();
         final List<Row> rows = new ArrayList<>();
@@ -975,9 +977,15 @@ final class ShowPipelineExecutor {
                 "COLUMN",
                 "Y",
                 null, "N", "N",
-                null, null, own != null ? own.getComment() : null, null, null, null
+                null, null, own != null ? own.getComment() : null, maskingPolicyOf(described, i), null, null
             )));
         }
         return new ResultSet(columns, rows);
+    }
+
+    /** The masking policy a dynamic table's column list attached to its column at a place, or null. */
+    private static String maskingPolicyOf(final DynamicTable table, final int place) {
+        final List<TableColumn> resolved = table.getResolvedColumns();
+        return resolved == null || place >= resolved.size() ? null : resolved.get(place).getMaskingPolicyName();
     }
 }

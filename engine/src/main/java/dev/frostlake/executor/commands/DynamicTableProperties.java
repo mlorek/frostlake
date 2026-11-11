@@ -56,10 +56,10 @@ public final class DynamicTableProperties {
         }
         named.addAll(action.dynamicTableProperty());
         for (final FrostlakeParser.DynamicTablePropertyContext property : named) {
-            final String name = property.getText().toUpperCase(Locale.ROOT);
-            if (!TAKEN.contains(name)) {
+            if (!TAKEN.contains(property.getText().toUpperCase(Locale.ROOT))) {
+                // Named as written, a reserved word among the names it reads (live-verified).
                 throw new RuntimeException(
-                    SqlCompilationError.of("invalid property '" + name + "' for 'DYNAMIC_TABLE'"));
+                    SqlCompilationError.of("invalid property '" + property.getText() + "' for 'DYNAMIC_TABLE'"));
             }
         }
     }

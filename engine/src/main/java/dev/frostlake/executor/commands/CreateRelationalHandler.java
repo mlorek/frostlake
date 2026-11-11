@@ -443,7 +443,7 @@ public class CreateRelationalHandler implements CommandHandler {
             // property 'COMMENT';"). The pre-AS COMMENT arrives in this same generic list.
             final List<String> viewKeys = new ArrayList<>();
             for (final FrostlakeParser.ViewPropertyContext property : ctx.viewProperty()) {
-                viewKeys.add(property.optionKey().getText());
+                viewKeys.add(property.propertyName().getText());
             }
             if (!ctx.commentClause().isEmpty()) {
                 for (int i = 0; i < ctx.commentClause().size(); i++) {
@@ -457,7 +457,7 @@ public class CreateRelationalHandler implements CommandHandler {
                 // A pre-AS COMMENT = '...' is consumed by the generic viewProperty* list before the
                 // dedicated commentClause can match — read it from there so it is not dropped.
                 for (final FrostlakeParser.ViewPropertyContext property : ctx.viewProperty()) {
-                    if ("COMMENT".equalsIgnoreCase(property.optionKey().getText())
+                    if ("COMMENT".equalsIgnoreCase(property.propertyName().getText())
                             && property.copyOptionValue().STRING_LITERAL() != null) {
                         comment = ddl.extractStringLiteral(property.copyOptionValue().STRING_LITERAL());
                     }
@@ -466,7 +466,7 @@ public class CreateRelationalHandler implements CommandHandler {
             // CHANGE_TRACKING = TRUE turns the view's change tracking on, as a stream created on it does; a query
             // change tracking cannot follow is refused (live-verified, see ChangeTrackedQuery).
             for (final FrostlakeParser.ViewPropertyContext property : ctx.viewProperty()) {
-                if ("CHANGE_TRACKING".equalsIgnoreCase(property.optionKey().getText())) {
+                if ("CHANGE_TRACKING".equalsIgnoreCase(property.propertyName().getText())) {
                     final boolean tracked = "TRUE".equalsIgnoreCase(property.copyOptionValue().getText());
                     final String untracked = tracked ? ChangeTrackedQuery.refusal(catalog,
                         queryExecutor.getFunctionRegistry(), ctx.selectStatement()) : null;
@@ -723,6 +723,7 @@ public class CreateRelationalHandler implements CommandHandler {
         // The table's own column list is judged against the query's columns once the query compiles, and the
         // columns are kept as they resolved, for the listings that tell them.
         dt.setResolvedColumns(queryExecutor.dynamicTableColumns(schema, dt));
+        DynamicTableColumnClauses.apply(ctx.dynamicTableColumns(), dt.getResolvedColumns(), catalog, queryExecutor);
         if (initialize == Initialize.ON_SCHEDULE) {
             return;
         }
@@ -742,14 +743,14 @@ public class CreateRelationalHandler implements CommandHandler {
                 if (!DmlWriteTarget.isRowTimeFailure(failed)) {
                     throw failed;
                 }
-                throw refreshFailure(failed);
+                throw refreshFailure(schema, dt, start, failed);
             }
             if (!dt.getDeclaredColumns().isEmpty()) {
                 // A value the column's declared type cannot hold fails the first refresh, and with it the create.
                 try {
                     rows = queryExecutor.dynamicTableRows(schema, dt);
                 } catch (final RuntimeException failed) {
-                    throw refreshFailure(failed);
+                    throw refreshFailure(schema, dt, start, failed);
                 }
             }
             // What the first refresh holds is what a listing counts and what the next refresh compares.
@@ -759,6 +760,17 @@ public class CreateRelationalHandler implements CommandHandler {
             queryExecutor.endDynamicTableRefresh(outer);
             RefreshTriggers.end(trigger);
         }
+    }
+
+    /**
+     * The refusal of a create whose first refresh failed on a row, the failure noted in the refresh history under the
+     * name the table would have had, though no table is made (live-verified).
+     */
+    private RuntimeException refreshFailure(final Schema schema, final DynamicTable dt, final Instant start,
+                                            final RuntimeException failed) {
+        queryExecutor.noteFailedDynamicTableRefresh(schema, dt, start, FailureCode.of(failed).code(),
+            failed.getMessage(), null);
+        return refreshFailure(failed);
     }
 
     /** The refusal of a create whose first refresh failed on a row. */
@@ -985,6 +997,8 @@ public class CreateRelationalHandler implements CommandHandler {
         }
         final String qualifiedName = getText(ctx.qualifiedName(0));
         final String[] parts = catalog.withoutAccount(qualifiedNameParts(ctx.qualifiedName(0)), 3);
+        // Its properties are judged before anything the statement names is looked for (live-verified).
+        CreatedObjectProperties.requireDynamicTableProperties(ctx, parts[parts.length - 1]);
         final boolean orReplace = ctx.or_replace() != null;
         // A refusal of the body itself, which IF NOT EXISTS never forgives while the table is being created.
         RuntimeException bodyRefusal = null;
@@ -1039,12 +1053,28 @@ public class CreateRelationalHandler implements CommandHandler {
                         }
                         clusterByText = ClusteringKeySpelling.written(opt.clusterKeyOrder(), opt.LPAREN(),
                             opt.RPAREN());
+                    } else if (opt.propertyName() != null) {
+                        // Its own properties given as texts, judged already (see CreatedObjectProperties).
+                        final String key = ParameterRegistry.canonical(opt.propertyName().getText());
+                        final String own = CreatedObjectProperties.ownValue(opt, key);
+                        if (own != null && "WAREHOUSE".equals(key)) {
+                            warehouse = own;
+                            WarehouseReference.require(catalog, warehouse);
+                        } else if (own != null && "REFRESH_MODE".equals(key)) {
+                            refreshMode = RefreshMode.valueOf(own.toUpperCase(Locale.ROOT));
+                        } else if (own != null && "INITIALIZE".equals(key)) {
+                            initialize = "ON_SCHEDULE".equalsIgnoreCase(own) ? Initialize.ON_SCHEDULE
+                                : Initialize.ON_CREATE;
+                        } else if ("COMMENT".equals(key) && opt.copyOptionValue() == null) {
+                            comment = null;
+                        }
                     }
                 }
             }
 
             final String query = ddl.getOriginalText(ctx.selectStatement());
             final DynamicTable dt = new DynamicTable(dtName, query, targetLag, warehouse);
+            DynamicTableColumnClauses.refuseDefaults(ctx.dynamicTableColumns());
             dt.setDeclaredColumns(declaredColumns(ctx.dynamicTableColumns()));
             dt.setRefreshMode(refreshMode);
             dt.setInitialize(initialize);

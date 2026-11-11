@@ -15,6 +15,7 @@
  */
 package dev.frostlake.features;
 
+import dev.frostlake.AlertEvaluationWait;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -37,7 +38,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * The ALERT object: CREATE [OR REPLACE | OR ALTER] ALERT … IF (EXISTS (…)) THEN …, CREATE ALERT … CLONE,
  * ALTER ALERT RESUME | SUSPEND | SET | UNSET | MODIFY CONDITION | MODIFY ACTION, DROP ALERT, SHOW ALERTS,
- * DESCRIBE ALERT and EXECUTE ALERT.
+ * DESCRIBE ALERT and EXECUTE ALERT. An alert without a schedule is an alert on new data, so the alerts here carry one
+ * but where that kind is the subject. An account evaluates an executed alert a moment later, so the test waits there
+ * for the evaluations it reads (see {@link AlertEvaluationWait}).
  */
 public class AlertTest extends BaseDatabaseTest {
 
@@ -106,23 +109,27 @@ public class AlertTest extends BaseDatabaseTest {
 
     @Test
     public void createModesFollowTheObjectFamilies() {
-        engine.executeQuery("CREATE ALERT a2 IF (EXISTS (SELECT 1)) THEN SELECT 1");
+        final String hourly = " SCHEDULE = '60 MINUTE'";
+        engine.executeQuery("CREATE ALERT a2" + hourly + " IF (EXISTS (SELECT 1)) THEN SELECT 1");
         assertEquals("A2 already exists, statement succeeded.",
-            status("CREATE ALERT IF NOT EXISTS a2 IF (EXISTS (SELECT 2)) THEN SELECT 2"));
-        assertTrue(refusal("CREATE ALERT a2 IF (EXISTS (SELECT 2)) THEN SELECT 2").contains("Object 'A2' already exists."));
-        assertTrue(refusal("CREATE OR REPLACE ALERT IF NOT EXISTS a2 IF (EXISTS (SELECT 2)) THEN SELECT 2")
-            .contains("incompatible"));
-        engine.executeQuery("CREATE OR REPLACE ALERT a2 IF (EXISTS (SELECT 3)) THEN SELECT 3");
+            status("CREATE ALERT IF NOT EXISTS a2" + hourly + " IF (EXISTS (SELECT 2)) THEN SELECT 2"));
+        assertTrue(refusal("CREATE ALERT a2" + hourly + " IF (EXISTS (SELECT 2)) THEN SELECT 2")
+            .contains("Object 'A2' already exists."));
+        assertTrue(refusal("CREATE OR REPLACE ALERT IF NOT EXISTS a2" + hourly
+            + " IF (EXISTS (SELECT 2)) THEN SELECT 2").contains("incompatible"));
+        engine.executeQuery("CREATE OR REPLACE ALERT a2" + hourly + " IF (EXISTS (SELECT 3)) THEN SELECT 3");
         assertEquals("SELECT 3", show("A2", "condition"));
         engine.executeQuery("ALTER ALERT a2 RESUME");
-        engine.executeQuery("CREATE OR ALTER ALERT a2 COMMENT = 'altered' IF (EXISTS (SELECT 4)) THEN SELECT 5");
+        engine.executeQuery("CREATE OR ALTER ALERT a2 COMMENT = 'altered'" + hourly
+            + " IF (EXISTS (SELECT 4)) THEN SELECT 5");
         assertEquals("SELECT 4", show("A2", "condition"));
         assertEquals("SELECT 5", show("A2", "action"));
         assertEquals("altered", show("A2", "comment"));
         assertEquals("started", show("A2", "state"), "CREATE OR ALTER keeps the state");
-        engine.executeQuery("CREATE OR ALTER ALERT a2 IF (EXISTS (SELECT 4)) THEN SELECT 5");
+        engine.executeQuery("CREATE OR ALTER ALERT a2" + hourly + " IF (EXISTS (SELECT 4)) THEN SELECT 5");
         assertEquals("", show("A2", "comment"), "a property the statement leaves out is unset");
-        engine.executeQuery("CREATE OR ALTER ALERT a2b IF (EXISTS (SELECT 1)) THEN SELECT 1");
+        engine.executeQuery("ALTER ALERT a2 SUSPEND");
+        engine.executeQuery("CREATE OR ALTER ALERT a2b" + hourly + " IF (EXISTS (SELECT 1)) THEN SELECT 1");
         assertEquals("suspended", show("A2B", "state"));
     }
 
@@ -130,20 +137,23 @@ public class AlertTest extends BaseDatabaseTest {
     public void executeRunsTheActionOnlyWhenTheConditionReturnsRows() {
         engine.executeQuery("CREATE TABLE gauge (v INT)");
         engine.executeQuery("CREATE TABLE fired (msg VARCHAR)");
-        engine.executeQuery("CREATE ALERT a3 IF (EXISTS (SELECT * FROM gauge WHERE v > 5)) "
+        engine.executeQuery("CREATE ALERT a3 SCHEDULE = '60 MINUTE' IF (EXISTS (SELECT * FROM gauge WHERE v > 5)) "
             + "THEN INSERT INTO fired VALUES ('high')");
+        AlertEvaluationWait.mark(engine);
         assertEquals("Alert A3 is scheduled to run immediately.", status("EXECUTE ALERT a3"));
+        AlertEvaluationWait.until(engine, "A3", 1);
         assertEquals("0", status("SELECT COUNT(*) FROM fired"));
         engine.executeQuery("INSERT INTO gauge VALUES (10)");
         engine.executeQuery("EXECUTE ALERT test_db.test_schema.a3");
+        AlertEvaluationWait.until(engine, "A3", 2);
         assertEquals("1", status("SELECT COUNT(*) FROM fired"));
         assertEquals("suspended", show("A3", "state"), "EXECUTE ALERT does not resume the alert");
     }
 
     @Test
     public void alterSetsUnsetsAndModifies() {
-        engine.executeQuery("CREATE ALERT a4 WAREHOUSE = compute_wh COMMENT = 'c' IF (EXISTS (SELECT 1))"
-            + " THEN SELECT 1");
+        engine.executeQuery("CREATE ALERT a4 WAREHOUSE = compute_wh SCHEDULE = '60 MINUTE' COMMENT = 'c'"
+            + " IF (EXISTS (SELECT 1)) THEN SELECT 1");
         engine.executeQuery("ALTER ALERT a4 SET SCHEDULE = 'USING CRON 0 9 * * * UTC' RUNBOOK = 'rb' CONFIG = 'x'");
         assertEquals("USING CRON 0 9 * * * UTC", show("A4", "schedule"));
         assertEquals("rb", show("A4", "runbook"));
@@ -162,19 +172,21 @@ public class AlertTest extends BaseDatabaseTest {
     @Test
     public void resumeArmsTheScheduleAndSuspendDisarmsIt() {
         engine.executeQuery("CREATE ALERT a5 SCHEDULE = '60 MINUTE' IF (EXISTS (SELECT 1)) THEN SELECT 1");
+        // The schedule armed is the engine's own scheduler's; an account shows only the state.
+        final boolean embedded = !isLiveSnowflake();
         final String key = TaskScheduler.alertKey("TEST_DB", "TEST_SCHEMA", "A5");
-        assertFalse(engine.getTaskScheduler().isScheduled(key));
+        assertFalse(embedded && engine.getTaskScheduler().isScheduled(key));
         engine.executeQuery("ALTER ALERT a5 RESUME");
         assertEquals("started", show("A5", "state"));
-        assertTrue(engine.getTaskScheduler().isScheduled(key));
+        assertTrue(!embedded || engine.getTaskScheduler().isScheduled(key));
         engine.executeQuery("ALTER ALERT a5 SUSPEND");
         assertEquals("suspended", show("A5", "state"));
-        assertFalse(engine.getTaskScheduler().isScheduled(key));
+        assertFalse(embedded && engine.getTaskScheduler().isScheduled(key));
     }
 
     @Test
     public void aMissingAlertIsRefusedByItsQualifiedName() {
-        engine.executeQuery("CREATE ALERT a6 IF (EXISTS (SELECT 1)) THEN SELECT 1");
+        engine.executeQuery("CREATE ALERT a6 SCHEDULE = '60 MINUTE' IF (EXISTS (SELECT 1)) THEN SELECT 1");
         assertEquals("A6 successfully dropped.", status("DROP ALERT a6"));
         final String missing = "Alert 'TEST_DB.TEST_SCHEMA.A6' does not exist or not authorized.";
         assertTrue(refusal("DROP ALERT a6").contains(missing));
@@ -187,7 +199,8 @@ public class AlertTest extends BaseDatabaseTest {
 
     @Test
     public void aCloneKeepsTheDefinitionAndStartsSuspended() {
-        engine.executeQuery("CREATE ALERT c1 SCHEDULE = '30 MINUTE' COMMENT = 'src' IF (EXISTS (SELECT 1)) THEN SELECT 9");
+        engine.executeQuery("CREATE ALERT c1 SCHEDULE = '30 MINUTE' COMMENT = 'src' IF (EXISTS (SELECT 1)) "
+            + "THEN SELECT 9");
         engine.executeQuery("ALTER ALERT c1 RESUME");
         assertEquals("Alert C2 successfully created.", status("CREATE ALERT c2 CLONE c1"));
         assertEquals("suspended", show("C2", "state"));
@@ -202,10 +215,10 @@ public class AlertTest extends BaseDatabaseTest {
 
     @Test
     public void showScopesAndModifiers() {
-        engine.executeQuery("CREATE ALERT s1 IF (EXISTS (SELECT 1)) THEN SELECT 1");
-        engine.executeQuery("CREATE ALERT s2 IF (EXISTS (SELECT 1)) THEN SELECT 1");
+        engine.executeQuery("CREATE ALERT s1 SCHEDULE = '60 MINUTE' IF (EXISTS (SELECT 1)) THEN SELECT 1");
+        engine.executeQuery("CREATE ALERT s2 SCHEDULE = '60 MINUTE' IF (EXISTS (SELECT 1)) THEN SELECT 1");
         engine.executeQuery("CREATE SCHEMA other_schema");
-        engine.executeQuery("CREATE ALERT other_schema.s3 IF (EXISTS (SELECT 1)) THEN SELECT 1");
+        engine.executeQuery("CREATE ALERT other_schema.s3 SCHEDULE = '60 MINUTE' IF (EXISTS (SELECT 1)) THEN SELECT 1");
         assertEquals(3, engine.executeQuery("SHOW ALERTS IN ACCOUNT").getRows().size());
         assertEquals(3, engine.executeQuery("SHOW ALERTS IN DATABASE test_db").getRows().size());
         assertEquals(1, engine.executeQuery("SHOW ALERTS IN SCHEMA test_db.other_schema").getRows().size());
@@ -231,9 +244,12 @@ public class AlertTest extends BaseDatabaseTest {
         engine.executeQuery("CREATE ALERT f1 SCHEDULE = '60 MINUTE' SUSPEND_ALERT_AFTER_NUM_FAILURES = 2 "
             + "IF (EXISTS (SELECT * FROM no_such_table)) THEN SELECT 1");
         engine.executeQuery("ALTER ALERT f1 RESUME");
+        AlertEvaluationWait.mark(engine);
         engine.executeQuery("EXECUTE ALERT f1");
+        AlertEvaluationWait.until(engine, "F1", 1);
         assertEquals("started", show("F1", "state"));
         engine.executeQuery("EXECUTE ALERT f1");
+        AlertEvaluationWait.until(engine, "F1", 2);
         assertEquals("suspended", show("F1", "state"));
         assertEquals("true", show("F1", "was_auto_suspended"));
         engine.executeQuery("ALTER ALERT f1 RESUME");
@@ -244,9 +260,11 @@ public class AlertTest extends BaseDatabaseTest {
     @Test
     public void alertsCarryTags() {
         engine.executeQuery("CREATE TAG sev");
-        engine.executeQuery("CREATE ALERT t1 WITH TAG (sev = 'high') IF (EXISTS (SELECT 1)) THEN SELECT 1");
+        engine.executeQuery("CREATE ALERT t1 WITH TAG (sev = 'high') SCHEDULE = '60 MINUTE' IF (EXISTS (SELECT 1)) "
+            + "THEN SELECT 1");
         ResultSet refs = engine.executeQuery(
-            "SELECT TAG_NAME, TAG_VALUE, LEVEL, APPLY_METHOD FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('t1', 'ALERT'))");
+            "SELECT TAG_NAME, TAG_VALUE, LEVEL, APPLY_METHOD FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('t1', "
+                + "'ALERT'))");
         assertEquals(1, refs.getRows().size());
         assertEquals(Arrays.<Object>asList("SEV", "high", "ALERT", "MANUAL"), refs.getRows().get(0).getValues());
         engine.executeQuery("ALTER ALERT t1 SET TAG sev = 'low'");
@@ -255,6 +273,19 @@ public class AlertTest extends BaseDatabaseTest {
         engine.executeQuery("ALTER ALERT t1 UNSET TAG sev");
         refs = engine.executeQuery("SELECT * FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('t1', 'ALERT'))");
         assertEquals(0, refs.getRows().size());
+    }
+
+    /**
+     * An alert written without a schedule is an alert on new data: its condition must read a table or a view, and it
+     * is run by the rows that table takes, never by EXECUTE ALERT (live-verified).
+     */
+    @Test
+    public void anAlertWithoutAScheduleIsAnAlertOnNewData() {
+        engine.executeQuery("CREATE TABLE watched (v INT)");
+        engine.executeQuery("CREATE ALERT nd1 IF (EXISTS (SELECT * FROM watched WHERE v > 5)) THEN SELECT 1");
+        assertEquals("Execute Alert is not supported for a streaming alert.", refusal("EXECUTE ALERT nd1"));
+        assertEquals("Streaming alert condition must not call a stored procedure or query from a VALUES clause",
+            refusal("CREATE ALERT nd2 IF (EXISTS (SELECT 1)) THEN SELECT 1"));
     }
 
     @Test

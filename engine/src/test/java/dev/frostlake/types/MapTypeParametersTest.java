@@ -26,6 +26,7 @@ import org.junit.jupiter.api.function.Executable;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * A MAP's key and value types take their parameters wherever a type is written — a cast, a column, a routine's
@@ -74,6 +75,7 @@ public class MapTypeParametersTest extends BaseDatabaseTest {
 
     @Test
     public void theParametersSurviveAnEngineClone() throws Exception {
+        assumeFalse(isLiveSnowflake(), "a clone is the engine's own");
         engine.execute("CREATE TABLE mc (m MAP(VARCHAR(5), NUMBER(10,2)))");
         engine.execute("CREATE FUNCTION mcf(x MAP(VARCHAR(5), NUMBER(10,2))) RETURNS MAP(VARCHAR(5), NUMBER(10,2))"
             + " AS $$ x $$");

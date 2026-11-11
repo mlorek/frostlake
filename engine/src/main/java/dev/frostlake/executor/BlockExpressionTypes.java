@@ -99,6 +99,9 @@ public final class BlockExpressionTypes {
     /** What a declared type's cast refusal reads before its echo. */
     private static final String CAST_ECHO = "invalid type [CAST(";
 
+    /** The qualifier a block's variable takes as the typer's column, which no echo writes. */
+    private static final String VARIABLES_QUALIFIER = "$SCRIPT_VARIABLES.";
+
     /** What a call given more arguments than it takes is refused with, before its echo. */
     private static final String TOO_MANY = "too many arguments for function [";
 
@@ -150,6 +153,13 @@ public final class BlockExpressionTypes {
                     rendered(expression, types, values, CONVERSION_ECHO.equals(echo)), types, queryExecutor);
                 if (rendered != null && rendered.contains(echo)) {
                     echoed = rendered;
+                    // A miscounted call of a user's function compiles as a query, which reads each variable as a bind
+                    // the block numbers (see UserCallBinds).
+                    final String bound = CONVERSION_ECHO.equals(echo) ? null : UserCallBinds.rewrite(echoed,
+                        expression, types, values, queryExecutor.getFunctionRegistry());
+                    if (bound != null) {
+                        echoed = bound;
+                    }
                 }
             }
             // An IF's or an ELSEIF's condition places a miscounted call with each name written out as a bind, and its
@@ -377,12 +387,14 @@ public final class BlockExpressionTypes {
             return null;
         } catch (final RuntimeException refused) {
             final String message = refused.getMessage();
+            // A variable is echoed by its own name, as the block's variables are no relation's columns (live-verified:
+            // LET r := f(x + 1, 1, 2) is [F(X + 1, 1, 2)]).
             return SqlCompilationError.isCompilationError(message)
                 && (message.contains("Invalid argument types for function '")
                     || message.contains(CONVERSION_ECHO) || message.contains(TOO_MANY)
                     || message.contains(NOT_ENOUGH)
                     || compiled && !(refused instanceof UnknownUnitWord) && message.contains(UNKNOWN_UNIT))
-                ? message : null;
+                ? message.replace(VARIABLES_QUALIFIER, "") : null;
         } finally {
             ExpressionSource.end(displaced);
         }

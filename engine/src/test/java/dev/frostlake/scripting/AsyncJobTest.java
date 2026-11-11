@@ -181,6 +181,9 @@ public class AsyncJobTest extends MeasuredCellsTestSupport {
                 + "execution error: uninitialized resultSet 'R'",
             "EXECUTE IMMEDIATE $$ BEGIN LET r RESULTSET := ASYNC (SELECT 1/0 AS a); BEGIN AWAIT r; EXCEPTION WHEN "
                 + "OTHER THEN LET z := 1; END; RETURN TABLE(r); END; $$");
+        // An account runs every ASYNC job at once, so the INSERT of 4 beside the failing job above may have finished
+        // before the failure ended the block, or not: the table is read without it either way.
+        answer("DELETE FROM jobs WHERE n = 4");
         assertAnswer(
             "Function SP successfully created.",
             "CREATE OR REPLACE PROCEDURE sp() RETURNS TABLE (a NUMBER) LANGUAGE SQL AS $$ BEGIN LET r RESULTSET "

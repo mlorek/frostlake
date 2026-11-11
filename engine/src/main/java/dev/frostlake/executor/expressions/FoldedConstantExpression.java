@@ -31,6 +31,7 @@ import java.math.BigDecimal;
 final class FoldedConstantExpression extends LiteralExpression {
 
     private final DataType declaredType;
+    private boolean blockBinding;
 
     /**
      * @param value        the folded value: a BigDecimal for an exact number, a Double for a FLOAT, or null
@@ -44,6 +45,16 @@ final class FoldedConstantExpression extends LiteralExpression {
     /** @return the conversion's target type */
     DataType getDeclaredType() {
         return declaredType;
+    }
+
+    /** @return whether this is a block's exact NUMBER variable, folded from its binding */
+    boolean isBlockBinding() {
+        return blockBinding;
+    }
+
+    /** Marks this constant as a block's exact NUMBER variable — see {@link #isBlockBinding()}. */
+    void markBlockBinding() {
+        this.blockBinding = true;
     }
 
     /** @return whether the target is a FLOAT */

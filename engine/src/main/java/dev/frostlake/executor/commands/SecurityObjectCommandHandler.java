@@ -523,6 +523,11 @@ public final class SecurityObjectCommandHandler {
             if (properties.containsKey(key)) {
                 throw new RuntimeException(SqlCompilationError.duplicateProperty(key));
             }
+            if (property.dottedScopeName() != null) {
+                // An agent scope's dotted name, judged as written once the other values are (see AgentSessionScopes).
+                properties.put(key, ParseTreeText.getOriginalText(property.dottedScopeName()));
+                continue;
+            }
             if (leavesOut(kind, spec, property.securityPropertyValue())) {
                 continue;
             }

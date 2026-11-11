@@ -25,11 +25,22 @@ package dev.frostlake.executor;
  */
 final class LateralStandIns {
 
-    /** Per thread: whether the next table function is asked, and whether a parameter took an interval. */
+    /**
+     * Per thread: whether the next table function is asked, whether a parameter took an interval, and whether a
+     * parameter's argument read none.
+     */
     private static final ThreadLocal<boolean[]> STATE = new ThreadLocal<boolean[]>() {
         @Override
         protected boolean[] initialValue() {
-            return new boolean[2];
+            return new boolean[3];
+        }
+    };
+
+    /** Per thread: whether the reading last ended found an argument that read no interval (see {@link #unknown}). */
+    private static final ThreadLocal<boolean[]> LAST_UNKNOWN = new ThreadLocal<boolean[]>() {
+        @Override
+        protected boolean[] initialValue() {
+            return new boolean[1];
         }
     };
 
@@ -43,9 +54,10 @@ final class LateralStandIns {
      */
     static boolean[] begin() {
         final boolean[] state = STATE.get();
-        final boolean[] displaced = {state[0], state[1]};
+        final boolean[] displaced = {state[0], state[1], state[2]};
         state[0] = true;
         state[1] = false;
+        state[2] = false;
         return displaced;
     }
 
@@ -67,6 +79,24 @@ final class LateralStandIns {
     }
 
     /**
+     * Records that an exact number parameter's argument read no interval: the relation to the left carries no
+     * statistics of it - a VALUES list's column, a window's, a table function's - and the account types the
+     * function's columns by their declared width (live-verified).
+     */
+    static void unknown() {
+        STATE.get()[2] = true;
+    }
+
+    /**
+     * Whether the reading last ended on this thread found an argument that read no interval.
+     *
+     * @return true where it did
+     */
+    static boolean lastRunUnknown() {
+        return LAST_UNKNOWN.get()[0];
+    }
+
+    /**
      * Ends the reading {@link #begin} asked for.
      *
      * @param displaced the state begin displaced
@@ -75,8 +105,10 @@ final class LateralStandIns {
     static boolean end(final boolean[] displaced) {
         final boolean[] state = STATE.get();
         final boolean took = state[1];
+        LAST_UNKNOWN.get()[0] = state[2];
         state[0] = displaced[0];
         state[1] = displaced[1];
+        state[2] = displaced[2];
         return took;
     }
 }

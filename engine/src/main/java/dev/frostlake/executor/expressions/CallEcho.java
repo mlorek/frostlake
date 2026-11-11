@@ -43,4 +43,16 @@ public interface CallEcho {
                                 final ParsedEchoPrinter printer) {
         return null;
     }
+
+    /**
+     * A cast's or an operation's text where the echo folds it to the constant it computes, or null to print it as
+     * parsed.
+     *
+     * @param expression the cast or the operation
+     * @param printer    the printer
+     * @return the text, or null
+     */
+    default String spellConstant(final Expression expression, final ParsedEchoPrinter printer) {
+        return null;
+    }
 }

@@ -265,8 +265,7 @@
        "expect": {"error": {"messageContains": "invalid type [CAST(GT.G AS OBJECT)] for parameter 'TO_OBJECT'"}}},
       {"sql": "SELECT CAST(g AS NUMBER) FROM gt",
        "expect": {"error": {"messageContains": "invalid type [CAST(GT.G AS NUMBER(38,0))] for parameter 'TO_NUMBER'"}}},
-      {"sql": "SELECT CAST(g AS GEOGRAPHY) FROM gt",
-       "expect": {"error": {"messageContains": "invalid type [CAST(GT.G AS GEOGRAPHY)] for parameter 'TO_GEOGRAPHY'"}}},
+      {"sql": "SELECT CAST(g AS GEOGRAPHY) FROM gt", "expect": {"rowCount": 0}},
       {"sql": "SELECT CAST(gm AS GEOGRAPHY) FROM gt",
        "expect": {"error": {"messageContains": "invalid type [CAST(GT.GM AS GEOGRAPHY)] for parameter 'TO_GEOGRAPHY'"}}}
     ]},

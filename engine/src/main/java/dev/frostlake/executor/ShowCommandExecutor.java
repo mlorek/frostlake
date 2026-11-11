@@ -56,6 +56,7 @@ public class ShowCommandExecutor {
     private final ShowRelationalExecutor relationalExecutor;
     private final ShowPipelineExecutor pipelineExecutor;
     private final ShowRoutineExecutor routineExecutor;
+    private final PrivacyLifecycleListing privacyLifecycleListing;
     private final ShowSecurityExecutor securityExecutor;
     private final ShowInfraExecutor infraExecutor;
     private final ShowSessionExecutor sessionExecutor;
@@ -84,6 +85,7 @@ public class ShowCommandExecutor {
         this.relationalExecutor = new ShowRelationalExecutor(catalog, storageEngine, ownership);
         this.pipelineExecutor = new ShowPipelineExecutor(catalog, ownership);
         this.routineExecutor = new ShowRoutineExecutor(catalog, functionRegistry, ownership);
+        this.privacyLifecycleListing = new PrivacyLifecycleListing(catalog, ownership);
         this.infraExecutor = new ShowInfraExecutor(catalog, ownership);
         // The security and session families read securityManager live through this facade, so they receive
         // a reference to it rather than the (still-null-at-construction) SecurityManager value.
@@ -521,6 +523,49 @@ public class ShowCommandExecutor {
 
     public ResultSet describeJoinPolicy(final String policyName) {
         return routineExecutor.describeJoinPolicy(policyName);
+    }
+
+    /**
+     * SHOW PRIVACY POLICIES or SHOW STORAGE LIFECYCLE POLICIES in a schema.
+     *
+     * @param schemaName the schema, or null for the current one
+     * @param storage    whether the storage lifecycle policies are listed
+     * @return the listing
+     */
+    public ResultSet showPrivacyOrLifecyclePolicies(final String schemaName, final boolean storage) {
+        return privacyLifecycleListing.show(schemaName, storage);
+    }
+
+    /**
+     * The listing over a database.
+     *
+     * @param databaseName the database, or null for the current one
+     * @param storage      whether the storage lifecycle policies are listed
+     * @return the listing
+     */
+    public ResultSet showPrivacyOrLifecyclePoliciesInDatabase(final String databaseName, final boolean storage) {
+        return privacyLifecycleListing.showInDatabase(databaseName, storage);
+    }
+
+    /**
+     * The listing over the account.
+     *
+     * @param storage whether the storage lifecycle policies are listed
+     * @return the listing
+     */
+    public ResultSet showPrivacyOrLifecyclePoliciesInAccount(final boolean storage) {
+        return privacyLifecycleListing.showInAccount(storage);
+    }
+
+    /**
+     * DESCRIBE PRIVACY POLICY or DESCRIBE STORAGE LIFECYCLE POLICY.
+     *
+     * @param policyName the policy as written
+     * @param storage    whether a storage lifecycle policy is described
+     * @return the description
+     */
+    public ResultSet describePrivacyOrLifecyclePolicy(final String policyName, final boolean storage) {
+        return privacyLifecycleListing.describe(policyName, storage);
     }
 
     public ResultSet showAggregationPolicies(final String schemaName) {

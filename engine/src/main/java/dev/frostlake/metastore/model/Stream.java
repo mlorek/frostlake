@@ -571,7 +571,8 @@ public class Stream implements Named, Taggable {
     public void restartOn(final List<Table> tables) {
         bindBaseTables(tables);
         rebound = true;
-        shownTables = null;
+        // Listed as reading those tables under the names they have from then on, renamed too (live-verified).
+        shownTables = new ArrayList<>(tables);
         initialRecords = null;
         currentOffset = records.size();
         versions.clear();
@@ -692,14 +693,23 @@ public class Stream implements Named, Taggable {
 
     /**
      * Whether SYSTEM$STREAM_HAS_DATA answers TRUE: the stream lists changes, or a table it reads took a version past
-     * its offset, a change the stream does not list among them - a DELETE under an APPEND_ONLY stream, a row a view
-     * does not show. The function diffs the tables' versions, not the stream's rows (documented; live-verified for an
-     * APPEND_ONLY view stream after a DELETE), so it may answer TRUE where a read lists nothing.
+     * its offset that counts as data (see StreamVersion#countsAsData), a change the stream may not list among them - a
+     * DELETE under an APPEND_ONLY stream that left rows, a row a view does not show. The function diffs the tables'
+     * versions, not the stream's rows (documented; live-verified), so it may answer TRUE where a read lists nothing.
      *
      * @return whether the stream has data
      */
     public boolean hasData() {
-        return getUnconsumedCount() > 0 || !getPendingVersions().isEmpty();
+        if (getUnconsumedCount() > 0) {
+            return true;
+        }
+        final boolean appendOnly = streamType != StreamType.STANDARD;
+        for (final StreamVersion version : getPendingVersions()) {
+            if (version.countsAsData(appendOnly)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** The initial rows pending before the first consumption, or null when none are. */

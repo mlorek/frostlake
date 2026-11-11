@@ -500,8 +500,11 @@ final class ShowSecurityExecutor {
             new ResultSetColumn("granted_by", StringType.VARCHAR)
         );
         final List<Row> rows = new ArrayList<>();
-        final String currentUser = catalog.currentUserForStage();
-        if (catalog.hasUser(currentUser)) {
+        // The user the session runs for: the engine's own session, which runs as SYSTEM, lists the user
+        // CURRENT_USER() names.
+        final String currentUser = facade.getSecurityManager() != null
+            ? facade.getSecurityManager().getSessionContext().getExecutingUser() : catalog.currentUserForStage();
+        if (currentUser != null && catalog.hasUser(currentUser)) {
             final User user = catalog.getUser(currentUser);
             for (final String roleName : user.getGrantedRoles()) {
                 // As in SHOW GRANTS TO USER, live never surfaces the PUBLIC membership every user has.

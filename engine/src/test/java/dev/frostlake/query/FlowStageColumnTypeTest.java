@@ -61,14 +61,16 @@ public class FlowStageColumnTypeTest extends BaseDatabaseTest {
             answer("SHOW TABLES LIKE 'ft' ->> SELECT SYSTEM$TYPEOF(\"is_dynamic\") FROM $1"));
     }
 
-    /** The other listings answer the same way — their own declared types, not a guess. */
+    /**
+     * The other listings answer the same way — their own declared types, not a guess. The grants listing is the
+     * table's own, which an account answers at once, where a role's can grow past a statement's timeout.
+     */
     @Test
     public void theOtherListingsDoToo() {
         assertEquals("VARCHAR(16777216)[LOB]", answer(
             "SHOW COLUMNS IN TABLE ft ->> SELECT SYSTEM$TYPEOF(\"data_type\") FROM $1 LIMIT 1"));
         assertEquals("TIMESTAMP_LTZ(3)[SB8]", answer(
-            "SHOW GRANTS TO ROLE ACCOUNTADMIN"
-                + " ->> SELECT SYSTEM$TYPEOF(\"created_on\") FROM $1 LIMIT 1"));
+            "SHOW GRANTS ON TABLE ft ->> SELECT SYSTEM$TYPEOF(\"created_on\") FROM $1 LIMIT 1"));
     }
 
     /** A SELECT stage carries its own column types — and loses the plan's value interval. */

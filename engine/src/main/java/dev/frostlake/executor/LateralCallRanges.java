@@ -16,6 +16,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.values.ValueRange;
 
@@ -37,6 +38,7 @@ final class LateralCallRanges {
     private final ValueRange[] united;
     private final boolean[] unknown;
     private boolean called;
+    private boolean declaredOnly;
 
     /**
      * @param shape the lateral item's shape, whose columns are tagged by the union
@@ -55,6 +57,7 @@ final class LateralCallRanges {
     /** Starts a run: no call is added yet. */
     void begin() {
         called = false;
+        declaredOnly = false;
         for (int i = 0; i < united.length; i++) {
             united[i] = null;
             unknown[i] = false;
@@ -123,8 +126,22 @@ final class LateralCallRanges {
         return true;
     }
 
+    /**
+     * Tags the run's columns by their declared width alone: an argument the relations to the left carry no statistics
+     * of types the function so, whatever its calls answered (see LateralStandIns#unknown).
+     */
+    void declaredOnly() {
+        declaredOnly = true;
+    }
+
     /** Tags the shape's columns by the union of the calls added, or by the planned interval where none is known. */
     void apply() {
+        if (declaredOnly) {
+            for (final TableColumn column : shape.getColumns()) {
+                column.setValueRange(null);
+            }
+            return;
+        }
         for (int i = 0; i < united.length; i++) {
             shape.getColumns().get(i).setValueRange(called && !unknown[i] && united[i] != null ? united[i]
                 : planned[i]);

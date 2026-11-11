@@ -884,6 +884,21 @@ public class ExpressionEvaluator {
     }
 
     /**
+     * Whether an expression reads a derived relation's column whose values are drawn anew for each row - see
+     * TableColumn#isVolatileDraw. Never throws.
+     *
+     * @param expression the expression
+     * @return true where it reads one
+     */
+    public boolean readsVolatileDraw(final Expression expression) {
+        try {
+            return preparedVisitor().readsVolatileDraw(expression);
+        } catch (final RuntimeException undetermined) {
+            return false;
+        }
+    }
+
+    /**
      * The NUMBER {@code expression} spells when it is a bare string literal, or a column carrying one out
      * of a derived relation — what a projected column hands on so a conditional over it folds as live
      * folds the literal (see TableColumn#getSpelledNumber); null for anything else. Never throws.

@@ -22,7 +22,9 @@ import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.functions.scalar.SnowflakeDateFormat;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.LobSize;
 import dev.frostlake.values.VariantJsonText;
+import dev.frostlake.values.VariantText;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.XmlVariants;
 
@@ -85,8 +87,12 @@ public class ToChar extends BuiltInFunction {
             // JSON_INDENT is set to — only a variant DISPLAYED as itself follows the width. It is the
             // CONVERSION text too, so a DOUBLE inside it is rewritten (VariantJsonText) — while a bare
             // double converts to its display spelling.
+            // A text past the most a text holds is refused, an array too long to be spelled before its text is
+            // made (see LobSize).
+            VariantText.requireConvertible(((VariantValue) value).node());
             final String convertedVariant = VariantJsonText.stringConversionTextOf(value);
-            return convertedVariant != null ? convertedVariant : ((VariantValue) value).text();
+            return LobSize.requireConverted(convertedVariant != null ? convertedVariant
+                : ((VariantValue) value).text());
         }
         if (value instanceof BinaryValue && args.size() >= 2 && args.get(1) != null) {
             // BINARY has its own format model — the target ENCODING, not a picture string.

@@ -80,6 +80,7 @@ import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.functions.scalar.semistructured.ParseJson;
 import dev.frostlake.jdbc.JdbcMarshaling;
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlCharStream;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
@@ -230,6 +231,8 @@ public class ProceduralExecutor {
     /** What a bare RETURN of SQLROWCOUNT declares before any statement of the block has run. */
     private static final DataType UNCOUNTED_RETURN = new StringType("VARCHAR", StringResultWidths.UNBOUNDED);
     private static final DataType COUNTER_TYPE = new NumericType("NUMBER", 9, 0);
+    /** The text names a running handler supplies. */
+    private static final String[] HANDLER_TEXT_NAMES = {"SQLSTATE", "SQLERRM"};
     private static final long COUNTER_LIMIT = 999_999_999L;
     private static final DataType WHOLE_NUMBER_TYPE = new NumericType("NUMBER", 38, 0);
     /** The RETURNS frame of the procedure whose body runs, or null outside one. */
@@ -1384,12 +1387,16 @@ public class ProceduralExecutor {
     /** Judge a block expression unless it passed already over the same types (see {@link #judgedPasses}). */
     private void judge(final ParserRuleContext expression, final DataType target) {
         final Map<String, DataType> types = judgedTypes();
+        final Set<String> bound = new HashSet<String>(counterTypes.keySet());
+        if (!handledExceptions.isEmpty()) {
+            addHandlerSuppliedNames(types, bound);
+        }
         final Map<String, DataType> passed = judgedPasses.get(expression);
         if (passed != null && passed.equals(types) && Objects.equals(judgedPassTargets.get(expression), target)) {
             return;
         }
-        BlockExpressionTypes.judge(expression, types, counterTypes.keySet(), bindsBlockNames(), target,
-            scope.variables(), queryExecutor);
+        BlockExpressionTypes.judge(expression, types, bound, bindsBlockNames(), target, scope.variables(),
+            queryExecutor);
         judgedPasses.put(expression, types);
         judgedPassTargets.put(expression, target);
     }
@@ -1417,6 +1424,39 @@ public class ProceduralExecutor {
     }
 
     /**
+     * Type the names a running handler supplies as a block expression is judged over them: SQLCODE a NUMBER(9,0),
+     * SQLSTATE and SQLERRM texts at their values' widths, each written out as a bind. {@code RETURN SQLCODE ||
+     * STARTSWITH('a', 'b')} is {@code Invalid argument types for function '||': (NUMBER(9,0), BOOLEAN)} at position
+     * 24, the name read as {@code (:SQLCODE)::NUMBER(9,0)}, and {@code SQLERRM || STARTSWITH('a', 'b')} over a
+     * message of three characters {@code (VARCHAR(3), BOOLEAN)} at position 11 (live-verified). A name the block
+     * declares itself keeps its declaration.
+     *
+     * @param types the types judged over, completed in place
+     * @param bound the names written out as binds, completed in place
+     */
+    private void addHandlerSuppliedNames(final Map<String, DataType> types, final Set<String> bound) {
+        if (!types.containsKey("SQLCODE")) {
+            types.put("SQLCODE", COUNTER_TYPE);
+            bound.add("SQLCODE");
+        }
+        for (final String name : HANDLER_TEXT_NAMES) {
+            if (!types.containsKey(name) && hasVariable(name)) {
+                types.put(name, boundTextType(getVariable(name)));
+                bound.add(name);
+            }
+        }
+    }
+
+    /** A text value's type as the account binds it: at its width, one at the least, a NULL at the full width. */
+    private static DataType boundTextType(final Object value) {
+        if (value instanceof String) {
+            final String text = (String) value;
+            return new StringType("VARCHAR", Math.max(1, text.codePointCount(0, text.length())));
+        }
+        return new StringType("VARCHAR", StringResultWidths.UNBOUNDED);
+    }
+
+    /**
      * The types of the names a block expression is judged over: each declared type, except that a text variable
      * is typed as the account binds its value — at the value's width, one at the least, and a NULL at the full
      * scripting width whatever the declared one: {@code LET x := 'abc'} reads as a VARCHAR(3), {@code ''} as a
@@ -1427,11 +1467,8 @@ public class ProceduralExecutor {
         for (final Map.Entry<String, DataType> entry : types.entrySet()) {
             if (entry.getValue() instanceof StringType && !"SQLROWCOUNT".equals(entry.getKey())) {
                 final Object value = getVariable(entry.getKey());
-                if (value == null) {
-                    entry.setValue(new StringType("VARCHAR", StringResultWidths.UNBOUNDED));
-                } else if (value instanceof String) {
-                    final String text = (String) value;
-                    entry.setValue(new StringType("VARCHAR", Math.max(1, text.codePointCount(0, text.length()))));
+                if (value == null || value instanceof String) {
+                    entry.setValue(boundTextType(value));
                 }
             }
         }
@@ -2458,14 +2495,26 @@ public class ProceduralExecutor {
             if (expr != null && expr.getSourceLine() > 0) {
                 recordExpressionFailure(expr.getSourceLine(), expr.getSourcePosition());
             }
-            // A bare word where a unit is read, naming none, is to a block the name nothing declares.
+            // A bare word where a unit is read, naming none, is to a block the name nothing declares: placed at a
+            // RETURN's or an IF condition's root, and at a LET's start (see ExpressionRootPlace).
             final UnknownUnitWord unit = UnknownUnitWord.in(failed);
             if (unit != null) {
-                throw new RuntimeException(SqlCompilationError.at(1, 0, "invalid identifier '" + unit.word() + "'"),
-                    failed);
+                final int[] place = unknownWordPlace(expr);
+                throw new RuntimeException(SqlCompilationError.at(place[0], place[1], "invalid identifier '"
+                    + unit.word() + "'"), failed);
             }
             throw failed;
         }
+    }
+
+    /** Where an expression's unknown word is placed: a RETURN's or an IF condition's root, else its start. */
+    private static int[] unknownWordPlace(final BaseExpression expr) {
+        final ParserRuleContext written = expr == null ? null : expr.getJudgedFrom();
+        if (written == null || !(written.getParent() instanceof FrostlakeParser.ReturnStatementContext)
+                && !(written.getParent() instanceof FrostlakeParser.IfStatementContext)) {
+            return new int[] {1, 0};
+        }
+        return ExpressionRootPlace.of(written);
     }
 
     private Object evaluateBuiltExpression(final BaseExpression expr) {

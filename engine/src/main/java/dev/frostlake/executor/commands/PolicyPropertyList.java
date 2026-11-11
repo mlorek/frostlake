@@ -22,6 +22,7 @@ import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.parser.FrostlakeParser;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -62,6 +63,19 @@ final class PolicyPropertyList {
      * @param kind the policy kind as the refusal names it, e.g. {@code MASKING_POLICY}
      */
     static void validate(final FrostlakeParser.PolicyActionContext action, final String kind) {
+        validate(action, kind, Collections.<String>emptyList());
+    }
+
+    /**
+     * {@link #validate(FrostlakeParser.PolicyActionContext, String)} for a kind with properties of its own beside
+     * COMMENT, whose values its statement judges: a storage lifecycle policy's ARCHIVE_TIER and ARCHIVE_FOR_DAYS.
+     *
+     * @param action the ALTER's policy action
+     * @param kind   the policy kind as the refusal names it
+     * @param others the kind's other properties, upper-case
+     */
+    static void validate(final FrostlakeParser.PolicyActionContext action, final String kind,
+                         final List<String> others) {
         final List<String> names = new ArrayList<>();
         final List<FrostlakeParser.PolicyPropertyValueContext> values = new ArrayList<>();
         if (!action.policyProperty().isEmpty()) {
@@ -82,12 +96,15 @@ final class PolicyPropertyList {
             byName.put(name, Boolean.TRUE);
         }
         for (final String name : byName.keySet()) {
-            if (!COMMENT.equals(name.toUpperCase(Locale.ROOT))) {
+            final String upper = name.toUpperCase(Locale.ROOT);
+            if (!COMMENT.equals(upper) && !others.contains(upper)) {
                 throw new RuntimeException(SqlCompilationError.invalidPropertyFor(name, kind));
             }
         }
-        for (final FrostlakeParser.PolicyPropertyValueContext value : values) {
-            commentOf(value);
+        for (int i = 0; i < values.size(); i++) {
+            if (COMMENT.equals(names.get(i).toUpperCase(Locale.ROOT))) {
+                commentOf(values.get(i));
+            }
         }
     }
 
@@ -101,9 +118,33 @@ final class PolicyPropertyList {
     static String comment(final FrostlakeParser.PolicyActionContext action) {
         String comment = null;
         for (final FrostlakeParser.PolicyPropertyContext property : action.policyProperty()) {
-            comment = commentOf(property.policyPropertyValue());
+            if (COMMENT.equals(property.identifier().getText().toUpperCase(Locale.ROOT))) {
+                comment = commentOf(property.policyPropertyValue());
+            }
         }
         return comment;
+    }
+
+    /**
+     * Whether a validated SET or UNSET property list sets or clears the comment.
+     *
+     * @param action the ALTER's policy action
+     * @return true when COMMENT is among its properties
+     */
+    static boolean namesComment(final FrostlakeParser.PolicyActionContext action) {
+        for (final FrostlakeParser.PolicyPropertyContext property : action.policyProperty()) {
+            if (COMMENT.equals(property.identifier().getText().toUpperCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        if (action.UNSET() != null) {
+            for (final FrostlakeParser.IdentifierContext name : action.identifier()) {
+                if (COMMENT.equals(name.getText().toUpperCase(Locale.ROOT))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** The comment a COMMENT property's value spells, null for NULL, refusing a value no comment takes. */

@@ -378,10 +378,9 @@ public class GeoTypeRejectionTest extends BaseDatabaseTest {
     // ── the conversions ──────────────────────────────────────────────────────
 
     /**
-     * EVERY cast target is refused, including the identity one — the sharpest difference from a plain
-     * OBJECT, which casts to VARCHAR and returns its JSON. Live renders the cast from its analysed
-     * plan (qualified, upper-cased, default length); Frostlake renders it as WRITTEN, the same choice
-     * the FILE rule already makes, so only the parameter name is asserted in full here.
+     * EVERY cast target but the value's own type is refused — the sharpest difference from a plain OBJECT, which
+     * casts to VARCHAR and returns its JSON; a cast to its own type is no conversion and reads the column
+     * (live-verified). Live renders the cast from its analysed plan (qualified, upper-cased, default length).
      */
     @Test
     public void everyCastFromAGeoValueIsRejected() {
@@ -401,8 +400,8 @@ public class GeoTypeRejectionTest extends BaseDatabaseTest {
             "invalid type [CAST(GT.G AS OBJECT)] for parameter 'TO_OBJECT'");
         assertFails("SELECT CAST(g AS NUMBER) FROM gt",
             "invalid type [CAST(GT.G AS NUMBER(38,0))] for parameter 'TO_NUMBER'");
-        assertFails("SELECT CAST(g AS GEOGRAPHY) FROM gt",
-            "invalid type [CAST(GT.G AS GEOGRAPHY)] for parameter 'TO_GEOGRAPHY'");
+        assertEquals(0, engine.executeQuery("SELECT CAST(g AS GEOGRAPHY) FROM gt").getRows().size());
+        assertEquals(0, engine.executeQuery("SELECT CAST(gm AS GEOMETRY) FROM gt").getRows().size());
         assertFails("SELECT CAST(gm AS GEOGRAPHY) FROM gt",
             "invalid type [CAST(GT.GM AS GEOGRAPHY)] for parameter 'TO_GEOGRAPHY'");
     }

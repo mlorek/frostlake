@@ -74,6 +74,10 @@ public class DynamicTable extends SqlObject {
      * number and the rows it holds (see {@link #getInputPartitions}).
      */
     private final Map<String, Map<Long, Long>> inputPartitions = new LinkedHashMap<>();
+    /** When each base table the last refresh read was made, by its qualified name: a replaced one is another. */
+    private final Map<String, Instant> inputCreatedTimes = new LinkedHashMap<>();
+    /** Whether a refresh that had to reinitialize the table failed, so the next one reinitializes it. */
+    private boolean reinitRequested;
     /** The refreshes this engine ran, oldest first, for a read or a stream at a past point (see {@link #refreshAt}). */
     private final List<DynamicTableRefresh> refreshes = new ArrayList<>();
     private boolean transientTable;
@@ -346,6 +350,36 @@ public class DynamicTable extends SqlObject {
     /** Keeps an input's micro-partitions as a refresh read them. */
     public synchronized void setInputPartitions(final String input, final Map<Long, Long> partitions) {
         inputPartitions.put(input, new LinkedHashMap<>(partitions));
+    }
+
+    /**
+     * When a base table the last refresh read was made, or null for one it did not read.
+     *
+     * @param input the base table's qualified name
+     * @return its creation time as the refresh read it, or null
+     */
+    public synchronized Instant getInputCreatedTime(final String input) {
+        return inputCreatedTimes.get(input);
+    }
+
+    /** Keeps when a base table a refresh read was made. */
+    public synchronized void setInputCreatedTime(final String input, final Instant createdTime) {
+        inputCreatedTimes.put(input, createdTime);
+    }
+
+    /** Every base table's creation time as the last refresh read it, as a snapshot saves them. */
+    public synchronized Map<String, Instant> getAllInputCreatedTimes() {
+        return new LinkedHashMap<>(inputCreatedTimes);
+    }
+
+    /** @return whether a failed refresh asked the next one to reinitialize the table */
+    public synchronized boolean isReinitRequested() {
+        return reinitRequested;
+    }
+
+    /** Sets whether the next refresh reinitializes the table because one before it failed to. */
+    public synchronized void setReinitRequested(final boolean requested) {
+        this.reinitRequested = requested;
     }
 
     /** Every input's micro-partitions as the last refresh read them, as a snapshot of the engine's state saves them. */

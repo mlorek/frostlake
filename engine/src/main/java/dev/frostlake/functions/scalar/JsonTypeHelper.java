@@ -142,6 +142,10 @@ public final class JsonTypeHelper {
      * string field holding JSON text round-trips to its raw text before parsing.
      */
     public static String quotedJsonStringText(final Object value) {
+        if (value instanceof VariantValue && ((VariantValue) value).isContainerValue()) {
+            // An array or an object is no string, whatever its size: its text is not made to be asked.
+            return null;
+        }
         final String raw = value instanceof VariantValue ? ((VariantValue) value).text()
             : value instanceof String ? (String) value
             : null;

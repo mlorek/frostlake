@@ -38,6 +38,7 @@ public class CastExpression implements Expression {
     private SourcePosition position;
     /** Whether this is a typed literal, {@code DATE '2020-01-02'}, rather than a cast anybody wrote. */
     private boolean typedLiteral;
+    private boolean blockBinding;
 
     public CastExpression(final Expression expression, final String targetType) {
         this(expression, targetType, false);
@@ -128,6 +129,21 @@ public class CastExpression implements Expression {
     /** Mark this cast as a typed literal — see {@link #isTypedLiteral()}. */
     public void markTypedLiteral() {
         this.typedLiteral = true;
+    }
+
+    /**
+     * Whether this cast is a block's exact NUMBER variable as the block binds it (see BlockVariableBinding), which a
+     * constant argument folds to a constant that keeps the mark.
+     *
+     * @return true for such a binding
+     */
+    public boolean isBlockBinding() {
+        return blockBinding;
+    }
+
+    /** Mark this cast as a block's exact NUMBER binding — see {@link #isBlockBinding()}. */
+    public void markBlockBinding() {
+        this.blockBinding = true;
     }
 
     @Override

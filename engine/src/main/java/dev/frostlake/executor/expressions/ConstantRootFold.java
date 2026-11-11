@@ -328,6 +328,9 @@ final class ConstantRootFold {
         final DataType target = visitor.inferStaticType(cast);
         if (target instanceof NumericType && foldsInto((NumericType) target, cast.getExpression(), source)) {
             final Expression converted = converted(cast, target);
+            if (converted instanceof FoldedConstantExpression && cast.isBlockBinding()) {
+                ((FoldedConstantExpression) converted).markBlockBinding();
+            }
             if (converted != null) {
                 return converted;
             }

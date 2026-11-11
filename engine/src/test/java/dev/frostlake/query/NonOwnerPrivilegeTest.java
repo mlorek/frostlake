@@ -144,36 +144,28 @@ public class NonOwnerPrivilegeTest extends MeasuredCellsTestSupport {
                 + "primary role <ROLE> must have INSERT granted on TABLE TEST_DB.TEST_SCHEMA.T1.",
                 "COPY INTO t1 FROM @mine_st");
             assertAnswer(
-                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'. Your "
-                + "primary role <ROLE> must have MODIFY granted on TABLE TEST_DB.TEST_SCHEMA.T1.",
+                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'.",
                 "ALTER TABLE t1 ADD COLUMN c INT");
             assertAnswer(
-                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'. Your "
-                + "primary role <ROLE> must have MODIFY granted on TABLE TEST_DB.TEST_SCHEMA.T1.",
+                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'.",
                 "ALTER TABLE t1 DROP COLUMN b");
             assertAnswer(
-                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'. Your "
-                + "primary role <ROLE> must have MODIFY granted on TABLE TEST_DB.TEST_SCHEMA.T1.",
+                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'.",
                 "ALTER TABLE t1 RENAME COLUMN b TO bb");
             assertAnswer(
-                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'. Your "
-                + "primary role <ROLE> must have MODIFY granted on TABLE TEST_DB.TEST_SCHEMA.T1.",
+                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'.",
                 "ALTER TABLE t1 ALTER COLUMN b COMMENT 'c'");
             assertAnswer(
-                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'. Your "
-                + "primary role <ROLE> must have MODIFY granted on TABLE TEST_DB.TEST_SCHEMA.T1.",
+                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'.",
                 "ALTER TABLE t1 SET COMMENT = 'x'");
             assertAnswer(
-                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'. Your "
-                + "primary role <ROLE> must have MODIFY granted on TABLE TEST_DB.TEST_SCHEMA.T1.",
+                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'.",
                 "ALTER TABLE t1 CLUSTER BY (a)");
             assertAnswer(
-                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'. Your "
-                + "primary role <ROLE> must have MODIFY granted on TABLE TEST_DB.TEST_SCHEMA.T1.",
+                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'.",
                 "ALTER TABLE t1 SET DATA_RETENTION_TIME_IN_DAYS = 0");
             assertAnswer(
-                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'. Your "
-                + "primary role <ROLE> must have MODIFY granted on TABLE TEST_DB.TEST_SCHEMA.T1.",
+                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'.",
                 "ALTER TABLE t1 ADD CONSTRAINT t1_pk PRIMARY KEY (a)");
             assertAnswer(
                 "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'. Your "
@@ -500,8 +492,7 @@ public class NonOwnerPrivilegeTest extends MeasuredCellsTestSupport {
                 + "primary role <ROLE> must have TRUNCATE granted on TABLE TEST_DB.TEST_SCHEMA.T1.",
                 "TRUNCATE TABLE t1");
             assertAnswer(
-                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'. Your "
-                + "primary role <ROLE> must have MODIFY granted on TABLE TEST_DB.TEST_SCHEMA.T1.",
+                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'.",
                 "ALTER TABLE t1 SET COMMENT = 'x'");
             assertAnswer(
                 "REFUSED SQL access control error: | Insufficient privileges to operate on stream source without "
@@ -543,8 +534,7 @@ public class NonOwnerPrivilegeTest extends MeasuredCellsTestSupport {
                 "Statement executed successfully.",
                 "TRUNCATE TABLE t1");
             assertAnswer(
-                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'. Your "
-                + "primary role <ROLE> must have MODIFY granted on TABLE TEST_DB.TEST_SCHEMA.T1.",
+                "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'.",
                 "ALTER TABLE t1 SET COMMENT = 'x'");
             assertAnswer(
                 "REFUSED SQL access control error: | Insufficient privileges to operate on table 'T1'. Your "

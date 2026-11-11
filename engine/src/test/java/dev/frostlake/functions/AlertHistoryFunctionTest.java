@@ -15,6 +15,7 @@
  */
 package dev.frostlake.functions;
 
+import dev.frostlake.AlertEvaluationWait;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -33,7 +34,12 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** INFORMATION_SCHEMA.ALERT_HISTORY: one row per evaluation of an alert, newest scheduled time first. */
+/**
+ * INFORMATION_SCHEMA.ALERT_HISTORY: one row per evaluation of an alert, newest scheduled time first. The alerts carry
+ * a schedule, since one without is an alert on new data, which EXECUTE ALERT does not run; an account evaluates an
+ * executed alert a moment later and keeps earlier runs' history, so the rows read are the ones since a mark (see
+ * {@link AlertEvaluationWait}).
+ */
 public class AlertHistoryFunctionTest extends BaseDatabaseTest {
 
     @AfterEach
@@ -52,15 +58,21 @@ public class AlertHistoryFunctionTest extends BaseDatabaseTest {
     @Test
     public void everyOutcomeIsRecordedNewestFirst() {
         engine.executeQuery("CREATE TABLE h (v INT)");
-        engine.executeQuery("CREATE ALERT h1 IF (EXISTS (SELECT * FROM h)) THEN SELECT 1");
+        engine.executeQuery("CREATE ALERT h1 SCHEDULE = '60 MINUTE' IF (EXISTS (SELECT * FROM h)) THEN SELECT 1");
+        AlertEvaluationWait.mark(engine);
         engine.executeQuery("EXECUTE ALERT h1");
+        AlertEvaluationWait.until(engine, "H1", 1);
         engine.executeQuery("INSERT INTO h VALUES (1)");
         engine.executeQuery("EXECUTE ALERT h1");
+        AlertEvaluationWait.until(engine, "H1", 2);
         engine.executeQuery("ALTER ALERT h1 MODIFY ACTION INSERT INTO no_such_table VALUES (1)");
         engine.executeQuery("EXECUTE ALERT h1");
+        AlertEvaluationWait.until(engine, "H1", 3);
         engine.executeQuery("ALTER ALERT h1 MODIFY CONDITION EXISTS (SELECT * FROM no_such_table)");
         engine.executeQuery("EXECUTE ALERT h1");
-        final ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(INFORMATION_SCHEMA.ALERT_HISTORY())");
+        AlertEvaluationWait.until(engine, "H1", 4);
+        final ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(INFORMATION_SCHEMA.ALERT_HISTORY("
+            + "SCHEDULED_TIME_RANGE_START => $alert_since, ALERT_NAME => 'H1'))");
         assertEquals(Arrays.asList("CONDITION_FAILED", "ACTION_FAILED", "TRIGGERED", "CONDITION_FALSE"), states(rs));
         final Row failed = rs.getRows().get(0);
         assertEquals("H1", cell(rs, failed, "NAME"));
@@ -88,20 +100,25 @@ public class AlertHistoryFunctionTest extends BaseDatabaseTest {
 
     @Test
     public void theNameAndLimitArgumentsNarrowTheRows() {
-        engine.executeQuery("CREATE ALERT n1 IF (EXISTS (SELECT 1)) THEN SELECT 1");
-        engine.executeQuery("CREATE ALERT n2 RUNBOOK = 'see wiki' IF (EXISTS (SELECT 1)) THEN SELECT 1");
+        engine.executeQuery("CREATE ALERT n1 SCHEDULE = '60 MINUTE' IF (EXISTS (SELECT 1)) THEN SELECT 1");
+        engine.executeQuery("CREATE ALERT n2 SCHEDULE = '60 MINUTE' RUNBOOK = 'see wiki' IF (EXISTS (SELECT 1)) "
+            + "THEN SELECT 1");
+        AlertEvaluationWait.mark(engine);
         engine.executeQuery("EXECUTE ALERT n1");
+        AlertEvaluationWait.until(engine, "N1", 1);
         engine.executeQuery("EXECUTE ALERT n2");
+        AlertEvaluationWait.until(engine, "N2", 1);
         engine.executeQuery("EXECUTE ALERT n2");
-        final ResultSet named = engine.executeQuery(
-            "SELECT * FROM TABLE(INFORMATION_SCHEMA.ALERT_HISTORY(ALERT_NAME => 'n2'))");
+        AlertEvaluationWait.until(engine, "N2", 2);
+        final ResultSet named = engine.executeQuery("SELECT * FROM TABLE(INFORMATION_SCHEMA.ALERT_HISTORY("
+            + "SCHEDULED_TIME_RANGE_START => $alert_since, ALERT_NAME => 'n2'))");
         assertEquals(2, named.getRows().size());
         assertEquals("see wiki", cell(named, named.getRows().get(0), "RUNBOOK"));
         assertEquals(1, engine.executeQuery(
             "SELECT * FROM TABLE(INFORMATION_SCHEMA.ALERT_HISTORY(RESULT_LIMIT => 1))").getRows().size());
         assertEquals(3, engine.executeQuery(
-            "SELECT * FROM TABLE(INFORMATION_SCHEMA.ALERT_HISTORY(SCHEDULED_TIME_RANGE_START => "
-                + "DATEADD('hour', -1, CURRENT_TIMESTAMP())))").getRows().size());
+            "SELECT * FROM TABLE(INFORMATION_SCHEMA.ALERT_HISTORY(SCHEDULED_TIME_RANGE_START => $alert_since))")
+            .getRows().size());
         assertEquals(0, engine.executeQuery(
             "SELECT * FROM TABLE(INFORMATION_SCHEMA.ALERT_HISTORY(RESULT_LIMIT => 0))").getRows().size());
         final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {

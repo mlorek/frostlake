@@ -315,8 +315,9 @@ public final class StreamSources {
 
     /**
      * The first table a re-bound view stream reads whose change tracking began after the point the stream reads from,
-     * while no change to it has come since: the range the stream reads holds a time the table tracked nothing, so the
-     * read is refused, as it is on the account until the table changes (live-verified).
+     * while no change to it has come since, or at all where a statement had written it before its tracking began (see
+     * Table#wasWrittenUntracked): the range the stream reads holds a time the table tracked nothing, so the read is
+     * refused, as it is on the account until such a table changes (live-verified).
      *
      * @param catalog the catalog
      * @param stream  the stream
@@ -332,8 +333,33 @@ public final class StreamSources {
             final long since = bound.get(i).getChangeTrackingSince();
             final String name = completed(viewHome, stream.getBaseTableNames().get(i));
             if (since != Long.MAX_VALUE && since > stream.getOffsetSequence()
-                    && !stream.holdsVersionAfter(name, since)) {
+                    && (bound.get(i).wasWrittenUntracked() || !stream.holdsVersionAfter(name, since))) {
                 return name;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The full name of the first table a view stream's view names that holds no table now, or null when each name holds
+     * one: the stream reads its view as a query does, so the view's expansion fails over that name whatever table the
+     * stream was bound to (live-verified: a re-bound stream whose table was renamed is refused so).
+     *
+     * @param catalog the catalog
+     * @param stream  the stream
+     * @return DB.SCHEMA.NAME of such a name, or null
+     */
+    public static String unexpandedNameOf(final Catalog catalog, final Stream stream) {
+        if (stream.getSourceType() != StreamSourceType.VIEW) {
+            return null;
+        }
+        final Schema viewHome = viewHomeOf(catalog, homeOf(catalog, stream), stream);
+        if (viewHome == null) {
+            return null;
+        }
+        for (final String name : stream.getBaseTableNames()) {
+            if (named(catalog, viewHome, name) == null) {
+                return completed(viewHome, name);
             }
         }
         return null;

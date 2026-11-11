@@ -43,6 +43,7 @@ import dev.frostlake.types.StringType;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.misc.Interval;
+import org.antlr.v4.runtime.tree.ParseTree;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -52,7 +53,9 @@ import java.util.List;
  * The ALERT statements: CREATE [OR REPLACE | OR ALTER] ALERT (with its properties, condition and action, or as a
  * CLONE), ALTER ALERT (RESUME, SUSPEND, SET, UNSET, MODIFY CONDITION, MODIFY ACTION), DROP ALERT, SHOW ALERTS,
  * DESCRIBE ALERT and EXECUTE ALERT. The condition and the action are kept as written; they are parsed, not
- * resolved, when the alert is created, so a missing object fails the evaluation rather than the CREATE.
+ * resolved, when the alert is created, so a missing object fails the evaluation rather than the CREATE. An alert
+ * written without a schedule is an alert on new data (documented), whose condition must read a table or a view and
+ * which EXECUTE ALERT does not run.
  */
 public final class AlertCommandHandler {
 
@@ -122,6 +125,7 @@ public final class AlertCommandHandler {
             alert = new Alert(name, sourceText(definition.alertCondition()),
                 ParseTreeText.taskBodyText(definition.taskBody()));
             applyProperties(catalog, alert, definition.alertProperty());
+            requireNewDataCondition(alert, definition.alertCondition());
         }
         if (schema.hasAlertExact(name)) {
             final Alert replaced = schema.getAlertExact(name);
@@ -150,7 +154,10 @@ public final class AlertCommandHandler {
     private void alterInPlace(final Schema schema, final Alert alert,
                               final FrostlakeParser.AlertDefinitionContext definition) {
         // The properties are judged on a copy first, so a refused statement leaves the alert as it was.
-        applyProperties(catalog, alert.copy(alert.getName()), definition.alertProperty());
+        final Alert judged = alert.copy(alert.getName());
+        judged.setSchedule(null);
+        applyProperties(catalog, judged, definition.alertProperty());
+        requireNewDataCondition(judged, definition.alertCondition());
         final String schedule = alert.getSchedule();
         alert.setWarehouse(null);
         alert.setSchedule(null);
@@ -190,6 +197,42 @@ public final class AlertCommandHandler {
                 alert.setSuspendAfterNumFailures(Integer.valueOf(property.INTEGER_LITERAL().getText()));
             }
         }
+    }
+
+    /**
+     * The condition of an alert on new data, one without a schedule: the alert runs when the table or the view its
+     * condition reads takes new rows, so a condition calling a stored procedure, or a query reading nothing but a
+     * VALUES clause, a query without a FROM among them, is refused as the alert is written (live-verified).
+     */
+    private static void requireNewDataCondition(final Alert alert,
+                                                final FrostlakeParser.AlertConditionContext condition) {
+        if (alert.getSchedule() != null || condition.showStatement() != null) {
+            return;
+        }
+        if (condition.callStatement() != null || !readsRelation(condition)) {
+            throw new RuntimeException(
+                "Streaming alert condition must not call a stored procedure or query from a VALUES clause");
+        }
+    }
+
+    /** Whether a query reads a relation: any source of a FROM but a VALUES clause and the brackets around one. */
+    private static boolean readsRelation(final ParseTree node) {
+        if (node instanceof FrostlakeParser.TableSourceContext) {
+            final FrostlakeParser.TableSourceContext source = (FrostlakeParser.TableSourceContext) node;
+            if (source.VALUES() == null && source.selectStatement() == null && source.tableReference() == null) {
+                return true;
+            }
+        }
+        if (node instanceof FrostlakeParser.SelectOperandContext
+                && ((FrostlakeParser.SelectOperandContext) node).TABLE_QUERY() != null) {
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (readsRelation(node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Refuses a property written twice, {@code duplicate property 'COMMENT';}. */
@@ -293,6 +336,7 @@ public final class AlertCommandHandler {
                 }
             }
         } else if (action.CONDITION() != null) {
+            requireNewDataCondition(alert, action.alertCondition());
             alert.setCondition(sourceText(action.alertCondition()));
         } else if (action.ACTION() != null) {
             alert.setAction(ParseTreeText.taskBodyText(action.taskBody()));
@@ -357,12 +401,16 @@ public final class AlertCommandHandler {
 
     /**
      * EXECUTE ALERT name: the condition is evaluated now, and the action run when it returns rows. It answers
-     * {@code Alert <NAME> is scheduled to run immediately.}
+     * {@code Alert <NAME> is scheduled to run immediately.} An alert on new data is run by its rows alone:
+     * {@code Execute Alert is not supported for a streaming alert.} (live-verified).
      */
     public ResultSet execute(final FrostlakeParser.QualifiedNameContext name) {
         final String[] parts = ParseTreeText.qualifiedNameParts(name);
         final Schema schema = catalog.requireOwningSchema(QualifiedName.of(parts));
         final Alert alert = require(name);
+        if (alert.getSchedule() == null) {
+            throw new RuntimeException("Execute Alert is not supported for a streaming alert.");
+        }
         final TaskScheduler scheduler = queryExecutor.getTaskScheduler();
         if (scheduler == null) {
             throw new RuntimeException("Task scheduler not initialized");

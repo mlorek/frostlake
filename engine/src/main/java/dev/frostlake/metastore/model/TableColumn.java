@@ -76,6 +76,8 @@ public class TableColumn implements Taggable {
 
     /** Whether the column belongs to a relation the plan has no statistics of: a VALUES clause's. */
     private boolean withoutStatistics;
+    /** Whether a DERIVED relation's column holds values drawn anew for each row; see isVolatileDraw. */
+    private boolean volatileDraw;
 
     // A DERIVED relation's column's interval of values, propagated from the inner projection the way
     // the account propagates statistics; null when none is known. A catalog column never carries one —
@@ -93,8 +95,8 @@ public class TableColumn implements Taggable {
     // A DERIVED relation's column projecting a double live's compiler folds, which TO_VARIANT wraps keeping
     // its FLOAT origin (see isFoldedDouble); false for every other column.
     private boolean foldedDouble;
-    // A DERIVED relation's column projecting a number or boolean literal a FROM-less select writes, which a wrap
-    // into a VARIANT converts unchecked (see isLiteralConstant); false for every other column.
+    // A DERIVED relation's column projecting a number or boolean literal a select writes, which a wrap into a
+    // VARIANT converts unchecked (see isLiteralConstant); false for every other column.
     private boolean literalConstant;
     // Whether the column holds nothing but an untyped NULL (see isUntypedNull); false for every other column.
     private boolean untypedNull;
@@ -211,6 +213,21 @@ public class TableColumn implements Taggable {
 
     public void setWithoutStatistics(final boolean withoutStatistics) {
         this.withoutStatistics = withoutStatistics;
+    }
+
+    /**
+     * Whether this DERIVED relation's column holds values drawn anew for each row - a SEQ4(), a RANDOM(), a UNIFORM
+     * over one - which a lateral SQL table function called over it cannot be planned with: the account refuses the
+     * call as {@code Unsupported subquery type cannot be evaluated} (live-verified).
+     *
+     * @return true for such a column
+     */
+    public boolean isVolatileDraw() {
+        return volatileDraw;
+    }
+
+    public void setVolatileDraw(final boolean volatileDraw) {
+        this.volatileDraw = volatileDraw;
     }
 
     public void setValueRange(final ValueRange valueRange) {
@@ -410,10 +427,11 @@ public class TableColumn implements Taggable {
     }
 
     /**
-     * Whether this DERIVED relation's column projects a number or boolean literal a FROM-less select writes:
-     * live folds the literal through the relation, so a wrap of the column into a VARIANT converts to a sized
-     * VARCHAR unchecked as the wrap of the literal does - {@code SELECT 'x' v UNION ALL SELECT TO_VARIANT(z) FROM
-     * (SELECT 12 z)} answers {@code 12} (live-verified). A catalog column never is one.
+     * Whether this DERIVED relation's column projects a number or boolean literal a select writes, over a table, a
+     * view, a CTE or another derived relation as over none: live folds the literal through the relation, so a wrap of
+     * the column into a VARIANT converts to a sized VARCHAR unchecked as the wrap of the literal does -
+     * {@code SELECT 'x' v UNION ALL SELECT TO_VARIANT(z) FROM (SELECT 12 z FROM t)} answers {@code 12}
+     * (live-verified). A catalog column never is one, nor a set operation's.
      *
      * @return true for such a column
      */
@@ -491,6 +509,7 @@ public class TableColumn implements Taggable {
         copy.projectionPolicyName = projectionPolicyName;
         copy.tags.putAll(tags);
         copy.withoutStatistics = withoutStatistics;
+        copy.volatileDraw = volatileDraw;
         copy.hiddenFromStar = hiddenFromStar;
         copy.staticallyTyped = staticallyTyped;
         copy.valueRange = valueRange;

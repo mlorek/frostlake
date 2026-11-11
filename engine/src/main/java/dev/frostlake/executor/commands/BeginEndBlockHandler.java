@@ -22,6 +22,7 @@ import dev.frostlake.executor.ApartRecording;
 import dev.frostlake.executor.BlockExpressionTypeError;
 import dev.frostlake.executor.BlockExpressionTypes;
 import dev.frostlake.executor.BlockFlowChains;
+import dev.frostlake.executor.BlockStatementText;
 import dev.frostlake.executor.BodyAbort;
 import dev.frostlake.executor.BodyPlacedError;
 import dev.frostlake.executor.CallDepth;
@@ -801,7 +802,8 @@ public class BeginEndBlockHandler implements CommandHandler {
         }
         final String queryIdBefore = proceduralExecutor().lastQueryIdOfSession();
         final String text = visitor.getOriginalText(stmtCtx);
-        final QueryHistory row = isChildStatement(stmtCtx) ? queryExecutor.beginChildStatement(text, stmtCtx) : null;
+        final QueryHistory row = isChildStatement(stmtCtx)
+            ? queryExecutor.beginChildStatement(BlockStatementText.of(stmtCtx, text), stmtCtx) : null;
         // A statement that commits work in a session of its own goes to the write-ahead log by itself, apart from
         // the transaction running the block (see ApartRecording).
         final ApartRecording apart = queryExecutor.beginApartRecording(stmtCtx);

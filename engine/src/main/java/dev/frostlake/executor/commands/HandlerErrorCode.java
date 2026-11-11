@@ -411,6 +411,17 @@ final class HandlerErrorCode {
                 && message.contains(" did not match the desired statement count ")) {
             return new HandlerErrorCode(StatementCountMismatch.CODE, StatementCountMismatch.STATE);
         }
+        // A bound value the compile cannot convert, and a LIMIT's or an OFFSET's bound row count it cannot read
+        // (live-verified through the account's driver).
+        if (message.contains("Can not convert parameter ") && message.contains(" into expected type [")) {
+            return new HandlerErrorCode(1038, "22023");
+        }
+        if (message.contains("Invalid row count '") && message.contains("' in limit clause")) {
+            return new HandlerErrorCode(2010, "2201W");
+        }
+        if (message.contains("Invalid row count '") && message.contains("' in result offset clause")) {
+            return new HandlerErrorCode(2011, "2201X");
+        }
         return null;
     }
 

@@ -703,7 +703,8 @@ final class MergeExecutor {
                                             && !(valueMap.get(key) instanceof DefaultMarkerExpression)) {
                                         orderedValues.add(valueMap.get(key));
                                     } else {
-                                        orderedValues.add(executor.insertColumnValue(col, fullyQualifiedTargetName, null));
+                                        orderedValues.add(executor.insertColumnValue(col, fullyQualifiedTargetName,
+                                            null, targetTable, orderedValues));
                                     }
                                 }
                                 final Row newRow = new Row(orderedValues);

@@ -19,6 +19,7 @@ package dev.frostlake.jdbc;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.SqlTokens;
+import dev.frostlake.executor.commands.FailureCode;
 import dev.frostlake.executor.expressions.IntervalCells;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.SqlCharStream;
@@ -999,7 +1000,11 @@ public final class JdbcMarshaling {
         try {
             return substitutePlaceholders(sql, params);
         } catch (final RuntimeException refused) {
-            throw new SQLException(refused.getMessage(), refused);
+            // A refusal the binding raises carries the code and the state the account's driver reads for it: a row
+            // count bound as a text or a FLOAT is 2010 / 2201W in a LIMIT, 2011 / 2201X in an OFFSET (live-verified).
+            final FailureCode family = FailureCode.ofClient(refused);
+            throw family == null ? new SQLException(refused.getMessage(), refused)
+                : new SQLException(refused.getMessage(), family.state(), family.code(), refused);
         }
     }
 
@@ -1109,7 +1114,8 @@ public final class JdbcMarshaling {
      * A prepared statement's value as the text written in its placeholder's place. The account's driver binds a double
      * or a float as a FLOAT, by its text — {@code SYSTEM$TYPEOF(?)} over setDouble(0.1) is FLOAT[DOUBLE], and
      * setDouble(1.255) written into a NUMBER(10,2) is 1.25 — so it is written as that text converted to FLOAT, which a
-     * LIMIT or an OFFSET refuses as the account's driver has it refused: {@code Invalid row count '?' in limit clause}.
+     * LIMIT or an OFFSET refuses as the account's driver has it refused: {@code Invalid row count '?' in limit clause},
+     * as it refuses a text there.
      * A BigDecimal binds as the NUMBER its digits spell, trailing zeros dropped, and one whose fraction takes it past
      * 38 digits is refused as the type it would be: setBigDecimal(1E-50) is
      * {@code Invalid intermediate datatype: NUMBER(51,50).} (all live-verified). Every other value is written as
@@ -1133,6 +1139,10 @@ public final class JdbcMarshaling {
                 throw new RuntimeException(SqlCompilationError.withoutPosition(
                     "Invalid intermediate datatype: NUMBER(" + precision + "," + scale + ")."));
             }
+        }
+        if (value instanceof String) {
+            // A text is no row count either (live-verified: setString in a LIMIT's or an OFFSET's place).
+            requireNoRowCount(tokens, placeholder);
         }
         return formatLiteral(value);
     }

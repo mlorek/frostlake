@@ -171,7 +171,11 @@ def _frostlake_install_snowpark():
             self.error_code = error_code
 
     class SnowparkSQLException(SnowparkClientException):
-        pass
+        # A failed query carries Snowpark's code for it, '1304', the failed statement's query ID and its text.
+        def __init__(self, message, error_code=None, sfqid=None, query=None):
+            super().__init__(message, error_code)
+            self.sfqid = sfqid
+            self.query = query
 
     # ------------------------------------------------------- value plumbing --
 
@@ -1526,7 +1530,10 @@ def _frostlake_install_snowpark():
                 # subclasses; only BaseException matches them.
                 raise SnowparkSQLException(str(e))
             if outcome.refused():
-                raise SnowparkSQLException(str(outcome.refusal()))
+                query_id = outcome.queryId()
+                if query_id is None:
+                    raise SnowparkSQLException(str(outcome.refusal()))
+                raise SnowparkSQLException(str(outcome.refusal()), '1304', str(query_id), sql)
             return outcome.result()
 
         def _query(self, sql, params=None):
@@ -1717,6 +1724,11 @@ def _frostlake_install_snowpark():
 
     _ex_mod.SnowparkClientException = SnowparkClientException
     _ex_mod.SnowparkSQLException = SnowparkSQLException
+    # A traceback names an exception by its module and its name, as Snowpark's own:
+    # snowflake.snowpark.exceptions.SnowparkSQLException: (1304): <query id>: <code> (<state>): <message>.
+    for _exc in (SnowparkClientException, SnowparkSQLException):
+        _exc.__module__ = 'snowflake.snowpark.exceptions'
+        _exc.__qualname__ = _exc.__name__
 
     _se_mod.Session = Session
 

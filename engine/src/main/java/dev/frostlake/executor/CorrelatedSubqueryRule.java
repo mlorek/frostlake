@@ -575,6 +575,71 @@ public final class CorrelatedSubqueryRule {
         }
     }
 
+    /**
+     * Whether live refuses an IN's subquery whatever the outer relation holds: its own aggregate beside the outer row
+     * over a scan a filter of its own prunes (see {@link #aggregatesBesideOuterOverPrunedScan}). Neither an empty
+     * outer relation nor one of a single row, which live reads row by row for the other shapes, spares it: {@code id
+     * IN (SELECT MAX(v) + t.id FROM g WHERE FALSE)} is refused over a target of no row, of one and of two, in a query,
+     * a DELETE and an EXPLAIN UPDATE alike (live-verified).
+     *
+     * @param subquery the IN's subquery
+     * @return true when it is refused so
+     */
+    public boolean refusesMembershipOverAnyOuter(final FrostlakeParser.SelectStatementContext subquery) {
+        final FrostlakeParser.SelectClauseContext clause = mainClause(subquery);
+        if (clause == null) {
+            return false;
+        }
+        final boolean judgingBefore = judging;
+        final boolean foldingBefore = foldingInAggregates;
+        judging = true;
+        foldingInAggregates = true;
+        try {
+            return judgeableWithDepth(subquery) && aggregatesBesideOuterOverPrunedScan(clause, scopeOfAlone(clause),
+                true);
+        } finally {
+            judging = judgingBefore;
+            foldingInAggregates = foldingBefore;
+        }
+    }
+
+    /**
+     * Whether a scalar subquery's select list opens with an aggregate over the outer row alone, or its HAVING holds
+     * one: the outer query's aggregate, a value the subquery runs with, so nothing of the subquery's own is
+     * aggregated ahead of it. Live refuses such a subquery over any outer relation, one of a single row and one whose
+     * statistics pin the names read alike: {@code (SELECT MAX(o.i) FROM g)}, {@code (SELECT MAX(o.i) + MAX(v) FROM g)}
+     * and {@code (SELECT MAX(v) FROM g HAVING MAX(o.i) > -1)} are refused, {@code (SELECT COUNT(*) + MAX(o.i) FROM g)}
+     * is answered (live-verified).
+     *
+     * @param subquery the scalar subquery
+     * @return true when it is refused so
+     */
+    public boolean opensWithOuterAggregate(final FrostlakeParser.SelectStatementContext subquery) {
+        final FrostlakeParser.SelectClauseContext clause = mainClause(subquery);
+        if (clause == null) {
+            return false;
+        }
+        final boolean judgingBefore = judging;
+        judging = false;
+        try {
+            final List<CorrelationScope> scopes = scopeOfAlone(clause);
+            final List<ParserRuleContext> calls = aggregateCalls(clause.selectList());
+            if (!calls.isEmpty() && readsOuterRowAlone(calls.get(0), scopes)) {
+                return true;
+            }
+            if (clause.havingClause() != null) {
+                for (final ParserRuleContext call : aggregateCalls(clause.havingClause())) {
+                    if (readsOuterRowAlone(call, scopes)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        } finally {
+            judging = judgingBefore;
+        }
+    }
+
     // ── an outer aggregate the statistics answer ─────────────────────────────────────
 
     /**

@@ -159,9 +159,12 @@ public class LastQueryIdArgumentTest extends BaseDatabaseTest {
                 "1e17::FLOAT", "10000.5::FLOAT", "TO_NUMBER(1e20::FLOAT)", "1e20::FLOAT::INT"}) {
             assertEquals(exceeds, refusal("SELECT LAST_QUERY_ID(" + index + ")"), index);
         }
-        for (final String index : new String[] {"TO_DOUBLE('1e-300')", "TO_DOUBLE('-0')", "10000.4::FLOAT",
-                "'-10000.4'::FLOAT"}) {
-            assertEquals("yes", answer("SELECT IFF(LAST_QUERY_ID(" + index + ") IS NULL, 'yes', 'no')"), index);
+        // Each reads the query its rounded index names, which a session of 10,000 statements holds.
+        final String[][] rounded = {{"TO_DOUBLE('1e-300')", "0"}, {"TO_DOUBLE('-0')", "0"},
+            {"10000.4::FLOAT", "10000"}, {"'-10000.4'::FLOAT", "-10000"}};
+        for (final String[] index : rounded) {
+            assertEquals("yes", answer("SELECT IFF(EQUAL_NULL(LAST_QUERY_ID(" + index[0] + "), LAST_QUERY_ID("
+                + index[1] + ")), 'yes', 'no')"), index[0]);
         }
     }
 

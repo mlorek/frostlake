@@ -189,6 +189,7 @@ final class GeneratorBounds {
             if (place == 0 || argument.expression() == null) {
                 continue;
             }
+            UnsupportedSetOperatorAll.requireNone(argument.expression());
             final int position = readsQualifier(argument.expression(), correlated) ? index + 1 : place;
             final ParserRuleContext bound = unwrapped(argument.expression());
             if (bound instanceof FrostlakeParser.ScalarSubqueryExprContext

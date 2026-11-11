@@ -133,8 +133,9 @@ public class AlertWarehouseAndStatusTest extends BaseDatabaseTest {
     public void aRunReportsItsQueriesAndAZeroErrorCode() {
         // The evaluation has finished when EXECUTE ALERT returns only on this engine.
         Assumptions.assumeFalse(isLiveSnowflake());
-        engine.executeQuery("CREATE ALERT awa_hit IF (EXISTS (SELECT 1)) THEN SELECT 1");
-        engine.executeQuery("CREATE ALERT awa_miss IF (EXISTS (SELECT 1 WHERE FALSE)) THEN SELECT 1");
+        engine.executeQuery("CREATE ALERT awa_hit SCHEDULE = '60 MINUTE' IF (EXISTS (SELECT 1)) THEN SELECT 1");
+        engine.executeQuery("CREATE ALERT awa_miss SCHEDULE = '60 MINUTE' IF (EXISTS (SELECT 1 WHERE FALSE)) "
+            + "THEN SELECT 1");
         engine.executeQuery("EXECUTE ALERT awa_hit");
         engine.executeQuery("EXECUTE ALERT awa_miss");
         final ResultSet rs = engine.executeQuery("SELECT NAME, STATE, SQL_ERROR_CODE, CONDITION_QUERY_ID,"

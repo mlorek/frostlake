@@ -49,9 +49,9 @@ import java.util.Set;
  * reads one - ARRAY_SIZE, TYPEOF, TO_JSON, IS_ARRAY, CHECK_JSON - its argument a NULL included. {@code VALUES
  * (ARRAY_SIZE([1]))} is {@code Invalid expression [ARRAY_SIZE(ARRAY_CONSTRUCT(1))] in VALUES clause}, the item echoed
  * as the plan spells it (see {@link ValuesItemEcho}), while ABS, UPPER, CONCAT, IFF, a cast of a text to a number
- * and a scalar subquery are taken. In a row after the first, an item that IS a semi-structured value is refused by
- * its type, before its column is folded: {@code VALUES (1, 2), ([1], 3)} is {@code Invalid data type [ARRAY] in
- * VALUES clause}.
+ * and a scalar subquery are taken. In a row after the first, an item that IS a constructed semi-structured value is
+ * refused by its type, before its column is folded: {@code VALUES (1, 2), ([1], 3)} is {@code Invalid data type
+ * [ARRAY] in VALUES clause}, while {@code VALUES (1), (PARSE_JSON('2'))} names the item.
  */
 final class ValuesSemiStructuredParts {
 
@@ -92,6 +92,11 @@ final class ValuesSemiStructuredParts {
      * @return the refusal, or null
      */
     static RuntimeException typeRefusalOf(final Expression item, final ExpressionEvaluator typer) {
+        // Only a constructor is folded to the value it is; a call answering one, PARSE_JSON('2'), is refused as the
+        // expression it is (live-verified).
+        if (!(item instanceof JsonArrayExpression) && !(item instanceof JsonObjectExpression)) {
+            return null;
+        }
         final DataType type = typeOf(item, typer);
         if (!isSemiStructured(type)) {
             return null;

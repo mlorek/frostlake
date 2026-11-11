@@ -614,6 +614,36 @@ public class ColumnDefinitionParser implements CommandHandler {
      */
     public TableColumn parseSingleColumnDef(final FrostlakeParser.ColumnDefContext colDef,
                                             final boolean addColumn, final boolean iceberg) {
+        return parseSingleColumnDef(colDef, addColumn, iceberg, null, null);
+    }
+
+    /**
+     * The canonical name of the table a CREATE TABLE's column list defines, or null where the list stands elsewhere.
+     */
+    private String createdTableName(final FrostlakeParser.ColumnListContext ctx) {
+        if (!(ctx.getParent() instanceof FrostlakeParser.CreateStatementContext)) {
+            return null;
+        }
+        final FrostlakeParser.ObjectNameContext name = ((FrostlakeParser.CreateStatementContext) ctx.getParent())
+            .objectName();
+        if (name == null) {
+            return null;
+        }
+        final String[] parts = queryExecutor.resolveObjectNameParts(name);
+        return parts.length == 0 ? null : parts[parts.length - 1];
+    }
+
+    /**
+     * As above, for a column of a CREATE TABLE's column list: its DEFAULT may read the columns defined before it, by
+     * name, by a condition over them or qualified by the table's own name, and is told back with each column it reads
+     * qualified so, {@code DEFAULT c2 + 1} as {@code DE.C2 + 1} (live-verified); which names it may read is judged by
+     * {@link DefaultExpressionCalls#requireEarlierColumns}.
+     *
+     * @param earlier the canonical names of the columns defined before it, or null outside a column list
+     * @param table   the table's canonical name, or null when not known
+     */
+    TableColumn parseSingleColumnDef(final FrostlakeParser.ColumnDefContext colDef, final boolean addColumn,
+                                     final boolean iceberg, final Set<String> earlier, final String table) {
         final String colName = ParseTreeText.namePartText(colDef.columnDefName());
         rejectAnsiReservedColumnName(colName, colDef);
         if (!iceberg) {
@@ -701,7 +731,7 @@ public class ColumnDefinitionParser implements CommandHandler {
                     }
                 }
             } else if (constraint.DEFAULT() != null) {
-                defaultValue = parseDefaultExpression(constraint.defaultExpression());
+                defaultValue = parseDefaultExpression(constraint.defaultExpression(), earlier != null);
                 defaultExpression = constraint.defaultExpression();
                 sawDefault = true;
             } else if (constraint.REFERENCES() != null) {
@@ -786,7 +816,7 @@ public class ColumnDefinitionParser implements CommandHandler {
             // routine parameter's: a cast written :: is CAST(… AS …), a CASE is CASE_FLATTENED(…) (live-verified).
             final String written = ((DefaultValueExpression) defaultValue).getExpressionText();
             final String told = new DefaultExpressionCalls(queryExecutor)
-                .toldColumnDefault(defaultExpression.booleanExpr());
+                .toldColumnDefault(defaultExpression.booleanExpr(), earlier != null ? table : null);
             defaultValue = new DefaultValueExpression(written, told.equals(written) ? null : told);
         }
 
@@ -914,11 +944,12 @@ public class ColumnDefinitionParser implements CommandHandler {
         final List<String> tableUniqueColumns = new ArrayList<>();
         // A value DEFAULT reads the columns defined before it alone (see DefaultExpressionCalls).
         final Set<String> earlier = new HashSet<>();
+        final String table = createdTableName(ctx);
 
         for (final FrostlakeParser.ColumnOrConstraintContext item : ctx.columnOrConstraint()) {
             if (item.columnDef() != null) {
-                final TableColumn parsed = parseSingleColumnDef(item.columnDef(), false, iceberg);
-                DefaultExpressionCalls.requireEarlierColumns(item.columnDef(), parsed.getName(), earlier);
+                final TableColumn parsed = parseSingleColumnDef(item.columnDef(), false, iceberg, earlier, table);
+                DefaultExpressionCalls.requireEarlierColumns(item.columnDef(), parsed.getName(), earlier, table);
                 earlier.add(parsed.getName());
                 columns.add(parsed);
             } else if (item.tableConstraint() != null) {
@@ -1687,6 +1718,15 @@ public class ColumnDefinitionParser implements CommandHandler {
     }
 
     public Object parseDefaultExpression(final FrostlakeParser.DefaultExpressionContext ctx) {
+        return parseDefaultExpression(ctx, false);
+    }
+
+    /**
+     * As above; with {@code namesJudgedLater} the default may name columns, a bare name and a condition over names
+     * among them, which the caller judges against the columns defined before it.
+     */
+    private Object parseDefaultExpression(final FrostlakeParser.DefaultExpressionContext ctx,
+                                          final boolean namesJudgedLater) {
         final FrostlakeParser.ExpressionContext expr = valueOf(ctx);
         if (expr != null) {
 
@@ -1723,10 +1763,13 @@ public class ColumnDefinitionParser implements CommandHandler {
                     }
                     return new SequenceDefault(sequence);
                 }
-                // A BARE identifier in a DEFAULT has nothing legal to name: a column reference is
-                // refused AT CREATE, at the identifier's own position (live-verified — the table
-                // is never created). A sequence default is the dotted seq.NEXTVAL form and never
-                // lands here.
+                // A BARE identifier in a DEFAULT names a column defined before it in a CREATE TABLE, judged by the
+                // caller; anywhere else it has nothing legal to name, and is refused AT CREATE, at the identifier's
+                // own position (live-verified — the table is never created). A sequence default is the dotted
+                // seq.NEXTVAL form and never lands here.
+                if (namesJudgedLater) {
+                    return new DefaultValueExpression(getOriginalText(expr));
+                }
                 if (!name.contains(".")) {
                     final Token start = nameCtx.qualifiedName().getStart();
                     throw new RuntimeException(SqlCompilationError.at(start.getLine(),
@@ -1754,7 +1797,7 @@ public class ColumnDefinitionParser implements CommandHandler {
                 final FrostlakeParser.ParenExprContext parenCtx = (FrostlakeParser.ParenExprContext) expr;
                 final FrostlakeParser.DefaultExpressionContext innerCtx = new FrostlakeParser.DefaultExpressionContext(null, 0);
                 innerCtx.addChild(parenCtx.booleanExpr());
-                return parseDefaultExpression(innerCtx);
+                return parseDefaultExpression(innerCtx, namesJudgedLater);
             }
 
             // Recognized context/datetime keywords can reach here as other context shapes (e.g. bare
@@ -1789,11 +1832,14 @@ public class ColumnDefinitionParser implements CommandHandler {
             // no spaces (e.g. "CASE WHEN 1=1 THEN…" → "CASEWHEN1=1THEN…"), which cannot be re-parsed.
             return new DefaultValueExpression(getOriginalText(expr));
         }
-        // A condition — a NOT, an AND, an OR — is computed per row as a complex expression is, and reads no name.
+        // A condition — a NOT, an AND, an OR — is computed per row as a complex expression is, and reads no name but,
+        // in a CREATE TABLE, the columns defined before it.
         if (ctx.booleanExpr() == null) {
             return null;
         }
-        new DefaultExpressionCalls(queryExecutor).requireNoNames(ctx.booleanExpr());
+        if (!namesJudgedLater) {
+            new DefaultExpressionCalls(queryExecutor).requireNoNames(ctx.booleanExpr());
+        }
         return new DefaultValueExpression(getOriginalText(ctx.booleanExpr()));
     }
 

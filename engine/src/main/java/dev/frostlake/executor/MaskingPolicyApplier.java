@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.UnsupportedSubqueryException;
 import dev.frostlake.metastore.PolicyReferences;
 import dev.frostlake.metastore.model.MaskingPolicy;
 import dev.frostlake.metastore.model.Parameter;
@@ -51,6 +52,9 @@ import org.antlr.v4.runtime.Token;
  * WHERE-filter helper.
  */
 final class MaskingPolicyApplier {
+
+    /** The name a row access policy's body reads the row it judges by, which no name of the body can take. */
+    private static final String JUDGED_ROW = "POLICY$ROW";
 
     private final QueryExecutor executor;
 
@@ -360,23 +364,31 @@ final class MaskingPolicyApplier {
             table.getRowAccessPolicyName(), table);
 
         // Build the predicate by binding each parameter to the column the attachment names, in one pass, so a column
-        // bound to one parameter is never read again for the next.
+        // bound to one parameter is never read again for the next. A parameter is bound where the body reads it as a
+        // value, ahead of a subquery's own column of its name, and as the row being judged: a subquery reads it as
+        // its outer row, so EXISTS (SELECT 1 FROM m WHERE m.v = val) keeps the rows whose value m holds, and a table
+        // or an alias of the parameter's name stays what it is (live-verified).
         final List<String> policyCols = table.getRowAccessPolicyColumns();
         final List<Parameter> params = policy.getParameters();
         final List<String> names = new ArrayList<>();
         final List<String> bound = new ArrayList<>();
         for (int i = 0; i < Math.min(params.size(), policyCols.size()); i++) {
             names.add(params.get(i).getName());
-            bound.add(policyCols.get(i));
+            bound.add(JUDGED_ROW + "." + policyCols.get(i));
         }
         // A row access policy reads a tag of the table it protects as a masking policy does.
-        final String body = rewriteTagFn(
-            SqlIdentifierSubstitution.substituteParameters(policy.getBody(), names, bound),
+        final String body = rewriteTagFn(ParameterReferences.bound(policy.getBody(), names, bound),
             "GET_TAG_ON_CURRENT_TABLE", table.getName(), "TABLE");
         // The body reads the objects it names, never a CTE of the statement reading the table (live-verified).
         final Map<String, ResultSet> outerCtes = executor.suspendCteScope();
         try {
-            return executor.filterRows(rows, shape, body);
+            return executor.filterRows(rows, shape, JUDGED_ROW, body);
+        } catch (final UnsupportedSubqueryException unsupported) {
+            // A subquery of the body the account cannot evaluate is refused as the policy's (see the refusal).
+            if (unsupported.namesFunction() || unsupported.getMessage().contains(" inside ")) {
+                throw unsupported;
+            }
+            throw UnsupportedSubqueryException.insideRowAccessPolicy();
         } finally {
             executor.setCurrentCteContext(outerCtes);
         }

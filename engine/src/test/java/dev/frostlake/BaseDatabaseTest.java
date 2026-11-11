@@ -21,7 +21,9 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -37,8 +39,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * <p>With {@code SF_LIVE=1} in the environment (see {@link LiveSnowflake}) the SQL these tests
  * submit runs against a real Snowflake account instead of the embedded engine — the same suite,
  * flipped by a switch, to confirm Frostlake and Snowflake agree. In live mode {@code test_db} is
- * recreated on the account before each test for isolation.
+ * recreated on the account before each test for isolation. A statement that would change the account's roles, users
+ * or grants is not sent there, and the test that sends one is skipped (see {@link LiveAccountStatements}).
  */
+@ExtendWith(LiveHeldBackFailures.class)
 public abstract class BaseDatabaseTest {
 
     protected DatabaseEngine engine;
@@ -46,6 +50,7 @@ public abstract class BaseDatabaseTest {
     @BeforeEach
     public void baseSetup() {
         if (LiveSnowflake.enabled()) {
+            LiveAccountStatements.beginTest();
             engine = new LiveSnowflakeEngine();
             // A previous test may have left the shared session in an open transaction or with
             // autocommit/role/warehouse moved — restore the baseline before touching test_db.
@@ -151,6 +156,9 @@ public abstract class BaseDatabaseTest {
 
     @AfterEach
     public void baseTeardown() {
+        if (engine instanceof LiveSnowflakeEngine) {
+            ((LiveSnowflakeEngine) engine).beginTeardown();
+        }
         // Allow subclasses to add their own teardown
         teardownTest();
 
@@ -165,6 +173,10 @@ public abstract class BaseDatabaseTest {
 
         if (engine != null) {
             engine.shutdown();
+        }
+        // A test that went on past a statement held back from the account checked no answer of the account's.
+        if (LiveSnowflake.enabled() && LiveAccountStatements.heldBackInTest() != null) {
+            Assumptions.abort(LiveAccountStatements.reason(LiveAccountStatements.heldBackInTest()));
         }
     }
 

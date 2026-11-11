@@ -29,6 +29,9 @@ public class RestAlertTest extends BaseRestTest {
 
     private static final String ALERTS = "/api/v2/databases/ra_db/schemas/s1/alerts";
 
+    /** A schedule for an alert that is no alert on new data, which EXECUTE ALERT would refuse. */
+    private static final String HOURLY = "\"schedule\":{\"schedule_type\":\"SCHEDULE_TYPE\",\"minutes\":60},";
+
     private static void database() {
         sql("CREATE DATABASE IF NOT EXISTS ra_db");
         sql("CREATE SCHEMA IF NOT EXISTS ra_db.s1");
@@ -86,12 +89,13 @@ public class RestAlertTest extends BaseRestTest {
     @Test
     public void createModesAndMissingProperties() throws Exception {
         database();
-        final String body = "{\"name\":\"al_modes\",\"condition\":\"SELECT 1\",\"action\":\"SELECT 2\"}";
+        final String body = "{\"name\":\"al_modes\"," + HOURLY
+            + "\"condition\":\"SELECT 1\",\"action\":\"SELECT 2\"}";
         ok(post(ALERTS, body));
         error(409, post(ALERTS + "?createMode=errorIfExists", body));
         ok(post(ALERTS + "?createMode=ifNotExists", body));
-        ok(post(ALERTS + "?createMode=orReplace", "{\"name\":\"al_modes\",\"condition\":\"SELECT 3\","
-            + "\"action\":\"SELECT 4\"}"));
+        ok(post(ALERTS + "?createMode=orReplace", "{\"name\":\"al_modes\"," + HOURLY
+            + "\"condition\":\"SELECT 3\",\"action\":\"SELECT 4\"}"));
         assertEquals("SELECT 3", ok(get(ALERTS + "/al_modes")).path("condition").asString());
         error(400, post(ALERTS, "{\"name\":\"al_nocond\",\"action\":\"SELECT 2\"}"));
         error(400, post(ALERTS, "{\"condition\":\"SELECT 1\",\"action\":\"SELECT 2\"}"));
@@ -102,7 +106,7 @@ public class RestAlertTest extends BaseRestTest {
     @Test
     public void executeRunsTheAction() throws Exception {
         database();
-        ok(post(ALERTS, "{\"name\":\"al_exec\",\"condition\":\"SELECT 1\","
+        ok(post(ALERTS, "{\"name\":\"al_exec\"," + HOURLY + "\"condition\":\"SELECT 1\","
             + "\"action\":\"INSERT INTO ra_db.s1.fired VALUES ('rest')\"}"));
         ok(post(ALERTS + "/al_exec:execute", ""));
         error(404, post(ALERTS + "/al_nosuch:execute", ""));
@@ -112,7 +116,8 @@ public class RestAlertTest extends BaseRestTest {
     @Test
     public void cloneCopiesTheAlert() throws Exception {
         database();
-        ok(post(ALERTS, "{\"name\":\"al_src\",\"comment\":\"src\",\"condition\":\"SELECT 1\",\"action\":\"SELECT 2\"}"));
+        ok(post(ALERTS, "{\"name\":\"al_src\",\"comment\":\"src\"," + HOURLY
+            + "\"condition\":\"SELECT 1\",\"action\":\"SELECT 2\"}"));
         ok(post(ALERTS + "/al_src:clone?targetDatabase=ra_db&targetSchema=s2", "{\"name\":\"al_copy\"}"));
         assertEquals("src", ok(get("/api/v2/databases/ra_db/schemas/s2/alerts/al_copy")).path("comment").asString());
         ok(post(ALERTS + "/al_src:clone?targetDatabase=ra_db&targetSchema=s1", "{\"name\":\"al_copy2\"}"));
@@ -128,7 +133,8 @@ public class RestAlertTest extends BaseRestTest {
     public void tagsAreSetReadWithLineageAndUnset() throws Exception {
         database();
         sql("CREATE TAG IF NOT EXISTS ra_db.s1.sev");
-        ok(post(ALERTS, "{\"name\":\"al_tags\",\"condition\":\"SELECT 1\",\"action\":\"SELECT 2\"}"));
+        ok(post(ALERTS, "{\"name\":\"al_tags\"," + HOURLY
+            + "\"condition\":\"SELECT 1\",\"action\":\"SELECT 2\"}"));
         ok(post(ALERTS + "/al_tags:set-tags",
             "[{\"tag_database\":\"ra_db\",\"tag_schema\":\"s1\",\"tag_name\":\"sev\",\"tag_value\":\"high\"}]"));
         JsonNode tags = ok(get(ALERTS + "/al_tags:get-tags"));

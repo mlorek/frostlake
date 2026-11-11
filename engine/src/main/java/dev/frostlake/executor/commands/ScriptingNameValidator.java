@@ -482,8 +482,9 @@ final class ScriptingNameValidator {
                     throw AssignedStatement.invalidValue(ParseTreeText.getOriginalText(set.resultSetStatement()));
                 }
                 checkResultSetStatement(set.resultSetStatement(), scope);
-            } else if (set.resultSetBlock() != null) {
-                // A block fills a RESULTSET, and compiles when it runs.
+            } else if (set.resultSetBlock() != null || set.resultSetChain() != null) {
+                // A block fills a RESULTSET, and compiles when it runs; a flow chain is read as a block, and assigned
+                // to anything else is refused as one while the block compiles (live-verified).
                 if (!resultSet) {
                     throw AssignedStatement.invalidValue(AssignedStatement.BLOCK);
                 }

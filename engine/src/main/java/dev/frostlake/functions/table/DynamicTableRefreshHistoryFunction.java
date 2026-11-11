@@ -103,19 +103,20 @@ public class DynamicTableRefreshHistoryFunction extends TableFunction {
         final Instant kept = now.minus(DynamicTableRefreshHistory.KEPT_FOR);
         final String named = name == null ? null : qualified(name);
         final List<DynamicTableRefreshRecord> found = new ArrayList<>();
-        if (!Boolean.TRUE.equals(namedArgs.get("ERROR_ONLY"))) {
-            // A refresh that fails is no refresh the engine keeps: only the ones that ran are listed.
-            for (final DynamicTableRefreshRecord record : catalog.getDynamicTableRefreshHistory().records()) {
-                final String qualified = QualifiedName.join(record.getDatabase(), record.getSchema(),
-                    record.getTable());
-                if (named != null ? !named.equals(qualified)
-                        : prefix != null && !qualified.toUpperCase(Locale.ROOT).startsWith(prefix)) {
-                    continue;
-                }
-                if (!record.getStart().isBefore(from) && !record.getStart().isAfter(to)
-                        && !record.getStart().isBefore(kept)) {
-                    found.add(record);
-                }
+        // ERROR_ONLY keeps the refreshes that failed (live-verified).
+        final boolean errorsOnly = Boolean.TRUE.equals(namedArgs.get("ERROR_ONLY"));
+        for (final DynamicTableRefreshRecord record : catalog.getDynamicTableRefreshHistory().records()) {
+            final String qualified = QualifiedName.join(record.getDatabase(), record.getSchema(), record.getTable());
+            if (named != null ? !named.equals(qualified)
+                    : prefix != null && !qualified.toUpperCase(Locale.ROOT).startsWith(prefix)) {
+                continue;
+            }
+            if (errorsOnly && !record.isFailed()) {
+                continue;
+            }
+            if (!record.getStart().isBefore(from) && !record.getStart().isAfter(to)
+                    && !record.getStart().isBefore(kept)) {
+                found.add(record);
             }
         }
         // By table, the last name first, and each table's latest refresh first: a RESULT_LIMIT keeps the first rows
@@ -151,15 +152,18 @@ public class DynamicTableRefreshHistoryFunction extends TableFunction {
         final Long lag = lagSeconds(record.getTargetLag());
         final long[] changed = record.getChanged();
         final boolean noData = "NO_DATA".equals(record.getAction());
+        // A failed reinitialization read no input (live-verified).
+        final boolean noInputs = noData || record.isFailed() && record.getReinitReason() != null;
         return new Row(Arrays.<Object>asList(
-            record.getTable(), record.getSchema(), record.getDatabase(), "SUCCEEDED", "SUCCESS", null,
+            record.getTable(), record.getSchema(), record.getDatabase(), record.isFailed() ? "FAILED" : "SUCCEEDED",
+            record.isFailed() ? record.getFailureCode() : "SUCCESS", record.getFailureMessage(),
             record.getQueryId(), ShowResultHelpers.createdOn(record.getStart()),
             ShowResultHelpers.createdOn(record.getGraphValidFrom()), ShowResultHelpers.createdOn(record.getStart()),
             ShowResultHelpers.createdOn(record.getEnd()),
             lag == null ? null : ShowResultHelpers.createdOn(record.getStart().plusSeconds(lag.longValue())), lag,
             QualifiedName.join(record.getDatabase(), record.getSchema(), record.getTable()), dependency(record),
             statistics(record, changed), record.getAction(), record.getTrigger().name(), record.getWarehouse(),
-            noData ? null : inputs(record), null, null, null));
+            noInputs ? null : inputs(record), record.getReinitReason(), null, null));
     }
 
     /** The dynamic table the refresh read last, with its data timestamp; none when it read only tables. */

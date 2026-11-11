@@ -19,11 +19,13 @@ package dev.frostlake.rt.py;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.ExecutionResult;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.commands.FailureCode;
 import dev.frostlake.executor.udf.TemporaryObjectStatements;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public class SnowparkSession {
     private final DatabaseEngine engine;
@@ -58,8 +60,9 @@ public class SnowparkSession {
     }
 
     /**
-     * {@link #sql(String)}, its refusal answered rather than thrown (see {@link SnowparkOutcome}). The refusal reads as
-     * the exception's own text, which is what Python's {@code str()} of the thrown exception read.
+     * {@link #sql(String)}, its refusal answered rather than thrown (see {@link SnowparkOutcome}). A statement the
+     * engine ran and refused reads as Snowpark's exception does (see {@link #sqlRefusal}); one refused before it ran
+     * reads as the exception's own text.
      *
      * @param sqlText the statement
      * @return its result, or the engine's refusal
@@ -68,8 +71,29 @@ public class SnowparkSession {
         try {
             return SnowparkOutcome.of(sql(sqlText));
         } catch (final RuntimeException refused) {
-            return SnowparkOutcome.refusedWith(refused.toString());
+            if (refused.getCause() == null) {
+                return SnowparkOutcome.refusedWith(refused.toString());
+            }
+            final String queryId = engine.lastQueryId();
+            return SnowparkOutcome.refusedWith(sqlRefusal(refused.getCause(), queryId), queryId);
         }
+    }
+
+    /**
+     * The text Snowpark's SnowparkSQLException carries for a statement the engine ran and refused: Snowpark's code
+     * for a failed query, 1304, the failed statement's query ID, then the refusal's code in six digits and its
+     * SQLSTATE, as the connector writes a failure: {@code (1304): <id>: 090239 (25000): Modifying a transaction that
+     * has started at a different scope is not allowed.} (live-verified).
+     *
+     * @param failure the engine's refusal
+     * @param queryId the failed statement's query ID
+     * @return the text
+     */
+    private static String sqlRefusal(final Throwable failure, final String queryId) {
+        final FailureCode client = FailureCode.ofClient(failure);
+        final FailureCode code = client != null ? client : FailureCode.of(failure);
+        return "(1304): " + queryId + ": " + String.format(Locale.ROOT, "%06d", Integer.valueOf(code.code())) + " ("
+            + code.state() + "): " + failure.getMessage();
     }
 
     /**

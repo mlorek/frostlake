@@ -20,7 +20,6 @@ import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.RoutineOverloads;
 import dev.frostlake.executor.SqlIdentifiers;
-import dev.frostlake.executor.expressions.CaretOperator;
 import dev.frostlake.executor.expressions.DoubledSigns;
 import dev.frostlake.executor.expressions.ParsedEchoPrinter;
 import dev.frostlake.functions.FunctionRegistry;
@@ -106,8 +105,7 @@ final class ScriptingUdfBodyValidator {
     void validate(final FrostlakeParser.BeginEndBlockContext block) {
         // What no expression may write is refused before any statement or call is judged: a caret between two
         // values, and a sign written straight after a sign (live-verified).
-        CaretOperator.rejectIn(block);
-        DoubledSigns.rejectIn(block);
+        DoubledSigns.rejectWithOperators(block);
         walk(block, null);
     }
 

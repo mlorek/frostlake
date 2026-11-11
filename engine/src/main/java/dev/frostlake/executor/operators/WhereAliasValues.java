@@ -27,17 +27,22 @@ import java.util.Map;
  * value the predicate read instead of computing the item again. A volatile item — RANDOM(), a sequence's NEXTVAL,
  * SEQ4() — is then computed once for such a row, and that one value is both filtered on and shown, as it is over a
  * single relation on the account (live-verified, through ORDER BY, LIMIT, DISTINCT and an ungrouped HAVING alike).
- * Over a join, or under a QUALIFY, the account computes the item again for the projection, and no values are
- * carried there. A QUALIFY, a window call and an ORDER BY key that read an alias over a single relation keep the
- * values they compute here alike, for the projection to show.
+ * Over a join, or under a QUALIFY, the account computes the item a WHERE read again for the projection, and no
+ * WHERE's values are carried there. A QUALIFY, a window call and an ORDER BY key that read a select item keep the
+ * values they compute here alike, over a join too, for the projection to show: an aliased item by its alias, and
+ * one with no alias, which a sort reads by its position, by its place in the select list (live-verified).
  */
 public final class WhereAliasValues {
 
     private final Map<Row, Map<String, Object>> byRow = new IdentityHashMap<>();
 
+    /** The values kept for select items by their place in the select list, for an item with no alias. */
+    private final Map<Row, Map<Integer, Object>> byItem = new IdentityHashMap<>();
+
     /** Drops every value kept, before the plan filters its rows again. */
     public void clear() {
         byRow.clear();
+        byItem.clear();
     }
 
     /**
@@ -47,6 +52,48 @@ public final class WhereAliasValues {
      */
     public void forget(final Row row) {
         byRow.remove(row);
+        byItem.remove(row);
+    }
+
+    /**
+     * Keeps the value computed for a select item of a row, known by its place in the select list: an item with no
+     * alias, which a sort reads by its position.
+     *
+     * @param row   the row
+     * @param item  the item's place in the select list, from 0
+     * @param value its value
+     */
+    public void rememberItem(final Row row, final int item, final Object value) {
+        Map<Integer, Object> values = byItem.get(row);
+        if (values == null) {
+            values = new HashMap<>();
+            byItem.put(row, values);
+        }
+        values.put(Integer.valueOf(item), value);
+    }
+
+    /**
+     * Whether a value was kept for the select item at {@code item} on {@code row}.
+     *
+     * @param row  the row
+     * @param item the item's place in the select list, from 0
+     * @return true when a stage computed it for that row
+     */
+    public boolean holdsItem(final Row row, final int item) {
+        final Map<Integer, Object> values = byItem.get(row);
+        return values != null && values.containsKey(Integer.valueOf(item));
+    }
+
+    /**
+     * The value kept for the select item at {@code item} on {@code row}; read only after {@link #holdsItem} said
+     * there is one.
+     *
+     * @param row  the row
+     * @param item the item's place in the select list, from 0
+     * @return the value a stage computed
+     */
+    public Object itemValueOf(final Row row, final int item) {
+        return byItem.get(row).get(Integer.valueOf(item));
     }
 
     /**

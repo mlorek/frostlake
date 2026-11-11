@@ -26,6 +26,8 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
@@ -35,36 +37,47 @@ import java.util.regex.Pattern;
  * name suggests — a comma-separated list, an address with no dotted domain, a one-letter top level and any address
  * with a space are {@code Invalid email address(es): [x].} — and the URL is a URI with a scheme, {@code mailto:}
  * included ({@code invalid URL: [x]}); the empty string is either one's and clears it. USERS takes a list of user
- * names, each a user that exists ({@code invalid value 'U' for property 'USER'}); the users a contact names are not
- * kept. A string given for USERS, or a list for another, is {@code invalid type of property}, any other name {@code
- * invalid property 'NAME' for 'CONTACT'}, and a contact reached by both its URL and its address {@code Email, url or
- * users/email_list, only one could be set.}
+ * names, each a user that exists ({@code invalid value 'U' for property 'USER'}), kept once each by the name the
+ * account holds, as SHOW CONTACTS lists them. A string given for USERS or a list for COMMENT is {@code invalid type of
+ * property}, a list for the URL or the address {@code Invalid value specified for property}, any other name {@code
+ * invalid property 'NAME' for 'CONTACT'}, and a contact reached by more than one of its URL, its address and its users
+ * {@code Email, url or users/email_list, only one could be set.} A statement's properties are judged together before
+ * any is written, one fault after another whatever order they are written in: a name, a string for USERS, a list for
+ * the address, then for the URL, a user that does not exist, a list for COMMENT, an unusable address, then URL.
  */
 final class ContactProperties {
 
     private static final Pattern EMAIL = Pattern.compile("[^\\s@]+@[^\\s@,]+\\.[A-Za-z]{2,}");
+    private static final String USERS = "USERS";
+    private static final String URL = "URL";
+    private static final String ADDRESS = "EMAIL_DISTRIBUTION_LIST";
+    private static final String COMMENT = "COMMENT";
 
     private ContactProperties() {
     }
 
     /**
-     * Write one property onto a contact, judged as it is read.
+     * Judge a statement's properties together, before any is written (see the class comment for the order).
      *
-     * @param contact  the contact
-     * @param property the property as the statement writes it
-     * @param catalog  the catalog, where the users a USERS list names are looked for
+     * @param properties the properties as the statement writes them
+     * @param catalog    the catalog, where the users a USERS list names are looked for
      */
-    static void set(final Contact contact, final FrostlakeParser.ContactPropertyContext property,
-                    final Catalog catalog) {
-        final String key = property.optionKey().getText().toUpperCase(Locale.ROOT);
-        if (!"USERS".equals(key) && !isString(key)) {
-            throw invalid(key);
-        }
-        if ("USERS".equals(key)) {
-            if (property.stringText() != null) {
-                throw invalidType(property.stringText().getText(), key);
+    static void judge(final List<FrostlakeParser.ContactPropertyContext> properties, final Catalog catalog) {
+        for (final FrostlakeParser.ContactPropertyContext property : properties) {
+            final String key = keyOf(property);
+            if (!USERS.equals(key) && !isString(key)) {
+                throw invalid(key);
             }
-            if (property.stringLiteralList() != null) {
+        }
+        for (final FrostlakeParser.ContactPropertyContext property : properties) {
+            if (USERS.equals(keyOf(property)) && property.stringText() != null) {
+                throw invalidType(property.stringText().getText(), USERS);
+            }
+        }
+        requireString(properties, ADDRESS);
+        requireString(properties, URL);
+        for (final FrostlakeParser.ContactPropertyContext property : properties) {
+            if (USERS.equals(keyOf(property)) && property.stringLiteralList() != null) {
                 for (final TerminalNode name : property.stringLiteralList().STRING_LITERAL()) {
                     final String user = SqlStringLiterals.decode(name.getText());
                     if (!catalog.hasUser(user)) {
@@ -73,43 +86,63 @@ final class ContactProperties {
                     }
                 }
             }
-            return;
         }
-        if (property.stringText() == null) {
-            final StringBuilder listed = new StringBuilder();
-            if (property.stringLiteralList() != null) {
-                for (final TerminalNode value : property.stringLiteralList().STRING_LITERAL()) {
-                    listed.append(listed.length() > 0 ? ", " : "").append(SqlStringLiterals.decode(value.getText()));
+        for (final FrostlakeParser.ContactPropertyContext property : properties) {
+            if (COMMENT.equals(keyOf(property)) && property.stringText() == null) {
+                final StringBuilder listed = new StringBuilder();
+                if (property.stringLiteralList() != null) {
+                    for (final TerminalNode value : property.stringLiteralList().STRING_LITERAL()) {
+                        listed.append(listed.length() > 0 ? ", " : "").append(SqlStringLiterals.decode(
+                            value.getText()));
+                    }
                 }
+                throw invalidType("[" + listed + "]", COMMENT);
             }
-            throw invalidType("[" + listed + "]", key);
         }
-        set(contact, key, ParseTreeText.stringValue(property.stringText()));
+        for (final FrostlakeParser.ContactPropertyContext property : properties) {
+            final String value = stringOf(property, ADDRESS);
+            if (value != null && !value.isEmpty() && !EMAIL.matcher(value).matches()) {
+                throw new RuntimeException("Invalid email address(es): [" + value + "].");
+            }
+        }
+        for (final FrostlakeParser.ContactPropertyContext property : properties) {
+            final String value = stringOf(property, URL);
+            if (value != null && !value.isEmpty() && !isUrl(value)) {
+                throw new RuntimeException(SqlCompilationError.of("invalid URL: [" + value + "]"));
+            }
+        }
     }
 
     /**
-     * Write one string property onto a contact, judged as it is read.
+     * Write one property, judged already (see {@link #judge}), onto a contact.
      *
-     * @param contact the contact
-     * @param name    the property's name as written
-     * @param value   its text
+     * @param contact  the contact
+     * @param property the property as the statement writes it
+     * @param catalog  the catalog, which holds the users a USERS list names
      */
-    static void set(final Contact contact, final String name, final String value) {
-        final String key = name.toUpperCase(Locale.ROOT);
-        if ("COMMENT".equals(key)) {
+    static void set(final Contact contact, final FrostlakeParser.ContactPropertyContext property,
+                    final Catalog catalog) {
+        final String key = keyOf(property);
+        if (USERS.equals(key)) {
+            final List<String> users = new ArrayList<>();
+            if (property.stringLiteralList() != null) {
+                for (final TerminalNode name : property.stringLiteralList().STRING_LITERAL()) {
+                    final String held = catalog.getUser(SqlStringLiterals.decode(name.getText())).getName();
+                    if (!users.contains(held)) {
+                        users.add(held);
+                    }
+                }
+            }
+            contact.setUsers(users);
+            return;
+        }
+        final String value = ParseTreeText.stringValue(property.stringText());
+        if (COMMENT.equals(key)) {
             contact.setComment(value);
-        } else if ("URL".equals(key)) {
-            if (!value.isEmpty() && !isUrl(value)) {
-                throw new RuntimeException(SqlCompilationError.of("invalid URL: [" + value + "]"));
-            }
+        } else if (URL.equals(key)) {
             contact.setUrl(value);
-        } else if ("EMAIL_DISTRIBUTION_LIST".equals(key)) {
-            if (!value.isEmpty() && !EMAIL.matcher(value).matches()) {
-                throw new RuntimeException("Invalid email address(es): [" + value + "].");
-            }
-            contact.setEmailDistributionList(value);
         } else {
-            throw invalid(key);
+            contact.setEmailDistributionList(value);
         }
     }
 
@@ -121,32 +154,61 @@ final class ContactProperties {
      */
     static void unset(final Contact contact, final String name) {
         final String key = name.toUpperCase(Locale.ROOT);
-        if ("COMMENT".equals(key)) {
+        if (COMMENT.equals(key)) {
             contact.setComment(null);
-        } else if ("URL".equals(key)) {
+        } else if (URL.equals(key)) {
             contact.setUrl(null);
-        } else if ("EMAIL_DISTRIBUTION_LIST".equals(key)) {
+        } else if (ADDRESS.equals(key)) {
             contact.setEmailDistributionList(null);
-        } else if (!"USERS".equals(key)) {
+        } else if (USERS.equals(key)) {
+            contact.setUsers(null);
+        } else {
             throw invalid(key);
         }
     }
 
     /**
-     * Refuse a contact reached both by its URL and by its address. Each property is judged as it is read, so an
-     * unusable address is refused before this pairing is.
+     * Refuse a contact reached by more than one of its URL, its address and its users.
      *
      * @param contact the contact as the statement leaves it
      */
     static void requireOneWay(final Contact contact) {
-        if (contact.getUrl() != null && !contact.getUrl().isEmpty() && contact.getEmailDistributionList() != null
-                && !contact.getEmailDistributionList().isEmpty()) {
+        int ways = contact.getUsers().isEmpty() ? 0 : 1;
+        if (contact.getUrl() != null && !contact.getUrl().isEmpty()) {
+            ways++;
+        }
+        if (contact.getEmailDistributionList() != null && !contact.getEmailDistributionList().isEmpty()) {
+            ways++;
+        }
+        if (ways > 1) {
             throw new RuntimeException("Email, url or users/email_list, only one could be set.");
         }
     }
 
+    /** Refuses a list written for the property {@code key}, which takes a string. */
+    private static void requireString(final List<FrostlakeParser.ContactPropertyContext> properties,
+                                      final String key) {
+        for (final FrostlakeParser.ContactPropertyContext property : properties) {
+            if (key.equals(keyOf(property)) && property.stringText() == null) {
+                throw new RuntimeException("Invalid value specified for property '" + key + "'");
+            }
+        }
+    }
+
+    /** The string a property writes when it is the property {@code key}, or null. */
+    private static String stringOf(final FrostlakeParser.ContactPropertyContext property, final String key) {
+        if (!key.equals(keyOf(property)) || property.stringText() == null) {
+            return null;
+        }
+        return ParseTreeText.stringValue(property.stringText());
+    }
+
+    private static String keyOf(final FrostlakeParser.ContactPropertyContext property) {
+        return property.optionKey().getText().toUpperCase(Locale.ROOT);
+    }
+
     private static boolean isString(final String key) {
-        return "COMMENT".equals(key) || "URL".equals(key) || "EMAIL_DISTRIBUTION_LIST".equals(key);
+        return COMMENT.equals(key) || URL.equals(key) || ADDRESS.equals(key);
     }
 
     private static boolean isUrl(final String value) {

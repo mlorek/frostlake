@@ -41,6 +41,7 @@ import dev.frostlake.values.Decfloats;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.misc.Interval;
+import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.RuleNode;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
@@ -150,7 +151,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         final LiteralExpression literal;
         if (argument.STRING_LITERAL() != null) {
             literal = new LiteralExpression(
-                unquoteStringAt(argument.getText(), argument.STRING_LITERAL().getSymbol()), LiteralType.STRING);
+                unquoteString(argument.getText()), LiteralType.STRING);
         } else if (argument.DOLLAR_QUOTED_STRING() != null) {
             literal = new LiteralExpression(unquoteDollar(argument.getText()), LiteralType.STRING);
         } else {
@@ -195,7 +196,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         }
         if (lit.STRING_LITERAL() != null) {
             return new LiteralExpression(
-                unquoteStringAt(lit.getText(), lit.STRING_LITERAL().getSymbol()), LiteralType.STRING);
+                unquoteString(lit.getText()), LiteralType.STRING);
         }
         if (lit.DOLLAR_QUOTED_STRING() != null) {
             return new LiteralExpression(unquoteDollar(lit.getText()), LiteralType.STRING);
@@ -545,8 +546,50 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             right.size() == 1), ctx.op);
     }
 
+    /**
+     * The members of the ROW a FROM-less subquery's one item is, built as the row it answers once (see
+     * SelectItemAccessors.fromlessRowItem); null for any other expression.
+     */
+    private List<Expression> fromlessRowMembers(final ParseTree written) {
+        final FrostlakeParser.RowExprContext row = written instanceof FrostlakeParser.ScalarSubqueryExprContext
+            ? SelectItemAccessors.fromlessRowItem(
+                ((FrostlakeParser.ScalarSubqueryExprContext) written).selectStatement())
+            : null;
+        return row == null ? null : fromlessRowMembers(row);
+    }
+
+    private List<Expression> fromlessRowMembers(final FrostlakeParser.RowExprContext row) {
+        final List<Expression> members = new ArrayList<>();
+        for (final FrostlakeParser.ExpressionContext value : row.rowValues) {
+            members.add(visit(value));
+        }
+        return members;
+    }
+
+    /**
+     * A FROM-less subquery of one ROW item as the account plans it, which a refusal names:
+     * {@code (SELECT ROW(1, 'x', 3) AS "(1, 'X', 3)" FROM (VALUES (null)) DUAL)} (live-verified).
+     */
+    private String fromlessRowPlan(final FrostlakeParser.RowExprContext row) {
+        final StringBuilder members = new StringBuilder();
+        for (final FrostlakeParser.ExpressionContext value : row.rowValues) {
+            members.append(members.length() > 0 ? ", " : "").append(originalText(value));
+        }
+        return "(SELECT ROW(" + members + ") AS \"" + originalText(row).toUpperCase(Locale.ROOT)
+            + "\" FROM (VALUES (null)) DUAL)";
+    }
+
     @Override
     public Expression visitRowScalarComparisonExpr(final FrostlakeParser.RowScalarComparisonExprContext ctx) {
+        final List<Expression> rowMembers = fromlessRowMembers(ctx.scalarRight);
+        if (rowMembers != null) {
+            // A FROM-less subquery of one ROW item is the row it answers once (live-verified).
+            final RowComparisonExpression rows =
+                new RowComparisonExpression(elementsOf(ctx.rowLeft), ctx.op.getText(), rowMembers);
+            rows.setRightSpelled(fromlessRowPlan(SelectItemAccessors.fromlessRowItem(
+                ((FrostlakeParser.ScalarSubqueryExprContext) ctx.scalarRight).selectStatement())));
+            return positioned(rows, ctx.op);
+        }
         final Expression right = visit(ctx.scalarRight);
         if (right instanceof RowExpression) {
             // A row behind parentheses of its own is a row still: (1, 2) = ((1, 2)).
@@ -566,6 +609,12 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     /** A scalar compared with a row, over the scalar a comparison-level chain gave it. */
     private Expression scalarRowStep(final FrostlakeParser.ScalarRowComparisonExprContext ctx, final Expression value) {
+        final List<Expression> rowMembers = fromlessRowMembers(ctx.expression(0));
+        if (rowMembers != null) {
+            // A FROM-less subquery of one ROW item is the row it answers once (live-verified).
+            return positioned(new RowComparisonExpression(rowMembers, ctx.op.getText(), elementsOf(ctx.rowRight)),
+                ctx.op);
+        }
         if (value instanceof RowExpression) {
             return positioned(new RowComparisonExpression(((RowExpression) value).getArguments(), ctx.op.getText(),
                 elementsOf(ctx.rowRight)), ctx.op);
@@ -663,6 +712,13 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     private Expression comparisonChain(final FrostlakeParser.ExpressionContext top) {
         final List<FrostlakeParser.ExpressionContext> items = ComparisonLevelChain.inWrittenOrder(top);
         Expression built = visit(items.get(0));
+        // A FROM-less subquery of one ROW item compared with a row is the row it answers once (live-verified).
+        final List<Expression> rowMembers = items.size() > 2
+            && items.get(1) instanceof FrostlakeParser.ComparisonExprContext
+            && SelectItemAccessors.rowOfWritten(items.get(2)) != null ? fromlessRowMembers(items.get(0)) : null;
+        if (rowMembers != null) {
+            built = new RowExpression(rowMembers);
+        }
         int next = 1;
         while (next < items.size()) {
             final FrostlakeParser.ExpressionContext step = items.get(next);
@@ -1069,7 +1125,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             literal = new LiteralExpression(unquoteDollar(ctx.getText()), LiteralType.STRING);
         } else if (ctx.STRING_LITERAL() != null) {
             literal = new LiteralExpression(
-                unquoteStringAt(ctx.getText(), ctx.STRING_LITERAL().getSymbol()), LiteralType.STRING);
+                unquoteString(ctx.getText()), LiteralType.STRING);
         } else {
             literal = new LiteralExpression(null, LiteralType.NULL);
         }
@@ -1116,6 +1172,17 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     /** A value [NOT] IN a subquery, anchored on the IN or the NOT before it. */
     private Expression inSubqueryStep(final Expression value, final FrostlakeParser.SelectStatementContext query,
                                       final TerminalNode not, final TerminalNode in) {
+        final FrostlakeParser.RowExprContext row = value instanceof RowExpression
+            ? SelectItemAccessors.fromlessRowItem(query) : null;
+        if (row != null) {
+            // A row IN a FROM-less subquery of one ROW item is the row IN that one row (live-verified).
+            final List<List<Expression>> rows = new ArrayList<>();
+            rows.add(fromlessRowMembers(row));
+            final TupleInExpression tuple =
+                TupleInExpression.ofTupleRows(((RowExpression) value).getArguments(), rows, not != null);
+            tuple.setPosition(keywordPosition(not != null ? not.getSymbol() : in.getSymbol()));
+            return tuple;
+        }
         final SubqueryExpression subquery = new SubqueryExpression(originalText(query));
         subquery.setPosition(new SourcePosition(query.getStart().getLine(), query.getStart().getCharPositionInLine()));
         final InExpression membership = new InExpression(value, subquery, not != null);
@@ -1305,7 +1372,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
      */
     private Expression collateCall(final Expression operand, final Token spec, final ParserRuleContext at) {
         final String text = spec.getType() == FrostlakeParser.DOLLAR_QUOTED_STRING
-            ? unquoteDollar(spec.getText()) : unquoteStringAt(spec.getText(), spec);
+            ? unquoteDollar(spec.getText()) : unquoteString(spec.getText());
         final LiteralExpression specLiteral = new LiteralExpression(text, LiteralType.STRING);
         specLiteral.setPosition(new SourcePosition(spec.getLine(), spec.getCharPositionInLine()));
         final List<Expression> args = new ArrayList<>();
@@ -1695,8 +1762,16 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             }
         }
         window.describeOver(distinctCall, partition, order, ascending, nullsFirst);
-        if (isWholePartition(over.windowFrame())) {
+        final FrostlakeParser.WindowFrameContext frame = over.windowFrame();
+        if (isWholePartition(frame)) {
             window.markWholeFramed();
+            if (frame.ROWS() != null) {
+                window.markWholeRowsFramed();
+            }
+        } else if (frame != null && frame.BETWEEN() != null && frame.ROWS() != null
+                && frame.frameBound(1).FOLLOWING() != null
+                && !(frame.frameBound(0).UNBOUNDED() != null && frame.frameBound(0).PRECEDING() != null)) {
+            window.markOrderReversedInPlan();
         }
     }
 
@@ -2156,6 +2231,16 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         if (ComparisonLevelChain.isStep(ctx)) {
             return comparisonChain(ctx);
         }
+        final FrostlakeParser.RowExprContext row = SelectItemAccessors.fromlessRowItem(ctx.selectStatement());
+        if (row != null) {
+            // A row IN a FROM-less subquery of one ROW item is the row IN that one row (live-verified).
+            final List<List<Expression>> rows = new ArrayList<>();
+            rows.add(fromlessRowMembers(row));
+            final TupleInExpression tuple = TupleInExpression.ofTupleRows(argList(ctx.expressionList()), rows,
+                ctx.NOT() != null);
+            tuple.setPosition(keywordPosition(ctx.NOT() != null ? ctx.NOT().getSymbol() : ctx.IN().getSymbol()));
+            return tuple;
+        }
         final TupleInExpression tuple = TupleInExpression.ofSubquery(
             argList(ctx.expressionList()),
             positionedSubquery(ctx.selectStatement()),
@@ -2596,36 +2681,12 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         }
     }
 
-    private String unquoteString(final String raw) {
-        // The one canonical string-literal decoder (quote stripping + escape handling).
-        return SqlStringLiterals.decode(raw);
-    }
-
     /**
-     * The same decode, positioned. The reader refuses an unpaired surrogate escape, and live reports
-     * that at the LITERAL's own start — not at the call around it, which is how the refusal announces
-     * that it came from the reader rather than from any function. Verified across seven offsets and
-     * onto a second line.
-     *
-     * @param raw   the literal token's text, quotes included
-     * @param token the token itself, for the place to report
-     * @return the decoded text
+     * The one canonical string-literal decoder, quote stripping and escape handling. An unpaired surrogate escape is
+     * refused in the reader's own sentence, with no place named (live-verified; see SqlStringLiterals).
      */
-    private String unquoteStringAt(final String raw, final Token token) {
-        try {
-            return SqlStringLiterals.decode(raw);
-        } catch (final RuntimeException refused) {
-            if (String.valueOf(refused.getMessage()).startsWith("Invalid Unicode string literal;")) {
-                // RESOLVED against the enclosing fragment, not taken raw. An expression is re-parsed on
-                // its own, so the token's own position is an offset INTO that fragment — 0 for the whole
-                // of `'\uD800'` — and only the resolver knows where the fragment sits in the statement.
-                final SourcePosition at = ExpressionSource.resolve(
-                    new SourcePosition(token.getLine(), token.getCharPositionInLine()));
-                throw new RuntimeException(
-                    SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(), refused.getMessage()));
-            }
-            throw refused;
-        }
+    private String unquoteString(final String raw) {
+        return SqlStringLiterals.decode(raw);
     }
 
     private String unquoteDollar(final String raw) {

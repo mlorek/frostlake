@@ -70,6 +70,12 @@ import java.util.Set;
  */
 final class ShowSessionExecutor {
 
+    /** Where the referenced side's four name columns start in a key row: database, schema, table, column. */
+    private static final int PK_SIDE = 1;
+
+    /** Where the referencing side's four name columns start in a key row. */
+    private static final int FK_SIDE = 5;
+
     /** The user parameter naming the network policy attached to the user. */
     private static final String NETWORK_POLICY = "NETWORK_POLICY";
 
@@ -1196,18 +1202,45 @@ final class ShowSessionExecutor {
                 }
             }
         }
+        // Ordered by the referenced column, its database, schema and table first (live-verified); keys referencing
+        // one column come in no order the account fixes, and stay here in the order they were read.
+        Collections.sort(rows, byColumnOf(PK_SIDE));
         return new ResultSet(cols, rows);
+    }
+
+    /** Key rows ordered by the database, schema, table and column one side names, from {@code first} on. */
+    private static Comparator<Row> byColumnOf(final int first) {
+        return new Comparator<Row>() {
+            @Override
+            public int compare(final Row left, final Row right) {
+                for (int i = first; i < first + 4; i++) {
+                    final Object a = left.getValue(i);
+                    final Object b = right.getValue(i);
+                    if (a == null || b == null) {
+                        if (a != b) {
+                            return a == null ? 1 : -1;
+                        }
+                        continue;
+                    }
+                    final int order = a.toString().compareTo(b.toString());
+                    if (order != 0) {
+                        return order;
+                    }
+                }
+                return 0;
+            }
+        };
     }
 
     /**
      * SHOW EXPORTED KEYS: the foreign keys that reference the tables of the scope, wherever the referencing table
      * lives — the rows SHOW IMPORTED KEYS lists for the referencing side, read from the referenced one
-     * (live-verified: a table lists the keys other tables import from it, and none it imports itself). The rows
-     * follow the referenced tables, then the referencing ones, and a key of several columns lists them in the
-     * referencing table's column order, where SHOW IMPORTED KEYS lists them in the key's own.
+     * (live-verified: a table lists the keys other tables import from it, and none it imports itself). The rows are
+     * ordered by the referencing column, its database, schema and table first, so a key of several columns lists
+     * its columns by name, whatever their place in the key or in the table (live-verified).
      */
     public ResultSet showExportedKeys(final String scopeKind, final String scopeName) {
-        final List<String> referenced = new ArrayList<>();
+        final Set<String> referenced = new HashSet<>();
         for (final Schema schema : schemasInScope(scopeKind, scopeName)) {
             final String databaseName = databaseNameOf(schema);
             for (final Table table : tablesInScope(schema, scopeKind, scopeName)) {
@@ -1216,29 +1249,12 @@ final class ShowSessionExecutor {
         }
         final ResultSet imported = showImportedKeys("ACCOUNT", null);
         final List<Row> rows = new ArrayList<>();
-        for (final String target : referenced) {
-            final Map<String, List<Row>> byReferencing = new LinkedHashMap<>();
-            for (final Row row : imported.getRows()) {
-                if (target.equals(tableOf(row, 1))) {
-                    final String referencing = tableOf(row, 5);
-                    if (!byReferencing.containsKey(referencing)) {
-                        byReferencing.put(referencing, new ArrayList<Row>());
-                    }
-                    byReferencing.get(referencing).add(row);
-                }
-            }
-            for (final Map.Entry<String, List<Row>> keys : byReferencing.entrySet()) {
-                final List<String> columns = columnNamesOf(keys.getKey());
-                Collections.sort(keys.getValue(), new Comparator<Row>() {
-                    @Override
-                    public int compare(final Row left, final Row right) {
-                        return Integer.compare(columns.indexOf(String.valueOf(left.getValue(8))),
-                            columns.indexOf(String.valueOf(right.getValue(8))));
-                    }
-                });
-                rows.addAll(keys.getValue());
+        for (final Row row : imported.getRows()) {
+            if (referenced.contains(tableOf(row, PK_SIDE))) {
+                rows.add(row);
             }
         }
+        Collections.sort(rows, byColumnOf(FK_SIDE));
         return new ResultSet(imported.getColumns(), rows);
     }
 
@@ -1249,26 +1265,6 @@ final class ShowSessionExecutor {
         }
         return QualifiedName.join(row.getValue(first).toString(), row.getValue(first + 1).toString(),
             row.getValue(first + 2).toString());
-    }
-
-    /** A table's column names in their order, or none when the table cannot be found. */
-    private List<String> columnNamesOf(final String qualifiedTable) {
-        final List<String> names = new ArrayList<>();
-        if (qualifiedTable == null) {
-            return names;
-        }
-        final Table table;
-        try {
-            table = catalog.resolveTable(qualifiedTable);
-        } catch (final RuntimeException gone) {
-            return names;
-        }
-        if (table != null) {
-            for (final TableColumn column : table.getColumns()) {
-                names.add(column.getName());
-            }
-        }
-        return names;
     }
 
     /**

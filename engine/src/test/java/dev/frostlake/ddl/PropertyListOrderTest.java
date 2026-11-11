@@ -25,7 +25,8 @@ import org.junit.jupiter.api.Test;
  * class the name refused is not the first written but the first of a table hashed by name: {@code A = 1 P = 2}
  * and {@code P = 1 A = 2} both refuse P, of thirteen names K1 to K13 the one refused is K1 in either order. A
  * repeated name alone is refused where it is read. COPY takes no value: a number or a switch value is an
- * invalid value of it, a text, a word or a list an invalid type. Every answer is live-verified.
+ * invalid value of it, a text, a word or a list an invalid type. The properties are judged before a column type
+ * that names no type is. Every answer is live-verified.
  */
 public class PropertyListOrderTest extends MeasuredCellsTestSupport {
 
@@ -213,5 +214,18 @@ public class PropertyListOrderTest extends MeasuredCellsTestSupport {
         assertAnswer(
             "REFUSED SQL compilation error: | invalid type of property 'TOK_PROPERTY_LIST' for 'COPY'",
             "CREATE OR REPLACE TABLE t_p (a INT) COPY = (a = 1)");
+    }
+
+    @Test
+    public void thePropertiesAreJudgedBeforeAColumnTypeNoTypeHolds() {
+        assertAnswer(
+            "REFUSED SQL compilation error: | invalid property 'x' for 'TABLE'",
+            "CREATE OR REPLACE TABLE tq2 (a NOSUCHTYPE) x = 1");
+        assertAnswer(
+            "REFUSED SQL compilation error: | invalid value ['x'] for parameter 'CHANGE_TRACKING'",
+            "CREATE OR REPLACE TABLE tq2 (a NOSUCHTYPE) CHANGE_TRACKING = 'x'");
+        assertAnswer(
+            "REFUSED SQL compilation error: | Unsupported data type 'NOSUCHTYPE'.",
+            "CREATE OR REPLACE TABLE tq2 (a NOSUCHTYPE) COMMENT = 'x'");
     }
 }

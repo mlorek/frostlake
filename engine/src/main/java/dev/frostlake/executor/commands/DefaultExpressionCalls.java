@@ -47,7 +47,9 @@ import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -80,6 +82,10 @@ import java.util.Set;
  * operation - and a bare name there is an invalid identifier, a parameter's own name too.
  */
 final class DefaultExpressionCalls {
+
+    /** The words a bare DEFAULT names that read no column: the clock and the constants. */
+    private static final Set<String> CLOCK_WORDS = new HashSet<String>(Arrays.asList("CURRENT_TIMESTAMP",
+        "CURRENT_DATE", "CURRENT_TIME", "LOCALTIMESTAMP", "LOCALTIME", "TRUE", "FALSE", "NULL"));
 
     /** How deep a SQL function's body is expanded into the functions it calls. */
     private static final int MAX_EXPANSION_DEPTH = 16;
@@ -198,30 +204,57 @@ final class DefaultExpressionCalls {
     }
 
     /**
-     * Refuse a CREATE TABLE column's value DEFAULT that reads a name no column before it carries (all live-verified):
-     * {@code (c2 INT, c INT DEFAULT c2 + 1)} is created, and {@code (c INT DEFAULT c2 + 1, c2 INT)} refuses the c2
-     * where it stands, {@code invalid identifier 'C2'}, as it does a name no column carries and a qualified one,
-     * {@code invalid identifier 'T.C2'}; the column's own name is refused at the column, {@code Column 'C' cannot
-     * reference itself in its default value expression.} A bare name and a condition are judged as before (see
-     * requireNoNames).
+     * Refuse a CREATE TABLE column's DEFAULT that reads a name no column before it carries (all live-verified): {@code
+     * (c2 INT, c INT DEFAULT c2 + 1)} is created, and so are {@code DEFAULT c2}, {@code DEFAULT NOT c2} and {@code
+     * DEFAULT t.c2 + 1} in a table t; {@code (c INT DEFAULT c2 + 1, c2 INT)} refuses the c2 where it stands, {@code
+     * invalid identifier 'C2'}, as it does a name no column carries and one qualified otherwise, {@code invalid
+     * identifier 'T.C2'}; the column's own name is refused at the column, {@code Column 'C' cannot reference itself in
+     * its default value expression.}
      *
      * @param column  the column's definition
      * @param name    the column's canonical name
      * @param earlier the canonical names of the columns defined before it
+     * @param table   the table's canonical name, or null when not known
      */
     static void requireEarlierColumns(final FrostlakeParser.ColumnDefContext column, final String name,
-                                      final Set<String> earlier) {
-        for (final FrostlakeParser.QualifiedNameExprContext read : valueDefaultNames(column)) {
+                                      final Set<String> earlier, final String table) {
+        for (final FrostlakeParser.QualifiedNameExprContext read : defaultNames(column)) {
             final String[] parts = ParseTreeText.qualifiedNameParts(read.qualifiedName());
-            if (parts.length == 1 && name.equals(parts[0])) {
+            // The table's own name may qualify a column it reads: (c2 INT, c INT DEFAULT t.c2 + 1) in t.
+            final boolean own = parts.length == 2 && table != null && table.equals(parts[0]);
+            final String read1 = own ? parts[1] : parts[0];
+            if ((parts.length == 1 || own) && name.equals(read1)) {
                 throw new RuntimeException(SqlCompilationError.at(column.getStart().getLine(),
                     column.getStart().getCharPositionInLine(), " Column '" + SqlIdentifiers.spellCanonical(name)
                         + "' cannot reference itself in its default value expression."));
             }
-            if (parts.length != 1 || !earlier.contains(parts[0])) {
+            if (parts.length != 1 && !own || !earlier.contains(read1)) {
                 throw invalidIdentifier(read);
             }
         }
+    }
+
+    /**
+     * The names a CREATE TABLE column's DEFAULT reads, in the order written: a value's, a condition's and a bare name
+     * alike, a sequence's NEXTVAL and the clock and constant words left out.
+     */
+    private static List<FrostlakeParser.QualifiedNameExprContext> defaultNames(
+            final FrostlakeParser.ColumnDefContext column) {
+        final List<FrostlakeParser.QualifiedNameExprContext> names = new ArrayList<>();
+        for (final FrostlakeParser.ColumnConstraintContext constraint : column.columnConstraint()) {
+            if (constraint.DEFAULT() != null && constraint.defaultExpression() != null
+                    && constraint.defaultExpression().booleanExpr() != null) {
+                collectNames(constraint.defaultExpression().booleanExpr(), null, names);
+            }
+        }
+        final List<FrostlakeParser.QualifiedNameExprContext> read = new ArrayList<>();
+        for (final FrostlakeParser.QualifiedNameExprContext name : names) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(name.qualifiedName());
+            if (parts.length != 1 || !CLOCK_WORDS.contains(parts[0])) {
+                read.add(name);
+            }
+        }
+        return read;
     }
 
     /**
@@ -325,8 +358,43 @@ final class DefaultExpressionCalls {
         return toldDefault(written, true);
     }
 
+    /**
+     * {@link #toldColumnDefault(ParserRuleContext)}, each column the default reads qualified by the table's name: a
+     * CREATE TABLE's {@code c INT DEFAULT c2 + 1} is told back as {@code DE.C2 + 1} (live-verified).
+     *
+     * @param written the default
+     * @param table   the table's canonical name, or null to qualify nothing
+     * @return the text
+     */
+    String toldColumnDefault(final ParserRuleContext written, final String table) {
+        if (table == null) {
+            return toldColumnDefault(written);
+        }
+        final List<FrostlakeParser.QualifiedNameExprContext> names = new ArrayList<>();
+        collectNames(written, null, names);
+        final String original = ParseTreeText.getOriginalText(written);
+        final int offset = written.getStart().getStartIndex();
+        final StringBuilder qualified = new StringBuilder();
+        int cursor = 0;
+        for (final FrostlakeParser.QualifiedNameExprContext name : names) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(name.qualifiedName());
+            if (parts.length != 1) {
+                continue;
+            }
+            final int start = name.getStart().getStartIndex() - offset;
+            qualified.append(original, cursor, start).append(SqlIdentifiers.spellCanonical(table)).append('.')
+                .append(SqlIdentifiers.spellCanonical(parts[0]));
+            cursor = name.getStop().getStopIndex() + 1 - offset;
+        }
+        qualified.append(original.substring(cursor));
+        return toldText(qualified.toString(), true);
+    }
+
     private String toldDefault(final ParserRuleContext written, final boolean column) {
-        final String expression = ParseTreeText.getOriginalText(written);
+        return toldText(ParseTreeText.getOriginalText(written), column);
+    }
+
+    private String toldText(final String expression, final boolean column) {
         try {
             final ExpressionEvaluatorVisitor printer = new ExpressionEvaluatorVisitor(
                 new Table("$DEFAULT", new ArrayList<TableColumn>(), true), null, queryExecutor.getFunctionRegistry(),

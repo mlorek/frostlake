@@ -209,7 +209,7 @@ final class PlanBuilder {
             for (int i = sorted.size() - 1; i >= 0 && !scan.getExpressions().isEmpty(); i--) {
                 scan.first(sorted.get(i));
             }
-            if (scan.getExpressions().isEmpty()) {
+            if (scan.getExpressions().isEmpty() && !scan.isReadUnlisted()) {
                 scan.unread();
             }
         }

@@ -17,6 +17,7 @@
 package dev.frostlake.parser;
 
 import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.TokenStream;
 
 import java.util.Locale;
 
@@ -40,6 +41,22 @@ public final class PropertyListKeys {
      */
     public static boolean opens(final Token name) {
         return name != null && isListKey(name.getText());
+    }
+
+    /**
+     * Whether a property opens with a session policy's agent scope given a dotted name, {@code
+     * AGENT_RESTRICTED_SESSION_SCOPE = db.schema.name}, which the property reads as written.
+     *
+     * @param input the tokens, the property's name next
+     * @return whether it does
+     */
+    public static boolean opensDottedScope(final TokenStream input) {
+        final Token name = input.LT(1);
+        final Token first = input.LT(3);
+        return name != null && "AGENT_RESTRICTED_SESSION_SCOPE".equalsIgnoreCase(name.getText())
+            && input.LT(2).getType() == FrostlakeLexer.EQ && first.getType() != FrostlakeLexer.STRING_LITERAL
+            && first.getType() != FrostlakeLexer.NULL && first.getType() != FrostlakeLexer.LPAREN
+            && first.getType() != Token.EOF && input.LT(4).getType() == FrostlakeLexer.DOT;
     }
 
     /**

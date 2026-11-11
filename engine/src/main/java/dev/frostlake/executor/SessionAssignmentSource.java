@@ -33,9 +33,12 @@ import dev.frostlake.values.VariantValue;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
+import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
@@ -57,6 +60,9 @@ final class SessionAssignmentSource {
     /** The account's refusal, full stop included. */
     static final String NON_CONSTANT = "Unsupported feature 'assignment from non-constant source expression'.";
 
+    /** A NULL written as a DECODE's literal argument (see decodeUnfolded). */
+    private static final Object NULL_LITERAL = new Object();
+
     /**
      * The functions the account's folder does not take: a source calling one anywhere outside the queries it holds
      * is refused as non-constant once it compiles, whatever its value (live-verified). The line is each function's
@@ -68,7 +74,7 @@ final class SessionAssignmentSource {
         "TIMESTAMPFROMPARTS", "TIMESTAMP_NTZ_FROM_PARTS", "TIMESTAMPNTZFROMPARTS", "TIMESTAMP_LTZ_FROM_PARTS",
         "TIMESTAMPLTZFROMPARTS", "TIMESTAMP_TZ_FROM_PARTS", "TIMESTAMPTZFROMPARTS", "DATEDIFF", "TIMEDIFF",
         "TIMESTAMPDIFF", "MONTHNAME", "DAYNAME", "REPEAT", "HASH", "RANDOM", "UUID_STRING", "SQUARE", "BITAND",
-        "ROUND", "DECODE", "STRTOK", "REGEXP_REPLACE", "SHA2", "SHA2_HEX", "MD5", "MD5_HEX", "BASE64_ENCODE",
+        "ROUND", "STRTOK", "REGEXP_REPLACE", "SHA2", "SHA2_HEX", "MD5", "MD5_HEX", "BASE64_ENCODE",
         "LENGTH", "LEN", "CHR", "CHAR", "LPAD", "RPAD", "REPLACE", "SQRT", "POWER", "POW", "HEX_ENCODE", "CONTAINS",
         "ASCII", "UNIFORM", "NORMAL", "REVERSE", "TRANSLATE", "EDITDISTANCE", "SOUNDEX", "CHARINDEX",
         "ARRAY_CONSTRUCT", "OBJECT_CONSTRUCT", "PARSE_JSON", "SYSTEM$TYPEOF"));
@@ -139,9 +145,23 @@ final class SessionAssignmentSource {
         if (node instanceof FrostlakeParser.SelectStatementContext) {
             return false;
         }
+        // A branch the fold does not take is not judged: IFF(TRUE, 1, CHR(65)) and CASE WHEN TRUE THEN 1 ELSE
+        // CHR(65) END set 1 (live-verified).
+        final List<ParseTree> taken = takenParts(node);
+        if (taken != null) {
+            for (final ParseTree part : taken) {
+                if (callsUnfoldedFunction(part)) {
+                    return true;
+                }
+            }
+            return false;
+        }
         final FrostlakeParser.FunctionNameContext name = calledName(node);
-        if (name != null && UNFOLDED.contains(name.getText().toUpperCase(Locale.ROOT))) {
-            return true;
+        if (name != null) {
+            final String upper = name.getText().toUpperCase(Locale.ROOT);
+            if ("DECODE".equals(upper) ? decodeUnfolded(node) : UNFOLDED.contains(upper)) {
+                return true;
+            }
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             if (callsUnfoldedFunction(node.getChild(i))) {
@@ -149,6 +169,147 @@ final class SessionAssignmentSource {
             }
         }
         return false;
+    }
+
+    /**
+     * The parts of an IFF or a searched CASE the fold reads when its conditions are TRUE or FALSE as written: the
+     * conditions up to the first TRUE and the branch it takes, or the ELSE where none is TRUE; null for any other node,
+     * and for a CASE a condition of which is no such literal.
+     */
+    private static List<ParseTree> takenParts(final ParseTree node) {
+        final List<ParseTree> parts = new ArrayList<>();
+        if (node instanceof FrostlakeParser.FunctionCallExprContext) {
+            final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) node;
+            final List<FrostlakeParser.FunctionArgContext> arguments = call.functionArgList() == null ? null
+                : call.functionArgList().functionArg();
+            if (call.functionName() == null || !"IFF".equalsIgnoreCase(call.functionName().getText())
+                    || arguments == null || arguments.size() != 3) {
+                return null;
+            }
+            final Boolean condition = booleanLiteral(arguments.get(0));
+            if (condition == null) {
+                return null;
+            }
+            parts.add(arguments.get(0));
+            parts.add(arguments.get(condition.booleanValue() ? 1 : 2));
+            return parts;
+        }
+        if (!(node instanceof FrostlakeParser.SearchedCaseExprContext)) {
+            return null;
+        }
+        final FrostlakeParser.SearchedCaseExprContext searched = (FrostlakeParser.SearchedCaseExprContext) node;
+        for (final FrostlakeParser.WhenClauseContext when : searched.whenClause()) {
+            final Boolean condition = booleanLiteral(when.booleanExpr(0));
+            if (condition == null) {
+                return null;
+            }
+            parts.add(when.booleanExpr(0));
+            if (condition.booleanValue()) {
+                parts.add(when.booleanExpr(1));
+                return parts;
+            }
+        }
+        if (searched.booleanExpr() != null) {
+            parts.add(searched.booleanExpr());
+        }
+        return parts;
+    }
+
+    /** TRUE or FALSE written as a literal, or null for any other node. */
+    private static Boolean booleanLiteral(final ParseTree node) {
+        final String text = node.getText();
+        return "TRUE".equalsIgnoreCase(text) ? Boolean.TRUE : "FALSE".equalsIgnoreCase(text) ? Boolean.FALSE : null;
+    }
+
+    /**
+     * Whether a DECODE is one the folder does not take: one with no default whose subject a search matches, as
+     * DECODE matches, NULL to NULL included - {@code DECODE(1, 1, 'a')} and {@code DECODE(NULL, NULL, 'a')} are
+     * refused, while {@code DECODE(1, 1, 'a', 'b')} and {@code DECODE(1, 2, 'a')} set (live-verified). Arguments other
+     * than literals are left to the fold.
+     */
+    private static boolean decodeUnfolded(final ParseTree node) {
+        if (!(node instanceof FrostlakeParser.FunctionCallExprContext)
+                || ((FrostlakeParser.FunctionCallExprContext) node).functionArgList() == null) {
+            return false;
+        }
+        final List<FrostlakeParser.FunctionArgContext> arguments =
+            ((FrostlakeParser.FunctionCallExprContext) node).functionArgList().functionArg();
+        if (arguments.size() < 3 || arguments.size() % 2 == 0) {
+            return false;
+        }
+        final Object subject = literalValue(arguments.get(0));
+        if (subject == null) {
+            return false;
+        }
+        for (int i = 1; i < arguments.size(); i += 2) {
+            final Object search = literalValue(arguments.get(i));
+            if (search != null && matches(subject, search)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** A literal argument's value - a number, a text or NULL_LITERAL - or null where the argument is no literal. */
+    private static Object literalValue(final FrostlakeParser.FunctionArgContext argument) {
+        final FrostlakeParser.BooleanExprContext value = argument.booleanExpr();
+        if (!(value instanceof FrostlakeParser.ValueExprContext)
+                || !(((FrostlakeParser.ValueExprContext) value).expression()
+                    instanceof FrostlakeParser.LiteralExprContext)) {
+            return null;
+        }
+        final FrostlakeParser.LiteralContext literal =
+            ((FrostlakeParser.LiteralExprContext) ((FrostlakeParser.ValueExprContext) value).expression()).literal();
+        if (literal.NULL() != null) {
+            return NULL_LITERAL;
+        }
+        if (literal.INTEGER_LITERAL() != null || literal.FLOAT_LITERAL() != null) {
+            try {
+                return new BigDecimal(literal.getText());
+            } catch (final NumberFormatException notPlain) {
+                return null;
+            }
+        }
+        return literal.STRING_LITERAL() != null ? literal.getText() : null;
+    }
+
+    /** Whether DECODE matches two literal values: NULL matches NULL, numbers by value, texts as written. */
+    private static boolean matches(final Object subject, final Object search) {
+        if (subject == NULL_LITERAL || search == NULL_LITERAL) {
+            return subject == search;
+        }
+        if (subject instanceof BigDecimal && search instanceof BigDecimal) {
+            return ((BigDecimal) subject).compareTo((BigDecimal) search) == 0;
+        }
+        return subject.equals(search);
+    }
+
+    /**
+     * Whether a source that is one scalar subquery limits its rows and hands out a VARIANT, an OBJECT or an ARRAY:
+     * such a query is refused as no constant, while the query without its LIMIT, and a LIMIT over any other type, set
+     * the variable (live-verified: {@code (SELECT NULL::VARIANT LIMIT 1)} and {@code (SELECT NULL::OBJECT LIMIT 1)}
+     * are refused, {@code (SELECT NULL::OBJECT)} and {@code (SELECT 1 LIMIT 1)} set).
+     *
+     * @param source        the source as parsed, one scalar subquery
+     * @param queryExecutor the executor whose functions and catalog type the source
+     * @return true for such a source
+     */
+    static boolean limitsSemiStructured(final FrostlakeParser.BooleanExprContext source,
+                                        final QueryExecutor queryExecutor) {
+        FrostlakeParser.BooleanExprContext value = source;
+        while (value instanceof FrostlakeParser.ValueExprContext && ((FrostlakeParser.ValueExprContext) value)
+                .expression() instanceof FrostlakeParser.ParenExprContext) {
+            value = ((FrostlakeParser.ParenExprContext) ((FrostlakeParser.ValueExprContext) value).expression())
+                .booleanExpr();
+        }
+        if (!(value instanceof FrostlakeParser.ValueExprContext) || !(((FrostlakeParser.ValueExprContext) value)
+                .expression() instanceof FrostlakeParser.ScalarSubqueryExprContext)) {
+            return false;
+        }
+        final FrostlakeParser.SelectStatementContext query = ((FrostlakeParser.ScalarSubqueryExprContext)
+            ((FrostlakeParser.ValueExprContext) value).expression()).selectStatement();
+        return (query.limitClause() != null || query.fetchClause() != null)
+            && isSemiStructured(staticTypeOf(DeclarationTypes.sqlExpression(source), queryExecutor));
     }
 
     /**

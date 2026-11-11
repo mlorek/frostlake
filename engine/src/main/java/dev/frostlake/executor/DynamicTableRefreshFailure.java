@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.RefreshTrigger;
 
 /**
  * The refusal of a manual refresh of a dynamic table whose query reads a relation that is gone. The account
@@ -36,6 +37,23 @@ final class DynamicTableRefreshFailure {
      * @param missing      the miss its query's expansion met
      * @return the refusal the refresh answers
      */
+    /**
+     * The refusal of a refresh that failed: the trigger as the sentence names it, INITIAL for a creation's, and the
+     * failure's message after the target's (live-verified): {@code Failed to refresh dynamic table with refresh_trigger
+     * MANUAL at data_timestamp 1794324971799 because of the error: SQL compilation error: Target table failed to
+     * refresh: Division by zero}.
+     *
+     * @param trigger what started the refresh
+     * @param message the failure's message
+     * @return the refusal
+     */
+    static RuntimeException refused(final RefreshTrigger trigger, final String message) {
+        return new RuntimeException(SqlCompilationError.inline("Failed to refresh dynamic table with refresh_trigger "
+            + (trigger == RefreshTrigger.CREATION ? "INITIAL" : trigger.name()) + " at data_timestamp "
+            + StatementClock.instant().toEpochMilli() + " because of the error: "
+            + SqlCompilationError.inline("Target table failed to refresh: " + message)));
+    }
+
     static RuntimeException manual(final DynamicTable dynamicTable, final ViewExpansionException missing) {
         final String expanded = missing.within(dynamicTable.getName()).getMessage()
             + " (Note: the dynamic table runs as owner role '" + dynamicTable.getOwner() + "'. " + NOTE + ")";

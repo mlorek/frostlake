@@ -102,7 +102,7 @@ public class RestResponseBodyShapesTest extends BaseRestTest {
         sql("CREATE ROLE rmb_role");
         final JsonNode roles = ok(get("/api/v2/roles?like=RMB_ROLE"));
         assertTrue(roles.get(0).get("comment").isNull(), roles.toString());
-        sql("CREATE ALERT rmb_db.s.rmb_alert IF (EXISTS (SELECT 1)) THEN SELECT 1");
+        sql("CREATE ALERT rmb_db.s.rmb_alert SCHEDULE = '60 MINUTE' IF (EXISTS (SELECT 1)) THEN SELECT 1");
         final JsonNode alert = ok(get(SCHEMA + "/alerts/rmb_alert"));
         assertTrue(alert.get("comment").isNull(), alert.toString());
         assertTrue(alert.path("config").isObject() && alert.path("config").isEmpty(), alert.toString());

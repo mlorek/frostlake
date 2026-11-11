@@ -21,18 +21,16 @@ import dev.frostlake.query.MeasuredCellsTestSupport;
 import org.junit.jupiter.api.Test;
 
 /**
- * GET reads a VARIANT at a number, a text, a BOOLEAN or a VARIANT; a FLOAT, a DECFLOAT, a date and a binary index
- * are refused by their type as the call compiles, the first argument named FILE, while an ARRAY and an OBJECT
- * take a FLOAT index (all live-verified).
+ * GET reads a VARIANT at a number, a text, a BOOLEAN, a FLOAT or a VARIANT, a FLOAT reading nothing, as over an ARRAY
+ * and an OBJECT; a DECFLOAT, a date and a binary index are refused by their type as the call compiles, the first
+ * argument named FILE (all live-verified).
  */
 public class GetVariantIndexTypeTest extends MeasuredCellsTestSupport {
 
     @Test
     public void variantIndexes() {
         engine.execute("ALTER SESSION SET USE_CACHED_RESULT = FALSE");
-        assertAnswer("REFUSED SQL compilation error: error line 1 at position 7 | Invalid argument types for function "
-                + "'GET': (FILE, FLOAT)",
-            "SELECT GET(PARSE_JSON('[1,2,3]'), 1::FLOAT)");
+        assertAnswer("null", "SELECT GET(PARSE_JSON('[1,2,3]'), 1::FLOAT)");
         assertAnswer("3", "SELECT GET(PARSE_JSON('[1,2,3]'), 1.5::NUMBER(2,1))");
         assertAnswer("2", "SELECT GET(PARSE_JSON('[1,2,3]'), 1::NUMBER(38,0))");
         assertAnswer("null", "SELECT GET(PARSE_JSON('[1,2,3]'), TRUE)");
@@ -43,16 +41,10 @@ public class GetVariantIndexTypeTest extends MeasuredCellsTestSupport {
         assertAnswer("REFUSED SQL compilation error: error line 1 at position 7 | Invalid argument types for function "
                 + "'GET': (FILE, DECFLOAT(38))",
             "SELECT GET(PARSE_JSON('[1,2,3]'), DECFLOAT '1')");
-        assertAnswer("REFUSED SQL compilation error: error line 1 at position 7 | Invalid argument types for function "
-                + "'GET': (FILE, FLOAT)",
-            "SELECT GET(PARSE_JSON('{\"a\":1}'), 1::FLOAT)");
+        assertAnswer("null", "SELECT GET(PARSE_JSON('{\"a\":1}'), 1::FLOAT)");
         assertAnswer("null", "SELECT GET([1,2,3], 1::FLOAT)");
-        assertAnswer("REFUSED SQL compilation error: error line 1 at position 7 | Invalid argument types for function "
-                + "'GET': (FILE, FLOAT)",
-            "SELECT GET(PARSE_JSON('[1,2,3]'), 1::DOUBLE)");
-        assertAnswer("REFUSED SQL compilation error: error line 1 at position 7 | Invalid argument types for function "
-                + "'GET': (FILE, FLOAT)",
-            "SELECT GET(PARSE_JSON('[1,2,3]'), NULL::FLOAT)");
+        assertAnswer("null", "SELECT GET(PARSE_JSON('[1,2,3]'), 1::DOUBLE)");
+        assertAnswer("null", "SELECT GET(PARSE_JSON('[1,2,3]'), NULL::FLOAT)");
         assertAnswer("REFUSED SQL compilation error: error line 1 at position 7 | Invalid argument types for function "
                 + "'GET': (FILE, BINARY(67108864))",
             "SELECT GET(PARSE_JSON('[1,2,3]'), TO_BINARY('01', 'HEX'))");

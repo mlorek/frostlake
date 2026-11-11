@@ -62,21 +62,29 @@ import org.antlr.v4.runtime.TokenStream;
  *   REPEAT LET a := 1  then  INSERT INTO u VALUES (1); UNTIL …        'INSERT' alone
  * </pre>
  *
- * <p>In a nested block's list and a FOR's body the block's own lines are read and one more follows them: the token
- * after the first name past the last of them, the statement's semicolon passed. In a WHILE's body and a LOOP's the
+ * <p>In a nested block's list the block's own lines are read and one more follows them: the token after the first
+ * name at or past the last of them, the statement's semicolon passed. In a WHILE's body, a LOOP's and a FOR's the
  * lines go on from the value's own fault, each the token after the first name past the one before; a statement
  * read on at a name passes that name over, and its second line is the token after the first name at or after the
- * one it names, a name standing for itself - but for the table INTO names, read as the fault it is (all
- * live-verified):
+ * one it names, a name standing for itself - but for the table INTO names, read as the fault it is, a MERGE's USING
+ * followed by its source. A value the statement reads on whole is followed by the token after the first name past
+ * the statement's semicolon, and a value ending in a word goes on at the token after the statement's first name. A
+ * FOR's END FOR names nothing, so no END line follows its body's (all live-verified):
  *
  * <pre>
  *   BEGIN … LET a := 1  then  CREATE TABLE u (a INT);                 'CREATE', '(', 'INT'
+ *   BEGIN … LET a := 1  then  CREATE OR REPLACE VIEW v AS SELECT 1;   'CREATE', 'VIEW', 'v', 'AS'
  *   FOR … DO LET a := 1  then  CREATE OR REPLACE TABLE u (a INT, …);   'CREATE', 'TABLE', '(', 'INT'
+ *   FOR … DO LET a := 1  then  CREATE OR REPLACE VIEW v AS SELECT 1;   'CREATE', 'VIEW', 'AS'
+ *   FOR … DO LET a := 1  then  UPDATE u SET a = 1; END FOR;            'UPDATE', '='
  *   LOOP LET a := 1  then  CREATE OR REPLACE VIEW v AS SELECT 1;       'CREATE', 'VIEW', 'AS', the END after END LOOP;
  *   LOOP LET a := 1  then  CREATE TABLE u (a INT, b INT);              'CREATE', 'INT', ','
  *   LOOP LET a := 1  then  UPDATE u SET a = 1; END LOOP;               'UPDATE', '=', the END after END LOOP;
  *   LOOP LET a := 1  then  INSERT INTO u (a) VALUES (1, 2);            'INSERT', '(', ')'
+ *   LOOP LET a := 1  then  MERGE INTO u USING w ON …;                  'MERGE', 'USING', 'w'
+ *   LOOP LET a := 1  then  SELECT 1 INTO :a; END LOOP;                 'SELECT', the END after END LOOP;
  *   LOOP LET a := 1  then  DELETE FROM u; END LOOP;                    'DELETE', the END after END LOOP;
+ *   LOOP LET a := b  then  CREATE TABLE u (a INT);                     'CREATE', '(', 'INT'
  * </pre>
  */
 final class ExpressionResumption {
@@ -110,8 +118,9 @@ final class ExpressionResumption {
         }
         final FrostlakeParser.StatementListContext list = (FrostlakeParser.StatementListContext) parser.getContext();
         final boolean branch = inBranchBody(recognizer);
-        final boolean loop = inLoopBody(list);
-        final boolean inner = inInnerBody(list);
+        // A FOR's body reads as a WHILE's or a LOOP's does; its END FOR names nothing, so no END line follows.
+        final boolean loop = inLoopBody(list) || list.getParent() instanceof FrostlakeParser.ForStatementContext;
+        final boolean inner = inInnerBody(list) && !loop;
         if (!(list.getParent() instanceof FrostlakeParser.BeginEndBlockContext)
                 && !(list.getParent() instanceof FrostlakeParser.ExceptionHandlerContext) && !branch && !loop
                 && !inner) {
@@ -132,7 +141,9 @@ final class ExpressionResumption {
             ((BufferedTokenStream) stream).fill();
         }
         if (endsInWord(parser, stream, finished.getStop())) {
-            return null;
+            // A value ending in a word goes on into the statement in a loop's body: the token after its first name,
+            // and the token after the first name past that one.
+            return loop ? wordValueLines(stream, word) : null;
         }
         // The statement is read on its own, at its own place: everything before it is blanked, line breaks kept.
         final char[] text = sql.toCharArray();
@@ -149,7 +160,7 @@ final class ExpressionResumption {
         final Token[] nameFirst = new Token[1];
         final List<Token> read = read(parser, stream, text, keep, word, end, nameFirst);
         if (loop) {
-            return loopLines(stream, read, nameFirst[0]);
+            return loopLines(stream, read, nameFirst[0], end);
         }
         if (inner) {
             return innerLines(stream, word, read, nameFirst[0]);
@@ -239,20 +250,29 @@ final class ExpressionResumption {
     }
 
     /**
-     * A WHILE's or a LOOP's lines: past a value that resumed, its fault and then twice the token after the first name
-     * past the line before; past a name met first, the token after the first name past it, and the token after the
-     * first name at or after that one - the table INTO names giving the token after it and one line more.
+     * A WHILE's, a LOOP's or a FOR's lines: past a value that resumed, its fault and then twice the token after the
+     * first name past the line before; past a value read on whole, the token after the first name past the
+     * statement's semicolon; past a name met first, the token after the first name past it, and the token after the
+     * first name at or after that one - the table INTO names giving the token after it and one line more, a USING's
+     * source itself.
      *
      * @param stream the parse's token stream
      * @param read   the block's own reading, or null when no token resumed the value
      * @param name   the name met first, or null
+     * @param end    the statement's semicolon, or the end of the input
      * @return the lines, or null when this reading names none
      */
-    private static List<Token> loopLines(final TokenStream stream, final List<Token> read, final Token name) {
+    private static List<Token> loopLines(final TokenStream stream, final List<Token> read, final Token name,
+                                         final Token end) {
         final List<Token> lines = new ArrayList<>();
         if (read != null) {
             if (read.isEmpty()) {
-                return read;
+                // A value read on whole: the token after the first name past the statement's semicolon follows.
+                final Token after = end == null || end.getType() == Token.EOF ? null : pastNextName(stream, end, true);
+                if (after != null) {
+                    lines.add(after);
+                }
+                return lines;
             }
             Token at = read.get(0);
             lines.add(at);
@@ -274,8 +294,10 @@ final class ExpressionResumption {
                 return null;
             }
             lines.add(own);
-            final Token next = pastNextName(stream, own, true);
-            if (next != null) {
+            // A MERGE's USING is followed by its source's name, which is the next line itself.
+            final Token next = own.getType() == FrostlakeLexer.USING ? nextSpoken(stream, own.getTokenIndex())
+                : pastNextName(stream, own, true);
+            if (next != null && next.getType() != Token.EOF) {
                 lines.add(next);
             }
             return lines;
@@ -293,8 +315,8 @@ final class ExpressionResumption {
     }
 
     /**
-     * A FOR's body's or a nested block's lines: the block's own reading, then the token after the first name past the
-     * last of them, the statement's semicolon passed.
+     * A nested block's lines: the block's own reading, then the token after the first name at or past the last of
+     * them, the statement's semicolon passed.
      *
      * @param stream the parse's token stream
      * @param word   the refused word
@@ -317,7 +339,30 @@ final class ExpressionResumption {
         if (lines.isEmpty()) {
             return lines;
         }
-        final Token next = pastNextName(stream, lines.get(lines.size() - 1), true);
+        // The last line may be a name itself, a view's: the token after it follows.
+        final Token next = atOrPastName(stream, lines.get(lines.size() - 1));
+        if (next != null) {
+            lines.add(next);
+        }
+        return lines;
+    }
+
+    /**
+     * A loop's lines past a value that ends in a word: the token after the statement's first name, and the token
+     * after the first name past that one.
+     *
+     * @param stream the parse's token stream
+     * @param word   the refused word
+     * @return the lines, or null when the statement holds no name
+     */
+    private static List<Token> wordValueLines(final TokenStream stream, final Token word) {
+        final Token afterName = SyntaxErrorListener.afterFirstName(stream, word);
+        if (afterName == null) {
+            return null;
+        }
+        final List<Token> lines = new ArrayList<>();
+        lines.add(afterName);
+        final Token next = pastNextName(stream, afterName, true);
         if (next != null) {
             lines.add(next);
         }

@@ -48,6 +48,9 @@ public class SchemaSnapshot implements Serializable {
     public List<ProjectionPolicySnapshot> projectionPolicies = new ArrayList<>();
     public List<ProjectionPolicySnapshot> aggregationPolicies = new ArrayList<>();
     public List<ProjectionPolicySnapshot> joinPolicies = new ArrayList<>();
+    // Null on snapshots predating privacy and storage lifecycle policies — the restore path null-checks.
+    public List<ProjectionPolicySnapshot> privacyPolicies = new ArrayList<>();
+    public List<StorageLifecyclePolicySnapshot> storageLifecyclePolicies = new ArrayList<>();
     public List<MaskingPolicySnapshot> maskingPolicies = new ArrayList<>();
     public List<FileFormatSnapshot> fileFormats = new ArrayList<>();
     public List<FunctionSnapshot> functions = new ArrayList<>();

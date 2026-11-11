@@ -60,6 +60,8 @@ public final class DdlStatusMessage {
     private static final String PROJECTION_POLICY = "Projection policy";
     private static final String AGGREGATION_POLICY = "Aggregation policy";
     private static final String JOIN_POLICY = "Join policy";
+    private static final String PRIVACY_POLICY = "Privacy policy";
+    private static final String STORAGE_LIFECYCLE_POLICY = "Storage lifecycle policy";
 
     private static final Set<String> MODIFIERS = new HashSet<>();
 
@@ -182,6 +184,14 @@ public final class DdlStatusMessage {
             // A row access policy and a projection, an aggregation and a join policy quote their names and "are"
             // created (live-verified).
             return kind + " '" + name + "' is successfully created.";
+        }
+        // A privacy policy quotes its name and is successfully created, a storage lifecycle policy is created
+        // successfully (live-verified).
+        if (PRIVACY_POLICY.equals(kind)) {
+            return kind + " '" + name + "' successfully created.";
+        }
+        if (STORAGE_LIFECYCLE_POLICY.equals(kind)) {
+            return kind + " '" + name + "' created successfully.";
         }
         // A view's, a materialized view's and a dynamic table's name is spelled as a name is written, quoted where it
         // must be: View "v" successfully created., where every other kind prints it bare (live-verified).

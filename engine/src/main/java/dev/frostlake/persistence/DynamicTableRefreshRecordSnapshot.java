@@ -52,6 +52,10 @@ public class DynamicTableRefreshRecordSnapshot implements Serializable {
     public ArrayList<long[]> inputPartitions;
     public String dependency;
     public Instant dependencyTimestamp;
+    // Null on snapshots that predate failed and reinitializing refreshes, and for a refresh that succeeded.
+    public String failureCode;
+    public String failureMessage;
+    public String reinitReason;
 
     /**
      * A record as a snapshot keeps it.
@@ -84,6 +88,9 @@ public class DynamicTableRefreshRecordSnapshot implements Serializable {
         }
         saved.dependency = record.getDependency();
         saved.dependencyTimestamp = record.getDependencyTimestamp();
+        saved.failureCode = record.getFailureCode();
+        saved.failureMessage = record.getFailureMessage();
+        saved.reinitReason = record.getReinitReason();
         return saved;
     }
 
@@ -99,8 +106,12 @@ public class DynamicTableRefreshRecordSnapshot implements Serializable {
             inputs.add(new DynamicTableRefreshInput(inputKinds.get(i), inputNames.get(i), partitions[0],
                 partitions[1], partitions[2], partitions[3]));
         }
-        return new DynamicTableRefreshRecord(database, schema, table, targetLag, graphValidFrom,
-            RefreshTrigger.valueOf(trigger), action, queryId, start, end, changed, warehouse, inputs, dependency,
-            dependencyTimestamp);
+        final DynamicTableRefreshRecord record = new DynamicTableRefreshRecord(database, schema, table, targetLag,
+            graphValidFrom, RefreshTrigger.valueOf(trigger), action, queryId, start, end, changed, warehouse, inputs,
+            dependency, dependencyTimestamp);
+        if (failureCode != null) {
+            record.failed(failureCode, failureMessage);
+        }
+        return reinitReason == null ? record : record.reinitialized(reinitReason);
     }
 }

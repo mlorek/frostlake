@@ -68,7 +68,7 @@ public class HavingOuterRowAggregateStatisticsTest {
     public void anUnfilteredSubqueryIsRefusedAsWhereNoStatisticsApply() {
         assertEquals(nested("MAX(FZ.ID)", "MAX(CORRELATION(MAX(FZ.ID)))"),
             refusal("SELECT b FROM fz GROUP BY b HAVING MAX((SELECT MAX(fz.id) FROM g)) = 7 ORDER BY b"));
-        assertEquals(nested("MAX(FZ.ID)", "SUM(CORRELATION(MAX(FZ.ID)))"),
+        assertEquals(nested("MAX(FZ.ID)", "SUM(CORRELATION(CAST(MAX(FZ.ID) AS NUMBER(38,0))))"),
             refusal("SELECT b FROM fz WHERE id < 7 GROUP BY b HAVING SUM((SELECT MAX(fz.id) FROM g)) = 14 ORDER BY b"));
         assertEquals(nested("MIN(FZ.ID)", "COUNT(CORRELATION(MIN(FZ.ID)) + 1)"),
             refusal("SELECT b FROM fz GROUP BY b HAVING COUNT((SELECT MIN(fz.id) + 1 FROM g)) = 1 ORDER BY b"));

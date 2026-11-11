@@ -316,7 +316,10 @@ public final class ColumnTypeFamilies {
             return;
         }
         if (!accepts(targetFamily, sourceFamily) || "TIMESTAMP".equals(targetFamily) && "TIME".equals(sourceFamily)
-                || zonedIntoUnzoned(targetType, sourceType)) {
+                || zonedIntoUnzoned(targetType, sourceType)
+                || StructuredTypes.isStructured(targetType) && StructuredTypes.isStructured(sourceType)
+                    && !StructuredTypes.coercible(sourceType, targetType)) {
+            // A structured value is judged by the coercion rules, element by element (live-verified).
             throw new RuntimeException(SqlCompilationError.of("incompatible types: [" + spell(sourceType)
                 + "] and [" + spell(targetType) + "]"));
         }

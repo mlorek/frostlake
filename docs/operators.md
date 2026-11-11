@@ -157,11 +157,11 @@ simple `CASE`, and `DECODE`.
 
 | Operator | Form | Notes |
 |---|---|---|
-| `UNION [ALL]` | `q1 UNION q2` | Plain UNION deduplicates treating NULLs as equal. |
+| `UNION [ALL \| DISTINCT]` | `q1 UNION q2` | Plain UNION, and UNION DISTINCT, deduplicate treating NULLs as equal. |
 | `UNION [ALL] BY NAME` | `q1 UNION ALL BY NAME q2` | Aligns columns by NAME rather than position. |
-| `INTERSECT [ALL]` | `q1 INTERSECT q2` | |
-| `EXCEPT [ALL]` | `q1 EXCEPT q2` | `EXCEPT` is an UNRESERVED word (usable as an alias) — the parser disambiguates by the next token, as Snowflake does (live-measured). |
-| `MINUS [ALL]` | `q1 MINUS q2` | Snowflake synonym for EXCEPT; `MINUS` is reserved. |
+| `INTERSECT` | `q1 INTERSECT q2` | `INTERSECT ALL` is refused, `Unsupported feature 'INTERSECT ALL'.`, in a query, under EXPLAIN and in a GENERATOR bound alike; `INTERSECT DISTINCT` is a syntax error (live-measured). |
+| `EXCEPT` | `q1 EXCEPT q2` | `EXCEPT` is an UNRESERVED word (usable as an alias) — the parser disambiguates by the next token, as Snowflake does (live-measured). `EXCEPT ALL` is refused as `Unsupported feature 'MINUS ALL'.` |
+| `MINUS` | `q1 MINUS q2` | Snowflake synonym for EXCEPT; `MINUS` is reserved. `MINUS ALL` is refused as EXCEPT ALL is. |
 
 ## Semi-structured access and cast operators
 

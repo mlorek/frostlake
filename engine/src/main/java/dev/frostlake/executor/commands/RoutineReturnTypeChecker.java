@@ -112,7 +112,10 @@ final class RoutineReturnTypeChecker {
             if (SqlUdfBodyCalls.isUnknownFunctionRefusal(untyped)) {
                 return;
             }
-            throw untyped;
+            // A name the typing refuses is placed in the body's frame, where the body's own compile places one: a
+            // parameter named DEFAULT is refused at position 2 of $$ default + 1 $$ (live-verified).
+            final String framed = inFrame(untyped.getMessage(), body);
+            throw framed == null ? untyped : new RuntimeException(framed, untyped);
         }
         if (actual == null) {
             // A lone item the expression typing cannot settle — a scalar subquery — is typed by the query.
@@ -128,6 +131,36 @@ final class RoutineReturnTypeChecker {
         }
         throw new RuntimeException("Declared return type '" + spell(declared)
             + "' is incompatible with actual return type '" + spell(actual) + "'");
+    }
+
+    /**
+     * Judges the body of a policy that answers a constraint no type of this engine's names - a privacy policy's
+     * PRIVACY_BUDGET - by what it answers: a body the expression typing settles is of another type than the
+     * constraint, refused as {@code Declared return type 'SYSTEM$PRIVACY_BUDGET' is incompatible with actual return
+     * type 'NUMBER(1,0)'} (live-verified). A body this engine cannot type, a call of the functions that build the
+     * constraint among them, and the bare word NULL are taken as they are.
+     *
+     * @param queryExecutor the executor, for its functions
+     * @param catalog       the catalog the body's names resolve in
+     * @param constraint    the constraint's system type, e.g. {@code SYSTEM$PRIVACY_BUDGET}
+     * @param body          the body as written
+     */
+    static void checkConstraintBody(final QueryExecutor queryExecutor, final Catalog catalog,
+                                    final String constraint, final String body) {
+        if (queryExecutor == null || body == null || body.trim().isEmpty() || isUntypedNull(body.trim())) {
+            return;
+        }
+        final DataType actual;
+        try {
+            actual = RoutineReturnTypeOracle.bodyType(body.trim(), parametersTable(null),
+                queryExecutor.getFunctionRegistry(), catalog);
+        } catch (final RuntimeException untyped) {
+            return;
+        }
+        if (actual != null) {
+            throw new RuntimeException("Declared return type '" + constraint
+                + "' is incompatible with actual return type '" + spell(actual) + "'");
+        }
     }
 
     /**
@@ -244,6 +277,32 @@ final class RoutineReturnTypeChecker {
         final int framedPosition = line == 1 ? valueStart.getCharPositionInLine() + position - prefix : position;
         return message.substring(0, at.start()) + "error line " + framedLine + " at position " + framedPosition
             + message.substring(at.end());
+    }
+
+    /**
+     * A refusal of the trimmed body, moved to its place in the body's frame (see SqlUdfBodyFrame): the frame's
+     * parenthesis and the blanks before the trimmed text move its first line's positions; null for a refusal that
+     * names no place.
+     */
+    private static String inFrame(final String message, final String body) {
+        final Matcher at = message == null ? null : ERROR_POSITION.matcher(message);
+        if (at == null || !at.find()) {
+            return null;
+        }
+        int line = 1;
+        int column = 1;
+        for (int i = 0; i < body.length() && body.charAt(i) <= ' '; i++) {
+            if (body.charAt(i) == '\n') {
+                line++;
+                column = 0;
+            } else {
+                column++;
+            }
+        }
+        final int refusedLine = Integer.parseInt(at.group(1));
+        final int position = Integer.parseInt(at.group(2));
+        return message.substring(0, at.start()) + "error line " + (line + refusedLine - 1) + " at position "
+            + (refusedLine == 1 ? column + position : position) + message.substring(at.end());
     }
 
     /** Whether an expression text is the bare word NULL, or a call that folds to it — a value of no type at all. */

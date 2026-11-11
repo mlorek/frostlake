@@ -22,6 +22,8 @@ import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.MaterializedView;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
@@ -55,6 +57,9 @@ import java.util.TreeMap;
  * refusals carry, a missing policy as a missing table (live-verified).
  */
 public class PolicyReferencesFunction extends TableFunction {
+
+    /** The domain a materialized view's attachments are listed in. */
+    private static final String MATERIALIZED_VIEW_DOMAIN = "MATERIALIZED_VIEW";
 
     /** The table-like domains POLICY_REFERENCES reads beside the ones TAG_REFERENCES knows. */
     private static final Set<String> TABLE_LIKE_DOMAINS = new HashSet<String>(Arrays.asList("VIEW",
@@ -177,16 +182,92 @@ public class PolicyReferencesFunction extends TableFunction {
         final String name = written[written.length - 1];
         final Table table = schema == null ? null : schema.tableExact(name);
         final View view = schema == null || table != null ? null : viewExact(schema, name);
-        if (table == null && view == null) {
+        final DynamicTable dynamic = schema == null || table != null || view != null ? null
+            : dynamicTableExact(schema, name);
+        final MaterializedView materialized = schema == null || table != null || view != null || dynamic != null
+            ? null : materializedViewExact(schema, name);
+        if (table == null && view == null && dynamic == null && materialized == null) {
             // Refused in the domain's word, whichever kind of object the name was meant for.
             throw missingEntity("TABLE".equals(domain) ? "Table" : "View", written);
         }
         // Either domain takes a table or a view, and lists the attachments of its own kind only: a view named under
-        // 'table', or a table under 'view', answers no rows (live-verified).
+        // 'table', or a table under 'view', answers no rows (live-verified). A dynamic table's are a table's.
         if (table != null && "TABLE".equals(domain)) {
             appendTableRows(schema, table, rows);
         } else if (view != null && "VIEW".equals(domain)) {
             appendViewRows(schema, view, rows);
+        } else if (dynamic != null && "TABLE".equals(domain)) {
+            appendDynamicTableRows(schema, dynamic, rows);
+        } else if (materialized != null && "TABLE".equals(domain)) {
+            appendMaterializedViewRows(schema, materialized, rows);
+        }
+    }
+
+    /** The materialized view of exactly that name, or null. */
+    private static MaterializedView materializedViewExact(final Schema schema, final String name) {
+        if (!schema.hasMaterializedView(name)) {
+            return null;
+        }
+        final MaterializedView materialized = schema.getMaterializedView(name);
+        return materialized.getName().equals(name) ? materialized : null;
+    }
+
+    /**
+     * One row per policy a materialized view's own column list attached to its columns, listed in the domain
+     * MATERIALIZED_VIEW when the view is named under 'table' and in no row under 'view' (live-verified), ordered by
+     * policy name as a table's are.
+     */
+    private void appendMaterializedViewRows(final Schema schema, final MaterializedView materialized,
+                                            final List<Row> rows) {
+        if (!materialized.hasResolvedColumns()) {
+            return;
+        }
+        final Map<String, List<Row>> byPolicy = new TreeMap<>();
+        for (final TableColumn column : materialized.getResolvedColumns()) {
+            if (column.hasMaskingPolicy()) {
+                listed(byPolicy, attachment(schema, column.getMaskingPolicyName(), "MASKING_POLICY",
+                    materialized.getName(), MATERIALIZED_VIEW_DOMAIN, column.getName(), null));
+            }
+            if (column.hasProjectionPolicy()) {
+                listed(byPolicy, attachment(schema, column.getProjectionPolicyName(), "PROJECTION_POLICY",
+                    materialized.getName(), MATERIALIZED_VIEW_DOMAIN, column.getName(), null));
+            }
+        }
+        for (final List<Row> attachments : byPolicy.values()) {
+            rows.addAll(attachments);
+        }
+    }
+
+    /** The dynamic table of exactly that name, or null. */
+    private static DynamicTable dynamicTableExact(final Schema schema, final String name) {
+        if (!schema.hasDynamicTable(name)) {
+            return null;
+        }
+        final DynamicTable dynamic = schema.getDynamicTable(name);
+        return dynamic.getName().equals(name) ? dynamic : null;
+    }
+
+    /**
+     * One row per policy a dynamic table's own column list attached to its columns, ordered by policy name as a
+     * table's are (live-verified for a masking and a projection policy).
+     */
+    private void appendDynamicTableRows(final Schema schema, final DynamicTable dynamic, final List<Row> rows) {
+        if (dynamic.getResolvedColumns() == null) {
+            return;
+        }
+        final Map<String, List<Row>> byPolicy = new TreeMap<>();
+        for (final TableColumn column : dynamic.getResolvedColumns()) {
+            if (column.hasMaskingPolicy()) {
+                listed(byPolicy, attachment(schema, column.getMaskingPolicyName(), "MASKING_POLICY",
+                    dynamic.getName(), "TABLE", column.getName(), null));
+            }
+            if (column.hasProjectionPolicy()) {
+                listed(byPolicy, attachment(schema, column.getProjectionPolicyName(), "PROJECTION_POLICY",
+                    dynamic.getName(), "TABLE", column.getName(), null));
+            }
+        }
+        for (final List<Row> attachments : byPolicy.values()) {
+            rows.addAll(attachments);
         }
     }
 
@@ -211,6 +292,12 @@ public class PolicyReferencesFunction extends TableFunction {
                 }
                 for (final View view : each.getViews()) {
                     appendViewRows(each, view, rows);
+                }
+                for (final DynamicTable dynamic : each.getDynamicTables()) {
+                    appendDynamicTableRows(each, dynamic, rows);
+                }
+                for (final MaterializedView materialized : each.getMaterializedViews()) {
+                    appendMaterializedViewRows(each, materialized, rows);
                 }
             }
         }
@@ -250,7 +337,8 @@ public class PolicyReferencesFunction extends TableFunction {
     private boolean policyExists(final Schema schema, final String name) {
         return schema.getMaskingPolicy(name) != null || schema.getRowAccessPolicy(name) != null
             || schema.getProjectionPolicy(name) != null || schema.getAggregationPolicy(name) != null
-            || schema.getJoinPolicy(name) != null;
+            || schema.getJoinPolicy(name) != null || schema.getPrivacyPolicy(name) != null
+            || schema.getStorageLifecyclePolicy(name) != null;
     }
 
     /**
@@ -332,6 +420,14 @@ public class PolicyReferencesFunction extends TableFunction {
         if (table.hasJoinPolicy()) {
             listed(byPolicy, attachment(schema, table.getJoinPolicyName(), "JOIN_POLICY", table.getName(), "TABLE",
                 null, null));
+        }
+        if (table.hasPrivacyPolicy()) {
+            listed(byPolicy, attachment(schema, table.getPrivacyPolicyName(), "PRIVACY_POLICY", table.getName(),
+                "TABLE", null, table.getPrivacyEntityKey()));
+        }
+        if (table.hasStorageLifecyclePolicy()) {
+            listed(byPolicy, attachment(schema, table.getStorageLifecyclePolicyName(), "STORAGE_LIFECYCLE_POLICY",
+                table.getName(), "TABLE", null, table.getStorageLifecycleColumns()));
         }
         for (final List<Row> attachments : byPolicy.values()) {
             rows.addAll(attachments);

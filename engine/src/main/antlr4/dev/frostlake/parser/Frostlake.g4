@@ -1716,7 +1716,13 @@ securityProperty
     // An authentication policy's MFA, PAT, workload identity and client settings each take a list of properties of
     // their own (see AuthenticationPolicyLists); any other value of theirs is refused as no property list.
     : {PropertyListKeys.opens(_input.LT(1))}? optionKey EQ securityPropertyList
+    // A session policy's agent scope may name a scope by a dotted name, read as written (live-verified).
+    | {PropertyListKeys.opensDottedScope(_input)}? optionKey EQ dottedScopeName
     | optionKey EQ securityPropertyValue
+    ;
+
+dottedScopeName
+    : identifier (DOT identifier)+
     ;
 
 // A list of properties, separated by commas or blanks alike (live-verified).
@@ -1840,10 +1846,11 @@ createStatement
     // (EXTERNAL_VOLUME, CATALOG, BASE_LOCATION, … arrive as table options); only TRANSIENT may precede it.
     // The options stand before the query a table is created from, after a list of column names too; none
     // follows the query (live-verified).
-    | CREATE (or_replace | or_alter)? (TRANSIENT ICEBERG? | (LOCAL | GLOBAL)? (TEMPORARY | TEMP) | VOLATILE | HYBRID | ICEBERG)? TABLE if_not_exists? objectName tableTailOption* (LPAREN columnList RPAREN tableTailOption* (AS selectStatement)? | CLONE qualifiedName timeTravelClause? tableTailOption* | LIKE qualifiedName tableTailOption* | USING TEMPLATE selectStatement tableTailOption* | (columnListOptional tableTailOption*)? AS selectStatement) SEMI?
+    | CREATE (or_replace | or_alter)? (TRANSIENT ICEBERG? | (LOCAL | GLOBAL)? (TEMPORARY | TEMP) | VOLATILE | HYBRID | ICEBERG)? TABLE if_not_exists? objectName tableTailOption* (LPAREN columnList RPAREN tableTailOption* (AS selectStatement)? | CLONE qualifiedName timeTravelClause? tableTailOption* | LIKE qualifiedName tableTailOption* | USING TEMPLATE selectStatement templateTailOption* | (columnListOptional tableTailOption*)? AS selectStatement) SEMI?
     // An event table's columns are the fixed OpenTelemetry set, so it is written without a column list.
-    // A clone of another event table takes no property of its own, and may be of the source at a point of time.
-    | CREATE or_replace? EVENT TABLE if_not_exists? objectName (CLONE qualifiedName timeTravelClause? | tableTailOption*) SEMI?
+    // A clone of another event table takes no property after the source, only before it (judged as the table's), and
+    // may be of the source at a point of time (live-verified).
+    | CREATE or_replace? EVENT TABLE if_not_exists? objectName tableTailOption* (CLONE qualifiedName timeTravelClause?)? SEMI?
     // TEMPORARY/TEMP/VOLATILE views, live-measured, including the keyword ORDER: SECURE comes
     // BEFORE the temporary keyword on a view (`CREATE SECURE TEMPORARY VIEW` parses,
     // `CREATE TEMPORARY SECURE VIEW` is a syntax error) — the opposite of a function, below.
@@ -1920,6 +1927,8 @@ createStatement
     | CREATE or_replace? PROJECTION POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
     | CREATE or_replace? AGGREGATION POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) policyCreateProperty* SEMI?
     | CREATE or_replace? JOIN POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) commentClause? SEMI?
+    | CREATE or_replace? PRIVACY POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) commentClause? SEMI?
+    | CREATE or_replace? STORAGE lifecycle=IDENTIFIER {refuseKindWord($ctx, $lifecycle, "LIFECYCLE");} POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) storageLifecycleProperty* SEMI?
     ;
 
 // Integrations: account objects holding a third-party service's configuration. Frostlake stores them and never
@@ -2043,6 +2052,14 @@ commentClause
 policyCreateProperty
     : commentClause
     | EXEMPT_OTHER_POLICIES EQ policyFlagValue
+    ;
+
+// A storage lifecycle policy's properties after its body: its COMMENT, ARCHIVE_TIER and ARCHIVE_FOR_DAYS, judged by
+// the statement (see StorageLifecycleProperties). A property's name is a plain word, never the identifier rule: a
+// keyword that rule takes would follow every block a body can be, and move the syntax errors around a block's loops.
+storageLifecycleProperty
+    : commentClause
+    | propertyWord=IDENTIFIER EQ policyScalarValue
     ;
 
 policyFlagValue
@@ -2267,6 +2284,8 @@ dropStatement
     | DROP PROJECTION POLICY if_exists? objectName objectSignature? dropBehavior? SEMI?
     | DROP AGGREGATION POLICY if_exists? objectName objectSignature? dropBehavior? SEMI?
     | DROP JOIN POLICY if_exists? objectName objectSignature? dropBehavior? SEMI?
+    | DROP PRIVACY POLICY if_exists? objectName objectSignature? dropBehavior? SEMI?
+    | DROP STORAGE lifecycle=IDENTIFIER {refuseKindWord($ctx, $lifecycle, "LIFECYCLE");} POLICY if_exists? objectName objectSignature? dropBehavior? SEMI?
     ;
 
 // An instance of a class, DROP <class> <instance>. No class is modelled, so the class is refused as missing. The
@@ -2295,8 +2314,8 @@ dropHybridWord
     ;
 
 // The words of such a kind, each opening on a keyword. APPLICATION PACKAGE and ORGANIZATION PROFILE written alone
-// name the application PACKAGE and the organization PROFILE; the word between STORAGE and POLICY is LIFECYCLE and
-// the one after DBT is PROJECT, each refused where it stands otherwise (live-verified).
+// name the application PACKAGE and the organization PROFILE; the word after DBT is PROJECT, refused where it stands
+// otherwise (live-verified).
 unmodelledKind
     : RESOURCE MONITOR
     | SESSION POLICY
@@ -2304,12 +2323,10 @@ unmodelledKind
     | APPLICATION PACKAGE?
     | PACKAGES POLICY
     | ORGANIZATION PROFILE?
-    | STORAGE word=IDENTIFIER {refuseKindWord($ctx, $word, "LIFECYCLE");} POLICY
     | DBT word=IDENTIFIER {refuseKindWord($ctx, $word, "PROJECT");}
     | GIT REPOSITORY
     | SEMANTIC VIEW
     | AUTHENTICATION POLICY
-    | PRIVACY POLICY
     ;
 
 dropInstanceName
@@ -2359,6 +2376,8 @@ alterStatement
     | ALTER PROJECTION POLICY if_exists? qualifiedName policyAction SEMI?
     | ALTER AGGREGATION POLICY if_exists? qualifiedName policyAction SEMI?
     | ALTER JOIN POLICY if_exists? qualifiedName policyAction SEMI?
+    | ALTER PRIVACY POLICY if_exists? qualifiedName policyAction SEMI?
+    | ALTER STORAGE lifecycle=IDENTIFIER {refuseKindWord($ctx, $lifecycle, "LIFECYCLE");} POLICY if_exists? qualifiedName policyAction SEMI?
     | ALTER ROW ACCESS POLICY if_exists? qualifiedName policyAction SEMI?
     // A user's session parameters stand among its properties, and the name may be left out: the statement then
     // alters the session's own user.
@@ -2892,6 +2911,8 @@ securableKind
     | PACKAGES POLICY
     | PROJECTION POLICY
     | CONTACT
+    // A Cortex Search service takes USAGE, which lets a role query it, and OPERATE (documented).
+    | CORTEX SEARCH SERVICE
     ;
 
 // What SHOW GRANTS ON names: a kind and its object, or a bare name, which live reads as a table or a view. A kind word
@@ -2912,6 +2933,9 @@ showGrantsTarget
     | relationGrantsKind (grantsObjectName objectSignature? | KW_IDENTIFIER_OPEN objectSignature)
     // VOLUME alone names an external volume here (live-verified).
     | VOLUME qualifiedName
+    // A user, an object of the account, by its name or an IDENTIFIER() reference; the word alone is a bare name
+    // (live-verified).
+    | USER grantsObjectName
     | bare=qualifiedName {bareGrantsNameAllowed($bare.ctx)}?
     | KW_IDENTIFIER_REF LPAREN identifierArgument RPAREN
     ;
@@ -3440,15 +3464,16 @@ sequenceOption
     | ORDER
     | NOORDER
     | commentClause
-    // Any other name reads as a property, which the handler refuses in the account's words.
-    | optionKey EQ copyOptionValue
+    // Any other name reads as a property, which the handler refuses in the account's words, whatever its value.
+    | propertyName EQ (copyOptionValue | parenOptionList | tablePropertyConstant)
     ;
 
 // A sequence's properties are set with or without SET, one after another with or without commas; only its
-// comment is unset. START reads as a property so that the handler refuses it by name (live-verified).
+// comment is unset. START reads as a property so that the handler refuses it by name, and so does any other name,
+// set or unset (live-verified).
 sequenceAction
     : SET? sequenceAlterOption (COMMA? sequenceAlterOption)*
-    | UNSET COMMENT (COMMA COMMENT)*
+    | UNSET propertyName (COMMA propertyName)*
     | RENAME TO qualifiedName
     ;                             // RESTART is not a Snowflake sequence action (live: invalid property)
 
@@ -3458,6 +3483,7 @@ sequenceAlterOption
     | ORDER
     | NOORDER
     | COMMENT EQ (STRING_LITERAL | DOLLAR_QUOTED_STRING | NULL | SESSION_VAR_REF)
+    | propertyName EQ (copyOptionValue | parenOptionList | tablePropertyConstant)
     ;
 
 tagAssign
@@ -3536,7 +3562,7 @@ databaseAction
     // UNSET restores a parameter's INHERITANCE: a schema falls back to its database's value and a
     // database to the account default — SHOW answers the container's CURRENT value afterwards
     // (live-verified for DATA_RETENTION_TIME_IN_DAYS).
-    | UNSET optionKey (COMMA optionKey)*
+    | UNSET propertyName (COMMA propertyName)*
     | tagSet
     | tagUnset
     ;
@@ -3548,7 +3574,7 @@ schemaAction
     | SET COMMENT EQ STRING_LITERAL
     // Several properties per SET and a comma list per UNSET, as for a database.
     | SET tableSetProperty (COMMA? tableSetProperty)*
-    | UNSET optionKey (COMMA optionKey)*
+    | UNSET propertyName (COMMA propertyName)*
     | tagSet
     | tagUnset
     | (ENABLE | DISABLE) MANAGED ACCESS
@@ -3601,6 +3627,12 @@ tableAction
     | UNSET AGGREGATION POLICY
     | SET joinPolicyClause FORCE?
     | UNSET JOIN POLICY
+    // A privacy policy attaches with the one column its rows are counted by, a storage lifecycle policy ON the
+    // columns its arguments read; each is dropped by name or, the second, alone (live-verified).
+    | ADD PRIVACY POLICY qualifiedName ENTITY KEY LPAREN identifier RPAREN
+    | DROP PRIVACY POLICY qualifiedName
+    | ADD STORAGE lifecycle=IDENTIFIER {refuseKindWord($ctx, $lifecycle, "LIFECYCLE");} POLICY qualifiedName ON LPAREN identifierList RPAREN
+    | DROP STORAGE lifecycleDrop=IDENTIFIER {refuseKindWord($ctx, $lifecycleDrop, "LIFECYCLE");} POLICY
     | (ALTER | MODIFY) COLUMN? identifier SET PROJECTION POLICY qualifiedName FORCE?
     | (ALTER | MODIFY) COLUMN? identifier UNSET PROJECTION POLICY
     | SET CONTACT contactAssignment (COMMA contactAssignment)*
@@ -3625,15 +3657,21 @@ tableAction
 // ALTER TABLE ... UNSET prop[, prop]* — its own subrule so the masking-policy alternative's UNSET
 // keeps a single-token accessor in tableAction.
 tableUnsetProperties
-    : UNSET optionKey (COMMA optionKey)*
+    : UNSET propertyName (COMMA propertyName)*
     ;
 
 // One key=value of an ALTER TABLE … SET, kept paired with its value.
 tableSetProperty
     // A table's STAGE_COPY_OPTIONS reads its list as a stage's COPY_OPTIONS does (live-verified).
-    : {ClauseWords.isWord(_input.LT(1), "STAGE_COPY_OPTIONS")}? optionKey EQ stageCopyOptionList
+    : {ClauseWords.isWord(_input.LT(1), "STAGE_COPY_OPTIONS")}? propertyName EQ stageCopyOptionList
     // A number with a fraction is a FLOAT parameter's value, judged by kind with the others (see ParameterLevels).
-    | optionKey EQ (parenOptionList | copyOptionValue | MINUS? FLOAT_LITERAL)
+    | propertyName EQ (parenOptionList | copyOptionValue | MINUS? FLOAT_LITERAL)
+    // A list of constants is read, and judged by the name it is given (see CreatedObjectProperties#judgeAlterList).
+    | propertyName EQ constantList
+    ;
+
+constantList
+    : LPAREN copyOptionValue (COMMA copyOptionValue)* RPAREN
     ;
 
 // An enforcement property of ALTER TABLE … {ALTER | MODIFY} CONSTRAINT. Several may be given at
@@ -3836,7 +3874,7 @@ viewAction
     | SET CONTACT contactAssignment (COMMA contactAssignment)*
     | UNSET CONTACT contactPurpose (COMMA contactPurpose)*
     | SET viewSetItem (COMMA? viewSetItem)*
-    | UNSET optionKey (COMMA optionKey)*
+    | UNSET propertyName (COMMA propertyName)*
     | ADD ROW ACCESS POLICY qualifiedName ON LPAREN identifierList RPAREN
     | DROP ROW ACCESS POLICY qualifiedName
     | DROP ALL ROW ACCESS POLICIES
@@ -3863,7 +3901,7 @@ viewColumnMasking
 // that is no value (a reserved word), is a syntax error where the list begins (live-verified), which Java judges. A
 // dollar string is no stray word: refused here, it is read again as the quoted string it is (DollarStringLiterals).
 viewSetItem
-    : optionKey (EQ (copyOptionValue | NULL | viewSetStrayValue))?
+    : propertyName (EQ (copyOptionValue | NULL | viewSetStrayValue))?
     ;
 
 viewSetStrayValue
@@ -3881,20 +3919,25 @@ materializedViewAction
     | RENAME TO qualifiedName
     | (SET | UNSET) SECURE
     | SET viewSetItem (COMMA? viewSetItem)*
-    | UNSET optionKey (COMMA optionKey)*
+    | UNSET propertyName (COMMA propertyName)*
     ;
 
 dynamicTableOptions
     : dynamicTableOption+
     ;
 
-// A dynamic table may name its columns, and give each a type and a comment; the query supplies what is left out.
+// A dynamic table may name its columns, and give each a type, NOT NULL, a projection policy, a masking policy, tags and
+// a comment, in that order and each once; the query supplies what is left out. A DEFAULT is read to be refused
+// (live-verified).
 dynamicTableColumns
     : LPAREN dynamicTableColumn (COMMA dynamicTableColumn)* RPAREN
     ;
 
 dynamicTableColumn
-    : identifier (dataTypeName typeParameters?)? (COMMENT STRING_LITERAL)?
+    : identifier (dataTypeName typeParameters?)? (NOT NULL)? (DEFAULT defaultExpression)?
+      (WITH? PROJECTION POLICY projectionPolicy=qualifiedName)?
+      (WITH? MASKING POLICY maskingPolicy=qualifiedName (USING LPAREN identifierList RPAREN)?)?
+      tagList? (COMMENT STRING_LITERAL)?
     ;
 
 dynamicTableOption
@@ -3903,9 +3946,11 @@ dynamicTableOption
     | REFRESH_MODE EQ (AUTO | FULL | INCREMENTAL)
     | INITIALIZE EQ (ON_CREATE | ON_SCHEDULE)
     | DATA_RETENTION_TIME_IN_DAYS EQ INTEGER_LITERAL
-    | MAX_FILE_SIZE EQ INTEGER_LITERAL
     | COMMENT EQ (STRING_LITERAL | SESSION_VAR_REF)
     | CLUSTER BY clusterKeyOrder? LPAREN expression (COMMA expression)* RPAREN
+    // Any other name, or a value the forms above do not read, is a property the handler judges as a table's is, in
+    // the dynamic table's own words, before the warehouse is looked for (live-verified).
+    | propertyName EQ (parenOptionList | copyOptionValue | tablePropertyConstant) COMMA?
     ;
 
 // The options a CREATE DYNAMIC TABLE ... CLONE may give the clone in place of the source's.
@@ -3941,6 +3986,7 @@ dynamicTableSetting
 
 dynamicTableProperty
     : TARGET_LAG | WAREHOUSE | COMMENT | REFRESH_MODE | INITIALIZE | DATA_RETENTION_TIME_IN_DAYS | identifier
+    | reservedPropertyWord
     ;
 
 streamAction
@@ -4638,6 +4684,18 @@ optionKey
     | ENABLE
     ;
 
+// A property's name where a table, a view, a sequence or a dynamic table reads one: an option's name, or one of the
+// reserved words the account reads there as a name, only to refuse it as no property of the kind - DEFAULT = 1 is
+// invalid property 'DEFAULT' for 'TABLE', where SELECT = 1 is a syntax error at SELECT (live-verified).
+propertyName
+    : optionKey
+    | reservedPropertyWord
+    ;
+
+reservedPropertyWord
+    : DEFAULT | CASE | CAST | CONSTRAINT | CROSS | INNER | JOIN | WHEN
+    ;
+
 // EQUALITY(col) / SUBSTRING(col) / FULL_TEXT(col) / GEO(col), or EQUALITY(*) for every column. The
 // method is an ordinary identifier — live lets all four words name tables and columns too.
 searchOptimizationTarget
@@ -4677,9 +4735,29 @@ tableTailOption
     | rowAccessPolicyClause
     | WITH? aggregationPolicyClause
     | WITH? joinPolicyClause
+    | WITH? PRIVACY POLICY qualifiedName ENTITY KEY LPAREN identifier RPAREN
+    | WITH? STORAGE lifecycle=IDENTIFIER {refuseKindWord($ctx, $lifecycle, "LIFECYCLE");} POLICY qualifiedName ON LPAREN identifierList RPAREN
     // A table's STAGE_COPY_OPTIONS reads its list as a stage's COPY_OPTIONS does (live-verified).
+    | {ClauseWords.isWord(_input.LT(1), "STAGE_COPY_OPTIONS")}? propertyName EQ stageCopyOptionList COMMA?
+    | propertyName EQ (parenOptionList | copyOptionValue | tablePropertyConstant) COMMA?   // CHANGE_TRACKING=TRUE etc.
+    ;
+
+// The options after a template's query: a table's, but a property's name is no reserved word. A reserved word there
+// would follow every query to the parser's prediction - SELECT a FROM kw INNER would be refused at INNER rather than at
+// its end. The statement is written again without the template, where the options are read as a table's (see
+// CreateTableHandler).
+templateTailOption
+    : commentClause COMMA?
+    | copyGrants
+    | clusterByClause
+    | tagList
+    | rowAccessPolicyClause
+    | WITH? aggregationPolicyClause
+    | WITH? joinPolicyClause
+    | WITH? PRIVACY POLICY qualifiedName ENTITY KEY LPAREN identifier RPAREN
+    | WITH? STORAGE lifecycle=IDENTIFIER {refuseKindWord($ctx, $lifecycle, "LIFECYCLE");} POLICY qualifiedName ON LPAREN identifierList RPAREN
     | {ClauseWords.isWord(_input.LT(1), "STAGE_COPY_OPTIONS")}? optionKey EQ stageCopyOptionList COMMA?
-    | optionKey EQ (parenOptionList | copyOptionValue | tablePropertyConstant) COMMA?   // CHANGE_TRACKING=TRUE etc.
+    | optionKey EQ (parenOptionList | copyOptionValue | tablePropertyConstant) COMMA?
     ;
 
 // What else a table property may be given: NULL, a decimal, or a parenthesized list of constants. The name judges
@@ -4691,9 +4769,10 @@ tablePropertyConstant
     ;
 
 // CREATE VIEW key=value properties (CHANGE_TRACKING=TRUE, ...) — accepted, not modeled. A comma may follow each,
-// before the column list or AS too (live-verified).
+// before the column list or AS too (live-verified). A list or a constant is read as a table's property takes one,
+// for the view's kind to judge the name (live-verified).
 viewProperty
-    : optionKey EQ copyOptionValue COMMA?
+    : propertyName EQ (copyOptionValue | parenOptionList | tablePropertyConstant) COMMA?
     ;
 
 dmlStatement
@@ -4927,6 +5006,7 @@ connectByPredicate
 
 setOperator
     : UNION ALL? (BY identifier)?   // UNION [ALL] BY NAME aligns columns by name; identifier must be NAME
+    | UNION DISTINCT                // UNION DISTINCT is UNION; INTERSECT and EXCEPT take no DISTINCT (live-verified)
     | INTERSECT ALL?
     | EXCEPT ALL?
     | MINUS_KW ALL?   // MINUS is a Snowflake synonym for EXCEPT
@@ -5546,6 +5626,9 @@ showStatement
     | SHOW TERSE? PROJECTION POLICIES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     | SHOW TERSE? AGGREGATION POLICIES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     | SHOW TERSE? JOIN POLICIES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    // A privacy policy listing reads HISTORY after its kind, which lists the policies there (live-verified).
+    | SHOW TERSE? PRIVACY POLICIES HISTORY? (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
+    | SHOW TERSE? STORAGE lifecycle=IDENTIFIER {refuseKindWord($ctx, $lifecycle, "LIFECYCLE");} POLICIES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     | SHOW TERSE? ROW ACCESS POLICIES (LIKE stringText)? (IN (ACCOUNT (objectName objectSignature? | openedValueReference)? | (DATABASE | SCHEMA | TABLE) (objectName objectSignature? | openedValueReference)? | objectName ({scopeNameTakesSignature()}? objectSignature | showInstanceName ({scopeObjectTakesSignature($ctx)}? objectSignature)?)? | openedValueReference))? showTail SEMI?
     // FOR reads as IN does, and a table, a stream and a task are named bare, qualified or through IDENTIFIER()
     // (live-verified).
@@ -5575,7 +5658,7 @@ unmodelledListingKind
     | SNAPSHOTS
     | GIT REPOSITORIES
     | SEMANTIC VIEWS
-    | (SESSION | AUTHENTICATION | PACKAGES | PRIVACY) POLICIES
+    | (SESSION | AUTHENTICATION | PACKAGES) POLICIES
     | (EXTERNAL | DATA METRIC) FUNCTIONS
     ;
 
@@ -5807,6 +5890,8 @@ describeStatement
     | (DESCRIBE | DESC) PROJECTION POLICY qualifiedName objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) AGGREGATION POLICY qualifiedName objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) JOIN POLICY qualifiedName objectSignature? describeProperty* SEMI?
+    | (DESCRIBE | DESC) PRIVACY POLICY qualifiedName objectSignature? describeProperty* SEMI?
+    | (DESCRIBE | DESC) STORAGE lifecycle=IDENTIFIER {refuseKindWord($ctx, $lifecycle, "LIFECYCLE");} POLICY qualifiedName objectSignature? describeProperty* SEMI?
     | (DESCRIBE | DESC) SEARCH OPTIMIZATION ON qualifiedName describeProperty* SEMI?
     | (DESCRIBE | DESC) FILE FORMAT qualifiedName objectSignature? describeProperty* SEMI?
     // Any expression parses: the statement it names is judged as the statement compiles (see DescribeResultTarget).
@@ -6180,9 +6265,11 @@ callStatement
     ;
 
 // A procedure a CALL defines for itself, WITH name AS PROCEDURE (…) RETURNS … AS '…' CALL name(…) (Snowflake's CALL
-// with an anonymous procedure): its definition is read as CREATE PROCEDURE reads one, and no schema keeps it.
+// with an anonymous procedure): its definition is read as CREATE PROCEDURE reads one, and no schema keeps it. Common
+// table expressions may follow it, comma before each (live-verified).
 anonymousProcedure
     : WITH identifier AS PROCEDURE LPAREN parameterList? RPAREN RETURNS returnType functionOption* (AS bodyDefinition)?
+        (COMMA cteDefinition)*
     ;
 
 callQualifier

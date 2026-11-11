@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.FlowChainRefusal;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.Catalog;
@@ -63,7 +64,9 @@ final class ShowKeysScope {
         final String[] parts = queryExecutor.resolveObjectNameParts(ctx.objectName());
         if ("SCHEMA".equals(scopeKind)) {
             if (parts.length == 1) {
-                throw new RuntimeException(SqlCompilationError.of(
+                // Refused as a ->> chain compiles, so a chain names it bare, at whichever stage it stands, where a
+                // missing table or schema is the stage's own STATEMENT_ERROR (live-verified).
+                throw new FlowChainRefusal(SqlCompilationError.of(
                     "Must specify the full search path starting from database for " + parts[0]));
             }
             return false;

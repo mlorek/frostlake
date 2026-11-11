@@ -98,6 +98,7 @@ import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.IntoListLookahead;
 import dev.frostlake.parser.LimitValueSyntax;
+import dev.frostlake.parser.OverlayPlacingLines;
 import dev.frostlake.parser.PositionNeedleSyntax;
 import dev.frostlake.parser.PostParseRefusals;
 import dev.frostlake.parser.RoutineArgumentOrder;
@@ -259,6 +260,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         // Every statement is named for the refusal a session with no current database gets.
         final String enclosingKind = NoCurrentDatabaseRefusal.enter(StatementKindText.of(ctx));
         try {
+            DoubledSigns.rejectAheadOfCaret(ctx);
             CaretOperator.rejectInStatement(ctx);
             DoubledSigns.rejectInStatement(ctx);
             FromClauseProcedureJobs.require(ctx, procedureDepth > 0);
@@ -818,12 +820,22 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         // A statement refused for the names it writes is refused before the transaction is touched, and before
         // the scope is judged: its handler raises that refusal (see NamesJudgedFirst).
         final boolean namesFirst = ends && NamesJudgedFirst.refuses(ctx, queryExecutor);
-        if (ends && !namesFirst) {
+        final boolean windowKept = ends && !namesFirst;
+        if (windowKept) {
             // A block or a procedure may not end the transaction its caller began this way either.
             transactions.requireOwnScope();
+            // A CTAS reads its streams up to where the transaction began (see beginEndedTransactionWindow).
+            queryExecutor.beginEndedTransactionWindow(transactions.getCurrentTransaction().getStartSequence());
             transactions.commit();
         }
-        final Object answer = visitChildren(ctx);
+        final Object answer;
+        try {
+            answer = visitChildren(ctx);
+        } finally {
+            if (windowKept) {
+                queryExecutor.endEndedTransactionWindow();
+            }
+        }
         if (namesFirst && transactions.hasActiveTransaction()) {
             // The statement ran after all: it ends the transaction as any statement of its kind does.
             transactions.requireOwnScope();
@@ -1257,13 +1269,15 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     /**
      * Note where a RESULTSET initialiser's query begins, which a failure running it is reported at: a query chained to
-     * further stages is placed at its first flow arrow (live-verified: {@code LET r RESULTSET := (SELECT 1 AS a ->>
-     * SELECT b FROM $1)} fails at the arrow's position, 40).
+     * further stages is placed at its last flow arrow (live-verified: {@code LET r RESULTSET := (SELECT 1 AS a ->>
+     * SELECT b FROM $1)} fails at the arrow's position, 40, and a chain of three stages at its second arrow, whichever
+     * stage fails).
      */
     private static void noteInitialiserQuery(final DeclareResultSetStatement stmt,
                                              final FrostlakeParser.ResultSetSourceContext query) {
         if (query != null) {
-            final Token placed = query.FLOW_ARROW().isEmpty() ? query.getStart() : query.FLOW_ARROW(0).getSymbol();
+            final Token placed = query.FLOW_ARROW().isEmpty() ? query.getStart()
+                : query.FLOW_ARROW(query.FLOW_ARROW().size() - 1).getSymbol();
             stmt.setQueryAt(placed.getLine(), placed.getCharPositionInLine());
         }
     }
@@ -1425,6 +1439,9 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         }
         // The source folds to a constant, or is refused as one that does not (see SessionAssignmentSource).
         if (SessionAssignmentSource.isWholeSubquery(ctx)) {
+            if (SessionAssignmentSource.limitsSemiStructured(ctx, queryExecutor)) {
+                throw new RuntimeException(SessionAssignmentSource.NON_CONSTANT);
+            }
             return SessionAssignmentSource.assignable(evaluateSqlExpression(ctx), ctx, queryExecutor);
         }
         final Object folded;
@@ -1624,11 +1641,15 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         }
 
         // Handle: rs := (SELECT … ->> …) — a RESULTSET holds the chain's last answer, as the same chain where the
-        // RESULTSET is declared gives it (live-verified); the chain is placed at its first arrow, as a declared one is.
+        // RESULTSET is declared gives it (live-verified); the chain is placed at its last arrow, as a declared one is.
+        // Any other target refuses it as the block the account reads it as (live-verified).
         if (ctx.resultSetChain() != null) {
             final FrostlakeParser.ResultSetChainContext chain = ctx.resultSetChain();
+            if (!proceduralExecutor.holdsResultSet(varName)) {
+                throw AssignedStatement.invalidValue(AssignedStatement.BLOCK);
+            }
             final StatementValueExpression value = new StatementValueExpression(getOriginalText(chain));
-            final Token arrow = chain.FLOW_ARROW(0).getSymbol();
+            final Token arrow = chain.FLOW_ARROW(chain.FLOW_ARROW().size() - 1).getSymbol();
             value.setSourcePosition(arrow.getLine(), arrow.getCharPositionInLine());
             proceduralExecutor.executeStatement(new SetStatement(varName, value));
             logger.trace("Assigned resultset {} from a flow chain", varName);
@@ -2426,8 +2447,11 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
      * and compiles them, though no schema keeps it.
      */
     private Procedure anonymousProcedure(final FrostlakeParser.AnonymousProcedureContext definition) {
+        // The definition ends where the common table expressions after it begin.
+        final int end = definition.cteDefinition().isEmpty() ? definition.getStop().getStopIndex()
+            : definition.COMMA(0).getSymbol().getStartIndex() - 1;
         final String rest = definition.getStart().getInputStream().getText(Interval.of(
-            definition.LPAREN().getSymbol().getStartIndex(), definition.getStop().getStopIndex()));
+            definition.LPAREN().getSymbol().getStartIndex(), end));
         final FrostlakeParser.SqlScriptContext created = QueryExecutor.parsedScript(
             "CREATE PROCEDURE " + getOriginalText(definition.identifier()) + " " + rest);
         return ddlHandler.anonymousProcedure(created.flowChain(0).statement(0).ddlStatement().createStatement());
@@ -2553,6 +2577,12 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         final Procedure anonymous = ctx.anonymousProcedure() == null ? null
             : anonymousProcedure(ctx.anonymousProcedure());
         final boolean callsAnonymous = anonymous != null && parts.length == 1 && anonymous.getName().equals(procName);
+        if (anonymous != null && parts.length > 1 && anonymous.getName().equals(procName)) {
+            // The CALL's own procedure hides its name from a schema's: written under a schema, it names no routine
+            // at all, whatever the schema holds (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("Unknown user-defined function "
+                + String.join(".", parts).toUpperCase(Locale.ROOT) + "."));
+        }
 
         final Schema schema = callsAnonymous ? null : calledSchema(parts, procName);
 
@@ -3140,6 +3170,9 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 PostParseRefusals.requireBefore(coldTokens, read, coldListener);
                 RoutineArgumentOrder.requireBefore(coldTokens, coldListener);
                 SignatureTailLine.requireBefore(coldScript, read, coldListener);
+                // An OVERLAY's PLACING is refused with the lines its brackets decide, as in a statement of its own
+                // (live-verified).
+                OverlayPlacingLines.requireBefore(read, coldTokens, coldListener);
                 AssignedTableNameLines.requireBefore(read, coldListener);
                 coldListener.throwIfErrors();
             }
@@ -3168,6 +3201,10 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             // after the count, and in a text of several statements when that statement runs (see the loop below).
             final boolean severalStatements = ctx.FROM() == null && sqlScriptCtx.flowChain().size() > 1;
             if (ctx.FROM() == null) {
+                // Run by a script, the EXECUTE IMMEDIATE is listed as its text, under the kind of the one statement
+                // the text holds (see QueryExecutor#listChildAs).
+                final List<FrostlakeParser.StatementContext> held = flattenedStatements(sqlScriptCtx);
+                queryExecutor.listChildAs(sqlString, held.size() == 1 ? held.get(0) : null);
                 DynamicStatementCount.require(sqlScriptCtx.flowChain().size(), queryExecutor.getSecurityManager(),
                     proceduralExecutor.isExecutingBlock());
             }
@@ -3236,9 +3273,11 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                     // A statement of the text is a child statement of the session's, with a query ID and a QUERY_HISTORY
                     // row of its own (see QueryExecutor#beginChildStatement). A block's answer is not a statement of
                     // its own: it is this EXECUTE IMMEDIATE's answer, which the statement records once, as a block run
-                    // directly records it; the block's statements record themselves.
+                    // directly records it; the block's statements record themselves. A text of one other statement
+                    // runs as the EXECUTE IMMEDIATE itself, under its row and ID (see QueryExecutor#listChildAs).
                     final String statementText = getOriginalText(stmtCtx);
-                    final QueryHistory child = AnonymousBlockResult.isBlock(stmtCtx) ? null
+                    final boolean runsAsItself = ctx.FROM() == null && dynamicStatements.size() == 1;
+                    final QueryHistory child = AnonymousBlockResult.isBlock(stmtCtx) || runsAsItself ? null
                         : queryExecutor.beginChildStatement(statementText, stmtCtx);
                     try {
                         if (severalStatements) {

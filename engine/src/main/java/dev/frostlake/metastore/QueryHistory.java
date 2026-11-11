@@ -30,7 +30,7 @@ import java.util.Locale;
  */
 public class QueryHistory {
     private String queryId;
-    private final String queryText;
+    private String queryText;
     private final String database;
     private final String schema;
     private final String warehouse;
@@ -338,6 +338,15 @@ public class QueryHistory {
 
     public String getQueryText() {
         return queryText;
+    }
+
+    /**
+     * Lists the statement under another text: the one statement an EXECUTE IMMEDIATE it is runs.
+     *
+     * @param text the text it is listed under
+     */
+    public void listAs(final String text) {
+        this.queryText = text;
     }
 
     public String getDatabase() {
