@@ -38,6 +38,7 @@ import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.StoredRead;
 import dev.frostlake.metastore.model.Table;
+import dev.frostlake.storage.ColumnSource;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.DataType;
 import dev.frostlake.values.ValueRange;
@@ -324,6 +325,17 @@ public class ExpressionEvaluator {
         return preparedVisitor().compileSubqueries(expression, enclosingNames);
     }
 
+    /**
+     * The refusal of a scalar subquery opening with this query's aggregate that a select item evaluates whatever its
+     * row holds (see {@link ExpressionEvaluatorVisitor#openingOuterAggregateRefusal}); null for any other item.
+     *
+     * @param item the select item, parsed
+     * @return the refusal that waits for the statement around the subquery, or null
+     */
+    public RuntimeException openingOuterAggregateRefusal(final Expression item) {
+        return preparedVisitor().openingOuterAggregateRefusal(item);
+    }
+
     /** Compile one subquery in this evaluator's scope, as {@link #compileSubqueries} compiles each. */
     public RuntimeException compileSubquery(final SubqueryExpression subquery, final Map<String, Object> enclosingNames) {
         return preparedVisitor().compileSubquery(subquery, enclosingNames);
@@ -340,6 +352,16 @@ public class ExpressionEvaluator {
         }
         return expression instanceof SubqueryExpression
             ? preparedVisitor().multiColumnRowText((SubqueryExpression) expression) : null;
+    }
+
+    /**
+     * Refuses a predicate that is a subquery of one ROW item by that ROW's type (see
+     * {@link ExpressionEvaluatorVisitor#rejectRowSubqueryPredicate}).
+     *
+     * @param predicate the parsed predicate
+     */
+    public void rejectRowSubqueryPredicate(final Expression predicate) {
+        preparedVisitor().rejectRowSubqueryPredicate(predicate);
     }
 
     /** How many columns an expression that is a subquery selects; 0 for anything else or an unplannable one. */
@@ -832,6 +854,23 @@ public class ExpressionEvaluator {
      * @param text the item as its projection reads it, or null
      * @return how it reads one; NONE where it reads none or cannot be told
      */
+    /**
+     * The stored table a select item projects a column of as it is (see ColumnSource). Never throws.
+     *
+     * @param text the item as its projection reads it, or null
+     * @return the table, or null where the item reads none or cannot be told
+     */
+    public ColumnSource columnSourceOf(final String text) {
+        if (text == null || text.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return preparedVisitor().columnSourceOf(parse(text));
+        } catch (final RuntimeException undetermined) {
+            return null;
+        }
+    }
+
     public StoredRead storedReadOf(final String text) {
         if (text == null || text.trim().isEmpty()) {
             return StoredRead.NONE;

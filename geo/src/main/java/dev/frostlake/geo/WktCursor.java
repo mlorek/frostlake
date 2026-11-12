@@ -61,6 +61,16 @@ final class WktCursor {
         return false;
     }
 
+    /** Consumes the word EMPTY where it comes next, in any case, and answers whether it did. */
+    boolean emptyWord() {
+        final int start = pos;
+        if ("EMPTY".equalsIgnoreCase(word())) {
+            return true;
+        }
+        pos = start;
+        return false;
+    }
+
     String word() {
         skipSpace();
         final int start = pos;

@@ -61,6 +61,24 @@ public enum MomentStatistic {
     }
 
     /**
+     * Whether the statistic is of a sample, over n - 1.
+     *
+     * @return true for a sample's
+     */
+    public boolean isSample() {
+        return sample;
+    }
+
+    /**
+     * Whether the statistic is the standard deviation, the root of the variance.
+     *
+     * @return true for a deviation
+     */
+    public boolean isRoot() {
+        return root;
+    }
+
+    /**
      * The statistic of one row's frame.
      *
      * @param moments the partition's frame moments

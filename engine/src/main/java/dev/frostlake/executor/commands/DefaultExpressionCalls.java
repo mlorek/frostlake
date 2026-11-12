@@ -214,15 +214,16 @@ final class DefaultExpressionCalls {
      * @param column  the column's definition
      * @param name    the column's canonical name
      * @param earlier the canonical names of the columns defined before it
-     * @param table   the table's canonical name, or null when not known
+     * @param table   the table's canonical names, database, schema and table, or null when not known
      */
     static void requireEarlierColumns(final FrostlakeParser.ColumnDefContext column, final String name,
-                                      final Set<String> earlier, final String table) {
+                                      final Set<String> earlier, final String[] table) {
         for (final FrostlakeParser.QualifiedNameExprContext read : defaultNames(column)) {
             final String[] parts = ParseTreeText.qualifiedNameParts(read.qualifiedName());
-            // The table's own name may qualify a column it reads: (c2 INT, c INT DEFAULT t.c2 + 1) in t.
-            final boolean own = parts.length == 2 && table != null && table.equals(parts[0]);
-            final String read1 = own ? parts[1] : parts[0];
+            // The table's own name may qualify a column it reads, alone or with its schema and its database:
+            // (c2 INT, c INT DEFAULT t.c2 + 1) in t, s.t.c2 and d.s.t.c2 alike (live-verified).
+            final boolean own = parts.length > 1 && ownQualifier(parts, table);
+            final String read1 = parts[parts.length - 1];
             if ((parts.length == 1 || own) && name.equals(read1)) {
                 throw new RuntimeException(SqlCompilationError.at(column.getStart().getLine(),
                     column.getStart().getCharPositionInLine(), " Column '" + SqlIdentifiers.spellCanonical(name)
@@ -232,6 +233,19 @@ final class DefaultExpressionCalls {
                 throw invalidIdentifier(read);
             }
         }
+    }
+
+    /** Whether a column name's qualifier is the table's own name, with its schema and database or without. */
+    private static boolean ownQualifier(final String[] parts, final String[] table) {
+        if (table == null || parts.length - 1 > table.length) {
+            return false;
+        }
+        for (int i = 0; i < parts.length - 1; i++) {
+            if (!parts[parts.length - 2 - i].equals(table[table.length - 1 - i])) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -266,6 +280,17 @@ final class DefaultExpressionCalls {
      * @param table  the table it is added to
      */
     void requireAddedColumnReads(final FrostlakeParser.ColumnDefContext column, final Table table) {
+        final FrostlakeParser.ExpressionContext bare = valueDefault(column);
+        if (bare instanceof FrostlakeParser.QualifiedNameExprContext) {
+            // A bare name of one of the table's columns is refused the same way: DEFAULT c2 as [DE.C2].
+            final String[] parts = ParseTreeText.qualifiedNameParts(
+                ((FrostlakeParser.QualifiedNameExprContext) bare).qualifiedName());
+            if (parts.length == 1 && table.findColumn(parts[0]) != null) {
+                final String echo = printedPlan(barelyNamed(bare), table);
+                throw new RuntimeException(SqlCompilationError.of("Invalid column default expression ["
+                    + (echo != null ? echo : ParseTreeText.getOriginalText(bare)) + "]"));
+            }
+        }
         final List<FrostlakeParser.QualifiedNameExprContext> names = valueDefaultNames(column);
         for (final FrostlakeParser.QualifiedNameExprContext read : names) {
             final String[] parts = ParseTreeText.qualifiedNameParts(read.qualifiedName());

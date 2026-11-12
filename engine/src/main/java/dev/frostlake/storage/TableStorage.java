@@ -306,6 +306,26 @@ public class TableStorage {
     }
 
     /**
+     * Stores a clone's rows under their source's identities: a stream on a clone reports the METADATA$ROW_ID a
+     * stream on its source reports for the rows that stood when the clone was made (documented). Rows whose identities
+     * are not known take new ones.
+     *
+     * @param copied the rows
+     * @param ids    their identities in the source, index-aligned, or null
+     */
+    public void insertCloned(final List<Row> copied, final List<Long> ids) {
+        final boolean identified = ids != null && ids.size() == copied.size();
+        for (int i = 0; i < copied.size(); i++) {
+            final Row copy = new Row(new ArrayList<>(copied.get(i).getValues()));
+            if (identified) {
+                insertRestored(copy, ids.get(i).longValue());
+            } else {
+                insert(copy);
+            }
+        }
+    }
+
+    /**
      * Stores a restored row under the identity it had: a row's METADATA$ROW_ID is the same after a restart from a
      * snapshot as before it, as an immutable row id is on the account, and a stream's pending change still names it.
      *

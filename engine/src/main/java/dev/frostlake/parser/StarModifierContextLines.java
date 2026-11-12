@@ -39,6 +39,12 @@ import org.antlr.v4.runtime.Token;
  * </pre>
  *
  * A CASE condition whose {@code (id)} the THEN does not follow at once adds the THEN.
+ *
+ * <p>Two more places read a remainder of aliased values, {@code (1 AS id)}, {@code ((1 + 2) AS id)} or
+ * {@code (id AS x)}, past the same two lines before the keyword: a subquery quantified by any comparison and ALL, ANY
+ * or SOME, whose second line is the star before the keyword, and a subquery on the left of a WHERE's comparison (all
+ * live-verified). The lines past the keyword are each AS, then the call's {@code )}. Any other remainder there keeps
+ * the lines worked out so far.
  */
 final class StarModifierContextLines {
 
@@ -73,6 +79,18 @@ final class StarModifierContextLines {
                 && lines.get(0).equals(SyntaxErrorListener.sentence(spoken.get(open + 1)))) {
             final List<Integer> after = compared(spoken, fault);
             return after == null ? lines : joined(lines.subList(0, 2), spoken, after);
+        }
+        if (open >= 2 && spoken.get(open + 1).getType() == FrostlakeLexer.SELECT && lines.size() >= 2
+                && lines.get(0).equals(SyntaxErrorListener.sentence(spoken.get(open + 1)))) {
+            final int quantifier = spoken.get(open - 1).getType();
+            final boolean quantified = (quantifier == FrostlakeLexer.ALL || quantifier == FrostlakeLexer.ANY
+                || quantifier == FrostlakeLexer.SOME) && isComparison(spoken.get(open - 2).getType());
+            final int close = closing(spoken, open);
+            final boolean leftOfComparison = spoken.get(open - 1).getType() == FrostlakeLexer.WHERE
+                && close + 1 < spoken.size() && isComparison(spoken.get(close + 1).getType());
+            if (quantified || leftOfComparison) {
+                return aliasedPastSubquery(spoken, fault, lines, quantified);
+            }
         }
         // A CASE is read so as a query's first item; in a clause, a WHERE's, it is read another way.
         final List<Integer> after;
@@ -155,6 +173,66 @@ final class StarModifierContextLines {
             after.add(Integer.valueOf(shape.group + 1));
         }
         return after;
+    }
+
+    /**
+     * The lines of a subquery quantified by {@code > ALL} or standing left of {@code =}, for its call's keyword: the
+     * SELECT, the star before the keyword when quantified or the second line worked out so far, then a bracketed value
+     * with an alias read as a compared subquery reads it. Any other remainder keeps the lines worked out so far.
+     */
+    private static List<String> aliasedPastSubquery(final List<Token> spoken, final int keyword,
+                                                    final List<String> lines, final boolean quantified) {
+        final List<Integer> after = aliasedRemainder(spoken, keyword);
+        if (after == null) {
+            return lines;
+        }
+        final List<String> told = new ArrayList<String>();
+        told.add(lines.get(0));
+        told.add(quantified ? SyntaxErrorListener.sentence(spoken.get(keyword - 1)) : lines.get(1));
+        return joined(told, spoken, after);
+    }
+
+    /**
+     * The lines past a keyword whose remainder aliases values, each a word or a bracketed group with AS and a name
+     * after it: each AS, then the call's {@code )}; null for any other remainder.
+     */
+    private static List<Integer> aliasedRemainder(final List<Token> spoken, final int keyword) {
+        if (keyword + 1 >= spoken.size() || spoken.get(keyword + 1).getType() != FrostlakeLexer.LPAREN) {
+            return null;
+        }
+        final int group = closing(spoken, keyword + 1);
+        if (group < 0 || group + 1 >= spoken.size()) {
+            return null;
+        }
+        final List<Integer> aliases = new ArrayList<Integer>();
+        int at = keyword + 2;
+        while (at < group) {
+            final int valueEnd = spoken.get(at).getType() == FrostlakeLexer.LPAREN ? closing(spoken, at) : at;
+            if (valueEnd < 0 || valueEnd + 2 >= group || spoken.get(valueEnd + 1).getType() != FrostlakeLexer.AS
+                    || !SyntaxErrorListener.isNameLike(spoken.get(valueEnd + 2))) {
+                return null;
+            }
+            aliases.add(Integer.valueOf(valueEnd + 1));
+            at = valueEnd + 3;
+            if (at < group) {
+                if (spoken.get(at).getType() != FrostlakeLexer.COMMA) {
+                    return null;
+                }
+                at++;
+            }
+        }
+        if (aliases.isEmpty()) {
+            return null;
+        }
+        final List<Integer> after = new ArrayList<Integer>(aliases);
+        after.add(Integer.valueOf(group + 1));
+        return after;
+    }
+
+    /** Whether a token type is a comparison's operator. */
+    private static boolean isComparison(final int type) {
+        return type == FrostlakeLexer.EQ || type == FrostlakeLexer.NEQ || type == FrostlakeLexer.LT
+            || type == FrostlakeLexer.LTE || type == FrostlakeLexer.GT || type == FrostlakeLexer.GTE;
     }
 
     /** The lines past the keyword of an EXISTS query's item. */

@@ -48,9 +48,23 @@ public class TaskDependentsFunction extends TableFunction {
 
     private final Catalog catalog;
 
+    /** Which tasks the session may read about (see TaskSight); null reads about every one. */
+    private final TaskSight sight;
+
     public TaskDependentsFunction(final Catalog catalog) {
+        this(catalog, null);
+    }
+
+    /**
+     * The function reading only about the tasks the session sees.
+     *
+     * @param catalog the catalog
+     * @param sight   which tasks the session sees, or null for every one
+     */
+    public TaskDependentsFunction(final Catalog catalog, final TaskSight sight) {
         super("TASK_DEPENDENTS");
         this.catalog = catalog;
+        this.sight = sight;
     }
 
     @Override
@@ -82,13 +96,16 @@ public class TaskDependentsFunction extends TableFunction {
         } catch (final RuntimeException missing) {
             throw notATask(taskName);
         }
-        if (task == null) {
+        // A task the session may not read about is refused as one that is not there.
+        if (task == null || sight != null && !sight.sees(schema, task)) {
             throw notATask(taskName);
         }
         final List<Row> rows = new ArrayList<>();
         rows.add(row(task, schema));
         for (final Task dependent : TaskGraphs.descendants(schema, task, recursive)) {
-            rows.add(row(dependent, schema));
+            if (sight == null || sight.sees(schema, dependent)) {
+                rows.add(row(dependent, schema));
+            }
         }
         return new ResultSet(columns(), rows);
     }

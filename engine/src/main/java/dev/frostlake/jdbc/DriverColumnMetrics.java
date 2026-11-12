@@ -145,14 +145,17 @@ final class DriverColumnMetrics {
     /**
      * Whether the driver reports a column signed: a fixed-point number, whatever its scale, and an approximate one
      * — NUMBER, a file transfer's DECIMAL and DOUBLE. Every other type is unsigned, a date, a time, a timestamp, a
-     * BOOLEAN and an interval among them, negative values notwithstanding (live-verified).
+     * BOOLEAN and an interval among them, negative values notwithstanding (live-verified). A DECFLOAT is signed too:
+     * the driver reports it as Types.DECIMAL, and the account's driver decides isSigned by the type code (its
+     * source); unmeasured on live.
      *
      * @param driverTypeName the driver's name for the column's type
      * @return what {@code isSigned} answers for it
      */
     static boolean isSigned(final String driverTypeName) {
         final String family = family(driverTypeName);
-        return "NUMBER".equals(family) || "DECIMAL".equals(family) || "DOUBLE".equals(family);
+        return "NUMBER".equals(family) || "DECIMAL".equals(family) || "DOUBLE".equals(family)
+            || "DECFLOAT".equals(family);
     }
 
     /**

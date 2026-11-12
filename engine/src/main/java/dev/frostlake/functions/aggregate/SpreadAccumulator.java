@@ -104,6 +104,24 @@ public class SpreadAccumulator
             }
             return AggregateNumerics.varianceAtDeclaredScale(variance, maxScale, approximate);
         }
+        return exactResult(moments, sample, deviation, maxScale);
+    }
+
+    /**
+     * The statistic of exact moments: NULL below two values for a sample's and below one for the population's, the
+     * variance at the scale its widest input declares, and the deviation the root of that rounded variance.
+     *
+     * @param moments   the moments, every value exact
+     * @param sample    whether the statistic is of a sample
+     * @param deviation whether it is the standard deviation
+     * @param maxScale  the scale of the widest value folded in
+     * @return the statistic, or null
+     */
+    public static Object exactResult(final ExactMoments moments, final boolean sample, final boolean deviation,
+                                     final int maxScale) {
+        if (moments.count() < (sample ? 2 : 1)) {
+            return null;
+        }
         if (deviation) {
             return AggregateNumerics.rootOfExactVariance(moments, sample, maxScale);
         }

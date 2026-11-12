@@ -81,6 +81,37 @@ public final class CallerGrant {
         return "DATABASE".equals(inheritedFrom) ? scopeName.equals(database) : scopeName.equals(schema);
     }
 
+    /**
+     * This grant under the names a change of recorded names gives its object, or the database or schema an inherited
+     * grant covers: it goes with the object as the object's privileges do.
+     *
+     * @param remap the change
+     * @return the grant under its new names, or null when the change leaves it alone
+     */
+    public CallerGrant remapped(final GrantRemap remap) {
+        if (inheritedFrom == null) {
+            final String moved = remap.mapped(objectKind, objectName);
+            return moved == null ? null : new CallerGrant(privilege, objectKind, moved, null, null, createdOn);
+        }
+        if (scopeName == null) {
+            return null;
+        }
+        final String moved = remap.mapped(inheritedFrom, scopeName);
+        return moved == null ? null : new CallerGrant(privilege, objectKind, null, inheritedFrom, moved, createdOn);
+    }
+
+    /**
+     * Whether this grant is on that one object, or inherited where that database or schema lives.
+     *
+     * @param kind the object's kind, as grants record it
+     * @param name its name, as grants record it
+     * @return whether it is
+     */
+    public boolean isOn(final String kind, final String name) {
+        return inheritedFrom == null ? objectKind.equals(kind) && objectName.equals(name)
+            : inheritedFrom.equals(kind) && name.equals(scopeName);
+    }
+
     private static boolean same(final String a, final String b) {
         return a == null ? b == null : a.equals(b);
     }

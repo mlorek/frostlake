@@ -192,22 +192,34 @@ public abstract class AbstractFrostlakeResultSetMetaData implements ResultSetMet
         return false;
     }
 
+    /**
+     * The database, the schema and the table a column reads a stored table's column from as it is, or null for a
+     * computed column, which reports blanks (see ColumnSource).
+     *
+     * @param column the column, from 1
+     * @return the three names, or null
+     */
+    protected abstract String[] source(int column);
+
     @Override
     public String getSchemaName(final int column) throws SQLException {
         checkColumn(column);
-        return "";
+        final String[] source = source(column);
+        return source == null ? "" : source[1];
     }
 
     @Override
     public String getTableName(final int column) throws SQLException {
         checkColumn(column);
-        return "";
+        final String[] source = source(column);
+        return source == null ? "" : source[2];
     }
 
     @Override
     public String getCatalogName(final int column) throws SQLException {
         checkColumn(column);
-        return "";
+        final String[] source = source(column);
+        return source == null ? "" : source[0];
     }
 
     @Override

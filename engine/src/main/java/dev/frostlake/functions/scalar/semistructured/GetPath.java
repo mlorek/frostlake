@@ -72,6 +72,10 @@ public class GetPath extends VariantAccessorFunction {
             // An array is read by a number alone: a text or a VARIANT index names no element, GET([1], '0') and
             // GET([1], TO_VARIANT(0)) are NULL (live-verified).
             result = null;
+        } else if (args.get(1) instanceof Number) {
+            // An object is read by a text alone: a number names no key, GET(OBJECT_CONSTRUCT('1', 'x'), 1) is NULL
+            // (live-verified).
+            result = null;
         } else {
             result = src.get(accessor);
         }

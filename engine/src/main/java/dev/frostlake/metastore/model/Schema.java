@@ -1832,7 +1832,11 @@ public class Schema extends SqlObject {
      * @return whether the name is taken
      */
     public boolean holdsStageFor(final String name, final boolean temporary) {
-        return temporary ? ownStage(name, true) != null : stages.hasExact(name);
+        // The engine's own session keeps its temporary stages among the shared ones (see dropStageFor).
+        if (!temporary || StatementSession.current() == null) {
+            return stages.hasExact(name);
+        }
+        return ownStage(name, true) != null;
     }
 
     /**

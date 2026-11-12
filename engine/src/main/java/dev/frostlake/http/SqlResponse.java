@@ -275,13 +275,14 @@ public class SqlResponse {
     }
 
     /**
-     * Reports that the session has set CLIENT_RESULT_COLUMN_CASE_INSENSITIVE to TRUE, after which the driver matches
-     * a column label ignoring case for the rest of the connection; while it has not, nothing is reported.
+     * Reports that the session's CLIENT_RESULT_COLUMN_CASE_INSENSITIVE is TRUE - set on the session, its user or the
+     * account - after which the driver matches a column label ignoring case for the rest of the connection; while it
+     * is not, nothing is reported.
      *
-     * @param session the session the statement ran in
+     * @param caseInsensitive whether the session's value is TRUE
      */
-    public void reportResultColumnCase(final SessionContext session) {
-        if (session.getSettings().resultColumnsCaseInsensitive()) {
+    public void reportResultColumnCase(final boolean caseInsensitive) {
+        if (caseInsensitive) {
             this.clientResultColumnCaseInsensitive = Boolean.TRUE;
         }
     }

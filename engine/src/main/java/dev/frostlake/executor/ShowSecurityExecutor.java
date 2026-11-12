@@ -136,6 +136,41 @@ final class ShowSecurityExecutor {
         return new ResultSet(columns, rows);
     }
 
+    /** The DEFAULT_ROLE of the user the session runs for, canonical, or null when it names none. */
+    private String defaultRoleOfSessionUser(final SecurityManager securityManager) {
+        if (securityManager == null) {
+            return null;
+        }
+        final String executing = securityManager.getSessionContext().getExecutingUser();
+        if (executing == null || !catalog.hasUser(executing)) {
+            return null;
+        }
+        final String role = catalog.getUser(executing).getDefaultRole();
+        return role == null ? null : catalog.resolveRoleName(role);
+    }
+
+    /** The roles granted to a role, and to those, however far down: what the role inherits. */
+    private Set<String> rolesInheritedBy(final String roleName) {
+        final Set<String> reached = new HashSet<>();
+        if (roleName == null) {
+            return reached;
+        }
+        final List<String> pending = new ArrayList<>();
+        final Role start = catalog.roleExists(roleName)
+            ? catalog.getRoleExact(catalog.resolveRoleName(roleName)) : null;
+        if (start != null) {
+            pending.addAll(start.getGrantedRoles());
+        }
+        while (!pending.isEmpty()) {
+            final String next = pending.remove(pending.size() - 1);
+            if (reached.add(next) && catalog.roleExists(next)) {
+                pending.addAll(catalog.getRoleExact(next).getGrantedRoles());
+            }
+        }
+        reached.remove(roleName);
+        return reached;
+    }
+
     public ResultSet showRoles() {
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
@@ -153,6 +188,10 @@ final class ShowSecurityExecutor {
         final SecurityManager securityManager = facade.getSecurityManager();
         // is_current must reflect the session's actual current role, not a hard-coded SYSADMIN.
         final String curRole = securityManager != null ? securityManager.getSessionContext().getCurrentRole() : null;
+        // is_default names the user's DEFAULT_ROLE, and is_inherited each role the current role reaches through role
+        // grants, however far down, itself not among them (documented).
+        final String defaultRole = defaultRoleOfSessionUser(securityManager);
+        final Set<String> inherited = rolesInheritedBy(curRole);
         final List<Row> rows = new ArrayList<>();
         for (final Role role : catalog.getAllRoles()) {
             int assignedToUsers = 0;
@@ -170,9 +209,9 @@ final class ShowSecurityExecutor {
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(role.getCreatedTime()),
                 role.getName(),
-                "N",
+                role.getName().equals(defaultRole) ? "Y" : "N",
                 role.getName().equals(curRole) ? "Y" : "N",
-                "N",
+                inherited.contains(role.getName()) ? "Y" : "N",
                 assignedToUsers, grantedToRoles, role.getGrantedRoles().size(),
                 ShowResultHelpers.text(role.getOwner()),
                 ShowResultHelpers.text(role.getComment()),

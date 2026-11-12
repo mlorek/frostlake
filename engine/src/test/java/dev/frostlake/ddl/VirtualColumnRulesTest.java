@@ -162,4 +162,27 @@ public class VirtualColumnRulesTest extends MeasuredCellsTestSupport {
                 notATarget},
         });
     }
+
+    /**
+     * A virtual column holds no CHECK and takes no SET DEFAULT; dropping a default or a NOT NULL a column does not
+     * hold changes nothing and says so, a virtual column's and any other's alike (all live-verified).
+     */
+    @Test
+    public void constraintsAndDefaultsOfAVirtualColumn() {
+        engine.execute("CREATE OR REPLACE TABLE dd1000 (a INT, b INT DEFAULT 3, v INT AS (a + 1))");
+        assertCells(new String[][] {
+            {"ALTER TABLE dd1000 ADD CONSTRAINT ck1000 CHECK (v > 0)",
+                "REFUSED SQL compilation error: Cannot set CHECK constraint on virtual column V."},
+            {"ALTER TABLE dd1000 ALTER COLUMN v SET DEFAULT 5",
+                "REFUSED Unsupported feature 'Alter Column Set Default'."},
+            {"ALTER TABLE dd1000 ALTER COLUMN v DROP DEFAULT", "Default constraint does not exist for column 'V'"},
+            {"ALTER TABLE dd1000 ALTER COLUMN v DROP NOT NULL", "Not null constraint does not exist for column 'V'"},
+            {"ALTER TABLE dd1000 ALTER COLUMN a DROP DEFAULT", "Default constraint does not exist for column 'A'"},
+            {"ALTER TABLE dd1000 ALTER COLUMN b DROP DEFAULT", "Statement executed successfully."},
+            {"ALTER TABLE dd1000 ALTER COLUMN b DROP DEFAULT", "Default constraint does not exist for column 'B'"},
+            {"ALTER TABLE dd1000 ALTER COLUMN a DROP NOT NULL", "Not null constraint does not exist for column 'A'"},
+            {"ALTER TABLE dd1000 ADD CONSTRAINT ck1000 CHECK (a > 0)", "REFUSED ALTER TABLE ADD CHECK is not "
+                + "supported with ENABLE VALIDATE (you may specify ENABLE NOVALIDATE instead)."},
+        });
+    }
 }

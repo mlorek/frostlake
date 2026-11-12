@@ -36,6 +36,9 @@ import java.math.BigDecimal;
  */
 public class SumAccumulator implements AggregateFunction.Accumulator, ApproximateAwareAccumulator,
         DecfloatAwareAccumulator {
+
+    /** The sentence a raw running total that leaves its signed 128-bit carrier is refused with. */
+    public static final String OVERFLOW = "Value overflow in a SUM aggregate";
     private BigDecimal sum = BigDecimal.ZERO;
     /** Whether the argument is declared DECFLOAT: the sum is then a DECFLOAT (see Decfloats). */
     private boolean decfloat;
@@ -98,7 +101,7 @@ public class SumAccumulator implements AggregateFunction.Accumulator, Approximat
      */
     static void requireSumFits(final BigDecimal total) {
         if (total.precision() > 38 && NumericRangeRefusal.outsideSb16Window(total.unscaledValue())) {
-            throw new AggregateRangeRefusal("Value overflow in a SUM aggregate");
+            throw new AggregateRangeRefusal(OVERFLOW);
         }
     }
 

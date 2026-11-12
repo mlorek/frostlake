@@ -116,9 +116,10 @@ public class AlertHistoryFunctionTest extends BaseDatabaseTest {
         assertEquals("see wiki", cell(named, named.getRows().get(0), "RUNBOOK"));
         assertEquals(1, engine.executeQuery(
             "SELECT * FROM TABLE(INFORMATION_SCHEMA.ALERT_HISTORY(RESULT_LIMIT => 1))").getRows().size());
+        // The account's other alerts may run meanwhile, so only these two are counted.
         assertEquals(3, engine.executeQuery(
-            "SELECT * FROM TABLE(INFORMATION_SCHEMA.ALERT_HISTORY(SCHEDULED_TIME_RANGE_START => $alert_since))")
-            .getRows().size());
+            "SELECT * FROM TABLE(INFORMATION_SCHEMA.ALERT_HISTORY(SCHEDULED_TIME_RANGE_START => $alert_since)) "
+                + "WHERE name IN ('N1', 'N2')").getRows().size());
         assertEquals(0, engine.executeQuery(
             "SELECT * FROM TABLE(INFORMATION_SCHEMA.ALERT_HISTORY(RESULT_LIMIT => 0))").getRows().size());
         final RuntimeException refused = assertThrows(RuntimeException.class, new Executable() {

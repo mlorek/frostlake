@@ -509,8 +509,9 @@ final class TaskProperties {
     /**
      * FINALIZE: the task becomes the finalizer of the root the statement names, refused in this order when the
      * root does not exist, lives in another schema, is no root, or is the task itself; when the task carries a
-     * configuration or is given an overlap setting; and when it has a schedule, a predecessor or a child, or
-     * the root already has another finalizer.
+     * configuration or is given an overlap setting; when it has a schedule, a predecessor or a child, or the root
+     * already has another finalizer; and last when the root runs, since a finalizer joins the root's graph, which
+     * "must be suspended before any task is recreated" or a child task added (documented).
      *
      * @param task the task, with the statement's other properties applied
      */
@@ -554,6 +555,9 @@ final class TaskProperties {
         final Task existing = TaskGraphs.finalizerOf(schema, root);
         if (existing != null && !existing.getName().equals(task.getName())) {
             throw new RuntimeException("Finalize target " + root.getName() + " already have finalizer.");
+        }
+        if (root.getState() == TaskState.STARTED) {
+            throw notSuspended(root);
         }
         task.setFinalizedRootTask(root.getName());
     }

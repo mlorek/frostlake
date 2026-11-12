@@ -49,7 +49,8 @@ public final class FileFormatReference {
             return;
         }
         try {
-            if (catalog.hasFileFormat(writtenName)) {
+            // Named exactly: a format differing only in case is another (live-verified for DESCRIBE FILE FORMAT).
+            if (catalog.getFileFormatExact(writtenName) != null) {
                 return;
             }
         } catch (final RuntimeException unresolvable) {

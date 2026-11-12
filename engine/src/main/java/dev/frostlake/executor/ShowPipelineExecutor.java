@@ -32,6 +32,7 @@ import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamSourceType;
 import dev.frostlake.metastore.model.StreamType;
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.storage.ResultSet;
@@ -65,6 +66,9 @@ final class ShowPipelineExecutor {
 
     /** Snowflake's default MAX_DATA_EXTENSION_TIME_IN_DAYS, which bounds how long a stream stays fresh. */
     private static final int MAX_DATA_EXTENSION_DAYS = 14;
+
+    /** Snowflake's default DATA_RETENTION_TIME_IN_DAYS. */
+    private static final int DEFAULT_RETENTION_DAYS = 1;
 
     private final Catalog catalog;
 
@@ -165,7 +169,7 @@ final class ShowPipelineExecutor {
                 "DELTA",
                 stale ? "true" : "false",
                 stream.getStreamType() == StreamType.APPEND_ONLY ? "APPEND_ONLY" : "DEFAULT",
-                stale ? null : ShowResultHelpers.createdOn(staleAfter(stream)),
+                stale ? null : ShowResultHelpers.createdOn(staleAfter(stream, home)),
                 "N/A",
                 ShowResultHelpers.OWNER_ROLE_TYPE
             )));
@@ -491,14 +495,63 @@ final class ShowPipelineExecutor {
     }
 
     /**
-     * When the stream's change data expires. Snowflake extends a stream's retention up to
-     * MAX_DATA_EXTENSION_TIME_IN_DAYS, which defaults to 14 days past the last offset advance.
+     * When the stream may go stale: its last consumption, or its creation before any, plus the greater of its table's
+     * DATA_RETENTION_TIME_IN_DAYS and MAX_DATA_EXTENSION_TIME_IN_DAYS, each as the table has it - its own, else its
+     * schema's, its database's, the account's or the default (documented: "calculated by adding the greater value of
+     * the DATA_RETENTION_TIME_IN_DAYS or MAX_DATA_EXTENSION_TIME_IN_DAYS parameters setting to the last consumption
+     * time of the stream"). A stream on anything but a table takes the defaults.
      */
-    private LocalDateTime staleAfter(final Stream stream) {
-        if (stream.getCreatedAt() == null) {
+    private LocalDateTime staleAfter(final Stream stream, final Schema home) {
+        final LocalDateTime base = stream.getLastConsumedAt() != null ? stream.getLastConsumedAt()
+            : stream.getCreatedAt();
+        if (base == null) {
             return null;
         }
-        return stream.getCreatedAt().plusDays(MAX_DATA_EXTENSION_DAYS);
+        int retention = DEFAULT_RETENTION_DAYS;
+        int extension = MAX_DATA_EXTENSION_DAYS;
+        final Table table = stream.getSourceType() == StreamSourceType.TABLE && home != null
+            ? StreamSources.sourceOf(catalog, home, stream) : null;
+        if (table != null) {
+            final Schema holder = StreamSources.holderOf(catalog, table);
+            final Database database = holder == null ? null : catalog.findDatabase(holder.getDatabaseName());
+            retention = days(table.getDataRetentionTimeInDays(),
+                holder == null ? null : holder.getDataRetentionTimeInDays(),
+                database == null ? null : database.getDataRetentionTimeInDays(),
+                catalog.getAccountParameters().get("DATA_RETENTION_TIME_IN_DAYS"), DEFAULT_RETENTION_DAYS);
+            extension = days(table.getMaxDataExtensionTimeInDays(),
+                parsedDays(holder == null ? null : holder.getParameters().get("MAX_DATA_EXTENSION_TIME_IN_DAYS")),
+                parsedDays(database == null ? null : database.getParameters().get("MAX_DATA_EXTENSION_TIME_IN_DAYS")),
+                catalog.getAccountParameters().get("MAX_DATA_EXTENSION_TIME_IN_DAYS"), MAX_DATA_EXTENSION_DAYS);
+        }
+        return base.plusDays(Math.max(retention, extension));
+    }
+
+    /** The first of a table's, its schema's and its database's own days that is set, else the account's, else none. */
+    private static int days(final Integer own, final Integer schema, final Integer database, final String account,
+                            final int fallback) {
+        if (own != null) {
+            return own.intValue();
+        }
+        if (schema != null) {
+            return schema.intValue();
+        }
+        if (database != null) {
+            return database.intValue();
+        }
+        final Integer parsed = parsedDays(account);
+        return parsed != null ? parsed.intValue() : fallback;
+    }
+
+    /** A parameter's days as its text sets them, or null when it sets none. */
+    private static Integer parsedDays(final String text) {
+        if (text == null) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(text.trim());
+        } catch (final NumberFormatException unread) {
+            return null;
+        }
     }
 
     /** SQL LIKE match for SHOW … LIKE filters — shared via {@link ShowResultHelpers#matchesLike}. */

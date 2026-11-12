@@ -46,7 +46,6 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -187,7 +186,8 @@ public class TaskScheduler {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final DynamicTable table : new ArrayList<>(schema.getDynamicTables())) {
                     if (isDue(table, now)) {
-                        due.add(new String[] {database.getName(), schema.getName(), table.getName()});
+                        due.add(new String[] {database.getName(), schema.getName(), table.getName(),
+                            table.getOwner()});
                     }
                 }
             }
@@ -195,7 +195,7 @@ public class TaskScheduler {
         int refreshed = 0;
         for (final String[] name : due) {
             try {
-                refreshOnSchedule(name[0], name[1], name[2]);
+                refreshOnSchedule(name[0], name[1], name[2], name[3]);
                 refreshed++;
             } catch (final RuntimeException failed) {
                 logger.warn("Scheduled refresh of dynamic table {}.{}.{} failed: {}", name[0], name[1], name[2],
@@ -243,20 +243,21 @@ public class TaskScheduler {
         return parts[1].startsWith("day") ? count * 86400L : -1L;
     }
 
-    /** One scheduled refresh, as a session of its own in the table's home. */
-    private void refreshOnSchedule(final String database, final String schema, final String table) {
+    /** One scheduled refresh, as a session of its own in the table's home that acts with the table owner's role. */
+    private void refreshOnSchedule(final String database, final String schema, final String table,
+                                   final String owner) {
         final String[] priorScope = catalog.currentSessionScope();
         catalog.beginSessionScope(database, schema);
         // The refresh, and those of the tables it reads first, are the schedule's (see RefreshTriggers).
         final RefreshTrigger trigger = RefreshTriggers.begin(RefreshTrigger.SCHEDULED);
         try {
-            taskExecutor.runInOwnSession(new Runnable() {
+            taskExecutor.runAsOwner(new Runnable() {
                 @Override
                 public void run() {
                     taskExecutor.execute("ALTER DYNAMIC TABLE " + quoted(database) + "." + quoted(schema) + "."
                         + quoted(table) + " REFRESH");
                 }
-            });
+            }, null, owner);
         } finally {
             RefreshTriggers.end(trigger);
             catalog.restoreSessionScope(priorScope);
@@ -597,10 +598,31 @@ public class TaskScheduler {
         CURRENT_GRAPH_CONFIG.set(config);
         try {
             final int runsBefore = root.getExecutionHistory().size();
-            final Set<String> visited = new HashSet<>();
-            executeTask(rootKey, root, visited, trigger);
-            if (root.getExecutionHistory().size() > runsBefore) {
-                runFinalizer(rootKey, root, visited, trigger);
+            final GraphRun run = new GraphRun();
+            executeTask(rootKey, root, run, trigger);
+            if (root.getExecutionHistory().size() <= runsBefore || TaskGraphs.skipped(lastRun(root))) {
+                // No graph run began: the run overlapped one still going, or the root's condition skipped it.
+                return;
+            }
+            final TaskExecution began = root.getExecutionHistory().get(runsBefore);
+            final Schema schema = schemaOfKey(rootKey);
+            // TASK_AUTO_RETRY_ATTEMPTS, the root's: a graph run that failed runs again from the task runs of it that
+            // failed, each retry its next attempt (documented).
+            for (int retry = 0; schema != null && retry < root.getTaskAutoRetryAttempts()
+                    && graphRunFailed(schema, root, began); retry++) {
+                retryGraphRun(rootKey, root, schema, began, null, TaskTrigger.AUTOMATIC_RETRY, config);
+            }
+            final int attempt = schema == null ? 1 : TaskGraphs.lastAttempt(schema, root, began.getStartTime(), null);
+            if (attempt > 1) {
+                CURRENT_ATTEMPT.set(Integer.valueOf(attempt));
+            }
+            try {
+                runFinalizer(rootKey, root, run, trigger);
+            } finally {
+                CURRENT_ATTEMPT.remove();
+            }
+            if (schema != null) {
+                countFailures(rootKey, root, schema, began);
             }
         } finally {
             if (prior == null) {
@@ -611,25 +633,72 @@ public class TaskScheduler {
         }
     }
 
-    /** Run the resumed finalizer task of a root, after the rest of its graph run. */
-    private void runFinalizer(final String rootKey, final Task root, final Set<String> visited,
-                              final TaskTrigger trigger) {
-        final String[] parts = QualifiedName.parse(rootKey).parts();
-        if (parts.length != 3) {
+    /**
+     * Whether a graph run failed: a task of it, the root, a child or the finalizer, whose last run in it failed.
+     *
+     * @param began the root's run that began the graph run
+     */
+    private static boolean graphRunFailed(final Schema schema, final Task root, final TaskExecution began) {
+        final List<Task> tasks = new ArrayList<>();
+        tasks.add(root);
+        tasks.addAll(TaskGraphs.descendants(schema, root, true));
+        for (final Task task : tasks) {
+            final TaskExecution last = TaskGraphs.lastRunWithin(task, began.getStartTime(), null, 0);
+            if (last != null && TaskExecutionState.FAILED.name().equals(last.getState())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * SUSPEND_TASK_AFTER_NUM_FAILURES, the root's: the root is suspended once that many of its graph runs in a row
+     * failed, retries included, a failure of any task of the graph counted; a graph run that succeeds counts afresh
+     * (documented).
+     */
+    private void countFailures(final String rootKey, final Task root, final Schema schema, final TaskExecution began) {
+        if (!graphRunFailed(schema, root, began)) {
+            root.resetFailedGraphRuns();
             return;
         }
-        final Database database = catalog.getDatabase(parts[0]);
-        final Schema schema = database == null ? null : database.getSchema(parts[1]);
-        final Task finalizer = schema == null ? null : TaskGraphs.finalizerOf(schema, root);
-        if (finalizer != null && finalizer.getState() == TaskState.STARTED) {
-            executeTask(schedulerKey(parts[0], parts[1], finalizer.getName()), finalizer, visited, trigger);
+        final int failures = root.countFailedGraphRun();
+        if (root.getSuspendTaskAfterNumFailures() > 0 && failures >= root.getSuspendTaskAfterNumFailures()) {
+            logger.warn("Task {} reached {} failed graph runs in a row — suspending", rootKey, failures);
+            suspendTask(rootKey, root);
         }
     }
 
-    private void executeTask(final String qualifiedTaskName, final Task task, final Set<String> visited,
+    /** The schema a scheduler key's task is in, or null when the key names no schema there is. */
+    private Schema schemaOfKey(final String key) {
+        final String[] parts = QualifiedName.parse(key).parts();
+        if (parts.length != 3) {
+            return null;
+        }
+        final Database database = catalog.getDatabase(parts[0]);
+        return database == null ? null : database.getSchema(parts[1]);
+    }
+
+    /** A task's latest recorded run. */
+    private static TaskExecution lastRun(final Task task) {
+        final List<TaskExecution> history = task.getExecutionHistory();
+        return history.get(history.size() - 1);
+    }
+
+    /** Run the resumed finalizer task of a root, after the rest of its graph run. */
+    private void runFinalizer(final String rootKey, final Task root, final GraphRun run,
+                              final TaskTrigger trigger) {
+        final Schema schema = schemaOfKey(rootKey);
+        final Task finalizer = schema == null ? null : TaskGraphs.finalizerOf(schema, root);
+        if (finalizer != null && finalizer.getState() == TaskState.STARTED) {
+            final String[] parts = QualifiedName.parse(rootKey).parts();
+            executeTask(schedulerKey(parts[0], parts[1], finalizer.getName()), finalizer, run, trigger);
+        }
+    }
+
+    private void executeTask(final String qualifiedTaskName, final Task task, final GraphRun run,
                              final TaskTrigger trigger) {
         // Each task runs at most once per DAG run; the set also guards against dependency cycles.
-        if (!visited.add(task.getName().toUpperCase(Locale.ROOT))) {
+        if (!run.enter(task)) {
             return;
         }
         // ALLOW_OVERLAPPING_EXECUTION = FALSE (the default): a run that would overlap an in-flight
@@ -642,7 +711,7 @@ public class TaskScheduler {
             return;
         }
         try {
-            runTaskOnce(qualifiedTaskName, task, visited, trigger);
+            runTaskOnce(qualifiedTaskName, task, run, trigger);
         } finally {
             if (overlapGuard) {
                 runningTasks.remove(runKey);
@@ -650,7 +719,7 @@ public class TaskScheduler {
         }
     }
 
-    private void runTaskOnce(final String qualifiedTaskName, final Task task, final Set<String> visited,
+    private void runTaskOnce(final String qualifiedTaskName, final Task task, final GraphRun run,
                              final TaskTrigger trigger) {
         // Run the whole task (WHEN condition, body, DAG cascade) with its HOME database/schema bound to
         // this thread only. The scheduler fires on its own thread against the shared engine: resolving
@@ -668,12 +737,13 @@ public class TaskScheduler {
             // A run is a session of its own, whether the schedule or an EXECUTE TASK started it: it never joins
             // the caller's transaction or history (see TaskExecutor#runInOwnSession). Each DAG child the run
             // cascades to opens its own in turn.
-            taskExecutor.runInOwnSession(new Runnable() {
+            // The run acts with the role that owns the task, whoever started it (see TaskExecutor#runAsOwner).
+            taskExecutor.runAsOwner(new Runnable() {
                 @Override
                 public void run() {
-                    runTaskOnceInScope(qualifiedTaskName, task, visited, trigger);
+                    runTaskOnceInScope(qualifiedTaskName, task, run, trigger);
                 }
-            }, task.getSessionParameters());
+            }, task.getSessionParameters(), task.getOwner());
         } finally {
             catalog.restoreSessionScope(priorScope);
         }
@@ -700,14 +770,26 @@ public class TaskScheduler {
             ? String.format(Locale.ROOT, "%06d", ran.getErrorCode()) : null, SCHEDULED_BY.get());
     }
 
-    private void runTaskOnceInScope(final String qualifiedTaskName, final Task task, final Set<String> visited,
+    /**
+     * A run its WHEN condition skipped: it began, and is listed SKIPPED with no query, but its statement did not run
+     * (documented); its error is the condition's, 0040003 "Conditional expression for task evaluated to false.". It
+     * counts neither as a success nor as a failure.
+     */
+    private TaskExecution skipped(final LocalDateTime scheduledTime, final TaskTrigger trigger) {
+        final Integer retried = CURRENT_ATTEMPT.get();
+        return new TaskExecution(scheduledTime, scheduledTime, stamp(Instant.now()), TaskExecutionState.SKIPPED,
+            "Conditional expression for task evaluated to false.", 0, trigger,
+            retried == null ? 1 : retried.intValue()).ranAs(null, "0040003", SCHEDULED_BY.get());
+    }
+
+    private void runTaskOnceInScope(final String qualifiedTaskName, final Task task, final GraphRun run,
                                     final TaskTrigger trigger) {
         // Read the way SQL reads the time, so what the run does next reads a later instant.
         final LocalDateTime scheduledTime = stamp(StatementClock.observed());
         logger.info("Executing task: {}", qualifiedTaskName);
         // (Predecessor gating is implemented by the cascade itself: a child runs only via
-        // runDependentTasks after its predecessor completes successfully. USER_TASK_TIMEOUT_MS is
-        // NOT enforced — the engine has no statement-cancellation mechanism to interrupt a run.)
+        // runDependentTasks once every predecessor has succeeded in this graph run (see GraphRun).
+        // USER_TASK_TIMEOUT_MS is NOT enforced — the engine has no statement-cancellation mechanism.)
 
         // Evaluate WHEN condition — skip execution if condition is false
         if (task.getCondition() != null && !task.getCondition().isEmpty()) {
@@ -721,6 +803,7 @@ public class TaskScheduler {
                             && !"0".equals(condVal.toString());
                     if (!condMet) {
                         logger.debug("Task {} WHEN condition evaluated to false, skipping", qualifiedTaskName);
+                        task.recordExecution(skipped(scheduledTime, trigger));
                         return;
                     }
                 }
@@ -729,65 +812,52 @@ public class TaskScheduler {
                 // skips the run — it must not fall through and execute the body unconditionally.
                 logger.warn("Failed to evaluate WHEN condition for task {} — skipping run: {}",
                     qualifiedTaskName, e.getMessage());
+                task.recordExecution(skipped(scheduledTime, trigger));
                 return;
             }
         }
 
-        // Execute the body, with TASK_AUTO_RETRY_ATTEMPTS retries on failure. Each attempt is
-        // recorded in the task history. On the final failed attempt, SUSPEND_TASK_AFTER_NUM_FAILURES
-        // suspends the task once its CONSECUTIVE failure count reaches the threshold.
+        // Execute the body once, recorded in the task history as the attempt of its graph run this is. A failure is
+        // retried, and counted toward the root's suspension, for the graph run as a whole (see runGraph).
         CURRENT_TASK.set(task);
         final Integer retried = CURRENT_ATTEMPT.get();
         final int graphAttempt = retried == null ? 1 : retried.intValue();
         try {
-            final int maxAttempts = 1 + Math.max(0, task.getTaskAutoRetryAttempts());
-            for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-                // The attempt reads a time of its own. Under EXECUTE TASK the caller's statement instant moves on,
-                // so the body's CURRENT_TIMESTAMP is the start recorded here. On the scheduler's thread the body
-                // pins a later instant than this reading.
-                StatementClock.advance();
-                final LocalDateTime startTime = stamp(StatementClock.observed());
-                // Until it ends the run is listed EXECUTING, while it waits for a held table too (live-verified).
-                final TaskExecution running = new TaskExecution(scheduledTime, startTime, null,
-                    TaskExecutionState.EXECUTING, null, 0, trigger, graphAttempt).ranAs(null, null, SCHEDULED_BY.get());
-                task.beginRun(running);
-                try {
-                    final int rowsAffected = taskExecutor.execute(task.getSqlStatement());
+            // The run reads a time of its own. Under EXECUTE TASK the caller's statement instant moves on, so the
+            // body's CURRENT_TIMESTAMP is the start recorded here. On the scheduler's thread the body pins a later
+            // instant than this reading.
+            StatementClock.advance();
+            final LocalDateTime startTime = stamp(StatementClock.observed());
+            // Until it ends the run is listed EXECUTING, while it waits for a held table too (live-verified).
+            final TaskExecution running = new TaskExecution(scheduledTime, startTime, null,
+                TaskExecutionState.EXECUTING, null, 0, trigger, graphAttempt).ranAs(null, null, SCHEDULED_BY.get());
+            task.beginRun(running);
+            try {
+                final int rowsAffected = taskExecutor.execute(task.getSqlStatement());
 
-                    task.recordExecution(ranAs(task, new TaskExecution(scheduledTime, startTime, stamp(Instant.now()),
-                        TaskExecutionState.SUCCEEDED, null, rowsAffected, trigger, graphAttempt)));
+                task.recordExecution(ranAs(task, new TaskExecution(scheduledTime, startTime, stamp(Instant.now()),
+                    TaskExecutionState.SUCCEEDED, null, rowsAffected, trigger, graphAttempt)));
 
-                    // Calculate next run time (only for interval-scheduled tasks — a CRON task
-                    // stamps its next fire when it re-arms)
-                    if (task.getSchedule() != null && task.getScheduleType() != ScheduleType.CRON) {
-                        final long delaySeconds = parseSchedule(task.getSchedule(), task.getScheduleType());
-                        task.setNextRunTime(Instant.now().plusSeconds(delaySeconds));
-                    }
-
-                    logger.info("Task {} completed successfully. Rows affected: {}", qualifiedTaskName, rowsAffected);
-
-                    // Run dependent (AFTER this-task) tasks: a DAG child executes once its predecessor
-                    // completes successfully, provided the child is in the resumed (STARTED) state. A
-                    // skipped (WHEN false) or failed parent does not cascade.
-                    runDependentTasks(task, visited, trigger);
-                    return;
-
-                } catch (final Exception e) {
-                    task.recordExecution(ranAs(task, new TaskExecution(scheduledTime, startTime, stamp(Instant.now()),
-                        TaskExecutionState.FAILED, e.getMessage(), 0, trigger, graphAttempt)));
-                    logger.error("Task {} failed (attempt {}/{}): {}",
-                        qualifiedTaskName, attempt, maxAttempts, e.getMessage());
-
-                    if (attempt == maxAttempts
-                            && task.getSuspendTaskAfterNumFailures() > 0
-                            && task.getFailureCount() >= task.getSuspendTaskAfterNumFailures()) {
-                        logger.warn("Task {} reached {} consecutive failures — suspending",
-                            qualifiedTaskName, task.getFailureCount());
-                        suspendTask(qualifiedTaskName, task);
-                    }
-                } finally {
-                    task.endRun(running);
+                // Calculate next run time (only for interval-scheduled tasks — a CRON task
+                // stamps its next fire when it re-arms)
+                if (task.getSchedule() != null && task.getScheduleType() != ScheduleType.CRON) {
+                    final long delaySeconds = parseSchedule(task.getSchedule(), task.getScheduleType());
+                    task.setNextRunTime(Instant.now().plusSeconds(delaySeconds));
                 }
+
+                logger.info("Task {} completed successfully. Rows affected: {}", qualifiedTaskName, rowsAffected);
+
+                // Run dependent (AFTER this-task) tasks: a DAG child executes once every predecessor has
+                // completed successfully in this graph run, provided the child is resumed (STARTED). A
+                // skipped (WHEN false) or failed parent does not cascade.
+                run.succeeded(task);
+                runDependentTasks(qualifiedTaskName, task, run, trigger);
+            } catch (final Exception e) {
+                task.recordExecution(ranAs(task, new TaskExecution(scheduledTime, startTime, stamp(Instant.now()),
+                    TaskExecutionState.FAILED, e.getMessage(), 0, trigger, graphAttempt)));
+                logger.error("Task {} failed (attempt {}): {}", qualifiedTaskName, graphAttempt, e.getMessage());
+            } finally {
+                task.endRun(running);
             }
         } finally {
             CURRENT_TASK.remove();
@@ -807,31 +877,30 @@ public class TaskScheduler {
     }
 
     /**
-     * Execute every resumed task that lists {@code parent} as an AFTER predecessor. Children are
-     * looked up across the current database's schemas (a Snowflake task DAG lives in one schema);
-     * predecessor references are matched on their bare task name, case-insensitively. Depth-first:
-     * in a diamond DAG each task still runs exactly once (via the visited set), though not
-     * necessarily after ALL of its predecessors — acceptable for this simplified scheduler.
+     * Execute every resumed task of the parent's own schema that lists {@code parent} as an AFTER predecessor and whose
+     * predecessors have all succeeded in this graph run (see GraphRun). A graph lives in one schema (documented: "All
+     * tasks in a task graph must exist in the same schema"), so a task of another schema that follows a task of the
+     * same name is no part of the run. A child waiting on another predecessor runs when that one succeeds, and not at
+     * all when it fails.
+     *
+     * @param parentKey the parent's scheduler key, which names its database and schema
      */
-    private void runDependentTasks(final Task parent, final Set<String> visited, final TaskTrigger trigger) {
-        final String currentDb = catalog.getCurrentDatabase();
-        final Database db = currentDb != null ? catalog.getDatabase(currentDb) : null;
-        if (db == null) {
+    private void runDependentTasks(final String parentKey, final Task parent, final GraphRun run,
+                                   final TaskTrigger trigger) {
+        final String[] parts = QualifiedName.parse(parentKey).parts();
+        if (parts.length != 3) {
             return;
         }
-        for (final Schema schema : db.getAllSchemas()) {
-            for (final Task candidate : schema.getTasks()) {
-                if (candidate.getState() != TaskState.STARTED) {
-                    continue; // only resumed children run
-                }
-                for (final String predecessor : candidate.getPredecessors()) {
-                    final int dot = predecessor.lastIndexOf('.');
-                    final String bareName = dot >= 0 ? predecessor.substring(dot + 1) : predecessor;
-                    if (bareName.equalsIgnoreCase(parent.getName())) {
-                        executeTask(schema.getName() + "." + candidate.getName(), candidate, visited, trigger);
-                        break;
-                    }
-                }
+        final Database database = catalog.getDatabase(parts[0]);
+        final Schema schema = database == null ? null : database.getSchema(parts[1]);
+        if (schema == null) {
+            return;
+        }
+        for (final Task candidate : new ArrayList<>(schema.getTasks())) {
+            // Only resumed children run, each once every predecessor has succeeded.
+            if (candidate.getState() == TaskState.STARTED && GraphRun.follows(candidate, parent)
+                    && run.ready(candidate)) {
+                executeTask(schedulerKey(parts[0], parts[1], candidate.getName()), candidate, run, trigger);
             }
         }
     }
@@ -901,6 +970,7 @@ public class TaskScheduler {
         if (usingConfig != null) {
             TaskGraphConfig.requireObject(usingConfig);
         }
+        TriggeredTaskInterval.require(task, key);
 
         if (retryLast) {
             retryLastGraphRun(key, task, schema);
@@ -927,7 +997,7 @@ public class TaskScheduler {
             final TaskExecution run = graphRuns.get(i);
             if (group.equals(TaskGraphs.graphRunGroupId(root, TaskGraphs.runId(run.getScheduledTime())))) {
                 final LocalDateTime until = i + 1 < graphRuns.size() ? graphRuns.get(i + 1).getStartTime() : null;
-                retryGraphRun(rootKey, root, schema, run, until);
+                retryGraphRun(rootKey, root, schema, run, until, TaskTrigger.MANUAL_RETRY, root.getConfig());
                 return;
             }
         }
@@ -945,7 +1015,8 @@ public class TaskScheduler {
             throw new RuntimeException("Cannot perform retry: no suitable run of graph with root task " + root.getName()
                 + " to retry.");
         }
-        retryGraphRun(rootKey, root, schema, graphRuns.get(graphRuns.size() - 1), null);
+        retryGraphRun(rootKey, root, schema, graphRuns.get(graphRuns.size() - 1), null, TaskTrigger.MANUAL_RETRY,
+            root.getConfig());
     }
 
     /**
@@ -955,18 +1026,21 @@ public class TaskScheduler {
      *
      * @param graphRun the root's run that began the graph run
      * @param until    when the next graph run began, or null for the latest one
+     * @param trigger  what started the retry: RETRY LAST or RETRY GRAPH RUN GROUP, or TASK_AUTO_RETRY_ATTEMPTS
+     * @param config   the configuration the retry's runs read
      */
     private void retryGraphRun(final String rootKey, final Task root, final Schema schema,
-                               final TaskExecution graphRun, final LocalDateTime until) {
+                               final TaskExecution graphRun, final LocalDateTime until, final TaskTrigger trigger,
+                               final String config) {
         final LocalDateTime graphStart = graphRun.getStartTime();
         final int lastAttempt = TaskGraphs.lastAttempt(schema, root, graphStart, until);
         final String prior = CURRENT_GRAPH_CONFIG.get();
-        CURRENT_GRAPH_CONFIG.set(root.getConfig());
+        CURRENT_GRAPH_CONFIG.set(config);
         CURRENT_ATTEMPT.set(Integer.valueOf(lastAttempt + 1));
         try {
             final TaskExecution rootRun = TaskGraphs.lastRunWithin(root, graphStart, until, 0);
             if (rootRun != null && TaskExecutionState.FAILED.name().equals(rootRun.getState())) {
-                executeTask(rootKey, root, new HashSet<>(), TaskTrigger.MANUAL_RETRY);
+                executeTask(rootKey, root, new GraphRun(), trigger);
                 return;
             }
             final List<Task> failed = new ArrayList<>();
@@ -979,10 +1053,21 @@ public class TaskScheduler {
             if (failed.isEmpty()) {
                 throw new RuntimeException(noFailures(root, graphRun, lastAttempt));
             }
-            final Set<String> visited = new HashSet<>();
+            // What succeeded in the graph run stays done: a retried task's children run once its other
+            // predecessors are among them.
+            final GraphRun run = new GraphRun();
+            if (rootRun != null && TaskExecutionState.SUCCEEDED.name().equals(rootRun.getState())) {
+                run.succeeded(root);
+            }
+            for (final Task candidate : TaskGraphs.descendants(schema, root, true)) {
+                final TaskExecution last = TaskGraphs.lastRunWithin(candidate, graphStart, until, 0);
+                if (last != null && TaskExecutionState.SUCCEEDED.name().equals(last.getState())) {
+                    run.succeeded(candidate);
+                }
+            }
             for (final Task task : failed) {
-                executeTask(schedulerKey(schema.getDatabaseName(), schema.getName(), task.getName()), task, visited,
-                    TaskTrigger.MANUAL_RETRY);
+                executeTask(schedulerKey(schema.getDatabaseName(), schema.getName(), task.getName()), task, run,
+                    trigger);
             }
         } finally {
             CURRENT_ATTEMPT.remove();

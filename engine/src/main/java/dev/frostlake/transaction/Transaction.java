@@ -306,6 +306,16 @@ public class Transaction {
     }
 
     /**
+     * Whether the transaction outlives the statement that began it: one an explicit BEGIN opened, or the implicit one a
+     * session with AUTOCOMMIT off holds open until its COMMIT or ROLLBACK. Such a transaction holds the locks it takes.
+     *
+     * @return whether the transaction lasts past its statement
+     */
+    public boolean isLasting() {
+        return explicit || !statementScoped;
+    }
+
+    /**
      * Whether the transaction ends with the statement that began it: one a statement of an autocommit session
      * began, which no BEGIN has made explicit since.
      */
@@ -549,6 +559,16 @@ public class Transaction {
     private static String runningStatementId() {
         final String running = StatementCancellation.runningQueryId();
         return running != null ? running : UUID.randomUUID().toString();
+    }
+
+    /**
+     * Moves the locks this transaction records by table to the tables' new storage names, as its write set's move
+     * (see {@link TransactionManager#tablesMoved}): a table renamed, replaced or dropped under it keeps one lock.
+     *
+     * @param moved the old storage name of each moved table, mapped to its new one
+     */
+    void retargetTableLocks(final Map<String, String> moved) {
+        MovedTables.rekey(tableLocks, MovedTables.upperCased(moved));
     }
 
     /**

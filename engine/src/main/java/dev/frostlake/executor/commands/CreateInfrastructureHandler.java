@@ -1170,6 +1170,109 @@ public class CreateInfrastructureHandler implements CommandHandler {
         throw new RuntimeException(SqlCompilationError.invalidIdentifier(column));
     }
 
+    /**
+     * CREATE TASK | STAGE | FILE FORMAT ... CLONE: a copy of one object under a new name, made as a schema clone makes
+     * it (documented: CREATE ... CLONE): a task suspended, with its whole definition; a stage with its
+     * definition, an internal one holding no files; a file format with its options. Cloning needs OWNERSHIP of a
+     * source task and USAGE on a source stage or file format (documented), and the CREATE privilege on the target
+     * schema; the copy is owned by the role that creates it, with its schema's future grants.
+     *
+     * @param ctx         the statement
+     * @param ifNotExists whether IF NOT EXISTS was written
+     * @return null: the statement answers the status its kind does
+     */
+    public Object handleCloneSchemaObject(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
+        final String kind = ctx.TASK() != null ? "TASK" : ctx.STAGE() != null ? "STAGE" : "FILE_FORMAT";
+        // A temporary clone is its session's own, as a temporary stage or file format is (live-verified).
+        final boolean temporary = TemporaryObjectStatements.isTemporary(ctx);
+        final String written = getText(ctx.qualifiedName(0));
+        final String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
+        final String name = parts[parts.length - 1];
+        final String[] sourceParts = qualifiedNameParts(ctx.qualifiedName(1));
+        final Schema sourceSchema = ddl.resolveSchemaFromQualifiedName(getText(ctx.qualifiedName(1)));
+        final String sourceName = sourceParts[sourceParts.length - 1];
+        final Schema schema = ddl.resolveSchemaFromQualifiedName(written);
+        final Privilege create = "TASK".equals(kind) ? Privilege.CREATE_TASK
+            : "STAGE".equals(kind) ? Privilege.CREATE_STAGE : Privilege.CREATE_FILE_FORMAT;
+        final boolean taken = "TASK".equals(kind) ? hasTaskNamed(schema, name)
+            : "STAGE".equals(kind) ? schema.holdsStageFor(name, temporary) : schema.hasFileFormatExact(name);
+        try {
+            // The source is found, and the session's right to clone it asked, before the name is judged.
+            final Task sourceTask = "TASK".equals(kind) ? sourceSchema.getTaskExact(sourceName) : null;
+            final Stage sourceStage = "STAGE".equals(kind) ? sourceSchema.getStageExact(sourceName) : null;
+            final FileFormat sourceFormat = "FILE_FORMAT".equals(kind) ? sourceSchema.getFileFormatExact(sourceName)
+                : null;
+            if ("FILE_FORMAT".equals(kind) && sourceFormat == null) {
+                throw new RuntimeException(SqlCompilationError.doesNotExist("File format",
+                    sourceSchema.qualifiedName(sourceName)));
+            }
+            final String[] sourceFull = QualifiedName.parse(sourceSchema.qualifiedName(sourceName)).parts();
+            if (sourceTask != null) {
+                queryExecutor.requireOwnership("TASK", sourceFull, null);
+            } else {
+                queryExecutor.requirePrivilege(Privilege.USAGE, kind, sourceFull, null);
+            }
+            if (temporary && sourceStage != null && sourceStage.getType() == StageType.INTERNAL) {
+                // An internal stage is no temporary clone's source (live-verified).
+                throw new RuntimeException("Unsupported feature 'Cloning internal and temporary stages'.");
+            }
+            DDLCommandHandler.refuseTakenName(ctx.or_replace() == null && !ifNotExists, taken, parts);
+            if (ctx.or_replace() != null && taken && !temporary) {
+                queryExecutor.requireOwnership(kind, parts, null);
+            }
+            if (temporary) {
+                schema.requireCreatable(create);
+            } else {
+                ddl.checkCreatePrivilege(create, schema);
+            }
+            // IF NOT EXISTS over a name taken answers that it already exists (see handleIfNotExists).
+            DDLCommandHandler.refuseTakenName(ifNotExists, taken, parts);
+            // A temporary clone takes no future grant, as a temporary object made outright takes none.
+            final CreationGrants grantsOfNew = temporary ? null : FutureGrants.ofNew(catalog, kind, schema, name);
+            final String owner = grantsOfNew == null ? catalog.currentRoleForOwner() : grantsOfNew.owner();
+            if (sourceTask != null) {
+                final Task copy = sourceTask.cloneDefinitionAs(name);
+                copy.setOwner(owner);
+                if (taken) {
+                    schema.dropTask(name);
+                }
+                schema.addTask(copy);
+            } else if (sourceStage != null) {
+                final Stage copy = sourceStage.copyAs(name);
+                copy.setOwner(owner);
+                copy.setTemporary(temporary);
+                if (taken) {
+                    schema.dropStageFor(name, temporary);
+                }
+                schema.addStage(copy);
+                if (copy.getType() == StageType.INTERNAL) {
+                    // A cloned internal stage holds none of its source's files.
+                    queryExecutor.resetInternalStageDir(schema.qualifiedName(name));
+                }
+            } else {
+                final FileFormat copy = new FileFormat(name, sourceFormat.getType());
+                copy.setWrittenType(sourceFormat.getWrittenType());
+                copy.getOptions().putAll(sourceFormat.getOptions());
+                copy.setComment(sourceFormat.getComment());
+                copy.setOwner(owner);
+                if (temporary) {
+                    copy.markTemporary(StatementSession.current());
+                }
+                if (taken) {
+                    schema.dropFileFormatExact(name);
+                }
+                schema.addFileFormat(copy);
+            }
+            if (grantsOfNew != null) {
+                grantsOfNew.apply();
+            }
+            logger.trace("Cloned {} {} from {}", kind, written, sourceName);
+        } catch (final RuntimeException e) {
+            ddl.handleIfNotExists(ifNotExists, e, "object", ctx.qualifiedName(0));
+        }
+        return null;
+    }
+
     public Object handleCreateFileFormat(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         requireFormatOption(ctx);
         final String name = getText(ctx.qualifiedName(0));
@@ -1285,7 +1388,10 @@ public class CreateInfrastructureHandler implements CommandHandler {
             GrantNames.renamed(catalog, "FILE_FORMAT", grantedBefore,
                 catalog.resolveOwningSchema(newName).qualifiedName(newSimple));
         } else {
-            // An ALTER may not change the type; its COMMENT is the format's.
+            // An ALTER may not change the type; its COMMENT is the format's. The clause is tried on a copy first, so a
+            // refused one leaves the format as it was: its values are set as the list is read, and a codec the type
+            // does not take is refused only once the whole list is read.
+            FileFormatClause.read(action.copyFormatOption(), scratchOf(fileFormat), false, false);
             final FileFormatClause written = FileFormatClause.read(action.copyFormatOption(), fileFormat, false, false);
             if (written.comment() != null) {
                 fileFormat.setComment(written.comment());
@@ -1294,6 +1400,16 @@ public class CreateInfrastructureHandler implements CommandHandler {
         // Every ALTER is DDL on the file format, a rename included: its LAST_ALTERED moves.
         fileFormat.markDdl();
         return null;
+    }
+
+    /** A copy of a file format's type and options, which an ALTER's clause is tried on before the format itself. */
+    private static FileFormat scratchOf(final FileFormat format) {
+        final FileFormat scratch = new FileFormat(format.getName(), format.getType());
+        scratch.setWrittenType(format.getWrittenType());
+        for (final Map.Entry<String, String> option : format.getOptions().entrySet()) {
+            scratch.setOption(option.getKey(), option.getValue());
+        }
+        return scratch;
     }
 
     /**

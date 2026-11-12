@@ -84,8 +84,9 @@ public final class TableLockGate {
     }
 
     /**
-     * Refuses to let the running statement write a table another session's open transaction holds: the statement
-     * is to wait for the holder and run again (see {@link TableLockWait}).
+     * Refuses to let the running statement write a table another session's open transaction holds - one a BEGIN
+     * opened, or the implicit one of a session with AUTOCOMMIT off: the statement is to wait for the holder and run
+     * again (see {@link TableLockWait}).
      *
      * <p>A session that holds a temporary table of its own under the name wrote that table, not the one the running
      * statement writes, so its transaction holds nothing here (live-verified).
@@ -104,7 +105,7 @@ public final class TableLockGate {
         }
         final Transaction own = transactions.getCurrentTransaction();
         for (final Transaction other : transactions.getActiveTransactions()) {
-            if (other != own && other.isExplicit() && other.getSessionNumber() != null
+            if (other != own && other.isLasting() && other.getSessionNumber() != null
                     && !ownSession.equals(other.getSessionNumber())
                     && !temporaryHolders.contains(other.getSessionNumber()) && other.hasWritten(fullyQualifiedName)) {
                 throw new TableLockWait(other, fullyQualifiedName, tableName);
@@ -132,7 +133,7 @@ public final class TableLockGate {
         }
         final Transaction own = transactions.getCurrentTransaction();
         for (final Transaction other : transactions.getActiveTransactions()) {
-            if (other != own && other.isExplicit() && other.getSessionNumber() != null
+            if (other != own && other.isLasting() && other.getSessionNumber() != null
                     && !ownSession.equals(other.getSessionNumber()) && other.holdsStreamLock(stream)) {
                 throw TableLockWait.onStream(other, stream, resource, streamName);
             }

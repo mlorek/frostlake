@@ -17,7 +17,9 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ConditionalDdlOutcome;
+import dev.frostlake.executor.PrivilegeRefusal;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.expressions.PolicyObjectTagCalls;
@@ -856,6 +858,12 @@ public class CreateSecurityHandler implements CommandHandler {
             ? ctx.userProperties().userProperty() : new ArrayList<FrostlakeParser.UserPropertyContext>();
         UserProperties.checkForm(properties);
         AccountPrivileges.requireOnAccount(queryExecutor, catalog, Privilege.CREATE_USER);
+        if (ctx.userProperties() != null && !ctx.userProperties().createdUserBypass().isEmpty()) {
+            // A policy bypass is the account's administrators' alone: CREATE USER u MINS_TO_BYPASS_INGRESS_POLICY = 5
+            // is refused on the account, whatever the session holds (live-verified).
+            throw new PrivilegeRefusal(SqlAccessControlError.insufficientPrivileges("account",
+                catalog.getAccountLocator()));
+        }
         if (ctx.or_replace() == null && catalog.hasUserExact(userName)) {
             if (ifNotExists) {
                 ConditionalDdlOutcome.createSkipped();

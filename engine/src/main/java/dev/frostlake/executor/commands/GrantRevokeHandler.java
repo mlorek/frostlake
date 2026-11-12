@@ -200,6 +200,11 @@ public class GrantRevokeHandler implements CommandHandler {
                     }
                 }
                 if (isFuture) {
+                    if (databaseGrantee != null) {
+                        // A future grant is a grant on each object the scope will hold, so it is scoped as one: a
+                        // database role takes none on another database's objects (see requireOwnDatabase).
+                        requireOwnDatabase(databaseGrantee, scopeType, scopeName);
+                    }
                     final Role holder = databaseGrantee != null ? databaseGrantee : catalog.getRoleExact(targetName);
                     for (final String privilege : privileges) {
                         holder.addFutureGrant(objectKind, scopeType, scopeName, privilege, grantOption);
@@ -685,6 +690,9 @@ public class GrantRevokeHandler implements CommandHandler {
                          final String grantor, final String owner, final boolean grantOption) {
         // Recorded under the object's resolved full name, never the spelling (GrantNames).
         final String objectName = GrantNames.of(catalog, objectType, written);
+        if (databaseGrantee != null) {
+            requireOwnDatabase(databaseGrantee, objectType, objectName);
+        }
         final Privilege granted = Privilege.valueOf(privilege.toUpperCase(Locale.ROOT));
         final boolean throughOption = grantor != null && !grantor.equals(owner);
         if (isUser) {
@@ -705,6 +713,27 @@ public class GrantRevokeHandler implements CommandHandler {
             kept != null ? kept : grantor != null ? grantor : catalog.currentRoleForOwner());
         if (grantOption) {
             holder.setGrantOption(objectType, objectName, granted, true);
+        }
+    }
+
+    /**
+     * Refuses a privilege on an object outside a database role's own database: "Privileges on objects in one database
+     * (such as tables or views) cannot be granted to database roles in another database", and they "must be scoped to
+     * objects contained in the database where the role exists" (documented, "Access control considerations"). Such a
+     * grant was recorded and honoured, so every role holding the database role read the other database. The refusal's
+     * wording is the engine's own.
+     *
+     * @param role       the database role granted to
+     * @param objectType the object's kind as privileges record it
+     * @param objectName the object's full name as privileges record it
+     */
+    private static void requireOwnDatabase(final DatabaseRole role, final String objectType, final String objectName) {
+        final String database = "DATABASE".equals(objectType) ? objectName
+            : objectName.indexOf('.') < 0 ? null : QualifiedName.parse(objectName).parts()[0];
+        if (database == null || !database.equals(role.getDatabase())) {
+            throw new RuntimeException(SqlCompilationError.of("Privileges on objects of "
+                + (database == null ? "the account" : "database " + database)
+                + " cannot be granted to database role " + role.getQualifiedName() + "."));
         }
     }
 
@@ -1194,7 +1223,8 @@ public class GrantRevokeHandler implements CommandHandler {
 
     /**
      * The privileges a network policy, a network rule, a password, aggregation, authentication, join, packages or
-     * projection policy, a contact, a secret, an external volume or an integration takes; null for another kind.
+     * projection policy, a contact, a secret, an external volume, an integration or a task takes; null for another
+     * kind.
      */
     private static List<String> securityObjectPrivileges(final String objectType) {
         switch (objectType) {
@@ -1214,6 +1244,10 @@ public class GrantRevokeHandler implements CommandHandler {
                 return List.of("APPLY", "MODIFY");
             case "SECRET":
                 return List.of("READ", "USAGE");
+            case "TASK":
+                // "Task privileges": APPLYBUDGET, MONITOR, OPERATE and OWNERSHIP (documented); the refusal's words
+                // for a task are unmeasured on live.
+                return List.of("APPLYBUDGET", "MONITOR", "OPERATE", "OWNERSHIP");
             default:
                 return null;
         }

@@ -21,7 +21,9 @@ import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.BoundedText;
 import dev.frostlake.values.CodePointText;
+import dev.frostlake.values.LobSize;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -62,6 +64,8 @@ public class Insert extends TextArgumentFunction {
             final int[] head = Substring.window(base.length, 1, headLength);
             final int[] tail = Substring.window(base.length, tailStart, Integer.MAX_VALUE);
             final int kept = head[1] - head[0];
+            // A binary holds at most 64 MB, refused before the bytes are spliced (see LobSize).
+            LobSize.requireBinary((long) kept + insertion.length + tail[1] - tail[0]);
             final byte[] spliced = new byte[kept + insertion.length + tail[1] - tail[0]];
             System.arraycopy(base, head[0], spliced, 0, kept);
             System.arraycopy(insertion, 0, spliced, kept, insertion.length);
@@ -72,8 +76,10 @@ public class Insert extends TextArgumentFunction {
         final int characters = CodePointText.length(base);
         final int[] head = Substring.window(characters, 1, headLength);
         final int[] tail = Substring.window(characters, tailStart, Integer.MAX_VALUE);
-        return CodePointText.slice(base, head[0], head[1]) + SharedFunctionHelpers.textOf(args.get(3))
-            + CodePointText.slice(base, tail[0], tail[1]);
+        // A text holds at most 134,217,728 characters, so a longer one is refused before it is built (see BoundedText).
+        final String insertion = SharedFunctionHelpers.textOf(args.get(3));
+        return BoundedText.builtBy(characters, "CONCAT").append(CodePointText.slice(base, head[0], head[1]))
+            .append(insertion).append(CodePointText.slice(base, tail[0], tail[1])).toString();
     }
 
     @Override

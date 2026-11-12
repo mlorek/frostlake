@@ -100,6 +100,7 @@ import dev.frostlake.storage.Row;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.task.TaskGraphs;
 import dev.frostlake.task.TaskScheduler;
+import dev.frostlake.task.TriggeredTaskInterval;
 import dev.frostlake.transaction.TransactionManager;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.BinaryType;
@@ -1136,6 +1137,7 @@ public class AlterCommandHandler implements CommandHandler {
                                 "Join policy", catalog.qualifiedExactName(written)));
                         }
                         final String policyName = catalog.qualifiedExactName(written);
+                        requireApplyPolicy("JOIN_POLICY", policyName);
                         if (table.hasJoinPolicy()
                                 && !sameMaskingPolicy(table.getJoinPolicyName(), policyName)
                                 && ctx.tableAction().FORCE() == null) {
@@ -1150,6 +1152,7 @@ public class AlterCommandHandler implements CommandHandler {
                             throw new RuntimeException("Any policy of kind JOIN_POLICY is not attached"
                                 + " to TABLE " + table.getName().toUpperCase(Locale.ROOT) + ".");
                         }
+                        requireApplyPolicy("JOIN_POLICY", table.getJoinPolicyName());
                         table.setJoinPolicyName(null);
                         logger.trace("Unset join policy on table {}", tableName);
                     } else if (ctx.tableAction().aggregationPolicyClause() != null) {
@@ -1164,6 +1167,7 @@ public class AlterCommandHandler implements CommandHandler {
                                 "Aggregation policy", catalog.qualifiedExactName(written)));
                         }
                         final String policyName = catalog.qualifiedExactName(written);
+                        requireApplyPolicy("AGGREGATION_POLICY", policyName);
                         if (table.hasAggregationPolicy()
                                 && !sameMaskingPolicy(table.getAggregationPolicyName(), policyName)
                                 && ctx.tableAction().FORCE() == null) {
@@ -1188,6 +1192,7 @@ public class AlterCommandHandler implements CommandHandler {
                             throw new RuntimeException("Any policy of kind AGGREGATION_POLICY is not"
                                 + " attached to TABLE " + table.getName().toUpperCase(Locale.ROOT) + ".");
                         }
+                        requireApplyPolicy("AGGREGATION_POLICY", table.getAggregationPolicyName());
                         table.setAggregationPolicyName(null);
                         table.setAggregationEntityKey(new ArrayList<>());
                         logger.trace("Unset aggregation policy on table {}", tableName);
@@ -1232,6 +1237,12 @@ public class AlterCommandHandler implements CommandHandler {
                             // them, and live does not do that: it insists the statement say so with
                             // ENABLE NOVALIDATE and refuses every other spelling in one sentence.
                             final FrostlakeParser.CheckConstraintContext check = constraintCtx.checkConstraint();
+                            final TableColumn virtual = virtualColumnRead(check.booleanExpr(), table);
+                            if (virtual != null) {
+                                // A virtual column holds no constraint of its own (live-verified).
+                                throw new RuntimeException("SQL compilation error: Cannot set CHECK constraint on "
+                                    + "virtual column " + virtual.getName() + ".");
+                            }
                             if (check.checkEnforcement() == null || check.checkEnforcement().ENABLE() == null) {
                                 throw new RuntimeException("ALTER TABLE ADD CHECK is not supported with"
                                     + " ENABLE VALIDATE (you may specify ENABLE NOVALIDATE instead).");
@@ -1429,7 +1440,8 @@ public class AlterCommandHandler implements CommandHandler {
                             requireLegalRetention(rawKey, property.copyOptionValue());
                             requireAccountRetention(rawKey, property.copyOptionValue());
                             // A transient table keeps a day at most, as its transient containers do.
-                            requireTransientRetention(rawKey, table.isTransient(), property.copyOptionValue());
+                            requireTransientRetention(rawKey, table.isTransient() || table.isTemporary(),
+                                property.copyOptionValue());
                             requireLegalExtensionTime(rawKey, property.copyOptionValue());
                             requireLegalErrorLogging(rawKey, property.copyOptionValue());
                             CreatedObjectProperties.requireSwitchValue(rawKey, property.copyOptionValue());
@@ -1713,10 +1725,11 @@ public class AlterCommandHandler implements CommandHandler {
                 branchHandlesIfExists = true;
                 if (ctx.taskAction().RESUME() != null || ctx.taskAction().SUSPEND() != null) {
                     // OPERATE "Grants the ability to suspend or resume a task" (documented); every other action
-                    // is the owner's.
+                    // is the owner's: "Only the task owner ... can set or unset properties on a task" (documented), so
+                    // no privilege granted on the task lets another role change it.
                     queryExecutor.requirePrivilege(Privilege.OPERATE, "TASK", taskParts, null);
                 } else {
-                    queryExecutor.requirePrivilege(Privilege.MODIFY, "TASK", taskParts, null);
+                    queryExecutor.requireOwnership("TASK", taskParts, null);
                 }
 
                 // Canonical scheduler key (DB.SCHEMA.TASK), built identically for RESUME and SUSPEND so the
@@ -1734,6 +1747,8 @@ public class AlterCommandHandler implements CommandHandler {
                     unsetContacts(task, ctx.taskAction().contactPurpose());
                 } else if (ctx.taskAction().RESUME() != null) {
                     requireRunStateChangeable(task, schema);
+                    TriggeredTaskInterval.require(task, taskKey);
+                    requireOwnerMayRun(task);
                     // RESUME flips state to STARTED AND arms the scheduler so the task fires on its SCHEDULE
                     // (scheduleTask is a no-op until the scheduler is started). resumeTask sets the state.
                     if (visitor.getTaskScheduler() != null) {
@@ -1750,6 +1765,8 @@ public class AlterCommandHandler implements CommandHandler {
                     } else {
                         task.setState(TaskState.SUSPENDED);
                     }
+                    // "Suspending the root task of a task graph resets the count" of its failed runs (documented).
+                    task.resetFailedGraphRuns();
                     logger.trace("Suspended task: {}", taskName);
                 } else if (ctx.taskAction().SET() != null && ctx.taskAction().taskExecuteAs() != null) {
                     final String runAs = TaskProperties.runAsUser(ctx.taskAction().taskExecuteAs(), queryExecutor);
@@ -2599,6 +2616,7 @@ public class AlterCommandHandler implements CommandHandler {
                 "Aggregation policy", catalog.qualifiedExactName(written)));
         }
         final String policyName = catalog.qualifiedExactName(written);
+        requireApplyPolicy("AGGREGATION_POLICY", policyName);
         if (view.hasAggregationPolicy() && !sameMaskingPolicy(view.getAggregationPolicyName(), policyName) && !force) {
             throw new RuntimeException("Object " + view.getName().toUpperCase(Locale.ROOT)
                 + " already has a AGGREGATION_POLICY. Only one AGGREGATION_POLICY is allowed at a time.");
@@ -2620,6 +2638,7 @@ public class AlterCommandHandler implements CommandHandler {
             throw new RuntimeException("Any policy of kind AGGREGATION_POLICY is not attached to TABLE "
                 + view.getName().toUpperCase(Locale.ROOT) + ".");
         }
+        requireApplyPolicy("AGGREGATION_POLICY", view.getAggregationPolicyName());
         view.setAggregationPolicyName(null);
         view.setAggregationEntityKey(null);
         logger.trace("Unset aggregation policy on view {}", view.getName());
@@ -2634,6 +2653,7 @@ public class AlterCommandHandler implements CommandHandler {
                 catalog.qualifiedExactName(written)));
         }
         final String policyName = catalog.qualifiedExactName(written);
+        requireApplyPolicy("JOIN_POLICY", policyName);
         if (view.hasJoinPolicy() && !sameMaskingPolicy(view.getJoinPolicyName(), policyName) && !force) {
             throw new RuntimeException("Object " + view.getName().toUpperCase(Locale.ROOT)
                 + " already has a JOIN_POLICY. Only one JOIN_POLICY is allowed at a time.");
@@ -2648,6 +2668,7 @@ public class AlterCommandHandler implements CommandHandler {
             throw new RuntimeException("Any policy of kind JOIN_POLICY is not attached to TABLE "
                 + view.getName().toUpperCase(Locale.ROOT) + ".");
         }
+        requireApplyPolicy("JOIN_POLICY", view.getJoinPolicyName());
         view.setJoinPolicyName(null);
         logger.trace("Unset join policy on view {}", view.getName());
     }
@@ -3258,10 +3279,18 @@ public class AlterCommandHandler implements CommandHandler {
             logger.trace("Set nullability on column {}.{}", tableName, colName);
             return note;
         } else if (action.DEFAULT() != null) {
+            final TableColumn column = table.getColumn(colName);
+            if (action.SET() != null && column.isVirtual()) {
+                throw new RuntimeException("Unsupported feature 'Alter Column Set Default'.");
+            }
+            if (action.SET() == null && column.getDefaultValue() == null) {
+                // Dropping a default no column holds changes nothing, and says so (live-verified).
+                return "Default constraint does not exist for column '" + column.getName() + "'";
+            }
             // SET DEFAULT routes through the same default-expression parser CREATE TABLE uses: raw
             // getText() stored the literal WITH its quotes, so an insert that omitted the column got
             // the text 'X' (quotes included) instead of X.
-            table.getColumn(colName).setDefaultValue(action.SET() != null
+            column.setDefaultValue(action.SET() != null
                 ? ddlHandler.getColumnParser().parseDefaultExpression(action.defaultExpression())
                 : null);
             logger.trace("Set/drop default on column {}.{}", tableName, colName);
@@ -3930,10 +3959,14 @@ public class AlterCommandHandler implements CommandHandler {
         }
     }
 
-    /** Apply a SET TAG action's assignments to a taggable object, validating tag existence and ALLOWED_VALUES. */
+    /**
+     * Apply a SET TAG action's assignments to a taggable object, validating tag existence, the session's APPLY on
+     * each tag and ALLOWED_VALUES.
+     */
     private void applyTagSet(final Taggable target, final FrostlakeParser.TagSetContext set) {
         for (final FrostlakeParser.TagAssignContext assign : set.tagAssign()) {
             final Tag tag = referencedTag(assign.qualifiedName());
+            requireApplyTag(assign.qualifiedName(), tag);
             final String value = TagValues.text(assign.qualifiedName(), assign.tagValue(), queryExecutor);
             TagValues.requireAllowed(tag, value);
             TagAssignments.set(target, tag, value);
@@ -3943,8 +3976,21 @@ public class AlterCommandHandler implements CommandHandler {
     /** Apply an UNSET TAG action, removing each named tag association from a taggable object. */
     private void applyTagUnset(final Taggable target, final FrostlakeParser.TagUnsetContext unset) {
         for (final FrostlakeParser.QualifiedNameContext qn : unset.qualifiedName()) {
-            TagAssignments.unset(target, referencedTag(qn));
+            final Tag tag = referencedTag(qn);
+            requireApplyTag(qn, tag);
+            TagAssignments.unset(target, tag);
         }
+    }
+
+    /**
+     * Refuses setting or unsetting a tag the session may not apply: either takes APPLY TAG on the account, or APPLY
+     * on the tag beside the privilege on the object the statement already asks (documented, "Tag privileges"; see
+     * ApplyPrivileges). Owning the object alone was enough, so a role that cloned a table a tag-driven masking
+     * policy protects re-tagged its clone's column and read it in clear.
+     */
+    private void requireApplyTag(final FrostlakeParser.QualifiedNameContext name, final Tag tag) {
+        ApplyPrivileges.require(queryExecutor, Privilege.APPLY_TAG, "TAG",
+            catalog.qualifiedExactName(visitor.getText(name)), tag.getOwner());
     }
 
     /**
@@ -4005,6 +4051,35 @@ public class AlterCommandHandler implements CommandHandler {
         for (final String predecessor : resolved) {
             if (!TaskProperties.hasPredecessor(task, predecessor)) {
                 task.addPredecessor(predecessor);
+            }
+        }
+    }
+
+    /**
+     * Refuses to resume a task whose owning role may not run it (documented, ALTER TASK: resuming checks that the
+     * task's owner "also has the USAGE privilege on the warehouse assigned to the task, as well as the global EXECUTE
+     * TASK privilege; if not, an error is produced"; a serverless task's global privilege is EXECUTE MANAGED TASK). The
+     * owner is asked, not the session, so an OPERATE grantee is refused too while the owner lacks either. The SYSTEM
+     * user's session holds every privilege and resumes as before. The account's wording is unmeasured.
+     *
+     * @param task the task
+     */
+    private void requireOwnerMayRun(final Task task) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        if (security == null || "SYSTEM".equals(security.getSessionContext().getCurrentUser())
+                || task.getOwner() == null) {
+            return;
+        }
+        final String warehouse = task.getWarehouse();
+        final Privilege global = warehouse == null ? Privilege.EXECUTE_MANAGED_TASK : Privilege.EXECUTE_TASK;
+        if (!security.roleHoldsAccountPrivilege(task.getOwner(), global)) {
+            throw new RuntimeException(SqlAccessControlError.insufficientPrivileges("task", task.getName()));
+        }
+        if (warehouse != null && catalog.hasWarehouse(warehouse)) {
+            final String warehouseOwner = catalog.getWarehouse(warehouse).getOwner();
+            if (!security.roleHoldsPrivilege(task.getOwner(), Privilege.USAGE, "WAREHOUSE", warehouse,
+                    warehouseOwner)) {
+                throw new RuntimeException(SqlAccessControlError.insufficientPrivileges("task", task.getName()));
             }
         }
     }
@@ -4400,9 +4475,13 @@ public class AlterCommandHandler implements CommandHandler {
         requireColumn(target, colName, column);
         final TableColumn col = target.getColumn(colName);
         if (policyName == null) {
+            if (col.hasProjectionPolicy()) {
+                requireApplyPolicy("PROJECTION_POLICY", col.getProjectionPolicyName());
+            }
             col.setProjectionPolicyName(null);
             return;
         }
+        requireApplyPolicy("PROJECTION_POLICY", policyName);
         if (col.hasProjectionPolicy() && !sameMaskingPolicy(col.getProjectionPolicyName(), policyName) && !force) {
             // Live's wording, missing spaces and all.
             throw new RuntimeException("Specified column already attached to another"
@@ -4517,6 +4596,28 @@ public class AlterCommandHandler implements CommandHandler {
         }
         ApplyPrivileges.require(queryExecutor, Privilege.APPLY_ROW_ACCESS_POLICY, "ROW_ACCESS_POLICY", fullName,
             policy == null ? null : policy.getOwner());
+    }
+
+    /**
+     * Refuses setting or unsetting an aggregation, join or projection policy the session may not apply: it needs
+     * APPLY AGGREGATION POLICY, APPLY JOIN POLICY or APPLY PROJECTION POLICY on the account, or APPLY on the policy,
+     * as a masking or a row access policy does (documented). Owning the table or the view is not enough.
+     *
+     * @param kind       the policy's kind: AGGREGATION_POLICY, JOIN_POLICY or PROJECTION_POLICY
+     * @param policyName the policy's name in full, as an attachment records it
+     */
+    private void requireApplyPolicy(final String kind, final String policyName) {
+        final Privilege onAccount = "AGGREGATION_POLICY".equals(kind) ? Privilege.APPLY_AGGREGATION_POLICY
+            : "JOIN_POLICY".equals(kind) ? Privilege.APPLY_JOIN_POLICY : Privilege.APPLY_PROJECTION_POLICY;
+        String owner;
+        try {
+            owner = "AGGREGATION_POLICY".equals(kind) ? catalog.findAggregationPolicyExact(policyName).getOwner()
+                : "JOIN_POLICY".equals(kind) ? catalog.findJoinPolicy(policyName).getOwner()
+                : catalog.findProjectionPolicyExact(policyName).getOwner();
+        } catch (final RuntimeException gone) {
+            owner = null;
+        }
+        ApplyPrivileges.require(queryExecutor, onAccount, kind, policyName, owner);
     }
 
     /** A view's columns as a relation whose columns are the view's own, so a policy set on one stays with the view. */
@@ -5282,5 +5383,22 @@ public class AlterCommandHandler implements CommandHandler {
         return QualifiedName.parse(attached).parts().length == 3
             ? attached.equals(resolved)
             : QualifiedName.parse(attached).last().equals(QualifiedName.parse(resolved).last());
+    }
+
+    /** The first virtual column a CHECK's condition reads, or null. */
+    private static TableColumn virtualColumnRead(final ParseTree node, final Table table) {
+        if (node instanceof FrostlakeParser.QualifiedNameExprContext) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(
+                ((FrostlakeParser.QualifiedNameExprContext) node).qualifiedName());
+            final TableColumn column = table.findColumn(parts[parts.length - 1]);
+            return column != null && column.isVirtual() ? column : null;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            final TableColumn found = virtualColumnRead(node.getChild(i), table);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
     }
 }

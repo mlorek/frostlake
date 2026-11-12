@@ -74,9 +74,17 @@ final class PythonReturn {
      * Defines {@code __fl_converted(value, kind, scale)}, answering a pair: what became of the value ({@code null},
      * {@code value}, {@code int}, {@code decimal}, {@code python}, {@code refuse}, {@code raise}, {@code pass}) and its
      * text. A dict is keyed by the text of each key, a tuple's {@code (1, 2)} included (live-verified), as the CPython
-     * worker keys one.
+     * worker keys one. A builtin the conversion reads that a routine replaced - {@code builtins.str} included - is set
+     * aside while the conversion runs and put back after it, so the runtime's answer is unchanged and the routine keeps
+     * what it made, as the CPython worker sets the builtins aside around its own code.
      */
     static final String CONVERT = """
+        import builtins as __fl_builtins
+        __fl_own = {}
+        for __fl_name in ('isinstance', 'str', 'float', 'type', 'int', 'repr', 'len', 'dict', 'bool', 'hasattr',
+                          'getattr', 'list', 'tuple', 'bytes', 'bytearray', 'Exception', 'TypeError', 'ValueError',
+                          'OverflowError'):
+            __fl_own[__fl_name] = __fl_builtins.__dict__[__fl_name]
         import datetime as __fl_datetime
         import decimal as __fl_decimal
         import json as __fl_json
@@ -185,10 +193,23 @@ final class PythonReturn {
                 return ('value', bytes(v).hex())
             return ('pass', '')
         def __fl_converted(v, kind, scale):
+            __fl_aside = {}
+            for __fl_key_name, __fl_value in __fl_own.items():
+                __fl_current = __fl_builtins.__dict__.get(__fl_key_name, __fl_own)
+                if __fl_current is not __fl_value:
+                    __fl_aside[__fl_key_name] = __fl_current
+                    __fl_builtins.__dict__[__fl_key_name] = __fl_value
             try:
-                return __fl_convert(v, kind, scale)
-            except Exception as __fl_error:
-                return ('raise', type(__fl_error).__name__ + ': ' + str(__fl_error))
+                try:
+                    return __fl_convert(v, kind, scale)
+                except Exception as __fl_error:
+                    return ('raise', type(__fl_error).__name__ + ': ' + str(__fl_error))
+            finally:
+                for __fl_key_name, __fl_current in __fl_aside.items():
+                    if __fl_current is __fl_own:
+                        del __fl_builtins.__dict__[__fl_key_name]
+                    else:
+                        __fl_builtins.__dict__[__fl_key_name] = __fl_current
         """.replace("@DOUBLE@", HandlerJson.DOUBLE_IN_SOURCE);
 
     private PythonReturn() {

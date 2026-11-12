@@ -17,6 +17,8 @@
 package dev.frostlake.functions;
 
 import dev.frostlake.executor.expressions.CollationSpec;
+import dev.frostlake.values.BoundedText;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -128,14 +130,14 @@ public final class CollationMatching {
      * @param haystack    the text
      * @param needle      the text replaced
      * @param replacement what replaces it
-     * @return the result
+     * @return the result, refused when it would be longer than a text can be
      */
     public static String replaceUnder(final CollationSpec rules, final String haystack, final String needle,
                                       final String replacement) {
         if (needle.isEmpty()) {
             return haystack;
         }
-        final StringBuilder out = new StringBuilder(haystack.length());
+        final BoundedText out = BoundedText.named(haystack.length(), "REPLACE result");
         int at = 0;
         while (at <= haystack.length()) {
             final int[] found = findUnder(rules, haystack, needle, at);

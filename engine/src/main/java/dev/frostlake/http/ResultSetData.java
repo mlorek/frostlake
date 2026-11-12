@@ -111,6 +111,12 @@ public class ResultSetData {
             // A text or binary column's length, as the account's driver reports it; every other family
             // leaves the field out.
             colData.setLength(ColumnLengths.of(col.getDataType()));
+            // A stored table's column projected as it is names the table it is read from.
+            if (col.getSource() != null) {
+                colData.setDatabase(col.getSource().getDatabase());
+                colData.setSchema(col.getSource().getSchema());
+                colData.setTable(col.getSource().getTable());
+            }
             data.getColumns().add(colData);
         }
 

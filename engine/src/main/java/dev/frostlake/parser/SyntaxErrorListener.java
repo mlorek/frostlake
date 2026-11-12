@@ -2273,7 +2273,10 @@ public class SyntaxErrorListener extends BaseErrorListener {
         // ★ A PACKAGES POLICY OUT OF ITS ORDER, AND DESCRIBE DATASET'S WORDS, are read on — see PackagesPolicyLines.
         // ★ A PIVOT AGGREGATE THAT IS NO CALL OF ONE NAME is read on — see PivotCallShapeLines.
         // ★ A DYNAMIC TABLE'S COLUMN IT CANNOT READ is refused at the column's name — see DynamicTableColumnLines.
-        return DynamicTableColumnLines.lines(spoken, offendingIndexes,
+        // ★ A ROW ACCESS POLICY ADDED TO A MATERIALIZED VIEW is refused at its ADD — see MaterializedViewAddLines.
+        // ★ A CREATE OR ALTER OF A PRIVACY POLICY is refused at the OR alone — see CreateOrAlterKindLines.
+        return CreateOrAlterKindLines.lines(spoken, offendingIndexes, MaterializedViewAddLines.lines(spoken,
+            offendingIndexes, DynamicTableColumnLines.lines(spoken, offendingIndexes,
             PivotCallShapeLines.lines(spoken, offendingIndexes, PackagesPolicyLines.lines(spoken, offendingIndexes,
             StarModifierContextLines.lines(spoken, offendingIndexes,
             TaskClauseLines.lines(spoken, offendingIndexes, BracketedStringWordLines.lines(spoken,
@@ -2282,7 +2285,7 @@ public class SyntaxErrorListener extends BaseErrorListener {
                 AlertConditionLines.lines(spoken, offendingIndexes.get(0).intValue(),
                     MissingOperandLines.readOn(sql, spoken, offendingIndexes.get(0).intValue(),
                         RowLimitWordLines.withBothReadings(sql, spoken, offendingIndexes.get(0).intValue(),
-                            lines))))))))))));
+                            lines))))))))))))));
     }
 
     private List<String> reportedLinesOfTheParse(final boolean firstOnly) {

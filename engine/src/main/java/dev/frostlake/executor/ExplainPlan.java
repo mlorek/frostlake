@@ -176,6 +176,8 @@ final class ExplainPlan {
             final PlanNode plan;
             if (ctx.explainedStatement() != null) {
                 plan = explained(executor, ctx.explainedStatement(), builder);
+            } else if (ctx.explainedCall() != null) {
+                plan = PlanBuilder.anonymousCall(calledText(ctx.explainedCall()));
             } else {
                 compile(executor, ctx);
                 plan = ctx.selectStatement() != null ? builder.query(ctx.selectStatement())
@@ -192,6 +194,20 @@ final class ExplainPlan {
             return content(json(operators));
         }
         return tabular(operators);
+    }
+
+    /**
+     * The CALL of a procedure the statement defines for itself as its plan names it: the procedure's name upper-cased
+     * as an unquoted name reads, {@code P()} (live-verified), and its arguments as written.
+     */
+    private static String calledText(final FrostlakeParser.ExplainedCallContext call) {
+        final String[] parts = ParseTreeText.qualifiedNameParts(call.qualifiedName());
+        final StringBuilder name = new StringBuilder();
+        for (final String part : parts) {
+            name.append(name.length() > 0 ? "." : "").append(SqlIdentifiers.spellCanonical(part));
+        }
+        return name + "(" + (call.callArguments() == null ? "" : ParseTreeText.getOriginalText(call.callArguments()))
+            + ")";
     }
 
     /** The format USING names, upper-cased; TABULAR without one. Any word but the three is refused. */

@@ -16,6 +16,9 @@
 
 package dev.frostlake.executor.copy;
 
+import dev.frostlake.functions.scalar.JsonNumberNotation;
+import dev.frostlake.functions.scalar.JsonNumberRange;
+
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.cfg.JsonNodeFeature;
@@ -102,7 +105,7 @@ public class JsonStageReader implements StageFileReader {
         }
         try {
             if (text.charAt(0) == '[' && stripOuterArray) {
-                final JsonNode array = MAPPER.readTree(text);
+                final JsonNode array = readTree(text);
                 for (int i = 0; i < array.size(); i++) {
                     records.add(array.get(i));
                 }
@@ -110,7 +113,7 @@ public class JsonStageReader implements StageFileReader {
                 for (final String line : text.split("\\r?\\n")) {
                     final String trimmed = line.trim();
                     if (!trimmed.isEmpty()) {
-                        records.add(MAPPER.readTree(trimmed));
+                        records.add(readTree(trimmed));
                     }
                 }
             }
@@ -119,6 +122,16 @@ public class JsonStageReader implements StageFileReader {
                 jsonError);
         }
         return records;
+    }
+
+    /**
+     * A record's text read as PARSE_JSON reads it: a number written with an exponent is a DOUBLE (see
+     * {@link JsonNumberNotation}), and one written plainly that no NUMBER can hold is a DOUBLE too (see
+     * {@link JsonNumberRange}), so a staged file types a document as the function does.
+     */
+    private static JsonNode readTree(final String text) {
+        return JsonNumberRange.applyDoubleRange(text,
+            JsonNumberNotation.applyExponentNotation(MAPPER, text, MAPPER.readTree(text)));
     }
 
     @Override

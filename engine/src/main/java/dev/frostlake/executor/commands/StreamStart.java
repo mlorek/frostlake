@@ -81,7 +81,9 @@ final class StreamStart {
         final TableStorage storage = storageOf(table, tableName);
         if (point == null) {
             if (showInitialRows) {
-                stream.setInitialRecords(inserts(storage.scan(), null, new long[] {1L}));
+                final List<Long> ids = new ArrayList<>();
+                final List<Row> rows = storage.scanWithIds(ids);
+                stream.setInitialRecords(inserts(rows, ids, null));
             }
             return;
         }
@@ -91,8 +93,9 @@ final class StreamStart {
             if (sameSource(source, stream)) {
                 stream.inheritChanges(source);
                 if (showInitialRows) {
-                    stream.setInitialRecords(inserts(queryExecutor.rowsAtStreamOffset(storage.scan(), source), null,
-                        new long[] {1L}));
+                    final List<Long> ids = new ArrayList<>();
+                    final List<Row> rows = queryExecutor.rowsAtStreamOffset(storage.scanWithIds(ids), ids, source);
+                    stream.setInitialRecords(inserts(rows, ids, null));
                 }
                 return;
             }
@@ -106,7 +109,7 @@ final class StreamStart {
         final long[] rowId = {1L};
         addPendingChanges(stream, atPoint, storage, null, rowId);
         if (showInitialRows) {
-            stream.setInitialRecords(inserts(rowsOf(atPoint), null, new long[] {1L}));
+            stream.setInitialRecords(inserts(rowsOf(atPoint), idsOf(atPoint), null));
         }
     }
 
@@ -140,9 +143,10 @@ final class StreamStart {
         if (point == null) {
             if (showInitialRows) {
                 final List<StreamRecord> initial = new ArrayList<>();
-                final long[] rowId = {1L};
                 for (int i = 0; i < tables.size(); i++) {
-                    initial.addAll(inserts(storages.get(i).scan(), tag(tables.get(i)), rowId));
+                    final List<Long> ids = new ArrayList<>();
+                    final List<Row> rows = storages.get(i).scanWithIds(ids);
+                    initial.addAll(inserts(rows, ids, tag(tables.get(i))));
                 }
                 stream.setInitialRecords(initial);
             }
@@ -155,10 +159,10 @@ final class StreamStart {
                 stream.inheritChanges(source);
                 if (showInitialRows) {
                     final List<StreamRecord> initial = new ArrayList<>();
-                    final long[] rowId = {1L};
                     for (int i = 0; i < tables.size(); i++) {
-                        initial.addAll(inserts(rowsOf(queryExecutor.tableSnapshotAtSequence(tables.get(i),
-                            storages.get(i), source.getOffsetSequence())), tag(tables.get(i)), rowId));
+                        final TableSnapshot snapshot = queryExecutor.tableSnapshotAtSequence(tables.get(i),
+                            storages.get(i), source.getOffsetSequence());
+                        initial.addAll(inserts(rowsOf(snapshot), idsOf(snapshot), tag(tables.get(i))));
                     }
                     stream.setInitialRecords(initial);
                 }
@@ -182,9 +186,8 @@ final class StreamStart {
         }
         if (showInitialRows) {
             final List<StreamRecord> initial = new ArrayList<>();
-            final long[] initialRowId = {1L};
             for (int i = 0; i < tables.size(); i++) {
-                initial.addAll(inserts(rowsOf(atPoint.get(i)), tag(tables.get(i)), initialRowId));
+                initial.addAll(inserts(rowsOf(atPoint.get(i)), idsOf(atPoint.get(i)), tag(tables.get(i))));
             }
             stream.setInitialRecords(initial);
         }
@@ -334,7 +337,8 @@ final class StreamStart {
 
     /**
      * The changes between a version of a table and now, pending in the stream row by row: a row gone since is
-     * a delete, a row the version did not hold an insert, and a row rewritten since an update pair.
+     * a delete, a row the version did not hold an insert, and a row rewritten since an update pair. Each change
+     * carries its row's identity in the table's storage, the METADATA$ROW_ID the row's other changes report.
      */
     private static void addPendingChanges(final Stream stream, final TableSnapshot atPoint, final TableStorage storage,
                                           final String tag, final long[] rowId) {
@@ -357,16 +361,16 @@ final class StreamStart {
         for (final Map.Entry<Long, Row> old : before.entrySet()) {
             final Row now = after.get(old.getKey());
             if (now == null) {
-                stream.addRecord(record(old.getValue().getValues(), ChangeType.DELETE, false, rowId[0]++, tag));
+                stream.addRecord(record(old.getValue().getValues(), ChangeType.DELETE, false, old.getKey(), tag));
             } else if (!Objects.equals(old.getValue().getValues(), now.getValues())) {
-                final long id = rowId[0]++;
+                final long id = old.getKey();
                 stream.addRecord(record(old.getValue().getValues(), ChangeType.DELETE, true, id, tag));
                 stream.addRecord(record(now.getValues(), ChangeType.INSERT, true, id, tag));
             }
         }
         for (final Map.Entry<Long, Row> now : after.entrySet()) {
             if (!before.containsKey(now.getKey())) {
-                stream.addRecord(record(now.getValue().getValues(), ChangeType.INSERT, false, rowId[0]++, tag));
+                stream.addRecord(record(now.getValue().getValues(), ChangeType.INSERT, false, now.getKey(), tag));
             }
         }
     }
@@ -447,11 +451,28 @@ final class StreamStart {
         return values;
     }
 
-    private static List<StreamRecord> inserts(final List<Row> rows, final String tag, final long[] rowId) {
+    /**
+     * Rows as the inserts a stream first reports, each under its identity in the table's storage: the
+     * METADATA$ROW_ID the same row reports in its later changes, so a replica loaded from the initial rows merges
+     * those changes onto the right rows. Rows read without their identities are numbered in order.
+     *
+     * @param rows the rows
+     * @param ids  their identities, index-aligned
+     * @param tag  the table a view stream's records were captured from, or null
+     * @return the inserts
+     */
+    private static List<StreamRecord> inserts(final List<Row> rows, final List<Long> ids, final String tag) {
+        final boolean identified = ids.size() == rows.size();
         final List<StreamRecord> records = new ArrayList<>();
-        for (final Row row : rows) {
-            records.add(record(row.getValues(), ChangeType.INSERT, false, rowId[0]++, tag));
+        for (int i = 0; i < rows.size(); i++) {
+            final long rowId = identified ? ids.get(i).longValue() : i + 1L;
+            records.add(record(rows.get(i).getValues(), ChangeType.INSERT, false, rowId, tag));
         }
         return records;
+    }
+
+    /** A snapshot's row identities, index-aligned with its rows ({@link #rowsOf}). */
+    private static List<Long> idsOf(final TableSnapshot snapshot) {
+        return snapshot == null ? new ArrayList<Long>() : new ArrayList<>(snapshot.rowIds);
     }
 }

@@ -42,6 +42,7 @@ import dev.frostlake.metastore.model.SecurityObjectKind;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.metastore.model.Task;
+import dev.frostlake.metastore.model.TaskState;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.UnmodelledDropKind;
 import dev.frostlake.storage.Row;
@@ -206,8 +207,11 @@ public class DropCommandHandler implements CommandHandler {
                 continue;
             }
             out.put(fqn, new ArrayList<>(storage.getTableStorage(fqn).scan()));
-            // The storage waits with the dropped version, the table's time-travel history in it (live-verified).
-            final String kept = storage.keepDropped(fqn);
+            // The storage waits with the dropped version, the table's time-travel history in it (live-verified). One
+            // another session's open transaction wrote waits set aside for it, as when the table is dropped alone: its
+            // changes and its lock follow the version, never a new table of the name.
+            final String setAside = queryExecutor.getTransactionManager().setAsideIfWritten(fqn);
+            final String kept = setAside != null ? setAside : storage.keepDropped(fqn);
             if (kept != null) {
                 keptOut.put(fqn, kept);
             }
@@ -781,7 +785,8 @@ public class DropCommandHandler implements CommandHandler {
                     schema.dropTaskExact(taskName);
                     // A finalizer task of the dropped root finalizes nothing any more: it stands alone. A task that
                     // ran after the dropped one runs after it no more, a child of its other predecessors or, with
-                    // none left, standing alone (live-verified).
+                    // none left, standing alone (live-verified), and is suspended until resumed by hand: "These
+                    // former child tasks are suspended by default and must be resumed manually" (documented).
                     for (final Task remaining : schema.getTasks()) {
                         if (remaining.isFinalizer() && remaining.getFinalizedRootTask().equalsIgnoreCase(taskName)) {
                             remaining.setFinalizedRootTask(null);
@@ -790,6 +795,7 @@ public class DropCommandHandler implements CommandHandler {
                         while (predecessors.hasNext()) {
                             if (QualifiedName.parse(predecessors.next()).last().equals(taskName)) {
                                 predecessors.remove();
+                                remaining.setState(TaskState.SUSPENDED);
                             }
                         }
                     }

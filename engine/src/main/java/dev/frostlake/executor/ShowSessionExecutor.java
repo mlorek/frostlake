@@ -785,6 +785,15 @@ final class ShowSessionExecutor {
      * statement waits for (live-verified). {@code IN ACCOUNT} prepends a {@code session} column; the rows
      * are otherwise identical.
      */
+    /**
+     * A locked table as SHOW LOCKS names it: one a DROP or a replacement set aside while a transaction held it by the
+     * name it had, never by the storage key it was set aside under (see TransactionManager#setAsideIfWritten).
+     */
+    private static String lockedTable(final String key) {
+        final int aside = key.indexOf("#SET_ASIDE_");
+        return aside < 0 ? key : key.substring(0, aside);
+    }
+
     public ResultSet showLocks(final boolean inAccount) {
         final List<ResultSetColumn> columns = new ArrayList<>();
         if (inAccount) {
@@ -812,7 +821,7 @@ final class ShowSessionExecutor {
                 if (inAccount) {
                     cells.add(sessionNumberOf(txn));
                 }
-                cells.add(entry.getKey());
+                cells.add(lockedTable(entry.getKey()));
                 cells.add("PARTITIONS");
                 cells.add(transactionDisplayId(txn));
                 cells.add(ShowResultHelpers.createdOn(Instant.ofEpochMilli(txn.getStartTime())));

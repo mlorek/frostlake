@@ -22,6 +22,7 @@ import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.LobSize;
 
 import java.util.List;
 
@@ -42,7 +43,35 @@ public class Replace extends TextArgumentFunction {
         final String replacement = args.size() > 2 && args.get(2) != null
             ? SharedFunctionHelpers.textOf(args.get(2)) : "";
         // An empty text is found nowhere: the subject is as it was (live-verified).
-        return search.isEmpty() ? str : str.replace(search, replacement);
+        if (search.isEmpty()) {
+            return str;
+        }
+        requireFits(str, search, replacement);
+        return str.replace(search, replacement);
+    }
+
+    /**
+     * Refuse a replacement whose result would be longer than a text can be, before any of it is built: a longer
+     * replacement multiplies the subject's length by its occurrences, which are counted first.
+     */
+    private static void requireFits(final String str, final String search, final String replacement) {
+        final int grows = replacement.length() - search.length();
+        if (grows <= 0) {
+            return;
+        }
+        long occurrences = 0;
+        for (int at = str.indexOf(search); at >= 0; at = str.indexOf(search, at + search.length())) {
+            occurrences++;
+        }
+        if (str.length() + occurrences * grows <= LobSize.MAX_TEXT_BYTES) {
+            return;
+        }
+        final long characters = str.codePointCount(0, str.length()) + occurrences
+            * (replacement.codePointCount(0, replacement.length()) - search.codePointCount(0, search.length()));
+        if (characters <= LobSize.MAX_TEXT_BYTES) {
+            return;
+        }
+        throw LobSize.tooLongNamed("REPLACE result");
     }
 
     /** Under a collation every substring the collation calls equal to the search text is replaced. */

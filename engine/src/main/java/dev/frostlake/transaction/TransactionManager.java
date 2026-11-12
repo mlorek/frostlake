@@ -320,6 +320,7 @@ public class TransactionManager {
         }
         for (final Transaction txn : getActiveTransactions()) {
             txn.getWriteSet().retarget(moved);
+            txn.retargetTableLocks(moved);
         }
     }
 

@@ -30,7 +30,8 @@ public class TryParseJson extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
+        if (args.get(0) == null || args.size() > 1 && args.get(1) == null) return null;
+        final boolean duplicateKeys = JsonTypeHelper.duplicateKeys(getName(), args);
         // The argument is TEXT by the time it arrives, a VARIANT one having been coerced to VARCHAR at
         // the call boundary — see ExpressionEvaluatorVisitor.coerceVariantArgumentToText. A quoted
         // string is a JSON STRING here, whatever its content looks like.
@@ -40,13 +41,14 @@ public class TryParseJson extends BuiltInFunction {
         if (input.equalsIgnoreCase("null")) return VariantValue.of("null");
         // Parse leniently (Snowflake tolerates \' and invalid backslash escapes such as a regex \d);
         // TRY_ variant returns NULL when it still cannot be parsed.
-        final JsonNode node = JsonTypeHelper.parseLenient(input);
+        final JsonNode node = JsonTypeHelper.parseLenient(input, duplicateKeys);
         // A raw line break inside a string does not read, as PARSE_JSON refuses it.
         return node == null || JsonFaultReader.lineBreakFault(input) != null ? null : VariantValue.ofNode(node);
     }
 
     @Override
     public int getMinArgCount() { return 1; }
+    /** The second argument is the optional {@code 'd'} / {@code 's'} parameter, as PARSE_JSON's (documented). */
     @Override
-    public int getMaxArgCount() { return 1; }
+    public int getMaxArgCount() { return 2; }
 }

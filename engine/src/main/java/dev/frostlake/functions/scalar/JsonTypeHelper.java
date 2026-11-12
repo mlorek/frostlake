@@ -26,11 +26,36 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.cfg.JsonNodeFeature;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.util.List;
+
 /** Shared utilities for JSON variant type-checking functions. */
 public final class JsonTypeHelper {
 
     /** Static helpers only — never instantiated. */
     private JsonTypeHelper() {
+    }
+
+    /**
+     * Whether PARSE_JSON's or TRY_PARSE_JSON's optional parameter lets an object name a key twice: {@code 'd'}
+     * allows it, {@code 's'}, the default, does not (documented). Any other value is refused.
+     *
+     * @param function the function's name, for the refusal
+     * @param args     the call's arguments
+     * @return whether duplicate keys are allowed
+     */
+    public static boolean duplicateKeys(final String function, final List<Object> args) {
+        if (args.size() < 2) {
+            return false;
+        }
+        final String parameter = String.valueOf(args.get(1)).trim();
+        if ("d".equalsIgnoreCase(parameter)) {
+            return true;
+        }
+        if ("s".equalsIgnoreCase(parameter)) {
+            return false;
+        }
+        throw new RuntimeException("Invalid parameter '" + parameter + "' for function " + function
+            + ": expected 'd' or 's'.");
     }
 
     // STRICT_DUPLICATE_DETECTION because live REFUSES an object that names one key twice —
@@ -72,6 +97,20 @@ public final class JsonTypeHelper {
         .enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS)
         .build();
 
+    /**
+     * {@link #MAPPER} and {@link #LENIENT_MAPPER} that read an object naming one key twice, keeping its last value:
+     * PARSE_JSON's parameter {@code 'd'} "Allow duplicate keys in JSON objects. If a JSON object contains a duplicate
+     * key, the returned object has a single instance of that key with the last value specified for that key"
+     * (documented).
+     */
+    private static final ObjectMapper DUPLICATES_MAPPER = MAPPER.rebuild()
+        .disable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
+        .build();
+
+    private static final ObjectMapper DUPLICATES_LENIENT_MAPPER = LENIENT_MAPPER.rebuild()
+        .disable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
+        .build();
+
     public static JsonNode parse(final Object value) {
         if (value == null) return null;
         // Already a JsonNode (shouldn't happen but handle defensively)
@@ -88,6 +127,20 @@ public final class JsonTypeHelper {
      * still cannot be parsed.
      */
     public static JsonNode parseLenient(final String input) {
+        return parseLenient(input, false);
+    }
+
+    /**
+     * {@link #parseLenient(String)}, reading an object that names one key twice as having its last value where
+     * {@code duplicateKeys} says so.
+     *
+     * @param input         the JSON text
+     * @param duplicateKeys whether an object may name a key twice
+     * @return the tree, or null when the text still cannot be parsed
+     */
+    public static JsonNode parseLenient(final String input, final boolean duplicateKeys) {
+        final ObjectMapper strict = duplicateKeys ? DUPLICATES_MAPPER : MAPPER;
+        final ObjectMapper lenient = duplicateKeys ? DUPLICATES_LENIENT_MAPPER : LENIENT_MAPPER;
         // Snowflake's PARSE_JSON accepts the non-standard `undefined` token and keeps it as the VARIANT
         // undefined ELEMENT (live: PARSE_JSON('[undefined]') is [undefined], and an array of one
         // equals ARRAY_CONSTRUCT(NULL)). No JSON parser accepts the bare token, so mark it first and restore
@@ -101,19 +154,19 @@ public final class JsonTypeHelper {
         final String marked = VariantUndefined.markTokens(
             JsonKeywords.normalize(JsonHexNumbers.normalize(JsonArrayHoles.fill(input))));
         try {
-            return restoreAll(marked, readTree(MAPPER, marked));
+            return restoreAll(marked, readTree(strict, marked));
         } catch (final Exception e) {
             final String relaxed = escapeInvalidBackslashes(marked.replace("\\'", "'"));
             if (!relaxed.equals(marked)) {
                 try {
-                    return restoreAll(relaxed, readTree(MAPPER, relaxed));
+                    return restoreAll(relaxed, readTree(strict, relaxed));
                 } catch (final Exception ignored) {
                     // still not parseable — fall through to the lenient reader
                 }
             }
             // Last resort: allow a trailing comma and raw control characters in strings (see LENIENT_MAPPER).
             try {
-                return restoreAll(relaxed, readTree(LENIENT_MAPPER, relaxed));
+                return restoreAll(relaxed, readTree(lenient, relaxed));
             } catch (final Exception stillInvalid) {
                 return null;
             }
@@ -129,10 +182,12 @@ public final class JsonTypeHelper {
     /**
      * A document read into a tree, with each float's NOTATION carried across — a number written in
      * scientific notation belongs to the DOUBLE family and a plainly written one does not, and the
-     * reader's BigDecimal cannot tell the two apart on its own. See {@link JsonNumberNotation}.
+     * reader's BigDecimal cannot tell the two apart on its own. See {@link JsonNumberNotation}. A plainly written
+     * number no NUMBER can hold is a DOUBLE too (see {@link JsonNumberRange}).
      */
     private static JsonNode readTree(final ObjectMapper mapper, final String text) {
-        return JsonNumberNotation.applyExponentNotation(mapper, text, mapper.readTree(text));
+        return JsonNumberRange.applyDoubleRange(text,
+            JsonNumberNotation.applyExponentNotation(mapper, text, mapper.readTree(text)));
     }
 
     /**

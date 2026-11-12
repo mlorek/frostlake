@@ -111,10 +111,22 @@ public class Task implements Named, Taggable, ContactHolder {
 
         if (execution.getState().equals("SUCCEEDED")) {
             successCount++;
-            failureCount = 0; // SUSPEND_TASK_AFTER_NUM_FAILURES counts CONSECUTIVE failures
-        } else if (execution.getState().equals("FAILED")) {
-            failureCount++;
         }
+    }
+
+    /**
+     * Count one more graph run of this root that failed, retries included: SUSPEND_TASK_AFTER_NUM_FAILURES counts
+     * them in a row.
+     *
+     * @return the graph runs that failed in a row
+     */
+    public int countFailedGraphRun() {
+        return ++failureCount;
+    }
+
+    /** A graph run of this root succeeded, or the root was suspended: the failures in a row are counted afresh. */
+    public void resetFailedGraphRuns() {
+        failureCount = 0;
     }
 
     // The task-graph return value of this task's most recent run (SYSTEM$SET_RETURN_VALUE), readable
@@ -295,6 +307,7 @@ public class Task implements Named, Taggable, ContactHolder {
         return successCount;
     }
 
+    /** @return the graph runs of this root that failed in a row, retries included */
     public int getFailureCount() {
         return failureCount;
     }
@@ -523,7 +536,17 @@ public class Task implements Named, Taggable, ContactHolder {
     }
 
     public Task cloneDefinition() {
-        final Task copy = new Task(name, schedule, scheduleType, sqlStatement, warehouse);
+        return cloneDefinitionAs(name);
+    }
+
+    /**
+     * {@link #cloneDefinition()} under another name: a task cloned on its own.
+     *
+     * @param copyName the copy's name
+     * @return the copy, suspended
+     */
+    public Task cloneDefinitionAs(final String copyName) {
+        final Task copy = new Task(copyName, schedule, scheduleType, sqlStatement, warehouse);
         copy.explicitParameters.addAll(explicitParameters);
         copy.predecessors.addAll(predecessors);
         copy.comment = comment;

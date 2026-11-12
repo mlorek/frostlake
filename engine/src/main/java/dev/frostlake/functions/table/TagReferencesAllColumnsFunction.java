@@ -19,6 +19,7 @@ package dev.frostlake.functions.table;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.functions.TableFunction;
+import dev.frostlake.functions.scalar.context.DefinitionOwnership;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.Taggable;
@@ -61,9 +62,19 @@ public class TagReferencesAllColumnsFunction extends TableFunction {
     private final TagReferencesFunction references;
 
     public TagReferencesAllColumnsFunction(final Catalog catalog) {
+        this(catalog, null);
+    }
+
+    /**
+     * The function answered only for a table the session sees (see TagReferencesFunction).
+     *
+     * @param catalog   the catalog
+     * @param ownership what the session sees, or null to ask nothing
+     */
+    public TagReferencesAllColumnsFunction(final Catalog catalog, final DefinitionOwnership ownership) {
         super(NAME);
         this.catalog = catalog;
-        this.references = new TagReferencesFunction(catalog);
+        this.references = new TagReferencesFunction(catalog, ownership);
     }
 
     @Override

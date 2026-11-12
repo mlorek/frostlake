@@ -289,16 +289,29 @@ public final class VectorValue implements Comparable<VectorValue>, Serializable 
         return elementType.hashCode() * 31 + Arrays.hashCode(elements);
     }
 
-    /** Element-wise ordering, shorter-first on a common prefix — the ordering the display text implies. */
+    /**
+     * The byte-wise lexicographic order of the elements' 32-bit encodings, shorter-first on a common prefix
+     * (documented: "Direct vector comparisons (for example, v1 &lt; v2) are byte-wise lexicographic and, although
+     * deterministic, won't produce the results that you might expect from number comparisons"). Each element is
+     * compared as the unsigned value of its encoding, an INT's two's complement and a FLOAT's IEEE 754 bits, most
+     * significant byte first: an element with its sign bit set sorts after every element without it, so [-1] sorts
+     * after [1]. The order of the bytes within an element is unmeasured on live; most significant first keeps the
+     * elements of one sign in their numeric order, a FLOAT's negatives by magnitude.
+     */
     @Override
     public int compareTo(final VectorValue other) {
         final int shared = Math.min(elements.length, other.elements.length);
         for (int i = 0; i < shared; i++) {
-            final int cmp = Double.compare(elements[i], other.elements[i]);
+            final int cmp = Integer.compareUnsigned(encoding(elements[i]), other.encoding(other.elements[i]));
             if (cmp != 0) {
                 return cmp;
             }
         }
         return Integer.compare(elements.length, other.elements.length);
+    }
+
+    /** An element's 32-bit encoding: an INT's two's complement, a FLOAT's IEEE 754 bits. */
+    private int encoding(final double element) {
+        return elementType == VectorElementType.INT ? (int) element : Float.floatToRawIntBits((float) element);
     }
 }

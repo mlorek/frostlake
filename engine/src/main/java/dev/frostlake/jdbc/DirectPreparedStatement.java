@@ -76,7 +76,17 @@ public class DirectPreparedStatement extends DirectStatement implements Frostlak
     protected String buildSql() throws SQLException {
         // Inlined client-side (no server-side binding); escapes literals and skips '?' inside string literals.
         // (Replaces a replaceFirst loop that also mis-interpreted $ / \ in the replacement value.)
-        return JdbcMarshaling.bindPrepared(sql, parameters);
+        return JdbcMarshaling.bindPrepared(sql, parameters, refusesUnsetPlaceholders());
+    }
+
+    /**
+     * Whether a placeholder no value was set for is refused as the statement runs (see
+     * {@link JdbcMarshaling#bindPrepared(String, Map, boolean)}).
+     *
+     * @return true for a prepared statement
+     */
+    protected boolean refusesUnsetPlaceholders() {
+        return true;
     }
 
     /**

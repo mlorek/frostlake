@@ -49,6 +49,8 @@ public class QueryHistory {
     private volatile String loggedAs;
     private QueryStatus status;
     private long executionTimeMs;
+    /** How long the statement waited for other sessions' table locks, in milliseconds. */
+    private long blockedTimeMs;
     private long rowsProduced;
     private long rowsInserted;
     private long rowsUpdated;
@@ -225,7 +227,7 @@ public class QueryHistory {
         this.status = QueryStatus.SUCCESS;
         this.rowsProduced = answered;
         this.rowsWrittenToResult = answered;
-        this.executionTimeMs = Duration.between(startTime, endTime).toMillis();
+        this.executionTimeMs = Math.max(0L, Duration.between(startTime, endTime).toMillis() - blockedTimeMs);
     }
 
     public void markSuccess(final LocalDateTime endTime) {
@@ -236,7 +238,7 @@ public class QueryHistory {
         this.endTime = endTime;
         this.status = QueryStatus.FAILED;
         this.errorMessage = errorMessage;
-        this.executionTimeMs = Duration.between(startTime, endTime).toMillis();
+        this.executionTimeMs = Math.max(0L, Duration.between(startTime, endTime).toMillis() - blockedTimeMs);
     }
 
     /**
@@ -490,8 +492,23 @@ public class QueryHistory {
         return status.name();
     }
 
+    /** How long the statement ran, its waits for other sessions' table locks left out. */
     public long getExecutionTimeMs() {
         return executionTimeMs;
+    }
+
+    /** How long the statement waited for other sessions' table locks, in milliseconds (TRANSACTION_BLOCKED_TIME). */
+    public long getBlockedTimeMs() {
+        return blockedTimeMs;
+    }
+
+    /**
+     * Adds a wait for another session's table lock to the statement's blocked time.
+     *
+     * @param waitedMs the wait, in milliseconds
+     */
+    public void addBlockedTime(final long waitedMs) {
+        blockedTimeMs += Math.max(0L, waitedMs);
     }
 
     public long getRowsProduced() {

@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.functions.scalar.context.DefinitionOwnership;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.StreamSources;
@@ -62,19 +63,20 @@ final class ChangeTimes {
      * then at least one of the database objects referenced by the view changed"). A view's token is the newest of
      * its tables', 0 while none of them was ever written (live-verified). The name resolves as a written one would,
      * against the session's database and schema, and a name that is no table or view refuses the call, told as it
-     * was written.
+     * was written. So does one the session does not see.
      *
      * @param catalog  the catalog
+     * @param sight    which objects the session sees
      * @param argument the call's argument, the object's name as written
      * @return the token, or null for a NULL argument
      */
-    static Long lastChangeCommitTime(final Catalog catalog, final Object argument) {
+    static Long lastChangeCommitTime(final Catalog catalog, final DefinitionOwnership sight, final Object argument) {
         if (argument == null) {
             return null;
         }
         final String[] name = fullName(catalog, written(argument));
         final Long token = relationToken(catalog, name, new HashSet<String>());
-        if (token == null) {
+        if (token == null || !seesRelation(catalog, sight, name)) {
             // The name is told as it was written, not completed (live-verified).
             throw new RuntimeException(SqlCompilationError.doesNotExist("Object",
                 QualifiedName.join(SqlIdentifiers.canonicalTextParts(written(argument).trim()))));
@@ -86,15 +88,17 @@ final class ChangeTimes {
      * SYSTEM$STREAM_GET_TABLE_TIMESTAMP('&lt;stream&gt;'): the stamp, in nanoseconds, of the latest version of the
      * stream's table at or before the stream's offset (documented). Consuming the stream moves the offset, and so the
      * answer, and nothing else does. A stream on a view is refused (documented), in words of frostlake's own. An
-     * unknown stream is refused as SYSTEM$STREAM_HAS_DATA refuses one, a shape not verified for this function.
+     * unknown stream, or one the session does not see, is refused as SYSTEM$STREAM_HAS_DATA refuses one, a shape not
+     * verified for this function.
      *
      * @param catalog       the catalog
      * @param storageEngine the storage engine holding the table's versions
+     * @param sight         which objects the session sees
      * @param argument      the call's argument, the stream's name as written
      * @return the stamp as text — the call answers a VARCHAR (live-verified) — or null for a NULL argument
      */
     static String streamTableTimestamp(final Catalog catalog, final StorageEngine storageEngine,
-                                       final Object argument) {
+                                       final DefinitionOwnership sight, final Object argument) {
         if (argument == null) {
             return null;
         }
@@ -105,7 +109,7 @@ final class ChangeTimes {
         } catch (final RuntimeException unresolvable) {
             // refused just below, as an unknown stream
         }
-        if (stream == null) {
+        if (stream == null || !StreamSight.sees(catalog, stream, sight)) {
             throw new RuntimeException(SqlCompilationError.of("Invalid value ['" + written
                 + "'] for function 'SYSTEM$STREAM_GET_TABLE_TIMESTAMP', parameter 1: must be a valid stream name"));
         }
@@ -130,6 +134,31 @@ final class ChangeTimes {
             }
         }
         return String.valueOf(stamp * NANOS_PER_MILLI);
+    }
+
+    /**
+     * Whether the session sees the relation a full name names, which is there: one it owns or holds a privilege on, in
+     * a database and a schema it uses.
+     */
+    private static boolean seesRelation(final Catalog catalog, final DefinitionOwnership sight, final String[] name) {
+        if (sight == null) {
+            return true;
+        }
+        final Schema schema = catalog.findDatabase(name[0]).getSchema(name[1]);
+        final String recorded = schema.qualifiedName(name[2]);
+        if (schema.hasTable(name[2])) {
+            return sight.sees("TABLE", recorded, schema.getTable(name[2]).getOwner());
+        }
+        if (schema.hasView(name[2])) {
+            return sight.sees("VIEW", recorded, schema.getView(name[2]).getOwner());
+        }
+        if (schema.hasMaterializedView(name[2])) {
+            return sight.sees("MATERIALIZED VIEW", recorded, schema.getMaterializedView(name[2]).getOwner());
+        }
+        if (schema.hasDynamicTable(name[2])) {
+            return sight.sees("DYNAMIC TABLE", recorded, schema.getDynamicTable(name[2]).getOwner());
+        }
+        return true;
     }
 
     /** The argument's text, its surrounding quotes dropped when a caller left them on. */

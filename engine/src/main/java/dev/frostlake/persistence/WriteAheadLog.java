@@ -27,10 +27,12 @@ import java.io.EOFException;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -48,7 +50,9 @@ import org.slf4j.LoggerFactory;
  * Append-only write-ahead log — a logical (redo) log of committed transactions. Each committed transaction
  * is appended as ONE record (its mutating statements) and fsync'd before COMMIT returns, so a committed
  * transaction is durable atomically: a crash mid-append leaves a torn trailing record that replay discards,
- * so a transaction is recovered only when its whole record reached disk. On startup the engine replays the
+ * so a transaction is recovered only when its whole record reached disk. Reading the log cuts such a record off the
+ * file, and an append that fails partway takes back what it wrote, so a record appended later follows the last whole
+ * one and is read back on every later start. On startup the engine replays the
  * records to rebuild state. This covers both autocommit statements (a one-statement record) and explicit
  * {@code BEGIN…COMMIT} blocks (a multi-statement record); a rolled-back transaction is never written.
  *
@@ -105,6 +109,8 @@ public class WriteAheadLog {
     private boolean readsDecfloatVariables = true;
     /** False while reading a log before v9, whose contexts keep no precision of a time or a timestamp variable. */
     private boolean readsVariablePrecisions = true;
+    /** Whether the record read last was torn: the file ended inside it. */
+    private boolean readTorn;
     private static final byte REC_CHECKPOINT = 2;
     /** Where counters stood once a statement drew from them (see {@link CounterMark}). */
     private static final byte REC_COUNTERS = 3;
@@ -135,6 +141,7 @@ public class WriteAheadLog {
         if (path.getParent() != null) {
             Files.createDirectories(path.getParent());
         }
+        beginAgainOverTornHeader();
         final Instant written = writtenFirstStart();
         this.firstStart = written != null ? written : engineStart;
         openForAppend();
@@ -169,6 +176,63 @@ public class WriteAheadLog {
                 return null;
             }
             return instantFrom(in.readLong());
+        }
+    }
+
+    /**
+     * Begin the log again when a crash tore its header before the header was whole: nothing can have been logged
+     * after it, and a record appended behind the torn bytes would be read as the rest of the header.
+     */
+    private void beginAgainOverTornHeader() throws IOException {
+        if (!Files.exists(path)) {
+            return;
+        }
+        final long size = Files.size(path);
+        if (size == 0L) {
+            return;
+        }
+        boolean torn = size < Integer.BYTES + 1L;
+        if (!torn) {
+            try (DataInputStream in = new DataInputStream(new FileInputStream(path.toFile()))) {
+                torn = in.readInt() == MAGIC && in.readByte() >= VERSION_WITH_FIRST_START
+                    && size < Integer.BYTES + 1L + Long.BYTES;
+            }
+        }
+        if (torn) {
+            cutAt(0L);
+        }
+    }
+
+    /** Cut the log's file back to its first {@code end} bytes, forced to disk, when it is longer. */
+    private void cutAt(final long end) throws IOException {
+        try (FileChannel channel = FileChannel.open(path, StandardOpenOption.WRITE)) {
+            if (channel.size() > end) {
+                logger.warn("Cutting {} torn bytes off the end of the write-ahead log at {}", channel.size() - end,
+                    path);
+                channel.truncate(end);
+                channel.force(true);
+            }
+        }
+    }
+
+    /** Where the file ends before an append: what {@link #takeBack} cuts it back to when the append fails. */
+    private long appendStart() throws IOException {
+        return fileOut.getChannel().size();
+    }
+
+    /**
+     * Take back an append that failed partway: drop what it left buffered and cut off what of it reached the file, so
+     * the next append follows the last whole record. A failure to cut is logged; a later start cuts a torn record
+     * itself.
+     *
+     * @param start where the file ended before the append
+     */
+    private void takeBack(final long start) {
+        out = new DataOutputStream(new BufferedOutputStream(fileOut));
+        try {
+            cutAt(start);
+        } catch (final IOException cannotCut) {
+            logger.warn("A failed write-ahead log append could not be taken back: {}", cannotCut.getMessage());
         }
     }
 
@@ -235,11 +299,17 @@ public class WriteAheadLog {
         if (statements == null || statements.isEmpty()) {
             return;
         }
-        writeTransaction(out, WalRecord.transaction(statements,
-            statementInstants == null ? Collections.<Instant>emptyList() : statementInstants,
-            statementContexts == null ? Collections.<WalStatementContext>emptyList() : statementContexts));
-        out.flush();
-        fileOut.getFD().sync();
+        final long start = appendStart();
+        try {
+            writeTransaction(out, WalRecord.transaction(statements,
+                statementInstants == null ? Collections.<Instant>emptyList() : statementInstants,
+                statementContexts == null ? Collections.<WalStatementContext>emptyList() : statementContexts));
+            out.flush();
+            fileOut.getFD().sync();
+        } catch (final IOException failed) {
+            takeBack(start);
+            throw failed;
+        }
     }
 
     /** One transaction record in the current version's layout: per statement its instant, context and text. */
@@ -491,9 +561,15 @@ public class WriteAheadLog {
         if (marks == null || marks.isEmpty()) {
             return;
         }
-        writeCounters(out, marks);
-        out.flush();
-        fileOut.getFD().sync();
+        final long start = appendStart();
+        try {
+            writeCounters(out, marks);
+            out.flush();
+            fileOut.getFD().sync();
+        } catch (final IOException failed) {
+            takeBack(start);
+            throw failed;
+        }
     }
 
     private static void writeCounters(final DataOutputStream o, final List<CounterMark> marks) throws IOException {
@@ -510,23 +586,32 @@ public class WriteAheadLog {
 
     /** Append a checkpoint marker referencing a durable state snapshot, and force it to disk. */
     public synchronized void appendCheckpoint(final String checkpointRef) throws IOException {
-        out.writeByte(REC_CHECKPOINT);
-        writeString(out, checkpointRef);
-        out.flush();
-        fileOut.getFD().sync();
+        final long start = appendStart();
+        try {
+            out.writeByte(REC_CHECKPOINT);
+            writeString(out, checkpointRef);
+            out.flush();
+            fileOut.getFD().sync();
+        } catch (final IOException failed) {
+            takeBack(start);
+            throw failed;
+        }
     }
 
     /**
      * All records in order (for replay); empty if the log doesn't exist yet or has only the header. A torn
      * trailing record left by a crash mid-append is discarded, so only fully-written, fsync'd records are
-     * returned.
+     * returned, and is cut off the file, so the records appended after this read follow the last whole one.
      */
     public synchronized List<WalRecord> readAll() throws IOException {
         final List<WalRecord> records = new ArrayList<>();
         if (!Files.exists(path) || Files.size(path) == 0L) {
             return records;
         }
-        try (DataInputStream in = new DataInputStream(new FileInputStream(path.toFile()))) {
+        long whole;
+        final boolean tornAtEnd;
+        try (FileInputStream file = new FileInputStream(path.toFile());
+             DataInputStream in = new DataInputStream(file)) {
             final int magic = in.readInt();
             if (magic != MAGIC) {
                 logger.warn("Write-ahead log at {} has an unrecognized header; ignoring it", path);
@@ -551,13 +636,27 @@ public class WriteAheadLog {
                     return records;   // a header torn before its first start: nothing was logged after it
                 }
             }
+            // The reads go straight to the file, so its position is where the bytes read so far end.
+            whole = file.getChannel().position();
+            readTorn = false;
             while (true) {
                 final WalRecord rec = readRecord(in);
                 if (rec == null) {
                     break;   // clean end of log, or torn trailing record discarded
                 }
                 records.add(rec);
+                whole = file.getChannel().position();
             }
+            // A record a crash tore is a whole record's beginning, so reading it runs into the end of the file. One
+            // that stops being readable before the end is damage this log cannot tell the extent of: it stays.
+            tornAtEnd = readTorn && file.getChannel().position() >= file.getChannel().size();
+            if (readTorn && !tornAtEnd) {
+                logger.warn("The write-ahead log at {} holds an unreadable record at byte {}; replay stops there", path,
+                    whole);
+            }
+        }
+        if (tornAtEnd) {
+            cutAt(whole);
         }
         return records;
     }
@@ -615,6 +714,7 @@ public class WriteAheadLog {
         } catch (final EOFException eof) {
             // Torn trailing record (crash mid-append): it was never fsync'd whole — discard it.
             logger.debug("Discarding a torn trailing write-ahead log record");
+            readTorn = true;
             return null;
         }
     }

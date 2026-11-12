@@ -65,6 +65,9 @@ public class StreamSnapshot implements Serializable {
     // Where the stream's offset falls in the order table snapshots are taken in, which a join view's stream reads
     // its tables' rows at. Null on snapshots written before it was saved, which restore the offset as now.
     public Long offsetSequence;
+    // When a consuming statement last moved the offset. Null on snapshots written before it was saved, and on a stream
+    // never consumed, which restore none.
+    public LocalDateTime lastConsumedAt;
     // The versions its tables were written to past its offset, which SYSTEM$STREAM_BACKLOG lists. Null on snapshots
     // written before they were saved, which restore a stream with none.
     public List<StreamVersionSnapshot> versions;

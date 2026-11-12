@@ -198,6 +198,12 @@ public class DirectResultSet extends AbstractFrostlakeResultSet {
         if (value instanceof Number && NumericType.isDecfloat(declared)) {
             return ClientValueText.decfloatObject((Number) value);
         }
+        if ((value instanceof Integer || value instanceof Short || value instanceof Byte)
+                && declared instanceof NumericType && !NumericType.isApproximate(declared)
+                && !NumericType.isDecfloat(declared) && ((NumericType) declared).getScale() == 0) {
+            // A whole number the engine holds as a narrower Java type is the Long the metadata names too.
+            return Long.valueOf(((Number) value).longValue());
+        }
         if (value instanceof BigDecimal && declared instanceof NumericType && !NumericType.isApproximate(declared)
                 && ((NumericType) declared).getScale() == 0) {
             // A scale-0 NUMBER is the Long its metadata names while its value fits one, as the HTTP transport and

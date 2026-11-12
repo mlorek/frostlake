@@ -34,7 +34,7 @@ import dev.frostlake.security.SecurityManager;
  * privilege this engine asks. The refusal's wording is the engine's own form for a missing privilege; live's is not
  * measured.
  */
-final class ApplyPrivileges {
+public final class ApplyPrivileges {
 
     private ApplyPrivileges() {
     }
@@ -49,7 +49,7 @@ final class ApplyPrivileges {
      * @param owner            the role that owns the object, or null when none is recorded, which passes as it
      *                         does for every privilege
      */
-    static void require(final QueryExecutor queryExecutor, final Privilege accountPrivilege, final String kind,
+    public static void require(final QueryExecutor queryExecutor, final Privilege accountPrivilege, final String kind,
                         final String fullName, final String owner) {
         final SecurityManager security = queryExecutor.getSecurityManager();
         if (security == null || security.holdsAccountPrivilege(accountPrivilege)

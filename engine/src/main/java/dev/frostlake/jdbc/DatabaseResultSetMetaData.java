@@ -49,6 +49,12 @@ public class DatabaseResultSetMetaData extends AbstractFrostlakeResultSetMetaDat
     }
 
     @Override
+    protected String[] source(final int column) {
+        final ColumnData read = columns.get(column - 1);
+        return read.getTable() == null ? null : new String[] {read.getDatabase(), read.getSchema(), read.getTable()};
+    }
+
+    @Override
     protected int typeScale(final int column) {
         return columns.get(column - 1).scaleOrZero();
     }

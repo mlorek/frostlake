@@ -68,13 +68,14 @@ public final class AlertRunner {
         catalog.beginSessionScope(database, schema);
         final AlertExecution[] evaluated = new AlertExecution[1];
         try {
-            // The evaluation is a session of its own, apart from whatever session ran EXECUTE ALERT.
-            executor.runInOwnSession(new Runnable() {
+            // The evaluation is a session of its own, apart from whatever session ran EXECUTE ALERT, and acts with the
+            // role that owns the alert (see TaskExecutor#runAsOwner).
+            executor.runAsOwner(new Runnable() {
                 @Override
                 public void run() {
                     evaluated[0] = evaluate(alert, scheduled, scheduledFrom);
                 }
-            });
+            }, null, alert.getOwner());
         } finally {
             catalog.restoreSessionScope(prior);
         }

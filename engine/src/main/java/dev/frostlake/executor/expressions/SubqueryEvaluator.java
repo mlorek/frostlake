@@ -1451,6 +1451,26 @@ final class SubqueryEvaluator {
     }
 
     /**
+     * The refusal of a scalar subquery standing alone as a select item that opens with the outer query's aggregate
+     * over a row drawn from catalog tables (see {@link #opensWithOuterAggregate}), made as the statement compiles: live
+     * refuses it before any row reaches it, over an empty table and under a WHERE no row passes (live-verified). It
+     * waits for the rest of the statement to be judged, and a row reaching the subquery is refused the same way first.
+     *
+     * @param expr the select item's subquery
+     * @return the refusal, or null
+     */
+    UnsupportedSubqueryException openingOuterAggregateRefusal(final SubqueryExpression expr) {
+        final QueryExecutor queryExecutor = visitor.getQueryExecutor();
+        if (queryExecutor == null || expr.isExistence()) {
+            return null;
+        }
+        final FrostlakeParser.SelectStatementContext parsed = queryExecutor.subqueryStatement(expr.getSubquery());
+        // No row is bound yet: the outer names are the scope's own.
+        return parsed != null && opensWithOuterAggregate(queryExecutor, parsed, outerNamesContext().keySet())
+            ? unsupported(true, expr.getPosition()) : null;
+    }
+
+    /**
      * Whether a scalar subquery opens with the outer query's aggregate (see
      * {@link CorrelatedSubqueryRule#opensWithOuterAggregate}) over a row drawn from catalog tables, which live refuses
      * whatever the tables hold: neither {@link #outerHoldsOneRowAtMost} nor the statistics pinning the names it reads
@@ -1458,6 +1478,13 @@ final class SubqueryEvaluator {
      */
     private boolean opensWithOuterAggregate(final QueryExecutor queryExecutor,
                                             final FrostlakeParser.SelectStatementContext parsed) {
+        return opensWithOuterAggregate(queryExecutor, parsed, buildLateralContext().keySet());
+    }
+
+    /** Whether a scalar subquery opens with the outer query's aggregate, read over the given outer names. */
+    private boolean opensWithOuterAggregate(final QueryExecutor queryExecutor,
+                                            final FrostlakeParser.SelectStatementContext parsed,
+                                            final Set<String> names) {
         final List<Table> relations = new ArrayList<>();
         if (visitor.getMultiTableAllTables() != null && !visitor.getMultiTableAllTables().isEmpty()) {
             relations.addAll(visitor.getMultiTableAllTables());
@@ -1473,7 +1500,7 @@ final class SubqueryEvaluator {
             }
         }
         final Set<String> outerNames = new HashSet<>();
-        for (final String name : buildLateralContext().keySet()) {
+        for (final String name : names) {
             outerNames.add(name.toUpperCase(Locale.ROOT));
         }
         return new CorrelatedSubqueryRule(queryExecutor, outerNames, visitor.scopeRelations())
@@ -1590,11 +1617,19 @@ final class SubqueryEvaluator {
             // join carry is ambiguous.
             final Set<String> shared = sharedBareNames(table, visitor.getMultiTableAllTables());
             final Set<String> bare = new HashSet<>();
+            // A relation its FROM clause aliased is known by the alias alone - live, the alias replaces the name - so
+            // its name binds no qualified key: a subquery's own relation of that name answers for n.g, though the
+            // query around it reads n under an alias (FROM n o). The alias keys are bound below.
+            final Map<String, Table> fromKeys = visitor.getMultiTableAliasToTable();
+            final boolean knownByName = fromKeys == null || fromKeys.isEmpty() || fromKeys.containsKey(table.getName())
+                || !fromKeys.containsValue(table);
             for (int i = 0; i < columns.size(); i++) {
                 final String colName = columns.get(i).getName();
                 final Object value = row.getValue(i);
-                context.put(table.getName() + "." + colName, value);
-                noteCollation(collated, bound, table.getName() + "." + colName, columns.get(i));
+                if (knownByName) {
+                    context.put(table.getName() + "." + colName, value);
+                    noteCollation(collated, bound, table.getName() + "." + colName, columns.get(i));
+                }
                 if (bare.add(colName)) {
                     context.put(colName, shared.contains(colName) ? OuterNameBindings.AMBIGUOUS : value);
                     noteCollation(collated, bound, colName, collationCarrier(columns.get(i)));

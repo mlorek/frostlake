@@ -28,6 +28,8 @@ import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StagePathSegments;
 import dev.frostlake.executor.StagePrefix;
 import dev.frostlake.executor.StageQueryArguments;
+import dev.frostlake.executor.StagedFileMetadata;
+import dev.frostlake.executor.StatementCancellation;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.StorageIntegrationReference;
@@ -37,10 +39,14 @@ import dev.frostlake.executor.expressions.BinaryOperator;
 import dev.frostlake.executor.expressions.CaseExpression;
 import dev.frostlake.executor.expressions.CastExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.FunctionCallExpression;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.WhenClause;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.metastore.CopyJob;
+import dev.frostlake.metastore.CopyJobErrors;
 import dev.frostlake.metastore.LoadRecord;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.FileFormat;
@@ -419,7 +425,9 @@ public final class CopyCommandExecutor {
                 }
             } else if (StatementClock.isReplay()) {
                 // A replayed unload wrote its files when it first ran, and they are on disk as the statements after it
-                // left them: writing them again would refuse over them, or bring back files removed since.
+                // left them: writing them again would refuse over them, or bring back files removed since. What else
+                // it did is done again.
+                replayUnloadStreamReads(ctx);
                 return null;
             } else {
                 // COPY INTO stage FROM table/query
@@ -498,6 +506,8 @@ public final class CopyCommandExecutor {
         List<String> files = null;
         List<String> columns = null;
         FrostlakeParser.CopyTransformationContext transformation = null;
+        // The stage the files are read from, when the statement names one.
+        FrostlakeParser.StageRefContext sourceStage = null;
         StageQueryArguments transformationArguments = null;
         // The format the files are read by, at the account's defaults until a format says otherwise: the stage's
         // own first, then the statement's FILE_FORMAT - the format it names, then the options written beside it
@@ -530,6 +540,7 @@ public final class CopyCommandExecutor {
                     fromLocation = executor.stageRefToLocation(sourceCtx.stageRef());
                     fromLocationDisplay = ParseTreeText.getOriginalText(sourceCtx.stageRef());
                     executor.requireStagePrivilege(Privilege.READ, sourceCtx.stageRef());
+                    sourceStage = sourceCtx.stageRef();
                 } else if (sourceCtx.STRING_LITERAL() != null) {
                     // FROM 's3://bucket/path/'
                     fromLocation = ParseTreeText.extractStringLiteral(sourceCtx.STRING_LITERAL());
@@ -542,6 +553,7 @@ public final class CopyCommandExecutor {
                     fromLocation = executor.stageRefToLocation(transformation.stageRef());
                     fromLocationDisplay = ParseTreeText.getOriginalText(transformation.stageRef());
                     executor.requireStagePrivilege(Privilege.READ, transformation.stageRef());
+                    sourceStage = transformation.stageRef();
                 }
             } else if (clause.FILE_FORMAT() != null) {
                 requireDistinctCopyOption(seenCopyOptions, "FILE_FORMAT");
@@ -619,6 +631,9 @@ public final class CopyCommandExecutor {
             }
         }
 
+        // A named stage is the one of exactly that name, as LIST names it: @LX_ST reads no "lx_st". It is looked
+        // for once every clause is read, so a bad option value is refused first (live-verified).
+        executor.requireNamedStageExact(sourceStage);
         // A transformation's staged-file arguments read the files where the statement writes no FILE_FORMAT or
         // PATTERN of its own.
         if (transformationArguments != null) {
@@ -798,7 +813,12 @@ public final class CopyCommandExecutor {
             final List<FrostlakeParser.CopyTransformItemContext> transformItems =
                 transformation != null ? transformation.copyTransformItem() : null;
             final int transformSlots = transformItems != null ? maxPositionalRef(transformItems) : 0;
-            final ExpressionEvaluator transformEval = transformItems != null ? buildStageFieldEvaluator(transformSlots) : null;
+            final ExpressionEvaluator transformEval = transformItems != null
+                ? buildStageFieldEvaluator(transformSlots, SqlIdentifiers.canonical(transformation.identifier()))
+                : null;
+            if (transformItems != null) {
+                requireResolvedNames(transformItems, transformEval);
+            }
             final boolean checkColumnCount = csv
                 && columnCountChecked(errorOnColumnCountMismatch, columns, matchByColumnName, transformItems);
             // The files this statement reads, in path order — the same list for a load and a validation.
@@ -811,7 +831,8 @@ public final class CopyCommandExecutor {
             if (validationMode != null) {
                 return validateCopyFiles(validationMode, table, tableCols, fieldToCol,
                     transformItems, transformEval, transformSlots,
-                    candidates, recordReader, format, checkColumnCount, fromLocationDisplay, missingFiles, rowRules);
+                    candidates, recordReader, format, checkColumnCount, fromLocationDisplay, missingFiles, rowRules,
+                    staged);
             }
             // The load reads the stage's files as they are now, which a replay of its text would not find again.
             CheckpointDebt.owe();
@@ -835,6 +856,8 @@ public final class CopyCommandExecutor {
             final Set<String> addedKeys = new LinkedHashSet<>();
             // The files read, for the load history once the whole COPY has run (an aborted one records none).
             final List<LoadRecord> completedLoads = new ArrayList<>();
+            // The same files, which VALIDATE reads again (see CopyJobs).
+            final List<Path> readFiles = new ArrayList<>();
             final Schema owningSchema = executor.getCatalog().resolveOwningSchema(tableName);
             // SIZE_LIMIT counts the bytes of the files this statement has read so far; the next file
             // starts only while that total does not EXCEED the limit — so at least one file always
@@ -878,6 +901,8 @@ public final class CopyCommandExecutor {
                     executor.requireLoadUnheld(loader, fullyQualifiedTableName, table.getName());
                 }
                 final List<Row> fileRows = new ArrayList<>();
+                // The file's metadata columns, read once for its records where a transformation may name them.
+                final StagedFileMetadata metadata = transformItems != null ? metadataOf(staged, file) : null;
                 int parsed = 0;
                 int errors = 0;
                 // The file's FIRST rejected record — the trailing first_error quartet. Only the first is
@@ -904,7 +929,8 @@ public final class CopyCommandExecutor {
                             parsed++;
                             try {
                                 final Row row = transformItems != null
-                                    ? buildJsonTransformedRow(transformItems, tableCols.size(), fieldToCol, record, transformEval, transformSlots)
+                                    ? buildJsonTransformedRow(transformItems, tableCols.size(), fieldToCol, record,
+                                        transformEval, transformSlots, metadata, parsed)
                                     : buildJsonRow(tableCols, record, rowRules.matchByColumnName());
                                 enforceLoadedRow(table, row, rowRules);
                                 fileRows.add(row);
@@ -985,7 +1011,8 @@ public final class CopyCommandExecutor {
                                         }
                                     }
                                     row = transformItems != null
-                                        ? buildTransformedRow(transformItems, tableCols.size(), fieldToCol, rowFields, transformEval, transformSlots)
+                                        ? buildTransformedRow(transformItems, tableCols.size(), fieldToCol, rowFields,
+                                            transformEval, transformSlots, metadata, recordNumber)
                                         : buildCopyRow(tableCols, fileFieldMap, rowFields);
                                     enforceLoadedRow(table, row, rowRules);
                                     fileRows.add(row);
@@ -1042,6 +1069,7 @@ public final class CopyCommandExecutor {
                     firstError == null ? null : Integer.valueOf(firstError.getLine()),
                     firstError == null ? null : firstError.getCharacter(),
                     firstError == null ? null : firstError.getColumnName())));
+                readFiles.add(file);
                 completedLoads.add(new LoadRecord(fullyQualifiedTableName, table.isTemporary(),
                     owningSchema.getDatabaseName(), owningSchema.getName(), table.getName(),
                     executor.stagedDisplayName(fromLocation, file), fromLocationDisplay,
@@ -1051,6 +1079,32 @@ public final class CopyCommandExecutor {
                     firstError == null ? null : firstError.getCharacter(),
                     firstError == null ? null : firstError.getColumnName()));
             }
+
+            // VALIDATE finds this load again by its query ID, or as the session's last, and reads its files again as
+            // VALIDATION_MODE = RETURN_ALL_ERRORS reads them; a file no longer staged is a missing one.
+            final StageFileReader jobReader = recordReader;
+            final FileFormatOptions jobFormat = format;
+            final String jobLocation = fromLocation;
+            final String jobLocationDisplay = fromLocationDisplay;
+            executor.getCatalog().getCopyJobs().add(new CopyJob(StatementCancellation.runningQueryId(),
+                executor.currentSessionId(), owningSchema.getDatabaseName(), owningSchema.getName(), table.getName(),
+                abortOnError, transformItems != null, new CopyJobErrors() {
+                    @Override
+                    public ResultSet errors() {
+                        final List<Path> present = new ArrayList<>();
+                        final List<String> missing = new ArrayList<>();
+                        for (final Path read : readFiles) {
+                            if (Files.exists(read)) {
+                                present.add(read);
+                            } else {
+                                missing.add(executor.stagedDisplayName(jobLocation, read));
+                            }
+                        }
+                        return validateCopyFiles("RETURN_ALL_ERRORS", table, tableCols, fieldToCol, null, null, 0,
+                            present, jobReader, jobFormat, checkColumnCount, jobLocationDisplay, missing, rowRules,
+                            staged);
+                    }
+                }));
 
             // A load is DML (documented): its rows belong to the statement's transaction, seen by other sessions
             // once it commits and gone when it rolls back. The files it loaded, the load history and the purge wait
@@ -1324,7 +1378,8 @@ public final class CopyCommandExecutor {
             final ExpressionEvaluator transformEval, final int transformSlots,
             final List<Path> candidates,
             final StageFileReader recordReader, final FileFormatOptions format, final boolean checkColumnCount,
-            final String fromLocation, final List<String> missingFiles, final LoadedRowRules rowRules) {
+            final String fromLocation, final List<String> missingFiles, final LoadedRowRules rowRules,
+            final StagePrefix staged) {
         final String mode = validationMode.toUpperCase(Locale.ROOT).replace("'", "").trim();
         final Matcher nRowsMatcher = RETURN_N_ROWS_MODE.matcher(mode);
         final int returnRows = nRowsMatcher.matches() ? Integer.parseInt(nRowsMatcher.group(1)) : -1;
@@ -1338,7 +1393,7 @@ public final class CopyCommandExecutor {
             for (final Path file : candidates) {
                 for (final Row row : parseCopyFileRows(file, table, tableCols, fieldToCol,
                         transformItems, transformEval, transformSlots,
-                        recordReader, format, checkColumnCount, null, rowRules)) {
+                        recordReader, format, checkColumnCount, null, rowRules, staged)) {
                     rows.add(row);
                     if (rows.size() >= returnRows) {
                         return new ResultSet(columns, rows);
@@ -1365,7 +1420,7 @@ public final class CopyCommandExecutor {
         final List<Row> errorRows = new ArrayList<>();
         for (final Path file : candidates) {
             parseCopyFileRows(file, table, tableCols, fieldToCol, transformItems, transformEval,
-                transformSlots, recordReader, format, checkColumnCount, errorRows, rowRules);
+                transformSlots, recordReader, format, checkColumnCount, errorRows, rowRules, staged);
         }
         for (final String missing : missingFiles) {
             // The miss has no record geometry behind it — every positional column is null while the
@@ -1388,9 +1443,10 @@ public final class CopyCommandExecutor {
             final List<FrostlakeParser.CopyTransformItemContext> transformItems,
             final ExpressionEvaluator transformEval, final int transformSlots,
             final StageFileReader recordReader, final FileFormatOptions format, final boolean checkColumnCount,
-            final List<Row> errorCollector, final LoadedRowRules rowRules) {
+            final List<Row> errorCollector, final LoadedRowRules rowRules, final StagePrefix staged) {
         final String fileName = StagePathSegments.diskName(file);
         final List<Row> rows = new ArrayList<>();
+        final StagedFileMetadata metadata = transformItems != null ? metadataOf(staged, file) : null;
         try {
             if (recordReader != null) {
                 int recordNumber = 0;
@@ -1398,7 +1454,8 @@ public final class CopyCommandExecutor {
                     recordNumber++;
                     try {
                         final Row row = transformItems != null
-                            ? buildJsonTransformedRow(transformItems, tableCols.size(), fieldToCol, record, transformEval, transformSlots)
+                            ? buildJsonTransformedRow(transformItems, tableCols.size(), fieldToCol, record,
+                                transformEval, transformSlots, metadata, recordNumber)
                             : buildJsonRow(tableCols, record, rowRules.matchByColumnName());
                         enforceLoadedRow(table, row, rowRules);
                         rows.add(row);
@@ -1453,7 +1510,7 @@ public final class CopyCommandExecutor {
                                 }
                                 row = transformItems != null
                                     ? buildTransformedRow(transformItems, tableCols.size(), fieldToCol, rowFields,
-                                        transformEval, transformSlots)
+                                        transformEval, transformSlots, metadata, recordNumber)
                                     : buildCopyRow(tableCols, fieldToCol, rowFields);
                                 enforceLoadedRow(table, row, rowRules);
                                 rows.add(row);
@@ -1878,6 +1935,13 @@ public final class CopyCommandExecutor {
         return new RuntimeException(SqlCompilationError.invalidValueForParameter(rendered, name));
     }
 
+    /** Whether an unload's VALIDATION_MODE is RETURN_ROWS, written bare or quoted, in any case. */
+    private static boolean returnsRows(final FrostlakeParser.CopyOptionValueContext value) {
+        final String written = value.STRING_LITERAL() != null
+            ? ParseTreeText.extractStringLiteral(value.STRING_LITERAL()) : value.getText();
+        return "RETURN_ROWS".equalsIgnoreCase(written.trim());
+    }
+
     /** A boolean copy option takes a BARE TRUE/FALSE — a quoted or bareword value refuses. */
     private static Boolean requireBareBoolean(final String name,
             final FrostlakeParser.CopyOptionValueContext value) {
@@ -2179,7 +2243,8 @@ public final class CopyCommandExecutor {
 
     private FileFormat resolveFileFormat(final String name) {
         try {
-            return executor.getCatalog().getFileFormat(name);
+            // Named exactly, as DESCRIBE FILE FORMAT names it: FORMAT_NAME = LX_FF is no format "lx_ff".
+            return executor.getCatalog().getFileFormatExact(SqlIdentifiers.canonicalText(name));
         } catch (final RuntimeException e) {
             return null;
         }
@@ -2326,14 +2391,24 @@ public final class CopyCommandExecutor {
     }
 
     /** Evaluator over a synthetic COLUMN1..COLUMN&lt;slots&gt; table, so COPY transformation expressions can resolve $1, $2, …. */
-    private ExpressionEvaluator buildStageFieldEvaluator(final int slots) {
+    private ExpressionEvaluator buildStageFieldEvaluator(final int slots, final String alias) {
         final List<TableColumn> slotCols = new ArrayList<>();
         for (int i = 1; i <= slots; i++) {
             slotCols.add(new TableColumn("COLUMN" + i, StringType.VARCHAR, true, null, false, false, false));
         }
-        // COPY is an embedded SQL statement, so no scripting variable is in scope as a bare name here.
-        return new ExpressionEvaluator(new Table("COPY_STAGE", slotCols, false),
+        // The staged file's metadata columns read in a transformation as in a staged-file query (documented,
+        // "Querying metadata for staged files").
+        StagedFileMetadata.addColumns(slotCols);
+        // COPY is an embedded SQL statement, so no scripting variable is in scope as a bare name here. The stage's
+        // alias, when the transformation gives one, qualifies its fields: t.$1.
+        return new ExpressionEvaluator(new Table(alias != null ? alias : "COPY_STAGE", slotCols, false),
             executor.getFunctionRegistry(), executor.getCatalog(), executor);
+    }
+
+    /** A staged file's metadata columns, its name read as METADATA$FILENAME reads it: its path beneath the stage. */
+    private static StagedFileMetadata metadataOf(final StagePrefix staged, final Path file) {
+        return StagedFileMetadata.of(file, staged != null ? staged.metadataFileName(file)
+            : StagePathSegments.diskName(file));
     }
 
     /**
@@ -2342,11 +2417,13 @@ public final class CopyCommandExecutor {
      * positionally.
      */
     private Row buildTransformedRow(final List<FrostlakeParser.CopyTransformItemContext> items, final int numCols,
-            final int[] itemToCol, final List<String> rowFields, final ExpressionEvaluator transformEval, final int slots) {
-        final List<Object> slotValues = new ArrayList<>(slots);
+            final int[] itemToCol, final List<String> rowFields, final ExpressionEvaluator transformEval,
+            final int slots, final StagedFileMetadata metadata, final long rowNumber) {
+        final List<Object> slotValues = new ArrayList<>(slots + 5);
         for (int i = 0; i < slots; i++) {
             slotValues.add(i < rowFields.size() ? inferStageFieldValue(rowFields.get(i)) : null);
         }
+        metadata.addValues(slotValues, rowNumber);
         return projectTransform(items, numCols, itemToCol, new Row(slotValues), transformEval);
     }
 
@@ -2355,14 +2432,39 @@ public final class CopyCommandExecutor {
      * {@code $1:id} / {@code $1:addr.city} resolve — then evaluate the projection. Higher $n are unused for JSON.
      */
     private Row buildJsonTransformedRow(final List<FrostlakeParser.CopyTransformItemContext> items, final int numCols,
-            final int[] itemToCol, final JsonNode record, final ExpressionEvaluator transformEval, final int slots) {
-        final List<Object> slotValues = new ArrayList<>(slots);
+            final int[] itemToCol, final JsonNode record, final ExpressionEvaluator transformEval, final int slots,
+            final StagedFileMetadata metadata, final long rowNumber) {
+        final List<Object> slotValues = new ArrayList<>(slots + 5);
         for (int i = 0; i < slots; i++) {
             // $1 is the whole document as a TYPED variant, so paths extract typed values and a bare
             // $1 lands in a VARIANT column as a typed cell.
             slotValues.add(i == 0 ? VariantValue.ofNode(record) : null);
         }
+        metadata.addValues(slotValues, rowNumber);
         return projectTransform(items, numCols, itemToCol, new Row(slotValues), transformEval);
+    }
+
+    /**
+     * Refuses a transformation whose item names what the staged fields cannot answer, as the statement compiles and
+     * before any file is read: the name is no row's fault, so ON_ERROR does not reach it, as a query refuses such a
+     * name before reading a row (the account's sentence and place for a COPY are unmeasured; the engine's are a
+     * query's).
+     *
+     * @param items     the transformation's items
+     * @param evaluator the evaluator over the staged fields
+     */
+    private static void requireResolvedNames(final List<FrostlakeParser.CopyTransformItemContext> items,
+                                             final ExpressionEvaluator evaluator) {
+        for (final FrostlakeParser.CopyTransformItemContext item : items) {
+            final SourcePosition displaced = ExpressionSource.beginNested(new SourcePosition(
+                item.expression().getStart().getLine(), item.expression().getStart().getCharPositionInLine()));
+            try {
+                evaluator.validateColumnScope(ExpressionEvaluator.parse(
+                    ParseTreeText.getOriginalText(item.expression())));
+            } finally {
+                ExpressionSource.end(displaced);
+            }
+        }
     }
 
     /** Evaluate each transformation expression against the bound $-row, placing results into the mapped target columns. */
@@ -2535,7 +2637,8 @@ public final class CopyCommandExecutor {
         }
         final int slash = location.indexOf('/');
         try {
-            return executor.getCatalog().getStage(slash < 0 ? location.substring(1) : location.substring(1, slash));
+            return executor.getCatalog().getStageExact(slash < 0 ? location.substring(1)
+                : location.substring(1, slash));
         } catch (final RuntimeException unknown) {
             return null;
         }
@@ -2562,6 +2665,28 @@ public final class CopyCommandExecutor {
             + written + "'"));
     }
 
+    /**
+     * What a replayed unload did besides writing its files: a stream its source query read moves on, at its
+     * transaction's COMMIT or at once, as when it first ran (see {@link QueryExecutor#executeConsumingSelect}). The
+     * query runs for that alone; an unload that answers its rows (VALIDATION_MODE = RETURN_ROWS) consumed nothing.
+     *
+     * @param ctx the unload
+     */
+    private void replayUnloadStreamReads(final FrostlakeParser.CopyIntoStatementContext ctx) {
+        FrostlakeParser.SelectStatementContext fromSelect = null;
+        for (final FrostlakeParser.CopyIntoStageClauseContext clause : ctx.copyIntoStageClause()) {
+            if (clause.FROM() != null && clause.copyTableSource().selectStatement() != null) {
+                fromSelect = clause.copyTableSource().selectStatement();
+            } else if (clause.VALIDATION_MODE() != null) {
+                return;
+            }
+        }
+        if (fromSelect != null) {
+            executor.executeConsumingSelect(fromSelect);
+            executor.consumeCtasStreams();
+        }
+    }
+
     private Object executeCopyIntoStage(final FrostlakeParser.CopyIntoStatementContext ctx, final String location,
             final String locationDisplay) {
         logger.info("Executing COPY INTO location: {}", location);
@@ -2574,6 +2699,8 @@ public final class CopyCommandExecutor {
         boolean overwrite = false;
         boolean single = false;
         boolean detailedOutput = false;
+        // VALIDATION_MODE = RETURN_ROWS: the unload answers its query's rows and writes nothing.
+        boolean returnRows = false;
         String compression = "AUTO";
         String fileExtension = null;
         // PARTITION BY belongs directly after FROM: an option clause before it makes the account
@@ -2617,8 +2744,13 @@ public final class CopyCommandExecutor {
                         + clause.INTEGER_LITERAL().getText() + "] for parameter 'MAX_FILE_SIZE'"));
                 }
             } else if (clause.VALIDATION_MODE() != null) {
-                // VALIDATION_MODE never fits an unload: every value refuses as invalid.
-                throw invalidCopyOptionValue("VALIDATION_MODE", clause.copyOptionValue());
+                // An unload takes one value alone, RETURN_ROWS, bare or quoted in any case: "The only supported
+                // validation option is RETURN_ROWS" (documented). Every other value refuses as invalid.
+                if (!returnsRows(clause.copyOptionValue())) {
+                    throw invalidCopyOptionValue("VALIDATION_MODE", clause.copyOptionValue());
+                }
+                sawOptionClause = true;
+                returnRows = true;
             } else if (clause.identifier() != null && clause.copyOptionValue() != null) {
                 sawOptionClause = true;
                 final String optionName = ParseTreeText.getIdentifier(clause.identifier()).toUpperCase(Locale.ROOT);
@@ -2642,6 +2774,8 @@ public final class CopyCommandExecutor {
         // The text is written by the target stage's own format, then the statement's: delimiters, NULL_IF, the
         // enclosure and the escapes, the type, the compression and the extension alike.
         final FileFormatOptions unloadOptions = unloadFormat(location, ctx);
+        // A named stage is written into by exactly its name, as LIST names it: @LX_ST writes no "lx_st".
+        executor.requireNamedStageExact(ctx.stageRef());
         if (unloadOptions.getType() != null) {
             fileFormat = unloadOptions.getType();
         }
@@ -2657,7 +2791,10 @@ public final class CopyCommandExecutor {
         // Resolve the data to unload — either a table scan or a query result.
         final ResultSet data;
         if (fromSelect != null) {
-            data = executor.executeSelectFromContext(fromSelect);
+            // A stream the query reads is consumed once the files are written; RETURN_ROWS writes none and consumes
+            // nothing.
+            data = returnRows ? executor.executeSelectFromContext(fromSelect)
+                : executor.executeConsumingSelect(fromSelect);
         } else if (fromTable != null) {
             final Table sourceTable = executor.getCatalog().resolveTableAsWritten(fromTable, "Object");
             // An unload reads its table as a query does, so it needs SELECT on it as the query form does
@@ -2679,6 +2816,10 @@ public final class CopyCommandExecutor {
             }
         } else {
             throw new RuntimeException("COPY INTO " + location + " requires a FROM clause");
+        }
+        if (returnRows) {
+            // The query's results instead of the files: nothing is written, so the location is left as it was.
+            return data;
         }
         requireUnloadableType(unloadOptions.getWrittenType() != null ? unloadOptions.getWrittenType() : fileFormat,
             location);
@@ -2798,6 +2939,8 @@ public final class CopyCommandExecutor {
             }
         }
 
+        // The files are written: a stream the query read moves on, as after a DML (see executeConsumingSelect).
+        executor.consumeCtasStreams();
         // DETAILED_OUTPUT = TRUE swaps the summary for one row per written file, bare names.
         if (detailedOutput) {
             final List<ResultSetColumn> detailColumns = new ArrayList<>();

@@ -29,6 +29,7 @@ public final class TableVersion {
 
     private final TableStructure structure;
     private final List<Row> rows;
+    private final List<Long> rowIds;
 
     /**
      * @param structure the shape, or null when the table keeps no structure history and the rows follow its current
@@ -36,8 +37,24 @@ public final class TableVersion {
      * @param rows      the rows, in that shape
      */
     public TableVersion(final TableStructure structure, final List<Row> rows) {
+        this(structure, rows, null);
+    }
+
+    /**
+     * @param structure the shape, or null when the table keeps no structure history and the rows follow its current
+     *                  columns
+     * @param rows      the rows, in that shape
+     * @param rowIds    the rows' identities, index-aligned, or null when they are not known
+     */
+    public TableVersion(final TableStructure structure, final List<Row> rows, final List<Long> rowIds) {
         this.structure = structure;
         this.rows = rows;
+        this.rowIds = rowIds;
+    }
+
+    /** The rows' identities, index-aligned with {@link #getRows()}, or null when they are not known. */
+    public List<Long> getRowIds() {
+        return rowIds;
     }
 
     /** The shape the table had at the point, or null when its rows follow its current columns. */

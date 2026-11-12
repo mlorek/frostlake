@@ -23,6 +23,7 @@ import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.RowExpression;
 import dev.frostlake.executor.expressions.SourcePosition;
+import dev.frostlake.executor.expressions.ValueCaster;
 import dev.frostlake.executor.operators.Operator;
 import dev.frostlake.executor.operators.StageOperator;
 import dev.frostlake.metastore.model.Table;
@@ -211,9 +212,10 @@ final class PivotUnpivotExecutor {
                 }
             }
         }
-        // DEFAULT ON NULL (expr): the constant substituted for empty pivot cells.
+        // DEFAULT ON NULL (expr): the constant substituted for empty pivot cells, and its type.
         final Object defaultOnNull = pivotCtx.DEFAULT() != null
             ? evaluateConstant(pivotCtx.expression()) : null;
+        final DataType defaultType = pivotCtx.DEFAULT() != null ? constantType(pivotCtx.expression()) : null;
         // Get all non-pivot/non-agg columns for grouping
         final List<Integer> groupByColIndices = new ArrayList<>();
         for (int i = 0; i < table.getColumns().size(); i++) {
@@ -221,12 +223,14 @@ final class PivotUnpivotExecutor {
                 groupByColIndices.add(i);
             }
         }
-        // Build result columns
+        // Build result columns. A column keeps the type it is known to have, as UNPIVOT's do: a table's own column
+        // and one a derived relation typed statically, and a pivoted column the aggregate's type over such a column.
+        final boolean declared = table.residentSource() != null;
         final List<ResultSetColumn> resultColumns = new ArrayList<>();
         for (final int idx : groupByColIndices) {
             final TableColumn col = table.getColumns().get(idx);
-            resultColumns.add(withPolicy(new ResultSetColumn(col.getName(), col.getDataType(), null),
-                col.getProjectionPolicyName()));
+            resultColumns.add(withPolicy(new ResultSetColumn(col.getName(), col.getDataType(), null,
+                declared || col.isStaticallyTyped() ? col.getDataType() : null), col.getProjectionPolicyName()));
         }
         // A pivoted column hands out the aggregated column's values, and comes under its projection policy, unless
         // the aggregate only counts them (live-verified: MAX(ssn) is refused by the pivoted columns, COUNT(ssn) is
@@ -235,14 +239,21 @@ final class PivotUnpivotExecutor {
             : table.getColumns().get(aggColIndex).getProjectionPolicyName();
         final DataType aggregated = aggColIndex >= 0 ? table.getColumns().get(aggColIndex).getDataType() : null;
         requireAggregable(aggFuncName, aggregated);
-        final DataType pivotedType = pivotColumnType(aggFuncName, aggregated, aggregateText, table,
+        final DataType aggregateType = pivotColumnType(aggFuncName, aggregated, aggregateText, table,
             inList.pivotValueList() != null);
+        final DataType pivotedType = withDefault(aggregateType, defaultType);
+        // A default that widens the columns' type widens every cell's value to it.
+        final boolean widened = pivotedType != aggregateType;
+        final boolean aggregatedKnown = aggColIndex < 0 || declared
+            || table.getColumns().get(aggColIndex).isStaticallyTyped();
         boolean rowValued = false;
         for (final PivotValue pivotValue : pivotValues) {
-            resultColumns.add(withPolicy(new ResultSetColumn(pivotValue.name(aggregateAlias), pivotedType, null),
-                pivotedPolicy));
+            resultColumns.add(withPolicy(new ResultSetColumn(pivotValue.name(aggregateAlias), pivotedType, null,
+                aggregatedKnown ? pivotedType : null), pivotedPolicy));
             rowValued |= pivotValue.readsRow();
         }
+        // The DEFAULT ON NULL value as a cell holds it, converted once, when a cell first needs it.
+        final Object[] cellDefault = {null, Boolean.FALSE};
         final Table shape = executor.resultSetToTable(
             new ResultSet(renamed(resultColumns, renamedColumns), new ArrayList<Row>()), relationName);
         final ExpressionEvaluator rowEvaluator = rowValued
@@ -327,8 +338,15 @@ final class PivotUnpivotExecutor {
                         final List<Row> cellRows = entry.getValue().getOrDefault(Integer.valueOf(i),
                             new ArrayList<Row>());
                         Object aggResult = executor.aggregateOverRows(aggregateCall, cellRows, table);
+                        if (aggResult != null && widened) {
+                            aggResult = atPivotedType(aggResult, pivotedType);
+                        }
                         if (aggResult == null && defaultOnNull != null) {
-                            aggResult = defaultOnNull;
+                            if (!cellDefault[1].equals(Boolean.TRUE)) {
+                                cellDefault[0] = atPivotedType(defaultOnNull, pivotedType);
+                                cellDefault[1] = Boolean.TRUE;
+                            }
+                            aggResult = cellDefault[0];
                         }
                         rowValues.add(aggResult);
                     }
@@ -600,6 +618,52 @@ final class PivotUnpivotExecutor {
         }
     }
 
+    /**
+     * A value as a pivoted cell holds it: converted to the pivoted columns' number type, which DEFAULT ON NULL may have
+     * widened (see {@link #withDefault}), so 0 is 0.00 in a NUMBER(22,2) column and an aggregate's 10.00 is 10.000 in
+     * a NUMBER(23,3) one; a text that is no number is refused as the cast refuses it (live-verified). A column of
+     * another type takes the value as it is.
+     *
+     * @param value       the DEFAULT ON NULL value
+     * @param pivotedType the pivoted columns' type
+     * @return the value a cell holds
+     */
+    private static Object atPivotedType(final Object value, final DataType pivotedType) {
+        if (value == null || !(pivotedType instanceof NumericType) || NumericType.isDecfloat(pivotedType)) {
+            return value;
+        }
+        return ValueCaster.castValue(value, ColumnTypeFamilies.spell(pivotedType));
+    }
+
+    /**
+     * The pivoted columns' type once DEFAULT ON NULL gives a number: the aggregate's type and the default's fold to
+     * one, as NVL(aggregate, default) folds them, so over NUMBER(22,2) a 0.125 makes NUMBER(23,3), a 30-digit number
+     * NUMBER(32,2) and a FLOAT a FLOAT, where a NULL or a text default changes nothing (live-verified).
+     *
+     * @param aggregate   the aggregate's type, or null when unknown
+     * @param defaultType the default's type, or null when untyped
+     * @return the columns' type
+     */
+    private static DataType withDefault(final DataType aggregate, final DataType defaultType) {
+        if (aggregate == null || !(defaultType instanceof NumericType) || !(aggregate instanceof NumericType)) {
+            return aggregate;
+        }
+        final DataType folded = DeclaredTypeFold.combine(aggregate, defaultType);
+        return folded != null ? folded : aggregate;
+    }
+
+    /** A constant expression's static type, or null when it has none. */
+    private DataType constantType(final ParserRuleContext expr) {
+        final Table dummyTable = new Table("DUMMY", new ArrayList<>(), false);
+        final ExpressionEvaluator evaluator = new ExpressionEvaluator(
+            dummyTable, executor.getFunctionRegistry(), executor.getCatalog(), executor);
+        try {
+            return evaluator.inferStaticType(ExpressionEvaluator.parse(ParseTreeText.getOriginalText(expr)));
+        } catch (final RuntimeException untyped) {
+            return null;
+        }
+    }
+
     private static List<ResultSetColumn> renamed(final List<ResultSetColumn> columns, final List<String> names) {
         if (names == null) {
             return columns;
@@ -607,7 +671,8 @@ final class PivotUnpivotExecutor {
         final List<ResultSetColumn> renamedColumns = new ArrayList<>();
         for (int i = 0; i < columns.size(); i++) {
             final ResultSetColumn column = columns.get(i);
-            renamedColumns.add(i < names.size() ? new ResultSetColumn(names.get(i), column.getDataType()) : column);
+            // Renamed, a column keeps what it carries: its static type and its projection policy.
+            renamedColumns.add(i < names.size() ? column.withName(names.get(i)) : column);
         }
         return renamedColumns;
     }

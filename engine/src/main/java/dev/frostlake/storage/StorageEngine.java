@@ -23,6 +23,7 @@ import dev.frostlake.metastore.model.Table;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -568,11 +569,8 @@ public class StorageEngine {
         final TableStorage sourceStorage = getTableStorage(sourceQualifiedName);
         final TableStorage targetStorage = getTableStorage(targetQualifiedName);
 
-        // Copy all rows from source to target
-        for (final Row row : sourceStorage.scan()) {
-            // Create a new row with the same values
-            final Row clonedRow = new Row(new ArrayList<>(row.getValues()));
-            targetStorage.insert(clonedRow);
-        }
+        // Copy all rows from source to target, each under its source identity.
+        final List<Long> ids = new ArrayList<>();
+        targetStorage.insertCloned(sourceStorage.scanWithIds(ids), ids);
     }
 }

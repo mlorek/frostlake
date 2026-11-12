@@ -768,6 +768,7 @@ final class CatalogSnapshotReader {
                         stream.setOwner(streamSnapshot.owner);
                     }
                     stream.restoreCreatedTime(streamSnapshot.createdAt);
+                    stream.restoreLastConsumedAt(streamSnapshot.lastConsumedAt);
                     if (streamSnapshot.offsetSequence != null) {
                         stream.restoreOffsetSequence(streamSnapshot.offsetSequence.longValue());
                     }

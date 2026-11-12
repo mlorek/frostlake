@@ -231,4 +231,21 @@ public abstract class AbstractFrostlakeStatement implements Statement {
     public boolean isWrapperFor(final Class<?> iface) throws SQLException {
         return iface.isInstance(this);
     }
+
+    /**
+     * The batch's update counts as longs, as the JDBC 4.2 API reads them: {@link #executeBatch()}'s counts, a failure
+     * reported as it reports one.
+     *
+     * @return one count per statement of the batch
+     * @throws SQLException as {@link #executeBatch()} throws
+     */
+    @Override
+    public long[] executeLargeBatch() throws SQLException {
+        final int[] counts = executeBatch();
+        final long[] large = new long[counts.length];
+        for (int i = 0; i < counts.length; i++) {
+            large[i] = counts[i];
+        }
+        return large;
+    }
 }

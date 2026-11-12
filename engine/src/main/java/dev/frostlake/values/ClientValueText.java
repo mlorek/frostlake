@@ -105,6 +105,11 @@ public final class ClientValueText {
                 // "20201-01-15" past 9999 and "-1-01-01" before year one (live-verified).
                 return VariantJsonText.unwrappedStringText(SharedFunctionHelpers.variantTemporalText(value));
             }
+            if (value instanceof BinaryValue) {
+                // A binary held in a VARIANT is a JSON string of its hex digits, "AB", as a temporal is one of its
+                // text: getString and getObject read the same JSON text.
+                return VariantJsonText.unwrappedStringText(((BinaryValue) value).toHex());
+            }
         }
         // A container already displays its DOUBLEs the account's way; the whole-value double and the
         // one read out unwrapped are the two spelled here.

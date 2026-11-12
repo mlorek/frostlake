@@ -22,6 +22,7 @@ import dev.frostlake.executor.commands.AccessControlHandler;
 import dev.frostlake.executor.commands.AlertCommandHandler;
 import dev.frostlake.executor.commands.AlterCommandHandler;
 import dev.frostlake.executor.commands.AppObjectCommandHandler;
+import dev.frostlake.executor.commands.ApplyPrivileges;
 import dev.frostlake.executor.commands.BeginEndBlockHandler;
 import dev.frostlake.executor.commands.BoundPropertyVariable;
 import dev.frostlake.executor.commands.ColumnDefinitionParser;
@@ -36,6 +37,7 @@ import dev.frostlake.executor.commands.ExternalVolumeCommandHandler;
 import dev.frostlake.executor.commands.GrantRevokeHandler;
 import dev.frostlake.executor.commands.IntegrationCommandHandler;
 import dev.frostlake.executor.commands.LoopControlPlacement;
+import dev.frostlake.executor.commands.ManualRunPrivileges;
 import dev.frostlake.executor.commands.PropertyVariables;
 import dev.frostlake.executor.commands.QueryCommandHandler;
 import dev.frostlake.executor.commands.SecurityObjectCommandHandler;
@@ -469,9 +471,34 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
      * <p>Checked once per statement over the whole parse tree rather than in each DDL handler, because
      * {@code tagList} hangs off five different rules (table tail options, column constraints, views and
      * materialized views). A value outside the tag's ALLOWED_VALUES is refused here too, before anything
-     * is created (live-verified).
+     * is created (live-verified), and so is a tag the session may not apply.
      */
     private void rejectUnknownTagReferences(final ParseTree node) {
+        // A policy attached as the object is made asks APPLY on it, as the ALTER forms do: a masking or a projection
+        // policy in a column definition, a view column's clause or ADD COLUMN, WITH ROW ACCESS POLICY, and an
+        // aggregation or a join policy (see ApplyPrivileges).
+        if (node instanceof FrostlakeParser.ColumnConstraintContext
+                && ((FrostlakeParser.ColumnConstraintContext) node).qualifiedName() != null) {
+            final FrostlakeParser.ColumnConstraintContext constraint = (FrostlakeParser.ColumnConstraintContext) node;
+            if (constraint.MASKING() != null) {
+                requireApplyAttachedPolicy("MASKING_POLICY", constraint.qualifiedName());
+            } else if (constraint.PROJECTION() != null) {
+                requireApplyAttachedPolicy("PROJECTION_POLICY", constraint.qualifiedName());
+            }
+        } else if (node instanceof FrostlakeParser.ViewColumnClauseContext
+                && ((FrostlakeParser.ViewColumnClauseContext) node).qualifiedName() != null) {
+            final FrostlakeParser.ViewColumnClauseContext clause = (FrostlakeParser.ViewColumnClauseContext) node;
+            requireApplyAttachedPolicy(clause.MASKING() != null ? "MASKING_POLICY" : "PROJECTION_POLICY",
+                clause.qualifiedName());
+        } else if (node instanceof FrostlakeParser.RowAccessPolicyClauseContext) {
+            requireApplyAttachedPolicy("ROW_ACCESS_POLICY",
+                ((FrostlakeParser.RowAccessPolicyClauseContext) node).qualifiedName());
+        } else if (node instanceof FrostlakeParser.AggregationPolicyClauseContext) {
+            requireApplyAttachedPolicy("AGGREGATION_POLICY",
+                ((FrostlakeParser.AggregationPolicyClauseContext) node).qualifiedName());
+        } else if (node instanceof FrostlakeParser.JoinPolicyClauseContext) {
+            requireApplyAttachedPolicy("JOIN_POLICY", ((FrostlakeParser.JoinPolicyClauseContext) node).qualifiedName());
+        }
         if (node instanceof FrostlakeParser.TagListContext) {
             final FrostlakeParser.TagListContext tags = (FrostlakeParser.TagListContext) node;
             for (final FrostlakeParser.TagAssignmentContext assignment : tags.tagAssignment()) {
@@ -480,6 +507,9 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                     throw new RuntimeException(SqlCompilationError.doesNotExistAsSpelled("Tag", tagName.toUpperCase(Locale.ROOT)));
                 }
                 if (catalog != null) {
+                    // Setting a tag as the object is created asks APPLY on it as SET TAG does (see ApplyPrivileges).
+                    ApplyPrivileges.require(queryExecutor, Privilege.APPLY_TAG, "TAG",
+                        catalog.qualifiedExactName(tagName), catalog.getTagExact(tagName).getOwner());
                     // ALLOWED_VALUES is judged before the object is created, as live does.
                     TagValues.requireAllowed(catalog.getTagExact(tagName),
                         TagValues.text(assignment.qualifiedName(), assignment.tagValue(), queryExecutor));
@@ -488,6 +518,62 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             rejectUnknownTagReferences(node.getChild(i));
+        }
+    }
+
+    /**
+     * Refuses a policy an object being made attaches when the session may not apply it: the account's APPLY privilege
+     * for the policy's kind, or APPLY on the policy. A policy that is not there is left to the statement, which refuses
+     * it.
+     *
+     * @param kind the policy's kind: MASKING_POLICY, ROW_ACCESS_POLICY, PROJECTION_POLICY, AGGREGATION_POLICY or
+     *             JOIN_POLICY
+     * @param name the policy's name as written
+     */
+    private void requireApplyAttachedPolicy(final String kind, final FrostlakeParser.QualifiedNameContext name) {
+        if (catalog == null || name == null) {
+            return;
+        }
+        final String fullName;
+        final String owner;
+        try {
+            fullName = catalog.qualifiedExactName(getText(name));
+            owner = attachedPolicyOwner(kind, fullName);
+        } catch (final RuntimeException missing) {
+            return;
+        }
+        ApplyPrivileges.require(queryExecutor, applyOnAccount(kind), kind, fullName, owner);
+    }
+
+    /** The owner of a policy of a kind, by its name in full; a policy that is not there fails the lookup. */
+    private String attachedPolicyOwner(final String kind, final String fullName) {
+        switch (kind) {
+            case "MASKING_POLICY":
+                return catalog.findMaskingPolicyExact(fullName).getOwner();
+            case "ROW_ACCESS_POLICY":
+                return catalog.findRowAccessPolicyExact(fullName).getOwner();
+            case "PROJECTION_POLICY":
+                return catalog.findProjectionPolicyExact(fullName).getOwner();
+            case "AGGREGATION_POLICY":
+                return catalog.findAggregationPolicyExact(fullName).getOwner();
+            default:
+                return catalog.findJoinPolicy(fullName).getOwner();
+        }
+    }
+
+    /** The account privilege that applies every policy of a kind. */
+    private static Privilege applyOnAccount(final String kind) {
+        switch (kind) {
+            case "MASKING_POLICY":
+                return Privilege.APPLY_MASKING_POLICY;
+            case "ROW_ACCESS_POLICY":
+                return Privilege.APPLY_ROW_ACCESS_POLICY;
+            case "PROJECTION_POLICY":
+                return Privilege.APPLY_PROJECTION_POLICY;
+            case "AGGREGATION_POLICY":
+                return Privilege.APPLY_AGGREGATION_POLICY;
+            default:
+                return Privilege.APPLY_JOIN_POLICY;
         }
     }
 
@@ -503,7 +589,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 try {
                     return ddlHandler.handleCreateStatement(ctx);
                 } catch (final TableLockWait held) {
-                    waitingSince = waitingSince == 0L ? System.nanoTime() : waitingSince;
+                    // Each lock the statement meets is waited for LOCK_TIMEOUT on its own.
+                    waitingSince = System.nanoTime();
                     queryExecutor.awaitTableLock(held, waitingSince);
                 }
             }
@@ -645,7 +732,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                     queryExecutor.executeTruncate(tableName, ifExists);
                     return null;
                 } catch (final TableLockWait held) {
-                    waitingSince = waitingSince == 0L ? System.nanoTime() : waitingSince;
+                    // Each lock the statement meets is waited for LOCK_TIMEOUT on its own.
+                    waitingSince = System.nanoTime();
                     queryExecutor.awaitTableLock(held, waitingSince);
                 }
             }
@@ -724,6 +812,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         try {
             // EXECUTE TASK task_name
             final String taskName = getText(ctx.qualifiedName());
+            ManualRunPrivileges.requireTask(queryExecutor, ParseTreeText.qualifiedNameParts(ctx.qualifiedName()));
 
             if (taskScheduler == null) {
                 throw new RuntimeException("Task scheduler not initialized");
@@ -953,7 +1042,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 } finally {
                     savepoint.end(completed);
                 }
-                waitingSince = waitingSince == 0L ? System.nanoTime() : waitingSince;
+                // Each lock the statement meets is waited for LOCK_TIMEOUT on its own.
+                waitingSince = System.nanoTime();
                 queryExecutor.awaitTableLock(held, waitingSince);
             }
         } finally {
@@ -1010,7 +1100,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             try {
                 return queryHandler.handleQueryStatement(ctx);
             } catch (final TableLockWait held) {
-                waitingSince = waitingSince == 0L ? System.nanoTime() : waitingSince;
+                // Each lock the statement meets is waited for LOCK_TIMEOUT on its own.
+                waitingSince = System.nanoTime();
                 queryExecutor.awaitTableLock(held, waitingSince);
             }
         }
@@ -1718,7 +1809,10 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         final String selectSql = binds.isEmpty() ? declared
             : JdbcMarshaling.bindUsing(declared, binds, new HashSet<Integer>());
         // Execute the SELECT query to populate the cursor; one written with FOR UPDATE is refused as the query
-        // statement is, when the cursor opens (live-verified).
+        // statement is, when the cursor opens (live-verified). The query runs as a child statement of the session's,
+        // with a QUERY_HISTORY row of its own listed under the query as the cursor declares it (live-verified:
+        // SELECT|SUCCESS|SELECT 943011 for LET c CURSOR FOR SELECT 943011; OPEN c;).
+        final QueryHistory row = queryExecutor.beginChildStatement(declared, queryExecutor.firstStatementOf(declared));
         final ResultSet resultSet;
         try {
             final FrostlakeParser.QueryStatementContext query = parseCursorQuery(selectSql);
@@ -1728,8 +1822,12 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             resultSet = queryExecutor.executeSelectFromContext(query.selectStatement());
         } catch (final RuntimeException refused) {
             // A bound value echoed as a predicate is named by its placeholder (see UsingBindEcho).
-            throw binds.isEmpty() ? refused : UsingBindEcho.named(refused, declared, binds, new HashSet<Integer>());
+            final RuntimeException thrown = binds.isEmpty() ? refused
+                : UsingBindEcho.named(refused, declared, binds, new HashSet<Integer>());
+            queryExecutor.failChildStatement(row, declared, thrown);
+            throw thrown;
         }
+        queryExecutor.completeChildStatement(row, declared, resultSet);
         cursor.open(resultSet);
 
         logger.trace("Opened cursor: {}", cursorName);

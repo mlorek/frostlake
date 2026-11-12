@@ -110,6 +110,7 @@ final class MaskingPolicyApplier {
         final List<Expression> bodies = new ArrayList<>();
         final List<MaskingPolicy> boundByValue = new ArrayList<>();
         final List<DeferredFault> unreadable = new ArrayList<>();
+        final List<String> owners = new ArrayList<>();
         for (int i = 0; i < columns.size(); i++) {
             final TableColumn column = columns.get(i);
             if (column.hasMaskingPolicy()) {
@@ -119,9 +120,11 @@ final class MaskingPolicyApplier {
                 Expression body = null;
                 MaskingPolicy byValue = null;
                 DeferredFault refusal = null;
+                String policyOwner = null;
                 try {
                     final MaskingPolicy policy = PolicyReferences.maskingPolicy(executor.getCatalog(),
                         column.getMaskingPolicyName(), owner);
+                    policyOwner = policy.getOwner();
                     if (ParameterReferences.readInSubquery(policy.getBody(), parameterNames(policy))) {
                         byValue = policy;
                     } else {
@@ -133,6 +136,7 @@ final class MaskingPolicyApplier {
                 bodies.add(body);
                 boundByValue.add(byValue);
                 unreadable.add(refusal);
+                owners.add(policyOwner);
             }
         }
         final ExpressionEvaluator evaluator = new ExpressionEvaluator(relation, executor.getFunctionRegistry(),
@@ -147,10 +151,17 @@ final class MaskingPolicyApplier {
                 for (int k = 0; k < slots.size(); k++) {
                     final int slot = slots.get(k);
                     if (slot < values.size()) {
-                        values.set(slot, unreadable.get(k) != null ? unreadable.get(k)
-                            : boundByValue.get(k) != null
-                                ? valueBoundMask(evaluator, boundByValue.get(k), columns, slot, row, owner)
-                            : maskedValue(evaluator, bodies.get(k), row, columns.get(slot)));
+                        // The body runs with its policy owner's rights: the reading role needs no privilege on a
+                        // UDF or a mapping table it reads (documented), as a view's body runs with its owner's.
+                        final String rights = enterPolicyOwner(owners.get(k));
+                        try {
+                            values.set(slot, unreadable.get(k) != null ? unreadable.get(k)
+                                : boundByValue.get(k) != null
+                                    ? valueBoundMask(evaluator, boundByValue.get(k), columns, slot, row, owner)
+                                : maskedValue(evaluator, bodies.get(k), row, columns.get(slot)));
+                        } finally {
+                            leavePolicyOwner(rights);
+                        }
                     }
                 }
                 masked.add(new Row(values));
@@ -379,8 +390,11 @@ final class MaskingPolicyApplier {
         // A row access policy reads a tag of the table it protects as a masking policy does.
         final String body = rewriteTagFn(ParameterReferences.bound(policy.getBody(), names, bound),
             "GET_TAG_ON_CURRENT_TABLE", table.getName(), "TABLE");
-        // The body reads the objects it names, never a CTE of the statement reading the table (live-verified).
+        // The body reads the objects it names, never a CTE of the statement reading the table (live-verified), and
+        // reads them with its policy owner's rights: the reading role needs no privilege on a mapping table it reads
+        // (documented).
         final Map<String, ResultSet> outerCtes = executor.suspendCteScope();
+        final String rights = enterPolicyOwner(policy.getOwner());
         try {
             return executor.filterRows(rows, shape, JUDGED_ROW, body);
         } catch (final UnsupportedSubqueryException unsupported) {
@@ -390,7 +404,27 @@ final class MaskingPolicyApplier {
             }
             throw UnsupportedSubqueryException.insideRowAccessPolicy();
         } finally {
+            leavePolicyOwner(rights);
             executor.setCurrentCteContext(outerCtes);
+        }
+    }
+
+    /**
+     * Enters a policy owner's privileges for its body (see {@link SecurityManager#enterPolicyOwnerRights}).
+     *
+     * @param policyOwner the role that owns the policy, or null when it is not known
+     * @return the rights in force before, for {@link #leavePolicyOwner}
+     */
+    private String enterPolicyOwner(final String policyOwner) {
+        final SecurityManager security = executor.getSecurityManager();
+        return security == null ? null : security.enterPolicyOwnerRights(policyOwner);
+    }
+
+    /** Returns to the rights in force before {@link #enterPolicyOwner}. */
+    private void leavePolicyOwner(final String previous) {
+        final SecurityManager security = executor.getSecurityManager();
+        if (security != null) {
+            security.leavePolicyOwnerRights(previous);
         }
     }
 }

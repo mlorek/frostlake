@@ -177,7 +177,7 @@ public class AlterDropPrivilegeWordsTest extends BaseDatabaseTest {
             refusal("ALTER TAG aw_tg RENAME TO aw_tg2"));
         assertEquals(refused("stream", "AW_ST", "MODIFY", "STREAM", inSchema("AW_ST")),
             refusal("ALTER STREAM aw_st SET COMMENT = 'x'"));
-        assertEquals(refused("task", "AW_TK", "MODIFY", "TASK", inSchema("AW_TK")),
+        assertEquals(refused("task", "AW_TK", "OWNERSHIP", "TASK", inSchema("AW_TK")),
             refusal("ALTER TASK aw_tk SET COMMENT = 'x'"));
         assertEquals(refused("task", "AW_TK", "OPERATE", "TASK", inSchema("AW_TK")),
             refusal("ALTER TASK aw_tk RESUME"));
@@ -192,10 +192,12 @@ public class AlterDropPrivilegeWordsTest extends BaseDatabaseTest {
         // OPERATE lets a role that does not own the task or the pipe operate it, and no more.
         engine.execute("GRANT OPERATE ON TASK aw_tk TO ROLE ACCOUNTADMIN");
         engine.execute("GRANT OPERATE ON PIPE aw_p TO ROLE ACCOUNTADMIN");
+        // A task runs as its owner, so a serverless task's owner must hold EXECUTE MANAGED TASK.
+        engine.execute("GRANT EXECUTE MANAGED TASK ON ACCOUNT TO ROLE aw_other");
         runs("ALTER TASK aw_tk RESUME");
         runs("ALTER TASK aw_tk SUSPEND");
         runs("ALTER PIPE aw_p REFRESH");
-        assertEquals(refused("task", "AW_TK", "MODIFY", "TASK", inSchema("AW_TK")),
+        assertEquals(refused("task", "AW_TK", "OWNERSHIP", "TASK", inSchema("AW_TK")),
             refusal("ALTER TASK aw_tk SET COMMENT = 'x'"));
     }
 

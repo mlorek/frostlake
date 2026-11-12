@@ -195,7 +195,8 @@ public final class AggregateNumerics {
     /**
      * AVG over every cumulative RANGE frame of one partition at once, each exactly as {@link #windowAvg} reads that
      * frame on its own at a cumulative window's scale (see {@link #cumulativeWindowSums}). A quotient's refusal stands
-     * for its own group alone.
+     * for its own group alone, unless a running total later in the partition is refused: the sums are all taken before
+     * any quotient, so that refusal stands for every group.
      *
      * @param groups the partition's values, peer group by peer group, in partition order
      * @param variantArgument whether the argument expression is statically VARIANT-typed
@@ -262,6 +263,13 @@ public final class AggregateNumerics {
                     averages.add(quotient);
                 } catch (final RuntimeException quotientRefused) {
                     averages.add(quotientRefused);
+                }
+            }
+        }
+        if (refused != null) {
+            for (int i = 0; i < averages.size(); i++) {
+                if (averages.get(i) instanceof RuntimeException) {
+                    averages.set(i, refused);
                 }
             }
         }
@@ -1014,8 +1022,9 @@ public final class AggregateNumerics {
         if (approximate) {
             return Double.valueOf(variance);
         }
-        return BigDecimal.valueOf(variance)
-            .setScale(varianceScale(maxInputScale), RoundingMode.HALF_UP);
+        final int scale = varianceScale(maxInputScale);
+        return fitOrRefuse(BigDecimal.valueOf(variance).setScale(scale, RoundingMode.HALF_UP),
+            NumericRangeRefusal.gText(variance), scale);
     }
 
     /**
@@ -1046,7 +1055,11 @@ public final class AggregateNumerics {
      */
     public static BigDecimal exactVarianceAtDeclaredScale(final ExactMoments moments, final boolean sample,
                                                           final int maxInputScale) {
-        return moments.variance(sample, varianceScale(maxInputScale));
+        // NUMBER(38, s) holds 38 - s digits before the point: a variance past them is refused, never answered past
+        // its type (a window frame's alike).
+        final int scale = varianceScale(maxInputScale);
+        final BigDecimal variance = moments.variance(sample, scale);
+        return fitOrRefuse(variance, NumericRangeRefusal.gText(variance.doubleValue()), scale);
     }
 
     /**

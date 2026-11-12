@@ -35,6 +35,14 @@ import platform as _platform
 import sys as _sys
 import traceback as _traceback
 import types as _types
+import builtins as _builtins
+
+# The worker's own code reads the builtins through a private copy taken here: a routine that replaces builtins.len,
+# builtins.str or builtins.isinstance changes them for routines alone (see _GLOBALS), never for the worker's functions.
+# A function reads the builtins its module named when the function was defined, and so does a helper module the worker
+# makes (op "module"). The standard library the worker uses reads the real ones, so what routines made of those is set
+# aside while the worker's own code runs (see _set_aside).
+__builtins__ = dict(_builtins.__dict__)
 
 # The worker's functions and classes take their module from this name, which marks them the runtime's own (see
 # _owned); routines run under "__main__" in a namespace of their own (_GLOBALS).
@@ -63,7 +71,7 @@ _TIME = _dt.time
 _DECIMAL = _decimal.Decimal
 _FORMAT_EXCEPTION = _traceback.format_exception
 
-_GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}
+_GLOBALS = {"__name__": "__main__", "__builtins__": _builtins}
 # The names a routine's namespace starts with; each call runs in a namespace of its own (op "enter"), and what
 # the namespace held before is put back when the call is through (op "leave"). _FRAMES holds those saved states.
 _BASE = dict(_GLOBALS)
@@ -77,7 +85,6 @@ _MODULES = {}
 # outermost statement, as PythonRuntime.RUNTIME_SOURCE does on GraalPy): the built-in names, the environment, the
 # modules a helper module installed on sys.modules, and what the runtime's own code is made of - the helper modules,
 # this worker's module, every class and function they define (nested ones too) and their members.
-import builtins as _builtins
 _BUILTINS_BASE = dict(_builtins.__dict__)
 _ENVIRON_BASE = dict(_os.environ)
 _INSTALLED = {}
@@ -89,7 +96,7 @@ _GUARDED_IDS = set()
 _MISSING = object()
 # What else routines share, as it stood when the worker started (see _snapshot), and op "restore" puts back:
 # the standard library's modules then imported - (name, module, class, members) each -, the names then on sys.modules,
-# the working directory and the decimal context. Through the standard library's own functions, bound here.
+# the working directory, the decimal context, the import system's lists and cache and the recursion limit. Through the standard library's own functions, bound here.
 _STDLIB = []
 _MODULES_BASE = set()
 _GETCWD = _os.getcwd
@@ -97,6 +104,12 @@ _CHDIR = _os.chdir
 _SETCONTEXT = _decimal.setcontext
 _CWD_BASE = None
 _DECIMAL_BASE = None
+# What decides where an import looks, and the recursion limit, as they stood (see _put_back_import_system).
+_PATH_BASE = None
+_META_PATH_BASE = None
+_PATH_HOOKS_BASE = None
+_IMPORTER_CACHE_BASE = None
+_RECURSION_BASE = None
 
 
 # A SQL NULL a VARIANT parameter takes: a sqlNullWrapper, its type made where no module name is, so it has no
@@ -173,6 +186,41 @@ def _put_back_members(current, pristine):
             current[key] = value
 
 
+# What routines have made of the builtins in the running statement, kept aside while the worker's own code runs, or
+# None while the builtins are as the worker found them.
+_ROUTINE_BUILTINS = [None]
+
+
+def _set_aside():
+    # Routine code hands control back to the worker: what it made of the builtins is kept, and the builtins are put
+    # back as found, so the standard library the worker uses (json's decoder calls len) reads its own.
+    current = _builtins.__dict__
+    same = len(current) == len(_BUILTINS_BASE)
+    if same:
+        for key, value in _BUILTINS_BASE.items():
+            if current.get(key, _MISSING) is not value:
+                same = False
+                break
+    if same:
+        _ROUTINE_BUILTINS[0] = None
+        return
+    _ROUTINE_BUILTINS[0] = dict(current)
+    for key in [k for k in current if k not in _BUILTINS_BASE]:
+        del current[key]
+    _put_back_members(current, _BUILTINS_BASE)
+
+
+def _take_up():
+    # Routine code is about to run again: the builtins are what the routines left them.
+    kept = _ROUTINE_BUILTINS[0]
+    if kept is None:
+        return
+    current = _builtins.__dict__
+    for key in [k for k in current if k not in kept]:
+        del current[key]
+    current.update(kept)
+
+
 def _put_back(holder, kind, pristine, bases):
     # A member a routine added goes, as one it replaced or deleted comes back: an added Session.__getattribute__
     # would otherwise answer for session.sql in every later statement.
@@ -228,11 +276,38 @@ def _standard_library():
 
 
 def _snapshot():
-    global _CWD_BASE, _DECIMAL_BASE
+    global _CWD_BASE, _DECIMAL_BASE, _PATH_BASE, _META_PATH_BASE, _PATH_HOOKS_BASE, _IMPORTER_CACHE_BASE
+    global _RECURSION_BASE
     _STDLIB.extend(_standard_library())
     _MODULES_BASE.update(_sys.modules)
     _CWD_BASE = _GETCWD()
     _DECIMAL_BASE = _decimal.getcontext().copy()
+    _PATH_BASE = list(_sys.path)
+    _META_PATH_BASE = list(_sys.meta_path)
+    _PATH_HOOKS_BASE = list(_sys.path_hooks)
+    _IMPORTER_CACHE_BASE = dict(_sys.path_importer_cache)
+    _RECURSION_BASE = _sys.getrecursionlimit()
+
+
+def _put_back_list(current, pristine):
+    if len(current) != len(pristine) or any(a is not b for a, b in zip(current, pristine)):
+        current[:] = pristine
+
+
+def _put_back_import_system():
+    # The lists an import searches are put back in place, since a routine changes them in place
+    # (sys.path.insert(0, d) put its planted module before the standard library's), and so are the importer cache and
+    # the recursion limit.
+    _put_back_list(_sys.path, _PATH_BASE)
+    _put_back_list(_sys.meta_path, _META_PATH_BASE)
+    _put_back_list(_sys.path_hooks, _PATH_HOOKS_BASE)
+    cache = _sys.path_importer_cache
+    if len(cache) != len(_IMPORTER_CACHE_BASE) or any(cache.get(k, _MISSING) is not v
+                                                     for k, v in _IMPORTER_CACHE_BASE.items()):
+        cache.clear()
+        cache.update(_IMPORTER_CACHE_BASE)
+    if _sys.getrecursionlimit() != _RECURSION_BASE:
+        _sys.setrecursionlimit(_RECURSION_BASE)
 
 
 def _imported(key, value):
@@ -261,6 +336,7 @@ def _put_back_standard_library():
     for key in [k for k in modules if k not in _MODULES_BASE and k not in _INSTALLED]:
         if not _imported(key, modules[key]):
             del modules[key]
+    _put_back_import_system()
     try:
         moved = _GETCWD() != _CWD_BASE
     except OSError:
@@ -506,11 +582,22 @@ def _repr_or(value, fallback):
 
 
 def _call(handle, method, args):
-    _send({"op": "call", "handle": handle, "method": method, "args": [_encode(a) for a in args]})
-    reply = _serve(until_reply=True)
-    if "raise" in reply:
-        raise _JavaError(reply["raise"])
-    return _decode(reply.get("ret"))
+    # A routine calls the engine: the worker's own code runs meanwhile, under the builtins as it found them.
+    _set_aside()
+    failure = None
+    result = None
+    try:
+        _send({"op": "call", "handle": handle, "method": method, "args": [_encode(a) for a in args]})
+        reply = _serve(until_reply=True)
+        if "raise" in reply:
+            failure = _JavaError(reply["raise"])
+        else:
+            result = _decode(reply.get("ret"))
+    finally:
+        _take_up()
+    if failure is not None:
+        raise failure
+    return result
 
 
 def _handle(message):
@@ -524,7 +611,11 @@ def _handle(message):
         if compiled is None:
             compiled = compile(code, "<udf>", "exec")
             _CODE[code] = compiled
-        exec(compiled, _GLOBALS)
+        _take_up()
+        try:
+            exec(compiled, _GLOBALS)
+        finally:
+            _set_aside()
         return {"re": 1, "ok": True}
     if op == "enter":
         _FRAMES.append(dict(_GLOBALS))
@@ -570,6 +661,7 @@ def _handle(message):
         return {"re": 1, "ok": True}
     if op == "restore":
         _restore()
+        _ROUTINE_BUILTINS[0] = None
         return {"re": 1, "ok": True}
     if op == "get":
         name = message["name"]

@@ -21,6 +21,7 @@ import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.SourcePosition;
+import dev.frostlake.functions.scalar.context.DefinitionOwnership;
 import dev.frostlake.functions.table.QueryRunner;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
@@ -95,9 +96,9 @@ public final class ClusteringStatistics {
      * @param runner  what runs the query a predicate is compiled in
      * @return the depth
      */
-    public static Double depth(final Catalog catalog, final StorageEngine storage, final List<Object> args,
-                               final QueryRunner runner) {
-        final ClusteringStatistics read = read(catalog, storage, args, false);
+    public static Double depth(final Catalog catalog, final StorageEngine storage, final DefinitionOwnership sight,
+                               final List<Object> args, final QueryRunner runner) {
+        final ClusteringStatistics read = read(catalog, storage, sight, args, false);
         final boolean filtered = args.size() > 2 && args.get(2) != null && runner != null;
         return Double.valueOf((filtered ? read.meets(String.valueOf(args.get(2)), runner) : read.populated) ? 1.0
             : 0.0);
@@ -133,8 +134,9 @@ public final class ClusteringStatistics {
      * @param args    the call's arguments
      * @return the report
      */
-    public static String information(final Catalog catalog, final StorageEngine storage, final List<Object> args) {
-        final ClusteringStatistics read = read(catalog, storage, args, true);
+    public static String information(final Catalog catalog, final StorageEngine storage,
+                                     final DefinitionOwnership sight, final List<Object> args) {
+        final ClusteringStatistics read = read(catalog, storage, sight, args, true);
         final String keys = read.keys.replace("\\", "\\\\").replace("\"", "\\\"");
         return String.format(Locale.ROOT, REPORT, keys, Integer.valueOf(read.populated ? 1 : 0),
             read.populated ? "1.0" : "0.0");
@@ -148,13 +150,15 @@ public final class ClusteringStatistics {
      * @param args    the call's arguments
      * @return never
      */
-    public static Object ratio(final Catalog catalog, final StorageEngine storage, final List<Object> args) {
-        read(catalog, storage, args, false);
+    public static Object ratio(final Catalog catalog, final StorageEngine storage, final DefinitionOwnership sight,
+                               final List<Object> args) {
+        read(catalog, storage, sight, args, false);
         throw new RuntimeException("Unsupported feature 'Clustering Ratio'.");
     }
 
     private static ClusteringStatistics read(final Catalog catalog, final StorageEngine storage,
-                                             final List<Object> args, final boolean numberNamesInFull) {
+                                             final DefinitionOwnership sight, final List<Object> args,
+                                             final boolean numberNamesInFull) {
         final Object named = args.isEmpty() ? null : args.get(0);
         if (named == null) {
             throw new RuntimeException("null argument for table name");
@@ -169,8 +173,10 @@ public final class ClusteringStatistics {
         if (home.hasView(name)) {
             throw new RuntimeException("Cannot specify clustering keys on views\n");
         }
-        // The name is matched as an identifier is: a quoted "t" is no table T.
-        if (!home.hasTable(name) || !home.getTable(name).getName().equals(name)) {
+        // The name is matched as an identifier is: a quoted "t" is no table T. A table the session does not see is
+        // refused as one that is not there.
+        if (!home.hasTable(name) || !home.getTable(name).getName().equals(name) || sight != null
+                && !sight.sees("TABLE", home.qualifiedName(name), home.getTable(name).getOwner())) {
             // A number is read as a name in full; a text is told as it was written.
             throw new RuntimeException(SqlCompilationError.doesNotExist("Table",
                 numberNamesInFull && named instanceof Number ? home.qualifiedName(name) : QualifiedName.join(parts)));

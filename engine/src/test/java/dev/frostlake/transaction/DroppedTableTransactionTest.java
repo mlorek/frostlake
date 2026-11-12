@@ -36,7 +36,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * A transaction that has written a table another session drops or replaces while it is open commits its changes to
  * the table it wrote (live-verified): an UNDROP brings the dropped table back with the committed UPDATE or INSERT,
  * and a table that replaced it by CREATE OR REPLACE stays as its CREATE left it, empty, while the table it replaced
- * comes back by UNDROP, once its name is free, with the committed change.
+ * comes back by UNDROP, once its name is free, with the committed change. A table that goes with its schema is the same
+ * table: the new schema's table of the name is neither written nor locked by the transaction, and UNDROP SCHEMA brings
+ * the committed change back.
  *
  * <p>Live, the two sessions are two connections; embedded, two sessions of one concurrent engine.
  */
@@ -70,6 +72,9 @@ public class DroppedTableTransactionTest extends BaseDatabaseTest {
         say("B", "ROLLBACK");
         for (final String name : new String[] {"dt3", "dt7", "dt6", "dt5", "dt8", "dt8_new", "dt9", "dt9_new"}) {
             say("A", "DROP TABLE IF EXISTS " + name);
+        }
+        for (final String name : new String[] {"dts1", "dts2", "dts2_new"}) {
+            say("A", "DROP SCHEMA IF EXISTS test_db." + name);
         }
         if (isLiveSnowflake()) {
             connA.close();
@@ -161,6 +166,46 @@ public class DroppedTableTransactionTest extends BaseDatabaseTest {
         say("B", "CREATE OR REPLACE TABLE dt5 (id INT, v INT)");
         say("A", "COMMIT");
         assertEquals("", say("B", "SELECT id, v FROM dt5 ORDER BY 1"));
+    }
+
+    @Test
+    public void aTableReplacedWithItsSchemaLeavesTheNewTableAlone() {
+        say("A", "CREATE OR REPLACE SCHEMA test_db.dts1");
+        say("A", "USE SCHEMA test_db.test_schema");
+        say("A", "CREATE TABLE test_db.dts1.t (id INT, v INT)");
+        say("A", "INSERT INTO test_db.dts1.t VALUES (1, 1)");
+        say("A", "BEGIN");
+        say("A", "UPDATE test_db.dts1.t SET v = 100 WHERE id = 1");
+        say("A", "INSERT INTO test_db.dts1.t VALUES (2, 200)");
+        say("B", "CREATE OR REPLACE SCHEMA test_db.dts1");
+        say("B", "USE SCHEMA test_db.test_schema");
+        say("B", "CREATE TABLE test_db.dts1.t (id INT, v INT)");
+        say("B", "INSERT INTO test_db.dts1.t VALUES (3, 3)");
+        say("B", "ALTER SESSION SET LOCK_TIMEOUT = 0");
+        // Nobody holds the new table.
+        say("B", "UPDATE test_db.dts1.t SET v = 5 WHERE id = 3");
+        say("B", "ALTER SESSION UNSET LOCK_TIMEOUT");
+        say("A", "COMMIT");
+        assertEquals("3|5", say("B", "SELECT id, v FROM test_db.dts1.t ORDER BY 1"));
+    }
+
+    @Test
+    public void aTableDroppedWithItsSchemaComesBackWithTheCommittedChange() {
+        say("A", "CREATE OR REPLACE SCHEMA test_db.dts2");
+        say("A", "USE SCHEMA test_db.test_schema");
+        say("A", "CREATE TABLE test_db.dts2.t (id INT, v INT)");
+        say("A", "INSERT INTO test_db.dts2.t VALUES (1, 1)");
+        say("A", "BEGIN");
+        say("A", "INSERT INTO test_db.dts2.t VALUES (9, 9)");
+        say("B", "DROP SCHEMA test_db.dts2");
+        say("B", "CREATE SCHEMA test_db.dts2");
+        say("B", "USE SCHEMA test_db.test_schema");
+        say("B", "CREATE TABLE test_db.dts2.t (id INT, v INT)");
+        say("A", "COMMIT");
+        assertEquals("", say("B", "SELECT id, v FROM test_db.dts2.t ORDER BY 1"));
+        say("B", "ALTER SCHEMA test_db.dts2 RENAME TO test_db.dts2_new");
+        say("B", "UNDROP SCHEMA test_db.dts2");
+        assertEquals("1|1 ;; 9|9", say("B", "SELECT id, v FROM test_db.dts2.t ORDER BY 1"));
     }
 
     @Test

@@ -35,6 +35,7 @@ import dev.frostlake.executor.SelectItemAccessors;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StatementClock;
+import dev.frostlake.executor.UnreadRowItems;
 import dev.frostlake.executor.WarehouseReference;
 import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.SourcePosition;
@@ -62,6 +63,7 @@ import dev.frostlake.metastore.model.View;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlSyntaxException;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.RowAnyType;
 
 import org.antlr.v4.runtime.CharStream;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -514,17 +516,20 @@ public class CreateRelationalHandler implements CommandHandler {
             // a narrowing cast, 1/0, a date that does not parse — is the reader's, not the creator's,
             // and the view is created with its columns known (live-verified).
             final SourcePosition displacedBody = ExpressionSource.beginNested(originOf(ctx.selectStatement()));
+            // A ROW the body selects or holds stands unread as the view is created; a read of the view refuses it.
+            final Boolean outerViewBody = UnreadRowItems.beginViewBody();
             try {
                 // The body compiles where the view will live, whatever the session's context.
-                view.setResolvedColumns(queryExecutor.resolveViewShapeInScope(
+                view.setResolvedColumns(rowItemsTyped(ctx.selectStatement(), queryExecutor.resolveViewShapeInScope(
                     schemaDatabaseName(parts), schema.getName(), selectQuery, view.getColumnNames(),
-                    selectQuery.equals(writtenQuery) ? null : viewName));
+                    selectQuery.equals(writtenQuery) ? null : viewName)));
             } catch (final RowSelectItemException rowItem) {
                 // A ROW the body selects is named before it is judged: an unnamed one is Missing column
                 // specification (live-verified).
                 validateViewColumns(ctx);
                 throw rowItem;
             } finally {
+                UnreadRowItems.endViewBody(outerViewBody);
                 ExpressionSource.end(displacedBody);
             }
             // The role creating the view has to be able to read what the body reads.
@@ -801,6 +806,48 @@ public class CreateRelationalHandler implements CommandHandler {
      * Where a body begins, as the statement's own places are told: past the comments the text opens with, and from
      * the statement's first token in a request of several (live-verified).
      */
+    /**
+     * The view's columns with each that stands for a ROW item of the body's own select list typed {@code ROW(ANY)}, as
+     * DESCRIBE VIEW reports it (live-verified). The items before a star stand for the first columns and those after
+     * it for the last; an item between two stars is left as it is.
+     *
+     * @param body    the view's body
+     * @param columns the columns its shape gives
+     * @return the columns, retyped where they stand for a ROW
+     */
+    private static List<TableColumn> rowItemsTyped(final FrostlakeParser.SelectStatementContext body,
+                                                   final List<TableColumn> columns) {
+        if (body == null || columns == null || body.selectOperand().size() != 1
+                || body.selectOperand(0).selectClause() == null) {
+            return columns;
+        }
+        final List<FrostlakeParser.SelectItemContext> items =
+            body.selectOperand(0).selectClause().selectList().selectItem();
+        final List<TableColumn> typed = new ArrayList<>(columns);
+        int front = 0;
+        while (front < items.size() && front < typed.size()
+                && items.get(front) instanceof FrostlakeParser.ExprItemContext) {
+            retypeRowItem((FrostlakeParser.ExprItemContext) items.get(front), typed, front);
+            front++;
+        }
+        int back = items.size() - 1;
+        int column = typed.size() - 1;
+        while (back > front && column >= front && items.get(back) instanceof FrostlakeParser.ExprItemContext) {
+            retypeRowItem((FrostlakeParser.ExprItemContext) items.get(back), typed, column);
+            back--;
+            column--;
+        }
+        return typed;
+    }
+
+    /** Types the column at an index {@code ROW(ANY)} when the item it stands for is a ROW. */
+    private static void retypeRowItem(final FrostlakeParser.ExprItemContext item, final List<TableColumn> columns,
+                                      final int at) {
+        if (SelectItemAccessors.rowOfWritten(item.booleanExpr()) != null) {
+            columns.set(at, columns.get(at).retypedCopy(RowAnyType.ROW_ANY, columns.get(at).isNullable()));
+        }
+    }
+
     private static SourcePosition originOf(final ParserRuleContext ctx) {
         if (ctx == null) {
             return null;

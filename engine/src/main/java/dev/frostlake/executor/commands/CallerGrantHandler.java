@@ -16,6 +16,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.AccessControlListings;
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlCompilationError;
@@ -66,10 +67,13 @@ final class CallerGrantHandler {
         requireAuthority();
         final List<String> privileges = privileges(ctx.callerPrivilegeList());
         if (ctx.INHERITED() == null) {
-            final String[] target = target(ctx.objectType(), ctx.grantedObjectName());
+            final List<String[]> targets = targets(ctx.objectType(), ctx.grantedObjectName(), ctx.LPAREN() != null,
+                ctx.identifierList());
             final Role grantee = grantee(ctx.callerGrantee());
-            for (final String privilege : privileges) {
-                grantee.addCallerGrant(privilege, target[0], target[1], null, null, StatementClock.instant());
+            for (final String[] target : targets) {
+                for (final String privilege : privileges) {
+                    grantee.addCallerGrant(privilege, target[0], target[1], null, null, StatementClock.instant());
+                }
             }
         } else {
             final String kind = kind(ctx.callerObjectKinds());
@@ -87,10 +91,13 @@ final class CallerGrantHandler {
         requireAuthority();
         final List<String> privileges = privileges(ctx.callerPrivilegeList());
         if (ctx.INHERITED() == null) {
-            final String[] target = target(ctx.objectType(), ctx.grantedObjectName());
+            final List<String[]> targets = targets(ctx.objectType(), ctx.grantedObjectName(), ctx.LPAREN() != null,
+                ctx.identifierList());
             final Role grantee = revokee(ctx.callerRevokee());
-            for (final String privilege : privileges) {
-                grantee.revokeCallerGrant(privilege, target[0], target[1], null, null);
+            for (final String[] target : targets) {
+                for (final String privilege : privileges) {
+                    grantee.revokeCallerGrant(privilege, target[0], target[1], null, null);
+                }
             }
         } else {
             final String kind = kind(ctx.callerObjectKinds());
@@ -130,7 +137,7 @@ final class CallerGrantHandler {
         final List<Row> rows = new ArrayList<>();
         for (final Role role : grantees) {
             for (final CallerGrant grant : role.getCallerGrants()) {
-                if (target == null || covers(grant, target[0], target[1])) {
+                if ((target == null || covers(grant, target[0], target[1])) && present(grant)) {
                     rows.add(row(role, grant));
                 }
             }
@@ -148,6 +155,19 @@ final class CallerGrantHandler {
             }
         });
         return new ResultSet(columns(), rows);
+    }
+
+    /**
+     * Whether what a caller grant is on is there: a dropped object's grant stays recorded, for an UNDROP to find and
+     * for a new object of the name to take back, and is not listed meanwhile, as SHOW GRANTS lists none on an object
+     * that is gone (see {@link GrantNames#present}).
+     */
+    private boolean present(final CallerGrant grant) {
+        if (grant.getInheritedFrom() == null) {
+            return GrantNames.present(catalog, grant.getObjectKind(), grant.getObjectName());
+        }
+        return grant.getScopeName() == null || GrantNames.present(catalog, grant.getInheritedFrom(),
+            grant.getScopeName());
     }
 
     private static List<ResultSetColumn> columns() {
@@ -229,6 +249,46 @@ final class CallerGrantHandler {
      * The object a caller grant names, which must be there and on which the session holds some privilege: its kind as
      * privileges record it, then its name in full.
      */
+    /**
+     * The objects a caller grant on one object names: the object, or for a procedure or a function each overload the
+     * written argument types name - every overload of the name when none are written - under its signature, the name
+     * a routine's privileges are recorded and asked by (GrantNames.routine), as an ordinary GRANT records them.
+     */
+    private List<String[]> targets(final FrostlakeParser.ObjectTypeContext type,
+                                   final FrostlakeParser.GrantedObjectNameContext name, final boolean listWritten,
+                                   final FrostlakeParser.IdentifierListContext types) {
+        final String kind = SecurableKinds.of(type);
+        final List<String[]> targets = new ArrayList<>();
+        if (!"FUNCTION".equals(kind) && !"PROCEDURE".equals(kind)) {
+            targets.add(target(type, name));
+            return targets;
+        }
+        List<String> writtenTypes = null;
+        if (listWritten) {
+            writtenTypes = new ArrayList<>();
+            if (types != null) {
+                for (final FrostlakeParser.IdentifierContext written : types.identifier()) {
+                    writtenTypes.add(ParseTreeText.getIdentifier(written));
+                }
+            }
+        }
+        final String written = name.wholeObjectName() == null ? name.getText().toUpperCase(Locale.ROOT)
+            : queryExecutor.resolveWholeObjectName(name.wholeObjectName());
+        final String[] parts = QualifiedName.parse(written).parts();
+        queryExecutor.requireSecurable(kind, parts, writtenTypes == null ? null
+            : Integer.valueOf(writtenTypes.size()));
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        for (final String recorded : queryExecutor.routineGrantNames(kind, parts, writtenTypes)) {
+            // A routine the session holds nothing on is no object to it, as target() judges any other.
+            if (security != null
+                    && !security.holdsAnyPrivilege(kind, recorded, catalog.getObjectOwnerRole(kind, recorded))) {
+                throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+            }
+            targets.add(new String[] {kind, recorded});
+        }
+        return targets;
+    }
+
     private String[] target(final FrostlakeParser.ObjectTypeContext type,
                             final FrostlakeParser.GrantedObjectNameContext name) {
         final String kind = SecurableKinds.of(type);

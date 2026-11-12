@@ -28,6 +28,9 @@ import java.util.Map;
  * LTZ and TZ — falls back to TIMESTAMP_OUTPUT_FORMAT, which the NTZ default of its own shields NTZ from until NTZ is
  * set to ''. DATE and TIME stand apart from all of them.
  *
+ * <p>BINARY_OUTPUT_FORMAT, HEX or BASE64, is the text a BINARY converts to where no format of its own is written:
+ * "the one-argument version of TO_CHAR, TO_VARCHAR" (documented), and a cast and every other conversion alike.
+ *
  * <p>Pinned per statement in a ThreadLocal, as {@link SessionTimestampMapping} is: the rendering lives deep in static
  * helpers with no session to ask, and one engine serves many sessions.
  */
@@ -39,11 +42,12 @@ public final class SessionOutputFormats {
     public static final String TIMESTAMP_NTZ = "TIMESTAMP_NTZ_OUTPUT_FORMAT";
     public static final String TIMESTAMP_LTZ = "TIMESTAMP_LTZ_OUTPUT_FORMAT";
     public static final String TIMESTAMP_TZ = "TIMESTAMP_TZ_OUTPUT_FORMAT";
+    public static final String BINARY = "BINARY_OUTPUT_FORMAT";
 
     /** The built-in TIMESTAMP_OUTPUT_FORMAT, which an emptied NTZ format falls back to. */
     private static final String TIMESTAMP_DEFAULT = "YYYY-MM-DD HH24:MI:SS.FF3 TZHTZM";
 
-    private static final String[] NAMES = {DATE, TIME, TIMESTAMP, TIMESTAMP_NTZ, TIMESTAMP_LTZ, TIMESTAMP_TZ};
+    private static final String[] NAMES = {DATE, TIME, TIMESTAMP, TIMESTAMP_NTZ, TIMESTAMP_LTZ, TIMESTAMP_TZ, BINARY};
 
     private static final ThreadLocal<Map<String, String>> PINNED = new ThreadLocal<Map<String, String>>();
 
@@ -97,6 +101,12 @@ public final class SessionOutputFormats {
             return generic == null || generic.isEmpty() ? TIMESTAMP_DEFAULT : usable(generic);
         }
         return usable(own);
+    }
+
+    /** Whether a BINARY converts to BASE64 text, as the session has set, rather than to the built-in HEX. */
+    public static boolean binaryBase64() {
+        final String format = set(BINARY);
+        return format != null && "BASE64".equalsIgnoreCase(format.trim());
     }
 
     /** The format a TIMESTAMP_LTZ renders with, or null for the built-in one. */

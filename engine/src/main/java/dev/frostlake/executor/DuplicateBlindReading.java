@@ -49,11 +49,13 @@ import org.antlr.v4.runtime.tree.ParseTree;
  * reference of which is such a reader, or a view. Without an aggregate it is DISTINCT, its items the relation's columns
  * (a star, one that excludes columns included), constants, or a column's COLLATION or SYSTEM$TYPEOF. Grouped or
  * aggregating, its keys are such values and its aggregates a column's MAX, MIN or ANY_VALUE; what the items and the
- * HAVING compute of those is computed after the rows are folded. Anything else keeps the check, and the conversion with
- * it: an item computed before the rows are compared ({@code DISTINCT UPPER(y)}, {@code MAX(UPPER(y))}), COUNT(*) or
- * COUNT(DISTINCT y), a window or a QUALIFY, a join, IN or EXISTS over the relation, and a plain projection, LIMIT 1
- * included. Only the check at the top goes, of a UNION BY NAME too: in {@code A UNION B UNION C} the first UNION still
- * compares its rows, and a body that sorts or cuts its rows keeps its check.
+ * HAVING compute of those is computed after the rows are folded, and so is the ORDER BY that sorts the block's rows.
+ * Anything else keeps the check, and the conversion with it: an item computed before the rows are compared
+ * ({@code DISTINCT UPPER(y)}, {@code MAX(UPPER(y))}), COUNT(*) or COUNT(DISTINCT y), in the items, the HAVING or the
+ * ORDER BY ({@code GROUP BY y ORDER BY COUNT(*)} counts the duplicates), a window or a QUALIFY, a join, IN or EXISTS
+ * over the relation, and a plain projection, LIMIT 1 included. Only the check at the top goes, of a UNION BY NAME too:
+ * in {@code A UNION B UNION C} the first UNION still compares its rows, and a body that sorts or cuts its rows keeps
+ * its check.
  *
  * <p>A body that is one SELECT DISTINCT block, with no TOP and nothing sorting or cutting the rows it keeps, loses its
  * DISTINCT under such a reader, and an item the reader never reads is then never computed (all live-verified):
@@ -270,6 +272,12 @@ final class DuplicateBlindReading {
             items.add(expression);
             aggregating |= expression != null && callsAggregate(expression, functions);
         }
+        // The ORDER BY that sorts the block's rows is computed over them as the items are: an aggregate there makes
+        // the block aggregating, and one that is no extreme counts the duplicates.
+        final List<Expression> sortKeys = sortKeys(block);
+        for (final Expression key : sortKeys) {
+            aggregating |= key != null && callsAggregate(key, functions);
+        }
         if (!aggregating) {
             // DISTINCT over the relation's own values: each item is one.
             if (block.DISTINCT() == null) {
@@ -300,8 +308,34 @@ final class DuplicateBlindReading {
                 return false;
             }
         }
+        for (final Expression key : sortKeys) {
+            if (key == null || !foldsExtremesOnly(key, functions)) {
+                return false;
+            }
+        }
         return block.havingClause() == null
             || foldsExtremesOnly(parsed(block.havingClause().booleanExpr()), functions);
+    }
+
+    /**
+     * The sort keys of the ORDER BY that sorts a block's own rows: its statement's, the block being that statement's
+     * one operand. ORDER BY ALL names no key of its own.
+     */
+    private static List<Expression> sortKeys(final FrostlakeParser.SelectClauseContext block) {
+        final List<Expression> keys = new ArrayList<>();
+        if (!(block.getParent() instanceof FrostlakeParser.SelectOperandContext)
+                || !(block.getParent().getParent() instanceof FrostlakeParser.SelectStatementContext)) {
+            return keys;
+        }
+        final FrostlakeParser.SelectStatementContext statement =
+            (FrostlakeParser.SelectStatementContext) block.getParent().getParent();
+        if (statement.selectOperand().size() != 1 || statement.orderByClause() == null) {
+            return keys;
+        }
+        for (final FrostlakeParser.OrderItemContext item : statement.orderByClause().orderItem()) {
+            keys.add(parsed(item.booleanExpr()));
+        }
+        return keys;
     }
 
     /**

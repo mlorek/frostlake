@@ -57,6 +57,8 @@ public class DirectConnection extends AbstractFrostlakeConnection
     private String sessionSchema;
     private String sessionWarehouse;
     private boolean sessionAutoCommit;
+    /** The user this connection's roles were last held to, so a switch of user is seen at its next statement. */
+    private String rolesHeldTo;
 
     /**
      * The id of THIS connection's open transaction, or null when it has none.
@@ -100,6 +102,10 @@ public class DirectConnection extends AbstractFrostlakeConnection
     private volatile String sessionTimezone;
     /** Whether the aborted session held an open transaction, for the refusal's report. */
     private volatile boolean abortedInTransaction;
+    /** The thread this connection's statement runs on, or null between statements. */
+    private volatile Thread runningOn;
+    /** Set when the session was aborted while its statement ran: the statement ends the session as it ends. */
+    private volatile boolean endWhenOver;
 
     public DirectConnection(final DatabaseEngine engine) {
         this(engine, true);
@@ -126,17 +132,38 @@ public class DirectConnection extends AbstractFrostlakeConnection
         }
     }
 
-    /** SYSTEM$ABORT_SESSION named this connection's session: only marked here, from the aborting statement. */
+    /**
+     * SYSTEM$ABORT_SESSION named this connection's session. What it runs now ends at its next checkpoint, and a
+     * statement it waits in for a table lock at once, rather than going on once the lock is free (see
+     * StatementCancellation and TableLockWait), as the HTTP transport's session ends - unless what it runs now is
+     * the abort itself: a session that aborts itself gets its answer first.
+     */
     @Override
     public void abort() {
         abortedInTransaction = sessionTransactionId != null;
         aborted = true;
+        if (sessionSettings != null
+                && engine.getSecurityManager().getSessionContext().getBoundSettings() != sessionSettings) {
+            sessionSettings.markAborted();
+        }
     }
 
-    /** Roll back what the aborted session left open, and drop what it created TEMPORARY, once the aborting
-     *  statement is over. */
+    /**
+     * Roll back what the aborted session left open, and drop what it created TEMPORARY, once the aborting statement
+     * is over. A statement of the session's that still runs - one that waits for a table lock - ends first: a
+     * transaction it opened is the session's only once the statement captures it as it ends, so the session ends
+     * then (see {@link #executeScoped}), and its write never lands.
+     */
     @Override
     public void endAborted() {
+        final Thread running = runningOn;
+        if (running != null && running != Thread.currentThread()) {
+            endWhenOver = true;
+            return;
+        }
+        if (sessionSettings != null) {
+            sessionSettings.markAborted();
+        }
         endOwnTransaction();
         dropOwnTemporaryObjects();
     }
@@ -197,6 +224,8 @@ public class DirectConnection extends AbstractFrostlakeConnection
         // connections can be driven from many threads (the test harness's pooled bulk checks).
         // The HTTP front-end serializes through its own lock; direct connections serialize here.
         synchronized (engine) {
+            final Thread outer = runningOn;
+            runningOn = Thread.currentThread();
             final Catalog catalog = engine.getCatalog();
             final TransactionManager transactions = engine.getTransactionManager();
             catalog.beginSessionScope(sessionDatabase, sessionSchema, sessionWarehouse);
@@ -204,6 +233,16 @@ public class DirectConnection extends AbstractFrostlakeConnection
             final SessionContext session = engine.getSecurityManager().getSessionContext();
             if (sessionSettings != null) {
                 session.bindSettings(sessionSettings);
+                // Its query IDs are its own: LAST_QUERY_ID and RESULT_SCAN read this connection's history, as an
+                // HTTP session's read its own (see QueryResultCache).
+                engine.getQueryResultCache().beginSessionScope(String.valueOf(sessionSettings.getSessionNumber()));
+                // A user switched since this connection's last statement uses none of the roles it may not, the role
+                // this connection set by USE ROLE included, as the engine's own session does (see setCurrentUser).
+                final String user = engine.getCurrentUser();
+                if (user != null && !user.equals(rolesHeldTo)) {
+                    engine.dropRolesTheUserMayNotUse();
+                    rolesHeldTo = user;
+                }
             }
             // Restore this connection's transaction, or clear ANOTHER connection's: skipping that would
             // let this connection inherit whatever the previous one on this thread left open, and read
@@ -242,10 +281,17 @@ public class DirectConnection extends AbstractFrostlakeConnection
                 catalog.clearSessionScope();
                 transactions.clearSessionAutoCommit();
                 if (sessionSettings != null) {
+                    engine.getQueryResultCache().clearSessionScope();
                     session.unbindSettings();
                 }
+                runningOn = outer;
                 // A session this statement aborted — its own included — ends now that the statement is over.
                 engine.getSessionDirectory().endAborted();
+                // So does this one when another session's statement aborted it while this statement ran.
+                if (endWhenOver && outer == null) {
+                    endWhenOver = false;
+                    endAborted();
+                }
             }
         }
     }
@@ -286,6 +332,19 @@ public class DirectConnection extends AbstractFrostlakeConnection
         closed = true;
         if (sessionSettings != null) {
             engine.getSessionDirectory().unregister(sessionSettings.getSessionNumber());
+            // Its results stay readable by their IDs among the finished sessions' (see QueryResultCache).
+            engine.getQueryResultCache().forgetSession(String.valueOf(sessionSettings.getSessionNumber()));
+        }
+        synchronized (engine) {
+            // A statement another thread still runs on this connection - one waiting for a table lock - ends at once,
+            // as a cancel ends it (see TableLockWait), and the session ends once it is over (see executeScoped).
+            final Thread running = runningOn;
+            if (running != null && running != Thread.currentThread() && sessionSettings != null) {
+                sessionSettings.markAborted();
+                endWhenOver = true;
+                engine.notifyAll();
+                return;
+            }
         }
         endOwnTransaction();
         dropOwnTemporaryObjects();

@@ -51,6 +51,17 @@ interface FrostlakePreparedStatement extends PreparedStatement {
      */
     Map<Integer, Object> boundParameters();
 
+    /**
+     * The statement's update count as a long, as the JDBC 4.2 API reads it: {@link #executeUpdate()}'s.
+     *
+     * @return the count
+     * @throws SQLException as {@link #executeUpdate()} throws
+     */
+    @Override
+    default long executeLargeUpdate() throws SQLException {
+        return executeUpdate();
+    }
+
     @Override
     default void setNull(final int parameterIndex, final int sqlType) throws SQLException {
         boundParameters().put(parameterIndex, null);

@@ -136,7 +136,8 @@ public class ToChar extends BuiltInFunction {
      * TO_VARCHAR(&lt;binary&gt;, &lt;format&gt;) — the format names the ENCODING to render the bytes in
      * (live: {@code HEX} → {@code 48454C4C4F}, {@code BASE64} → {@code SEVMTE8=},
      * {@code UTF-8} → {@code HELLO}; case-insensitive, and any other value — including the empty
-     * string — is rejected). Without a format the value renders as hex, handled by the caller.
+     * string — is rejected). Without a format the value renders in the session's BINARY_OUTPUT_FORMAT, HEX unless
+     * set otherwise (see {@link SharedFunctionHelpers#textOf}).
      */
     private String renderBinary(final BinaryValue value, final String format) {
         switch (format.toUpperCase(Locale.ROOT)) {

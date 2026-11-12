@@ -40,6 +40,23 @@ public final class SessionRoles {
         this.secondaryRolesValue = "";
     }
 
+    /**
+     * The roles a task run or an alert evaluation acts with: the role that owns it as the primary role, PUBLIC beside
+     * it, and no secondary roles. A task or an alert always runs with its owner role's privileges, whoever starts it
+     * and whichever session is current when it starts (documented).
+     *
+     * @param owner the owning role's own name, as the catalog keeps it
+     * @return the roles
+     */
+    public static SessionRoles ofOwner(final String owner) {
+        final SessionRoles roles = new SessionRoles();
+        roles.activeRoles.clear();
+        roles.currentRole = owner;
+        roles.activeRoles.add(owner);
+        roles.activeRoles.add("PUBLIC");
+        return roles;
+    }
+
     /** A copy of another session's roles, for a session that takes them over before it sets its own. */
     public SessionRoles(final SessionRoles from) {
         this.currentRole = from.currentRole;

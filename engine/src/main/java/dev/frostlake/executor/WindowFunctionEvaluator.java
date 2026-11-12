@@ -61,7 +61,9 @@ import dev.frostlake.functions.aggregate.PairStatisticAccumulator;
 import dev.frostlake.functions.aggregate.PercentileContAccumulator;
 import dev.frostlake.functions.aggregate.PercentileDiscAccumulator;
 import dev.frostlake.functions.aggregate.RegrAccumulator;
+import dev.frostlake.functions.aggregate.SumAccumulator;
 import dev.frostlake.functions.scalar.conversion.BooleanWords;
+import dev.frostlake.functions.window.ExactFrameMoments;
 import dev.frostlake.functions.window.FloatFrameMoments;
 import dev.frostlake.functions.window.FloatFrameSums;
 import dev.frostlake.functions.window.FrameExtremes;
@@ -1577,10 +1579,45 @@ final class WindowFunctionEvaluator {
         return resultRows;
     }
 
-    Object evaluateWindowFunction(final FrostlakeParser.ExpressionContext expr,
-                                          final List<Row> allRows, final int currentRowIndex,
-                                          final FrostlakeParser.SelectClauseContext ctx, final Table table,
-                                          final Map<FrostlakeParser.OverClauseContext, Map<List<Object>, List<Row>>> overCache) {
+    Object evaluateWindowFunction(
+            final FrostlakeParser.ExpressionContext expr, final List<Row> allRows, final int currentRowIndex,
+            final FrostlakeParser.SelectClauseContext ctx, final Table table,
+            final Map<FrostlakeParser.OverClauseContext, Map<List<Object>, List<Row>>> overCache) {
+        try {
+            return windowFunctionValue(expr, allRows, currentRowIndex, ctx, table, overCache);
+        } catch (final AggregateRangeRefusal refusal) {
+            throw orderedWindowRefusal(expr, refusal);
+        }
+    }
+
+    /**
+     * A running sum that leaves its signed 128-bit carrier inside a window with an ORDER BY — a cumulative, sliding
+     * or any other ordered frame, SUM's and the variance family's sums alike — is refused as the window's
+     * intermediate result; a window without one sums its partition as the grouped aggregate does and keeps that
+     * sentence.
+     *
+     * @param expr    the window call
+     * @param refusal the refusal its evaluation met
+     * @return the refusal to raise
+     */
+    private static AggregateRangeRefusal orderedWindowRefusal(final FrostlakeParser.ExpressionContext expr,
+                                                             final AggregateRangeRefusal refusal) {
+        if (expr instanceof FrostlakeParser.FunctionCallExprContext
+                && SumAccumulator.OVERFLOW.equals(refusal.getMessage())) {
+            final FrostlakeParser.OverClauseContext over =
+                ((FrostlakeParser.FunctionCallExprContext) expr).overClause();
+            if (over != null && over.orderByClause() != null) {
+                return new AggregateRangeRefusal(
+                    "Numeric value is out of range, error: Window function intermediate result too large");
+            }
+        }
+        return refusal;
+    }
+
+    private Object windowFunctionValue(
+            final FrostlakeParser.ExpressionContext expr, final List<Row> allRows, final int currentRowIndex,
+            final FrostlakeParser.SelectClauseContext ctx, final Table table,
+            final Map<FrostlakeParser.OverClauseContext, Map<List<Object>, List<Row>>> overCache) {
         if (!(expr instanceof FrostlakeParser.FunctionCallExprContext)) {
             // A window function nested inside a larger expression, e.g. revenue - LAG(...) OVER (...).
             return evaluateNestedWindowExpression(expr, allRows, currentRowIndex, ctx, table, overCache);
@@ -3797,7 +3834,11 @@ final class WindowFunctionEvaluator {
             moments = frameMoments(functionName, funcCtx, partition, table);
             byCall.put(funcCtx, moments);
         }
-        return moments == NOT_SUMMARIZED ? NOT_SUMMARIZED
+        if (moments == NOT_SUMMARIZED) {
+            return NOT_SUMMARIZED;
+        }
+        return moments instanceof ExactFrameMoments
+            ? ((ExactFrameMoments) moments).of(anchorOrLast(position, partition))
             : statistic.of((FloatFrameMoments) moments, anchorOrLast(position, partition));
     }
 
@@ -3828,8 +3869,20 @@ final class WindowFunctionEvaluator {
         if (values == null) {
             return NOT_SUMMARIZED;
         }
-        // An exact argument is read exactly instead (see ExactMoments), frame by frame.
         final boolean declaredApproximate = isApproximateColumn(argExpr, table);
+        // An exact argument slides exact sums instead (see ExactFrameMoments); a DECFLOAT one, a mix of exact and
+        // approximate values and anything else is read frame by frame.
+        if (!declaredApproximate && allExact(values)
+                && !NumericType.isDecfloat(declaredArgumentType(argExpr, table))) {
+            final int[] lows = new int[values.length];
+            final int[] highs = new int[values.length];
+            for (int i = 0; i < values.length; i++) {
+                final int[] bounds = frameBounds(over, partition, i, table);
+                lows[i] = bounds[0];
+                highs[i] = bounds[1];
+            }
+            return new ExactFrameMoments(values, lows, highs, MomentStatistic.named(functionName));
+        }
         final Double[] terms = new Double[values.length];
         try {
             for (int i = 0; i < values.length; i++) {
@@ -3853,6 +3906,22 @@ final class WindowFunctionEvaluator {
             highs[i] = bounds[1];
         }
         return new FloatFrameMoments(terms, lows, highs, backward, compensated);
+    }
+
+    /** Whether every value present is of an exact numeric type, and one is present at least. */
+    private static boolean allExact(final Object[] values) {
+        boolean any = false;
+        for (final Object value : values) {
+            if (value == null) {
+                continue;
+            }
+            if (!(value instanceof BigDecimal || value instanceof BigInteger || value instanceof Long
+                    || value instanceof Integer || value instanceof Short || value instanceof Byte)) {
+                return false;
+            }
+            any = true;
+        }
+        return any;
     }
 
     /** RANGE from UNBOUNDED PRECEDING to the CURRENT ROW, spelled with one bound or with both. */

@@ -152,7 +152,7 @@ final class ExecuteSqlHandler implements HttpHandler {
             // SESSION changed CLIENT_SESSION_KEEP_ALIVE.
             response.reportKeepAlive(session);
             // Whether the driver now matches a column label ignoring case.
-            response.reportResultColumnCase(session);
+            response.reportResultColumnCase(engine.resultColumnsCaseInsensitive(session));
             // The zone the driver reads the session's dates and wall clocks in.
             response.reportTimezone(engine.sessionTimezone(session));
             // Where the session stands now — a USE, a CREATE SCHEMA or a procedure may have moved it.

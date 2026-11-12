@@ -45,6 +45,7 @@ import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.UnmodelledDropKind;
 import dev.frostlake.parser.UnmodelledKindWords;
+import dev.frostlake.security.SecurityManager;
 import dev.frostlake.security.SessionContext;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -1359,6 +1360,7 @@ public class ShowCommandHandler implements CommandHandler {
             requireRoutineArgumentTypes(ctx, getText(ctx.qualifiedName()));
             return showExecutor.describeProcedure(qualifiedNameParts(ctx.qualifiedName()), writtenSignature(ctx));
         } else if (ctx.USER() != null) {
+            requireDescribableUser(getText(ctx.identifier()));
             return showExecutor.describeUser(getText(ctx.identifier()));
         } else if (ctx.SEARCH() != null && ctx.OPTIMIZATION() != null) {
             return showExecutor.describeSearchOptimization(getText(ctx.qualifiedName()));
@@ -1625,6 +1627,37 @@ public class ShowCommandHandler implements CommandHandler {
         return new ResultSet(rs.getColumns(), filtered);
     }
 
+    /** The position of a listing's column of that name. */
+    private static int columnIndex(final ResultSet listing, final String name) {
+        for (int i = 0; i < listing.getColumns().size(); i++) {
+            if (listing.getColumns().get(i).getName().equals(name)) {
+                return i;
+            }
+        }
+        throw new IllegalStateException("no column " + name);
+    }
+
+    /**
+     * DESCRIBE USER of another user needs OWNERSHIP of that user (documented: "Individual users can see their own
+     * properties ... To view the properties of another user, you must use a role that has the following privilege:
+     * OWNERSHIP"); a user describes themselves, and the SYSTEM user, which holds every privilege, anyone. A missing
+     * user is refused as before. The refusal's words are unmeasured on live.
+     *
+     * @param name the user's canonical name
+     */
+    private void requireDescribableUser(final String name) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        if (security == null || !catalog.hasUserExact(name)) {
+            return;
+        }
+        final String current = security.getSessionContext().getCurrentUser();
+        if ("SYSTEM".equals(current) || name.equals(current)
+                || security.actsAsOwner(catalog.getUserExact(name).getOwner())) {
+            return;
+        }
+        throw new RuntimeException(SqlAccessControlError.insufficientPrivileges("user", name));
+    }
+
     private ResultSet handleShowGrants(final FrostlakeParser.ShowStatementContext ctx) {
         if (ctx.showGrantsIn() != null) {
             // SHOW GRANTS IN: whatever the parser let follow the IN is not what the account reads there.
@@ -1657,6 +1690,7 @@ public class ShowCommandHandler implements CommandHandler {
                 final String kind = target.relationGrantsKind() == null ? null
                     : SecurableKinds.joined(target.relationGrantsKind());
                 final GrantedObject relation = queryExecutor.shownRelation(parts, kind);
+                GrantRowSight.requireSeen(queryExecutor.getSecurityManager(), relation);
                 return asEventTable(showExecutor.showGrantsOnObject(relation.getKind(), written, relation), parts,
                     relation);
             }
@@ -1664,6 +1698,7 @@ public class ShowCommandHandler implements CommandHandler {
                 // TABLE and VIEW find a materialized view or a dynamic table too, listed under its own kind.
                 final GrantedObject other = queryExecutor.materializedOrDynamic(parts);
                 if (other != null) {
+                    GrantRowSight.requireSeen(queryExecutor.getSecurityManager(), other);
                     return showExecutor.showGrantsOnObject(other.getKind(), written, other);
                 }
             }
@@ -1682,16 +1717,27 @@ public class ShowCommandHandler implements CommandHandler {
                 queryExecutor.routineGrantNames(objectType, parts, writtenTypes);
             }
             final GrantedObject granted = queryExecutor.grantedObject(objectType, parts, arity, writtenTypes);
+            GrantRowSight.requireSeen(queryExecutor.getSecurityManager(), granted);
             return asEventTable(showExecutor.showGrantsOnObject(objectType, written, granted), parts, granted);
         } else if (ctx.TO() != null) {
-            // SHOW GRANTS TO USER/ROLE identifier
+            // SHOW GRANTS TO USER/ROLE identifier: the rows on what the session sees; a user's own listing whole.
             final String targetType = ctx.USER() != null ? "USER" : "ROLE";
             final String targetName = PrincipalNames.of(ctx.grantsPrincipal(), queryExecutor);
-            return showExecutor.showGrantsTo(targetType, targetName);
+            final ResultSet listing = showExecutor.showGrantsTo(targetType, targetName);
+            final SecurityManager security = queryExecutor.getSecurityManager();
+            if (security != null && "USER".equals(targetType)
+                    && targetName.equals(security.getSessionContext().getExecutingUser())) {
+                return listing;
+            }
+            return GrantRowSight.seen(listing, catalog, security, columnIndex(listing, "granted_on"),
+                columnIndex(listing, "name"));
         }
         if (ctx.OF() != null && ctx.ROLE() != null && ctx.grantsPrincipal() != null) {
-            // SHOW GRANTS OF ROLE identifier
-            return showExecutor.showGrantsOfRole(PrincipalNames.of(ctx.grantsPrincipal(), queryExecutor));
+            // SHOW GRANTS OF ROLE identifier: who holds a role the session sees.
+            final ResultSet listing = showExecutor.showGrantsOfRole(PrincipalNames.of(ctx.grantsPrincipal(),
+                queryExecutor));
+            return GrantRowSight.seen(listing, catalog, queryExecutor.getSecurityManager(), -1,
+                columnIndex(listing, "role"));
         }
         if (ctx.ON() == null && ctx.TO() == null && ctx.OF() == null) {
             // Bare SHOW GRANTS: what the current user holds.

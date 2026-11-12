@@ -53,9 +53,23 @@ public class TaskHistoryFunction extends TableFunction {
 
     private final Catalog catalog;
 
+    /** Which tasks the session may read about (see TaskSight); null reads about every one. */
+    private final TaskSight sight;
+
     public TaskHistoryFunction(final Catalog catalog) {
+        this(catalog, null);
+    }
+
+    /**
+     * The function reading only about the tasks the session sees.
+     *
+     * @param catalog the catalog
+     * @param sight   which tasks the session sees, or null for every one
+     */
+    public TaskHistoryFunction(final Catalog catalog, final TaskSight sight) {
         super("TASK_HISTORY");
         this.catalog = catalog;
+        this.sight = sight;
     }
 
     @Override
@@ -86,6 +100,10 @@ public class TaskHistoryFunction extends TableFunction {
                 for (final Schema schema : database.getAllSchemas()) {
                     for (final Task task : schema.getTasks()) {
                         if (filterTaskName != null && !task.getName().toUpperCase(Locale.ROOT).equals(filterTaskName)) continue;
+                        // Only the tasks the session may read about are listed (see TaskSight).
+                        if (sight != null && !sight.sees(schema, task)) {
+                            continue;
+                        }
                         final Task root = rootOf(schema, task);
                         // Live lists the next fire of every STARTED task as a SCHEDULED row, for as
                         // long as that fire is within EIGHT DAYS of now — measured to the hour: a fire

@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.functions.table.ValidateFunction;
+
 import org.antlr.v4.runtime.Token;
 
 import java.util.ArrayList;
@@ -109,6 +111,7 @@ public final class TableFunctionArguments {
 
         FIRST_POSITIONAL_PARAMETER.put(FLATTEN, "INPUT");
         FIRST_POSITIONAL_PARAMETER.put(TO_QUERY, "SQL");
+        FIRST_POSITIONAL_PARAMETER.put(ValidateFunction.NAME, "TABLE_NAME");
 
         REQUIRED_PARAMETER.put(FLATTEN, "INPUT");
         REQUIRED_PARAMETER.put(TO_QUERY, "SQL");

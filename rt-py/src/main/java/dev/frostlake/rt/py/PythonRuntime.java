@@ -172,7 +172,11 @@ public final class PythonRuntime {
      * routine may have changed it before it is seen. What a routine put on {@code sys.modules} that no import made
      * goes (a module without a spec, or no module at all, unless its parent module holds it under that name, as
      * {@code pyexpat} holds {@code pyexpat.errors}), while a real module a routine imported stays: numpy cannot be
-     * imported twice in one process. The working directory and the decimal context are put back as well.
+     * imported twice in one process. The working directory and the decimal context are put back as well, and so is
+     * what decides where an import looks: the contents of {@code sys.path}, {@code sys.meta_path} and
+     * {@code sys.path_hooks}, changed in place or not ({@code sys.path.insert(0, d)} put a routine's planted module
+     * before the standard library's for every later statement and every other engine on the thread), the importer cache
+     * and the recursion limit.
      */
     private static final String RUNTIME_SOURCE = """
         import types as _types
@@ -199,6 +203,11 @@ public final class PythonRuntime {
         _setcontext = _decimal.setcontext
         _cwd_base = None
         _decimal_base = None
+        _path_base = None
+        _meta_path_base = None
+        _path_hooks_base = None
+        _importer_cache_base = None
+        _recursion_base = None
         _kept = {}
         def bind(namespace, runtime):
             global _namespace, _base, _builtins_base, _environ_base
@@ -227,11 +236,31 @@ public final class PythonRuntime {
                                                             if not (key.startswith('__') and key.endswith('__')))))
             return found
         def _snapshot():
-            global _cwd_base, _decimal_base
+            global _cwd_base, _decimal_base, _path_base, _meta_path_base, _path_hooks_base, _importer_cache_base
+            global _recursion_base
             _stdlib.extend(_standard_library())
             _modules_base.update(_sys.modules)
             _cwd_base = _getcwd()
             _decimal_base = _decimal.getcontext().copy()
+            _path_base = list(_sys.path)
+            _meta_path_base = list(_sys.meta_path)
+            _path_hooks_base = list(_sys.path_hooks)
+            _importer_cache_base = dict(_sys.path_importer_cache)
+            _recursion_base = _sys.getrecursionlimit()
+        def _put_back_list(current, pristine):
+            if len(current) != len(pristine) or any(a is not b for a, b in zip(current, pristine)):
+                current[:] = pristine
+        def _put_back_import_system():
+            _put_back_list(_sys.path, _path_base)
+            _put_back_list(_sys.meta_path, _meta_path_base)
+            _put_back_list(_sys.path_hooks, _path_hooks_base)
+            cache = _sys.path_importer_cache
+            if len(cache) != len(_importer_cache_base) or any(cache.get(k, _missing) is not v
+                                                             for k, v in _importer_cache_base.items()):
+                cache.clear()
+                cache.update(_importer_cache_base)
+            if _sys.getrecursionlimit() != _recursion_base:
+                _sys.setrecursionlimit(_recursion_base)
         def _imported(key, value):
             if issubclass(type(value), _types.ModuleType) and value.__dict__.get('__spec__') is not None:
                 return True
@@ -250,6 +279,7 @@ public final class PythonRuntime {
             for key in [k for k in modules if k not in _modules_base and k not in _installed]:
                 if not _imported(key, modules[key]):
                     del modules[key]
+            _put_back_import_system()
             try:
                 moved = _getcwd() != _cwd_base
             except OSError:

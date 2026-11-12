@@ -45,7 +45,8 @@ import java.util.List;
  * <p>A database role is read from {@code SHOW DATABASE ROLES IN DATABASE}. The SQL has no CLONE form for a database
  * role, so {@code :clone} is done here: the copy is created (per {@code createMode}, in {@code targetDatabase} when
  * given) with the source's comment, then granted what the source holds — its privileges with their grant options,
- * the database roles granted to it, and its future grants. Who holds the source is not copied.
+ * the database roles granted to it, and its future grants, each only where it lies in the copy's database. Who holds
+ * the source is not copied.
  */
 public final class DatabaseRoleResource implements RestResource {
 
@@ -178,8 +179,9 @@ public final class DatabaseRoleResource implements RestResource {
             throw RestException.missing("Database role", source);
         }
         final RestIdentifier name = RestJson.identifier(call.body(), "name", true);
-        final String targetDatabase = call.query("targetDatabase") == null ? call.databaseSql()
-            : RestIdentifier.parse(call.query("targetDatabase"), "targetDatabase").sql();
+        final RestIdentifier targetDb = call.query("targetDatabase") == null ? call.identifier("database")
+            : RestIdentifier.parse(call.query("targetDatabase"), "targetDatabase");
+        final String targetDatabase = targetDb.sql();
         final String target = targetDatabase + "." + name.sql();
         final RestCreateMode mode = call.createMode();
         final RestStatement create = new RestStatement("CREATE" + mode.orReplace() + " DATABASE ROLE"
@@ -199,9 +201,17 @@ public final class DatabaseRoleResource implements RestResource {
                 continue;
             }
             if ("DATABASE ROLE".equals(kind)) {
-                call.sql().run("GRANT DATABASE ROLE " + quoted(grant.string("name")) + " TO " + grantee);
+                // A database role is granted only to a database role of its own database (documented), so a copy
+                // made in another database takes none of the source's.
+                if (targetDb.name().equals(databaseOf(kind, grant.string("name")))) {
+                    call.sql().run("GRANT DATABASE ROLE " + quoted(grant.string("name")) + " TO " + grantee);
+                }
             } else if ("ACCOUNT".equals(kind)) {
                 call.sql().run("GRANT " + privilege + " ON ACCOUNT TO " + grantee);
+            } else if (!targetDb.name().equals(databaseOf(kind, grant.string("name")))) {
+                // A database role holds privileges on its own database's objects alone (documented), so a copy made
+                // in another database takes none of the source's privileges on its source's objects.
+                continue;
             } else {
                 call.sql().run("GRANT " + privilege + " ON " + kind + " " + quoted(grant.string("name")) + " TO "
                     + grantee + (Boolean.TRUE.equals(grant.bool("grant_option")) ? " WITH GRANT OPTION" : ""));
@@ -209,6 +219,10 @@ public final class DatabaseRoleResource implements RestResource {
         }
         for (final RestRow grant : call.sql().show("SHOW FUTURE GRANTS TO DATABASE ROLE " + role(call))) {
             final List<String> scope = GrantRequests.nameParts(grant.string("name"));
+            if (!targetDb.name().equals(scope.get(0))) {
+                // A future grant in the source's database is no grant a copy in another database may take.
+                continue;
+            }
             final String in = scope.size() > 2
                 ? "IN SCHEMA " + RestIdentifier.quote(scope.get(0)) + "." + RestIdentifier.quote(scope.get(1))
                 : "IN DATABASE " + RestIdentifier.quote(scope.get(0));
@@ -217,6 +231,12 @@ public final class DatabaseRoleResource implements RestResource {
                 + (Boolean.TRUE.equals(grant.bool("grant_option")) ? " WITH GRANT OPTION" : ""));
         }
         return RestResponse.success(status);
+    }
+
+    /** The database an object a grant names lives in: a database's own name, else its name's first part. */
+    private static String databaseOf(final String kind, final String listed) {
+        final List<String> parts = GrantRequests.nameParts(listed);
+        return "DATABASE".equals(kind) || parts.isEmpty() ? listed : parts.get(0);
     }
 
     /** A dotted name from a listing as SQL, each part quoted. */

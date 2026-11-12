@@ -46,13 +46,13 @@ public class ParameterListDriftTest extends MeasuredCellsTestSupport {
     @Test
     public void theSessionListsTheJavaScriptFormatAndTheCurrentDefaults() {
         answer("SHOW PARAMETERS LIKE 'JS_Q%'");
-        assertAnswer("JS_QUERY_RESULT_FORMAT|ARROW|STRING", ROWS);
+        assertAnswer("JS_QUERY_RESULT_FORMAT|JSON|STRING", ROWS);
         answer("SHOW PARAMETERS LIKE 'DYNAMIC_TABLES_VIEW_VERSION'");
         assertAnswer("DYNAMIC_TABLES_VIEW_VERSION|13|NUMBER", ROWS);
         answer("SHOW PARAMETERS LIKE 'AI_SQL_EMBED_SIMILARITY_ERROR_HANDLING_USE_FAIL_ON_ERROR'");
         assertAnswer("AI_SQL_EMBED_SIMILARITY_ERROR_HANDLING_USE_FAIL_ON_ERROR|false|BOOLEAN", ROWS);
         answer("SHOW PARAMETERS LIKE 'JS_QUERY_RESULT_FORMAT' IN ACCOUNT");
-        assertAnswer("JS_QUERY_RESULT_FORMAT|ARROW|STRING", ROWS);
+        assertAnswer("JS_QUERY_RESULT_FORMAT|JSON|STRING", ROWS);
     }
 
     @Test

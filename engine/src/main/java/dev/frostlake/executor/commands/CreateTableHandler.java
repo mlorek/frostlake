@@ -280,8 +280,12 @@ public class CreateTableHandler implements CommandHandler {
             final TableVersion cloneVersion = ctx.CLONE() == null || ctx.timeTravelClause() == null ? null
                 : queryExecutor.versionAtClonePoint(copySource, copySourceStorage,
                     queryExecutor.clonePoint(ctx.timeTravelClause(), copySource));
+            final List<Long> cloneRowIds = new ArrayList<>();
             final List<Row> cloneRows = ctx.CLONE() == null ? null : cloneVersion != null
-                ? cloneVersion.getRows() : new ArrayList<Row>(copySourceStorage.scan());
+                ? cloneVersion.getRows() : copySourceStorage.scanWithIds(cloneRowIds);
+            if (cloneVersion != null && cloneVersion.getRowIds() != null) {
+                cloneRowIds.addAll(cloneVersion.getRowIds());
+            }
 
             // CREATE OR ALTER over a table that is already there brings it to the written shape and keeps
             // its rows, where CREATE OR REPLACE would drop it; a name nothing holds is created as usual.
@@ -465,10 +469,9 @@ public class CreateTableHandler implements CommandHandler {
                 queryExecutor.getStorageEngine().createTable(fullyQualifiedName, table);
                 resetTableStage(schema, tableName, fullyQualifiedName);
 
-                for (final Row row : cloneRows) {
-                    queryExecutor.getStorageEngine().getTableStorage(fullyQualifiedName)
-                        .insert(new Row(new ArrayList<>(row.getValues())));
-                }
+                // Each row keeps its source identity (see TableStorage#insertCloned).
+                queryExecutor.getStorageEngine().getTableStorage(fullyQualifiedName)
+                    .insertCloned(cloneRows, cloneRowIds);
 
                 logger.trace("Cloned table: {} from {}", qualifiedName, sourceTableName);
             } else if (ctx.LIKE() != null) {
@@ -1114,9 +1117,11 @@ public class CreateTableHandler implements CommandHandler {
             if ("DATA_RETENTION_TIME_IN_DAYS".equalsIgnoreCase(key)
                     && valueText.matches("[0-9]+")) {
                 TransientRetentionLimit.requireWithinAccountLimit(valueText);
-                // A transient table keeps a day at most, as its transient containers do.
+                // A transient table keeps a day at most, as its transient containers do. A temporary table takes a
+                // longer retention at CREATE and keeps one day of it, where ALTER TABLE refuses one (live-verified).
                 TransientRetentionLimit.requireWithinTransientLimit(table.isTransient(), valueText);
-                table.setDataRetentionTimeInDays(Integer.valueOf(valueText));
+                table.setDataRetentionTimeInDays(table.isTemporary()
+                    ? Integer.valueOf(Math.min(1, Integer.parseInt(valueText))) : Integer.valueOf(valueText));
             }
             if ("MAX_DATA_EXTENSION_TIME_IN_DAYS".equalsIgnoreCase(key)
                     && valueText.matches("[0-9]+") && Long.parseLong(valueText) > 90L) {

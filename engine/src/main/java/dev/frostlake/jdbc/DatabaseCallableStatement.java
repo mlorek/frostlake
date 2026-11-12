@@ -51,4 +51,10 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
         call.capture(getResultGrid());
         return rows;
     }
+
+    /** A CALL's OUT parameter takes no value, so a placeholder left unset is no refusal here. */
+    @Override
+    protected boolean refusesUnsetPlaceholders() {
+        return false;
+    }
 }

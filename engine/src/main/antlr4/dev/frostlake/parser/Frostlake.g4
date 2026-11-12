@@ -75,8 +75,7 @@ import java.util.List;
             rowPatternClauses.clear();
             parentheses = 0;
         } else if (type == BEGIN) {
-            final int next = typeAhead(0);
-            if (next != SEMI && next != Token.EOF && next != WORK && next != TRANSACTION && next != NAME) {
+            if (opensBlock(before, typeAhead(0))) {
                 blocksOpen++;
             }
         } else if (type == CASE) {
@@ -98,6 +97,29 @@ import java.util.List;
 
     /** How many BEGIN … END blocks the text has opened and not yet closed. */
     private int blocksOpen;
+
+    /**
+     * Whether a BEGIN opens a scripting block: it stands where a statement starts - the text's first word, after a
+     * statement's end, a block's own BEGIN, a branch's THEN or ELSE, a loop's DO, LOOP or REPEAT, or as the body
+     * after a CREATE's AS - and what follows it is no transaction word, no statement's end and nothing that only
+     * follows a name. BEGIN is no reserved word, so a column, an alias or a table named begin opens nothing.
+     */
+    private boolean opensBlock(final int before, final int next) {
+        if (next == SEMI || next == Token.EOF || next == WORK || next == TRANSACTION || next == NAME
+                || next == COMMA || next == RPAREN || next == DOT || next == FLOW_ARROW || next == FROM
+                || next == EQ || next == NEQ || next == LT || next == LTE || next == GT || next == GTE
+                || next == PLUS || next == MINUS || next == STAR || next == SLASH || next == PERCENT
+                || next == PIPE_PIPE || next == DOUBLE_COLON || next == COLON || next == ELSE || next == WHEN
+                || next == THEN || next == AND || next == OR || next == IS || next == IN || next == AS
+                || casesOpen > 0 && next == END) {
+            return false;
+        }
+        if (before == Token.INVALID_TYPE || before == SEMI || before == BEGIN || before == THEN || before == ELSE
+                || before == DO || before == LOOP || before == REPEAT) {
+            return true;
+        }
+        return before == AS && statementOpener == CREATE;
+    }
 
     /** How many CASEs, expressions and statements alike, the text has opened and not yet closed. */
     private int casesOpen;
@@ -191,6 +213,8 @@ import java.util.List;
         patternSymbols.clear();
         rowPatternClauses.clear();
         parentheses = 0;
+        blocksOpen = 0;
+        casesOpen = 0;
         lastStop = -1;
         inStageReference = false;
         inStagePath = false;
@@ -1875,6 +1899,8 @@ createStatement
     | CREATE or_replace? STREAM if_not_exists? qualifiedName CLONE qualifiedName copyGrants? SEMI?
     // EXECUTE AS USER follows the options and the AFTER list and precedes WHEN (live-verified).
     | CREATE or_replace? TASK if_not_exists? qualifiedName tagList? taskContacts? warehouseClause? taskOptions? afterClause? commentClause? taskExecuteAs? (WHEN booleanExpr)? AS taskBody SEMI?
+    // A task, a stage or a file format cloned on its own (documented: CREATE <object> ... CLONE).
+    | CREATE or_replace? TASK if_not_exists? qualifiedName CLONE qualifiedName SEMI?
     // CREATE OR ALTER makes the task, or changes it to what the statement writes; it takes no IF NOT EXISTS and no
     // contacts, reads a tag clause only to refuse it, and leaves the tags a task carries as they are (live-verified,
     // documented).
@@ -1893,7 +1919,11 @@ createStatement
     | CREATE or_replace? CORTEX SEARCH SERVICE if_not_exists? qualifiedName ON identifier
       (ATTRIBUTES identifierList)? cortexSearchOption* AS (LPAREN selectStatement RPAREN | selectStatement) SEMI?
     | CREATE or_replace? (TEMPORARY | TEMP)? STAGE if_not_exists? qualifiedName stageProperties? tagList? commentClause? SEMI?
+    // A temporary clone of a stage or a file format is taken; a transient one is a syntax error at the kind
+    // (live-verified).
+    | CREATE or_replace? (TEMPORARY | TEMP)? STAGE if_not_exists? qualifiedName CLONE qualifiedName SEMI?
     | CREATE or_replace? (TEMPORARY | TEMP)? FILE FORMAT if_not_exists? qualifiedName (copyFormatOption (COMMA? copyFormatOption)*)? commentClause? SEMI?
+    | CREATE or_replace? (TEMPORARY | TEMP)? FILE FORMAT if_not_exists? qualifiedName CLONE qualifiedName SEMI?
     // ALLOWED_VALUES comes first; PROPAGATE, ON_CONFLICT and COMMENT follow in any order, and the handler refuses
     // one written twice, and an ON_CONFLICT unless the tag propagates.
     | CREATE or_replace? TAG if_not_exists? qualifiedName tagProperties? tagSetProperty* SEMI?
@@ -2635,14 +2665,15 @@ grantStatement
 // given to the executable's owner - on one object, or INHERITED on every object of a kind in the account, a database
 // or a schema - ALL CALLER PRIVILEGES standing for every privilege (documented).
 grantCaller
-    : GRANT (CALLER callerPrivilegeList | ALL CALLER PRIVILEGES) ON objectType grantedObjectName TO callerGrantee SEMI?
+    : GRANT (CALLER callerPrivilegeList | ALL CALLER PRIVILEGES) ON objectType grantedObjectName
+        (LPAREN identifierList? RPAREN)? TO callerGrantee SEMI?
     | GRANT (INHERITED CALLER callerPrivilegeList | ALL INHERITED CALLER PRIVILEGES)
         ON ALL callerObjectKinds IN callerGrantScope TO callerGrantee SEMI?
     ;
 
 revokeCaller
     : REVOKE (CALLER callerPrivilegeList | ALL CALLER PRIVILEGES) ON objectType grantedObjectName
-        FROM callerRevokee SEMI?
+        (LPAREN identifierList? RPAREN)? FROM callerRevokee SEMI?
     | REVOKE (INHERITED CALLER callerPrivilegeList | ALL INHERITED CALLER PRIVILEGES)
         ON ALL callerObjectKinds IN callerGrantScope FROM callerRevokee SEMI?
     ;
@@ -2811,6 +2842,8 @@ globalPrivilegeList
     : globalPrivilege (COMMA globalPrivilege)*
     ;
 
+// The account's privileges a GRANT … ON ACCOUNT names by their words; one left out of the list was read as a privilege
+// on an object named ACCOUNT, a table that is not there.
 globalPrivilege
     : CREATE ACCOUNT
     | CREATE DATABASE
@@ -2822,8 +2855,17 @@ globalPrivilege
     | APPLY MASKING POLICY
     | APPLY ROW ACCESS POLICY
     | APPLY SESSION POLICY
+    | APPLY AGGREGATION POLICY
+    | APPLY AUTHENTICATION POLICY
+    | APPLY JOIN POLICY
+    | APPLY PACKAGES POLICY
+    | APPLY PASSWORD POLICY
+    | APPLY PROJECTION POLICY
     | APPLY TAG
     | EXECUTE TASK
+    | EXECUTE MANAGED TASK
+    | EXECUTE ALERT
+    | EXECUTE MANAGED ALERT
     | IMPORT SHARE
     | MANAGE GRANTS
     | MANAGE CALLER GRANTS
@@ -2960,7 +3002,14 @@ relationGrantsKind
     ;
 
 userProperties
-    : userProperty+
+    : (userProperty | createdUserBypass)+
+    ;
+
+// A policy bypass CREATE USER reads, refused for want of privilege on the account (live-verified for the ingress
+// policy's; the network and session policies' are unmeasured at CREATE and stay unread). ALTER USER SET reads the
+// bypasses as parameters.
+createdUserBypass
+    : {ClauseWords.isWord(_input.LT(1), "MINS_TO_BYPASS_INGRESS_POLICY")}? identifier EQ userPropertyValue
     ;
 
 userProperty
@@ -3181,8 +3230,9 @@ listValue
     | LPAREN (listedConstant (COMMA listedConstant)*)? RPAREN
     ;
 
+// A property's name may be written as a string: QUERY_TAG = (('a' = 'x')) is taken (live-verified).
 listedProperty
-    : identifier EQ listedConstant
+    : (identifier | STRING_LITERAL) EQ listedConstant
     ;
 
 listedConstant
@@ -3251,8 +3301,9 @@ copySource
 // COPY load transformation: a projection over the staged file's positional columns ($1, $2, …) FROM @stage.
 // Only the projection + stage source are modelled (no WHERE/JOIN/aggregates), matching Snowflake's COPY transform.
 // The stage may carry a staged-file query's arguments, judged as that query's are (live-verified).
+// The stage may take an alias, which qualifies its fields: SELECT t.$1 FROM @st t (documented).
 copyTransformation
-    : SELECT copyTransformItem (COMMA copyTransformItem)* FROM stageRef stageQueryParams?
+    : SELECT copyTransformItem (COMMA copyTransformItem)* FROM stageRef stageQueryParams? (AS? identifier)?
     ;
 
 copyTransformItem
@@ -3277,14 +3328,21 @@ stageRef
 // A path begins at a '/', and only there. Inside a segment a dot is an ordinary character, so a file
 // name carries one and '..' is a segment like any other — the account does NOT normalise it away, and
 // a COPY writes through it.
+// A path ends at a blank: every token after its first '/' is written straight after the one before it, so the word
+// after a blank is the next thing the statement reads - FROM @st/data/ t takes the alias t (see StagePathTokens).
 stagePath
-    // TO joins the segment words because paths like @~/some/path/to/file.csv are routine and `to`
-    // lexes as the keyword token; a full path-aware lexer mode is not worth the complexity.
-    : (SLASH stagePathSegment?)+
+    : SLASH ({StagePathTokens.continues(_input)}? stagePathSegment)?
+      ({StagePathTokens.continues(_input)}? SLASH ({StagePathTokens.continues(_input)}? stagePathSegment)?)*
     ;
 
 stagePathSegment
-    : (identifier | INTEGER_LITERAL | TO | SOME | ANY | ALL | DOT)+
+    : stagePathWord ({StagePathTokens.continues(_input)}? stagePathWord)*
+    ;
+
+// TO joins the segment words because paths like @~/some/path/to/file.csv are routine and `to`
+// lexes as the keyword token; a full path-aware lexer mode is not worth the complexity.
+stagePathWord
+    : identifier | INTEGER_LITERAL | TO | SOME | ANY | ALL | DOT
     ;
 
 copyTableSource
@@ -4925,7 +4983,13 @@ forUpdateClause
 // compiled and planned as a bare Result, a CREATE TABLE … AS SELECT and a materialized view as the
 // CreateTableAsSelect of their query (live-verified; see ExplainedStatements).
 explainStatement
-    : EXPLAIN (USING identifier)? (selectStatement | dmlStatement | explainedStatement) SEMI?
+    : EXPLAIN (USING identifier)? (selectStatement | dmlStatement | explainedCall | explainedStatement) SEMI?
+    ;
+
+// A CALL of a procedure the statement defines for itself, WITH p AS PROCEDURE … CALL p(), is explained; a CALL of
+// any other procedure is a syntax error at its first word, as the rule below reads (live-verified).
+explainedCall
+    : anonymousProcedure CALL qualifiedName LPAREN callArguments? RPAREN
     ;
 
 // The statements an EXPLAIN takes besides a query and a DML statement, by their first word (see explainsStatement): a

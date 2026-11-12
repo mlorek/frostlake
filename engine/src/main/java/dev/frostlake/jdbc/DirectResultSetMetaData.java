@@ -16,6 +16,7 @@
 
 package dev.frostlake.jdbc;
 
+import dev.frostlake.storage.ColumnSource;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.ColumnLengths;
 import dev.frostlake.types.DataType;
@@ -96,6 +97,12 @@ class DirectResultSetMetaData extends AbstractFrostlakeResultSetMetaData {
     @Override
     protected Integer length(final int column) {
         return ColumnLengths.of(type(column));
+    }
+
+    @Override
+    protected String[] source(final int column) {
+        final ColumnSource read = columns.get(column - 1).getSource();
+        return read == null ? null : new String[] {read.getDatabase(), read.getSchema(), read.getTable()};
     }
 
     @Override

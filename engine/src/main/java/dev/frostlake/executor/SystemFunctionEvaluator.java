@@ -17,12 +17,12 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.functions.SystemFunctionNames;
+import dev.frostlake.functions.scalar.context.DefinitionOwnership;
 import dev.frostlake.functions.table.QueryRunner;
 import dev.frostlake.functions.table.TagReferencesFunction;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Task;
-import dev.frostlake.metastore.model.TaskState;
 import dev.frostlake.security.SessionDirectory;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.task.TaskGraphConfig;
@@ -35,10 +35,8 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -55,13 +53,17 @@ public class SystemFunctionEvaluator {
     // What runs a query a function compiles of its own; installed by the executor once it can run one.
     private QueryRunner queryRunner;
 
+    /** Which objects the session sees: the functions that read an object answer only about one it sees. */
+    private final DefinitionOwnership sight;
+
     public SystemFunctionEvaluator(final Catalog catalog, final StorageEngine storageEngine,
                                    final TransactionManager transactionManager,
-                                   final SessionDirectory sessionDirectory) {
+                                   final SessionDirectory sessionDirectory, final DefinitionOwnership sight) {
         this.catalog = catalog;
         this.storageEngine = storageEngine;
         this.transactionManager = transactionManager;
         this.sessionDirectory = sessionDirectory;
+        this.sight = sight;
     }
 
     /**
@@ -112,15 +114,15 @@ public class SystemFunctionEvaluator {
             case "SYSTEM$WHITELIST":
                 return "[]";
             case "SYSTEM$LAST_CHANGE_COMMIT_TIME":
-                return ChangeTimes.lastChangeCommitTime(catalog, args.isEmpty() ? null : args.get(0));
+                return ChangeTimes.lastChangeCommitTime(catalog, sight, args.isEmpty() ? null : args.get(0));
             case "SYSTEM$WAIT":
                 return SystemWait.waitFor(args);
             case "SYSTEM$CLUSTERING_DEPTH":
-                return ClusteringStatistics.depth(catalog, storageEngine, args, queryRunner);
+                return ClusteringStatistics.depth(catalog, storageEngine, sight, args, queryRunner);
             case "SYSTEM$CLUSTERING_INFORMATION":
-                return ClusteringStatistics.information(catalog, storageEngine, args);
+                return ClusteringStatistics.information(catalog, storageEngine, sight, args);
             case "SYSTEM$CLUSTERING_RATIO":
-                return ClusteringStatistics.ratio(catalog, storageEngine, args);
+                return ClusteringStatistics.ratio(catalog, storageEngine, sight, args);
             case "SYSTEM$ABORT_TRANSACTION":
                 return abortTransaction(args);
             case "SYSTEM$ABORT_SESSION":
@@ -132,7 +134,8 @@ public class SystemFunctionEvaluator {
             case "SYSTEM$REFERENCE":
                 return ObjectReferenceTokens.create(catalog, args);
             case "SYSTEM$STREAM_GET_TABLE_TIMESTAMP":
-                return ChangeTimes.streamTableTimestamp(catalog, storageEngine, args.isEmpty() ? null : args.get(0));
+                return ChangeTimes.streamTableTimestamp(catalog, storageEngine, sight,
+                    args.isEmpty() ? null : args.get(0));
             case "SYSTEM$CURRENT_USER_TASK_NAME": {
                 final Task current = TaskScheduler.currentTask();
                 // Outside a task the name is empty, not NULL (live-verified).
@@ -212,38 +215,8 @@ public class SystemFunctionEvaluator {
             case "SYSTEM$VERIFY_EXTERNAL_VOLUME":
             case "SYSTEM$VERIFY_CATALOG_INTEGRATION":
                 return "{\"status\": \"OK\"}";
-            case "SYSTEM$TASK_DEPENDENTS_ENABLE": {
-                if (args.isEmpty() || args.get(0) == null) {
-                    // A NULL names no task, and answers NULL (live-verified).
-                    return null;
-                }
-                if (namedTask(args.get(0).toString()) == null) {
-                    // A name no task answers to is refused by the parameter the call sets, as written (live-verified).
-                    throw new RuntimeException(SqlCompilationError.of("invalid value [" + args.get(0)
-                        + "] for parameter 'RECURSIVE_TASK_ENABLE'"));
-                }
-                final String dbN = catalog.getCurrentDatabase();
-                final String scN = catalog.getCurrentSchema();
-                if (dbN != null && scN != null) {
-                    try {
-                        enableTaskDependents(
-                            args.get(0).toString().replaceAll("^'|'$", ""),
-                            catalog.getDatabase(dbN).getSchema(scN).getTasks());
-                    } catch (final Exception ignored) {}
-                }
-                return "Statement executed successfully.";
-            }
             default:
                 throw new RuntimeException("Unsupported system function: " + funcName);
-        }
-    }
-
-    /** The task a SYSTEM$ call names by a text, bare or qualified, or null where none answers to it. */
-    private Task namedTask(final String written) {
-        try {
-            return catalog.getTask(SqlIdentifiers.canonicalText(written));
-        } catch (final RuntimeException unresolved) {
-            return null;
         }
     }
 
@@ -276,40 +249,6 @@ public class SystemFunctionEvaluator {
             final String shown = argument instanceof Boolean ? argument.toString().toUpperCase(Locale.ROOT)
                 : String.valueOf(argument);
             throw new RuntimeException(SqlCompilationError.of("argument needs to be a string: '" + shown + "'"));
-        }
-    }
-
-    /**
-     * Resume (STARTED) every task in the given list that is a transitive dependent of {@code root}
-     * — the named root's subtree only, matching predecessor references by bare task name. The root
-     * itself is not resumed (Snowflake: it is resumed separately with ALTER TASK … RESUME).
-     */
-    public static void enableTaskDependents(final String root, final List<Task> tasks) {
-        String rootName = root;
-        final int rootDot = rootName.lastIndexOf('.');
-        if (rootDot >= 0) {
-            rootName = rootName.substring(rootDot + 1);
-        }
-        final Set<String> enabled = new HashSet<>();
-        enabled.add(rootName.toUpperCase(Locale.ROOT));
-        boolean changed = true;
-        while (changed) {
-            changed = false;
-            for (final Task task : tasks) {
-                if (enabled.contains(task.getName().toUpperCase(Locale.ROOT))) {
-                    continue;
-                }
-                for (final String predecessor : task.getPredecessors()) {
-                    final int dot = predecessor.lastIndexOf('.');
-                    final String bare = dot >= 0 ? predecessor.substring(dot + 1) : predecessor;
-                    if (enabled.contains(bare.toUpperCase(Locale.ROOT))) {
-                        task.setState(TaskState.STARTED);
-                        enabled.add(task.getName().toUpperCase(Locale.ROOT));
-                        changed = true;
-                        break;
-                    }
-                }
-            }
         }
     }
 

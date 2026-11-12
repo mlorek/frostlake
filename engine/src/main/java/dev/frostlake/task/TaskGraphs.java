@@ -21,6 +21,7 @@ import dev.frostlake.metastore.model.ScheduleType;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskExecution;
+import dev.frostlake.metastore.model.TaskExecutionState;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -178,11 +179,22 @@ public final class TaskGraphs {
     public static List<TaskExecution> graphRuns(final Task root) {
         final List<TaskExecution> runs = new ArrayList<>();
         for (final TaskExecution run : root.getExecutionHistory()) {
-            if (run.getAttempt() == 1) {
+            // A root run its condition skipped began no graph run: COMPLETE_TASK_GRAPHS lists none (documented).
+            if (run.getAttempt() == 1 && !skipped(run)) {
                 runs.add(run);
             }
         }
         return runs;
+    }
+
+    /**
+     * Whether a run is one its WHEN condition skipped.
+     *
+     * @param run the run
+     * @return true for a SKIPPED run
+     */
+    public static boolean skipped(final TaskExecution run) {
+        return TaskExecutionState.SKIPPED.name().equals(run.getState());
     }
 
     /**

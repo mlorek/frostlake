@@ -29,7 +29,10 @@ public enum TaskTrigger {
     EXECUTE_TASK("EXECUTE TASK"),
 
     /** A run EXECUTE TASK … RETRY LAST started, re-running the failed part of the last graph run. */
-    MANUAL_RETRY("MANUAL RETRY");
+    MANUAL_RETRY("MANUAL RETRY"),
+
+    /** A run TASK_AUTO_RETRY_ATTEMPTS started, re-running the failed part of a graph run that just failed. */
+    AUTOMATIC_RETRY("AUTOMATIC RETRY");
 
     private final String reported;
 

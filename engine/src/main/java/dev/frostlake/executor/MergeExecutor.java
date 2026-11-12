@@ -938,6 +938,7 @@ final class MergeExecutor {
             for (final TableColumn column : targetTable.getColumns()) {
                 final ParserRuleContext value = assigned.get(column.getName());
                 if (value != null) {
+                    requireDefaultOfNoColumns(column, value);
                     rejectMistypedValue(scope, column, value, jsonValues, decfloatValues);
                 }
             }
@@ -1009,6 +1010,26 @@ final class MergeExecutor {
             }
         }
         return json;
+    }
+
+    /**
+     * Refuse {@code SET c = DEFAULT} in a matched branch for a column whose default reads other columns, as an UPDATE
+     * refuses it while the statement compiles (live-verified; see ColumnReadingDefaults). A DEFAULT in an insert
+     * branch is computed over the row it inserts.
+     */
+    private void requireDefaultOfNoColumns(final TableColumn column, final ParserRuleContext value) {
+        final Expression parsed;
+        try {
+            parsed = ExpressionEvaluator.parse(executor.getOriginalText(value));
+        } catch (final RuntimeException unparsed) {
+            return;
+        }
+        if (parsed instanceof DefaultMarkerExpression) {
+            final List<String> read = ColumnReadingDefaults.columnsRead(column.getDefaultValue());
+            if (read != null && !read.isEmpty()) {
+                throw ColumnReadingDefaults.inUpdate(column.getName(), read.get(0));
+            }
+        }
     }
 
     /**

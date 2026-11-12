@@ -411,6 +411,7 @@ import dev.frostlake.functions.table.TagReferencesFunction;
 import dev.frostlake.functions.table.TaskDependentsFunction;
 import dev.frostlake.functions.table.TaskHistoryFunction;
 import dev.frostlake.functions.table.UserTaskCancelFunction;
+import dev.frostlake.functions.table.ValidateFunction;
 import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.security.SessionContext;
@@ -1116,6 +1117,7 @@ public class FunctionRegistry {
         registerTableFunction(new DynamicTableRefreshHistoryFunction(catalog));
         registerTableFunction(new ServerlessTaskHistoryFunction());
         registerTableFunction(new CopyHistoryFunction(catalog));
+        registerUnlistedTableFunction(new ValidateFunction(catalog, sessionContext));
         registerTableFunction(new TagReferencesFunction(catalog));
         registerTableFunction(new TagReferencesAllColumnsFunction(catalog));
         registerTableFunction(new AlertHistoryFunction(catalog));

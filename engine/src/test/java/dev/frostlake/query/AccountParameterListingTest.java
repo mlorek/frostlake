@@ -31,7 +31,7 @@ public class AccountParameterListingTest extends MeasuredCellsTestSupport {
         assertAnswer("DYNAMIC_TABLES_VIEW_VERSION|13|13||INFORMATION_SCHEMA.DYNAMIC_TABLES table function definition "
                 + "version|NUMBER",
             "SHOW PARAMETERS LIKE 'DYNAMIC_TABLES_VIEW_VERSION' IN ACCOUNT");
-        assertAnswer("JS_QUERY_RESULT_FORMAT|JSON|ARROW|SYSTEM|Format used to serialize query result to send back to "
+        assertAnswer("JS_QUERY_RESULT_FORMAT|JSON|JSON|SYSTEM|Format used to serialize query result to send back to "
                 + "the JavaScript driver|STRING",
             "SHOW PARAMETERS LIKE 'JS_QUERY_RESULT_FORMAT' IN ACCOUNT");
         assertAnswer("", "SHOW PARAMETERS LIKE 'TELEMETRY%' IN ACCOUNT");

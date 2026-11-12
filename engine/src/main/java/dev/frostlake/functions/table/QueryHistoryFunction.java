@@ -363,15 +363,17 @@ public class QueryHistoryFunction extends TableFunction {
             case "END_TIME":
                 return ShowResultHelpers.createdOn(q.getEndInstant() != null ? q.getEndInstant() : Instant.EPOCH);
             case "TOTAL_ELAPSED_TIME":
-                return Long.valueOf(q.getEndInstant() != null || q.getStartInstant() == null ? q.getExecutionTimeMs()
-                    : -q.getStartInstant().toEpochMilli());
+                return Long.valueOf(q.getEndInstant() != null || q.getStartInstant() == null
+                    ? q.getExecutionTimeMs() + q.getBlockedTimeMs() : -q.getStartInstant().toEpochMilli());
             case "BYTES_SCANNED": return q.getEndInstant() != null ? null : Long.valueOf(0L);
             case "QUEUED_PROVISIONING_TIME":
             case "QUEUED_REPAIR_TIME":
             case "QUEUED_OVERLOAD_TIME":
-            case "TRANSACTION_BLOCKED_TIME":
-                // No statement waits here: nothing queues one and no lock holds one back.
+                // Nothing queues a statement here.
                 return Long.valueOf(0L);
+            case "TRANSACTION_BLOCKED_TIME":
+                // The time the statement waited for other sessions' table locks, which EXECUTION_TIME leaves out.
+                return Long.valueOf(q.getBlockedTimeMs());
             case "EXECUTION_TIME": return Long.valueOf(q.getExecutionTimeMs());
             case "COMPILATION_TIME": return Long.valueOf(q.getCompilationTimeMs());
             case "ROWS_PRODUCED": return Long.valueOf(q.getRowsProduced());

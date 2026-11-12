@@ -85,6 +85,8 @@ public class OperatePrivilegeTest extends BaseDatabaseTest {
         engine.execute("CREATE TASK op_m SCHEDULE = '60 MINUTE' AS SELECT 1");
         engine.execute("GRANT OPERATE ON TASK op_a TO ROLE op_r");
         engine.execute("GRANT MONITOR ON TASK op_m TO ROLE op_r");
+        // A task runs as its owner, so a serverless task's owner must hold EXECUTE MANAGED TASK.
+        engine.execute("GRANT EXECUTE MANAGED TASK ON ACCOUNT TO ROLE " + opener);
         asRole();
         try {
             engine.execute("ALTER TASK op_a RESUME");
@@ -94,7 +96,7 @@ public class OperatePrivilegeTest extends BaseDatabaseTest {
             engine.execute("ALTER TASK op_a SUSPEND");
             // A property is the owner's to change, and MONITOR operates nothing.
             assertEquals("SQL access control error:\nInsufficient privileges to operate on task 'OP_A'. "
-                + "Your primary role OP_R must have MODIFY granted on TASK TEST_DB.TEST_SCHEMA.OP_A.",
+                + "Your primary role OP_R must have OWNERSHIP granted on TASK TEST_DB.TEST_SCHEMA.OP_A.",
                 refusal("ALTER TASK op_a SET COMMENT = 'x'"));
             assertEquals("SQL access control error:\nInsufficient privileges to operate on task 'OP_M'. "
                 + "Your primary role OP_R must have OPERATE granted on TASK TEST_DB.TEST_SCHEMA.OP_M.",

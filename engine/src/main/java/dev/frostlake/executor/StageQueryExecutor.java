@@ -147,7 +147,7 @@ final class StageQueryExecutor {
         }
 
         final List<List<Object>> fieldRows = new ArrayList<>();
-        final List<String> fileNames = new ArrayList<>();
+        final List<StagedFileMetadata> fileMetadata = new ArrayList<>();
         final List<Long> rowNumbers = new ArrayList<>();
         int width = csv ? 0 : 1;
         // A CSV query over a table's stage reads its table's columns: as many positions, and every record held to
@@ -167,6 +167,7 @@ final class StageQueryExecutor {
                 break;
             }
             final String relativeName = staged.metadataFileName(file);
+            final StagedFileMetadata metadata = StagedFileMetadata.of(file, relativeName);
             long rowNumber = 0;
             try {
                 if (recordReader != null) {
@@ -181,11 +182,12 @@ final class StageQueryExecutor {
                             JsonNullStripping.strip(record);
                         }
                         // An XML record is the variant PARSE_XML answers, which reads and prints as XML; any other is
-                        // the OBJECT the account holds, its keys sorted.
+                        // the OBJECT the account holds, its keys sorted, its numbers in the families the reader gave
+                        // them (a number written with an exponent stays a DOUBLE, see JsonStageReader).
                         fieldRows.add(new ArrayList<>(Arrays.asList("XML".equals(fileFormat)
                             ? (Object) ArrayFunctionHelper.toCanonicalVariant(record)
-                            : (Object) keysSorted(record).toString())));
-                        fileNames.add(relativeName);
+                            : (Object) ArrayFunctionHelper.toCanonicalVariant(keysSorted(record)))));
+                        fileMetadata.add(metadata);
                         rowNumbers.add(++rowNumber);
                     }
                 } else {
@@ -217,7 +219,7 @@ final class StageQueryExecutor {
                             values.set(fault.getKey().intValue() - 1, new DeferredFault(fault.getValue()));
                         }
                         fieldRows.add(values);
-                        fileNames.add(relativeName);
+                        fileMetadata.add(metadata);
                         rowNumbers.add(++rowNumber);
                         fields = reader.next(-1, ++fileRow, enclosed);
                     }
@@ -245,8 +247,7 @@ final class StageQueryExecutor {
             final TableColumn field = new TableColumn("COLUMN" + i, fieldType, true, null, false, false, false);
             columns.add(starless ? field.starHiddenCopy() : field);
         }
-        columns.add(new TableColumn("METADATA$FILENAME", StringType.VARCHAR, true, null, false, false, false));
-        columns.add(new TableColumn("METADATA$FILE_ROW_NUMBER", NumericType.BIGINT, true, null, false, false, false));
+        StagedFileMetadata.addColumns(columns);
 
         final List<Row> rows = new ArrayList<>();
         for (int r = 0; r < fieldRows.size(); r++) {
@@ -257,8 +258,7 @@ final class StageQueryExecutor {
             while (values.size() > width) {
                 values.remove(values.size() - 1);
             }
-            values.add(fileNames.get(r));
-            values.add(rowNumbers.get(r));
+            fileMetadata.get(r).addValues(values, rowNumbers.get(r).longValue());
             rows.add(new Row(values));
         }
         logger.debug("Stage query over {} file(s): {} row(s), {} field column(s)", files.size(), rows.size(), width);
@@ -381,7 +381,7 @@ final class StageQueryExecutor {
     }
 
     /** The MD5 of a file's bytes, in lower-case hex. */
-    private static String md5Of(final Path file) throws IOException {
+    static String md5Of(final Path file) throws IOException {
         final MessageDigest digest;
         try {
             digest = MessageDigest.getInstance("MD5");

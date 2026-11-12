@@ -43,6 +43,39 @@ public class ColumnData {
     // for every other type, and from a server that predates the field.
     @JsonInclude(JsonInclude.Include.NON_NULL)
     private Integer length;
+    // The database, the schema and the table a column projecting a stored table's column as it is reads from, which a
+    // client reports as the column's catalog, schema and table names, as the account's row type carries them. Absent
+    // for a computed column, and from a server that predates the fields.
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String database;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String schema;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String table;
+
+    public String getDatabase() {
+        return database;
+    }
+
+    public void setDatabase(final String database) {
+        this.database = database;
+    }
+
+    public String getSchema() {
+        return schema;
+    }
+
+    public void setSchema(final String schema) {
+        this.schema = schema;
+    }
+
+    public String getTable() {
+        return table;
+    }
+
+    public void setTable(final String table) {
+        this.table = table;
+    }
 
     public String getName() {
         return name;

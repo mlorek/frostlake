@@ -81,6 +81,8 @@ public class Catalog {
     private final IntegrationRegistry integrations = new IntegrationRegistry();
     /** The files COPY has loaded, for LOAD_HISTORY and COPY_HISTORY. */
     private final LoadHistory loadHistory = new LoadHistory();
+    /** The completed loads VALIDATE may validate again, by query ID (see CopyJobs). */
+    private final CopyJobs copyJobs = new CopyJobs();
     /** The refreshes the account's dynamic tables ran, for DYNAMIC_TABLE_REFRESH_HISTORY. */
     private final DynamicTableRefreshHistory dynamicTableRefreshHistory = new DynamicTableRefreshHistory();
     /** The account's query history, whose time-travel points a restored state keeps; the executor shares it. */
@@ -1223,6 +1225,15 @@ public class Catalog {
         return loadHistory;
     }
 
+    /**
+     * The completed COPY INTO table statements VALIDATE may validate again.
+     *
+     * @return the loads, by query ID
+     */
+    public CopyJobs getCopyJobs() {
+        return copyJobs;
+    }
+
     /** The refreshes the account's dynamic tables ran, under the names they ran under. */
     public DynamicTableRefreshHistory getDynamicTableRefreshHistory() {
         return dynamicTableRefreshHistory;
@@ -1709,6 +1720,21 @@ public class Catalog {
             return null;
         }
         return schema.getStream(objectName(qualifiedName));
+    }
+
+    /**
+     * {@link #resolveStream} by exactly its canonical name: a stream differing only in case is another (live-verified
+     * for DESCRIBE STREAM).
+     *
+     * @param qualifiedName the stream's canonical name, qualified or not
+     * @return the stream, or null when the schema or the stream does not exist
+     */
+    public Stream resolveStreamExact(final String qualifiedName) {
+        final Schema schema = resolveSchemaForObject(qualifiedName);
+        if (schema == null) {
+            return null;
+        }
+        return schema.getStreamExact(objectName(qualifiedName));
     }
 
     public void addFileFormat(final String qualifiedName, final FileFormat fileFormat) {

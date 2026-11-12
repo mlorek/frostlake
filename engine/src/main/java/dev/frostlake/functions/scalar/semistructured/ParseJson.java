@@ -34,7 +34,8 @@ public class ParseJson extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
+        if (args.get(0) == null || args.size() > 1 && args.get(1) == null) return null;
+        final boolean duplicateKeys = JsonTypeHelper.duplicateKeys(getName(), args);
         // The argument is TEXT by the time it arrives: a VARIANT one was coerced to VARCHAR at the call
         // boundary, which is where the declared type is still known — see
         // ExpressionEvaluatorVisitor.coerceVariantArgumentToText. Nothing here may second-guess the
@@ -50,7 +51,7 @@ public class ParseJson extends BuiltInFunction {
         // reads '.5' as 0.5. No JSON reader accepts it on its own, so it is spelled out for one.
         final String document = input.equals(".") ? "0" : input;
         // Parse leniently (Snowflake tolerates \' and invalid backslash escapes such as a regex \d).
-        final JsonNode parsed = JsonTypeHelper.parseLenient(document);
+        final JsonNode parsed = JsonTypeHelper.parseLenient(document, duplicateKeys);
         // A raw line break inside a string is refused, which the lenient reader does not do.
         final String lineBreak = parsed != null ? JsonFaultReader.lineBreakFault(args.get(0).toString()) : null;
         if (lineBreak != null) {
@@ -83,8 +84,9 @@ public class ParseJson extends BuiltInFunction {
 
     @Override
     public int getMinArgCount() { return 1; }
+    /** The second argument is the optional {@code 'd'} / {@code 's'} parameter (documented). */
     @Override
-    public int getMaxArgCount() { return 1; }
+    public int getMaxArgCount() { return 2; }
 
     /**
      * A predicate as PARSE_JSON's first argument is refused by the argument types, where a BOOLEAN

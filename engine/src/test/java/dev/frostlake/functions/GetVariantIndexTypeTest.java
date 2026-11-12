@@ -22,34 +22,50 @@ import org.junit.jupiter.api.Test;
 
 /**
  * GET reads a VARIANT at a number, a text, a BOOLEAN, a FLOAT or a VARIANT, a FLOAT reading nothing, as over an ARRAY
- * and an OBJECT; a DECFLOAT, a date and a binary index are refused by their type as the call compiles, the first
- * argument named FILE (all live-verified).
+ * and an OBJECT. A date, a time, a timestamp or a DECFLOAT index reads as its text, so it names an OBJECT's key and no
+ * ARRAY element; a binary index is refused by its type as the call compiles (all live-verified).
  */
 public class GetVariantIndexTypeTest extends MeasuredCellsTestSupport {
+
+    private static final String BINARY_REFUSED = "REFUSED SQL compilation error: error line 1 at position 7 | Invalid "
+        + "argument types for function 'GET': (VARIANT, ";
 
     @Test
     public void variantIndexes() {
         engine.execute("ALTER SESSION SET USE_CACHED_RESULT = FALSE");
-        assertAnswer("null", "SELECT GET(PARSE_JSON('[1,2,3]'), 1::FLOAT)");
-        assertAnswer("3", "SELECT GET(PARSE_JSON('[1,2,3]'), 1.5::NUMBER(2,1))");
-        assertAnswer("2", "SELECT GET(PARSE_JSON('[1,2,3]'), 1::NUMBER(38,0))");
-        assertAnswer("null", "SELECT GET(PARSE_JSON('[1,2,3]'), TRUE)");
-        assertAnswer("null", "SELECT GET(PARSE_JSON('[1,2,3]'), '1')");
-        assertAnswer("REFUSED SQL compilation error: error line 1 at position 7 | Invalid argument types for function "
-                + "'GET': (FILE, DATE)",
-            "SELECT GET(PARSE_JSON('[1,2,3]'), '2024-01-01'::DATE)");
-        assertAnswer("REFUSED SQL compilation error: error line 1 at position 7 | Invalid argument types for function "
-                + "'GET': (FILE, DECFLOAT(38))",
-            "SELECT GET(PARSE_JSON('[1,2,3]'), DECFLOAT '1')");
-        assertAnswer("null", "SELECT GET(PARSE_JSON('{\"a\":1}'), 1::FLOAT)");
-        assertAnswer("null", "SELECT GET([1,2,3], 1::FLOAT)");
-        assertAnswer("null", "SELECT GET(PARSE_JSON('[1,2,3]'), 1::DOUBLE)");
-        assertAnswer("null", "SELECT GET(PARSE_JSON('[1,2,3]'), NULL::FLOAT)");
-        assertAnswer("REFUSED SQL compilation error: error line 1 at position 7 | Invalid argument types for function "
-                + "'GET': (FILE, BINARY(67108864))",
-            "SELECT GET(PARSE_JSON('[1,2,3]'), TO_BINARY('01', 'HEX'))");
-        assertAnswer("null", "SELECT GET(OBJECT_CONSTRUCT('a', 1), 1::FLOAT)");
-        assertAnswer("null", "SELECT GET(PARSE_JSON('[1,2,3]')::VARIANT, PARSE_JSON('1'))");
+        assertCells(new String[][] {
+            {"SELECT GET(PARSE_JSON('[1,2,3]'), 1::FLOAT)", "null"},
+            {"SELECT GET(PARSE_JSON('[1,2,3]'), 1.5::NUMBER(2,1))", "3"},
+            {"SELECT GET(PARSE_JSON('[1,2,3]'), 1::NUMBER(38,0))", "2"},
+            {"SELECT GET(PARSE_JSON('[1,2,3]'), TRUE)", "null"},
+            {"SELECT GET(PARSE_JSON('[1,2,3]'), '1')", "null"},
+            {"SELECT GET(PARSE_JSON('{\"a\":1}'), 1::FLOAT)", "null"},
+            {"SELECT GET([1,2,3], 1::FLOAT)", "null"},
+            {"SELECT GET(PARSE_JSON('[1,2,3]'), 1::DOUBLE)", "null"},
+            {"SELECT GET(PARSE_JSON('[1,2,3]'), NULL::FLOAT)", "null"},
+            {"SELECT GET(PARSE_JSON('[1,2,3]'), TO_BINARY('01', 'HEX'))", BINARY_REFUSED + "BINARY(67108864))"},
+            {"SELECT GET(PARSE_JSON('[1,2,3]'), X'01')", BINARY_REFUSED + "BINARY(1))"},
+            {"SELECT GET(OBJECT_CONSTRUCT('a', 1), 1::FLOAT)", "null"},
+            {"SELECT GET(PARSE_JSON('[1,2,3]')::VARIANT, PARSE_JSON('1'))", "null"},
+            {"SELECT GET(OBJECT_CONSTRUCT('TRUE', 'x', 'true', 'y'), TRUE)", "y"}});
         engine.execute("ALTER SESSION UNSET USE_CACHED_RESULT");
+    }
+
+    @Test
+    public void aTemporalOrADecfloatIndexReadsAsItsText() {
+        assertCells(new String[][] {
+            {"SELECT GET(PARSE_JSON('[1,2,3]'), '2024-01-01'::DATE)", "null"},
+            {"SELECT GET(PARSE_JSON('{\"2024-01-01\":1}'), '2024-01-01'::DATE)", "1"},
+            {"SELECT GET(OBJECT_CONSTRUCT('2024-01-01', 'x'), '2024-01-01'::DATE)", "x"},
+            {"SELECT GET(OBJECT_CONSTRUCT('10:00:00', 'x'), '10:00'::TIME)", "x"},
+            {"SELECT GET(OBJECT_CONSTRUCT('2024-01-01 00:00:00.000', 'x'), '2024-01-01'::TIMESTAMP_NTZ)", "x"},
+            {"SELECT GET(OBJECT_CONSTRUCT('2024-01-01 00:00:00', 'x'), '2024-01-01'::TIMESTAMP_NTZ)", "null"},
+            {"SELECT GET(PARSE_JSON('[1,2,3]'), '2024-01-01'::TIMESTAMP_NTZ)", "null"},
+            {"SELECT GET(PARSE_JSON('[1,2,3]'), '10:00'::TIME)", "null"},
+            {"SELECT GET(PARSE_JSON('[1,2,3]'), DECFLOAT '1')", "null"},
+            {"SELECT GET(PARSE_JSON('[1,2,3]'), 1::DECFLOAT)", "null"},
+            {"SELECT GET(OBJECT_CONSTRUCT('1', 'x'), DECFLOAT '1')", "x"},
+            {"SELECT GET(OBJECT_CONSTRUCT('1.5', 'x'), DECFLOAT '1.5')", "x"},
+            {"SELECT GET(OBJECT_CONSTRUCT('1', 'x'), 1)", "null"}});
     }
 }

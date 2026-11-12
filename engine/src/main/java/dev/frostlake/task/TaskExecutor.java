@@ -93,4 +93,17 @@ public interface TaskExecutor {
     default void runInOwnSession(final Runnable run, final Map<String, String> parameters) {
         runInOwnSession(run);
     }
+
+    /**
+     * {@link #runInOwnSession(Runnable, Map)} for a session that acts with the role owning what runs: a task or an
+     * alert always runs with its owner role's privileges, whoever starts it and whichever session is current when it
+     * starts (documented). This default leaves the role aside.
+     *
+     * @param run        the run
+     * @param parameters the parameters the session starts with, by name, each as its text; null for none
+     * @param owner      the role owning the task or the alert, or null to take the starting session's roles
+     */
+    default void runAsOwner(final Runnable run, final Map<String, String> parameters, final String owner) {
+        runInOwnSession(run, parameters);
+    }
 }

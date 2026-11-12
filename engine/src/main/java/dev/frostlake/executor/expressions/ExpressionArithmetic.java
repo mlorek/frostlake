@@ -32,6 +32,7 @@ import dev.frostlake.values.NonFiniteDoubles;
 import dev.frostlake.values.VariantBooleans;
 import dev.frostlake.values.VariantJsonNulls;
 import dev.frostlake.values.VariantValue;
+import dev.frostlake.values.VectorValue;
 import dev.frostlake.values.XmlVariants;
 import dev.frostlake.values.YearMonthInterval;
 import java.math.BigDecimal;
@@ -1035,6 +1036,10 @@ public final class ExpressionArithmetic {
         final Integer binary = binaryVsOther(left, right);
         if (binary != null) {
             return binary;
+        }
+        if (left instanceof VectorValue && right instanceof VectorValue) {
+            // Two vectors compare byte-wise over their elements' encodings (see VectorValue#compareTo).
+            return ((VectorValue) left).compareTo((VectorValue) right);
         }
         return left.toString().compareTo(right.toString());
     }

@@ -23,7 +23,9 @@ import org.junit.jupiter.api.Test;
  * The syntax-error lines past a star modifier's keyword, {@code HASH(* REPLACE …)} or {@code RENAME}, where the call
  * stands as a CASE's condition, as a CASE's operand, in a subquery compared by {@code =} or as an EXISTS query's item
  * (live-verified): each place reads the modifier's remainder its own way, a bare keyword, a word, two words, a
- * RENAME, a bracketed value with an alias, with a comma after it, and a bracketed name.
+ * RENAME, a bracketed value with an alias, with a comma after it, and a bracketed name. A subquery quantified by
+ * {@code > ALL} and one on the left of a WHERE's {@code =} read a bracketed value with an alias as a compared subquery
+ * does.
  */
 public class StarModifierContextLinesTest extends MeasuredCellsTestSupport {
 
@@ -167,6 +169,52 @@ public class StarModifierContextLinesTest extends MeasuredCellsTestSupport {
             {"SELECT 1 FROM fz WHERE id = (SELECT MAX(id) FROM fz WHERE HASH(* REPLACE) = 1)",
                 "REFUSED SQL compilation error: | syntax error line 1 at position 29 unexpected 'SELECT'. | syntax "
                 + "error line 1 at position 40 unexpected 'id'. | syntax error line 1 at position 72 unexpected ')'."},
+            {"SELECT 1 FROM fz WHERE id > ALL (SELECT id FROM fz WHERE HASH(* REPLACE (1 AS id)) = 1)",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 33 unexpected 'SELECT'. | syntax "
+                + "error line 1 at position 62 unexpected '*'. | syntax error line 1 at position 75 unexpected "
+                + "'AS'. | syntax error line 1 at position 81 unexpected ')'."},
+            {"SELECT 1 FROM fz WHERE (SELECT MAX(id) FROM fz WHERE HASH(* REPLACE (1 AS id)) = 1) = id",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 24 unexpected 'SELECT'. | syntax "
+                + "error line 1 at position 35 unexpected 'id'. | syntax error line 1 at position 71 unexpected "
+                + "'AS'. | syntax error line 1 at position 77 unexpected ')'."},
+            // Any comparison and quantifier, and a remainder aliasing a bracketed value or two values.
+            {"SELECT 1 FROM fz WHERE id < ALL (SELECT id FROM fz WHERE HASH(* REPLACE (1 AS id)) = 1)",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 33 unexpected 'SELECT'. | "
+                + "syntax error line 1 at position 62 unexpected '*'. | syntax error line 1 at position 75 "
+                + "unexpected 'AS'. | syntax error line 1 at position 81 unexpected ')'."},
+            {"SELECT 1 FROM fz WHERE id >= ANY (SELECT id FROM fz WHERE HASH(* REPLACE (1 AS id)) = 1)",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 34 unexpected 'SELECT'. | "
+                + "syntax error line 1 at position 63 unexpected '*'. | syntax error line 1 at position 76 "
+                + "unexpected 'AS'. | syntax error line 1 at position 82 unexpected ')'."},
+            {"SELECT 1 FROM fz WHERE id <> SOME (SELECT id FROM fz WHERE HASH(* REPLACE (1 AS id)) = 1)",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 35 unexpected 'SELECT'. | "
+                + "syntax error line 1 at position 64 unexpected '*'. | syntax error line 1 at position 77 "
+                + "unexpected 'AS'. | syntax error line 1 at position 83 unexpected ')'."},
+            {"SELECT 1 FROM fz WHERE (SELECT MAX(id) FROM fz WHERE HASH(* REPLACE (1 AS id)) = 1) < id",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 24 unexpected 'SELECT'. | "
+                + "syntax error line 1 at position 35 unexpected 'id'. | syntax error line 1 at position 71 "
+                + "unexpected 'AS'. | syntax error line 1 at position 77 unexpected ')'."},
+            {"SELECT 1 FROM fz WHERE (SELECT MAX(id) FROM fz WHERE HASH(* REPLACE (1 AS id)) = 1) >= id",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 24 unexpected 'SELECT'. | "
+                + "syntax error line 1 at position 35 unexpected 'id'. | syntax error line 1 at position 71 "
+                + "unexpected 'AS'. | syntax error line 1 at position 77 unexpected ')'."},
+            {"SELECT 1 FROM fz WHERE (SELECT MAX(id) FROM fz WHERE HASH(* REPLACE (1 AS id)) = 1) <> id",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 24 unexpected 'SELECT'. | "
+                + "syntax error line 1 at position 35 unexpected 'id'. | syntax error line 1 at position 71 "
+                + "unexpected 'AS'. | syntax error line 1 at position 77 unexpected ')'."},
+            {"SELECT 1 FROM fz WHERE id > ALL (SELECT id FROM fz WHERE HASH(* REPLACE ((1 + 2) AS id)) = 1)",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 33 unexpected 'SELECT'. | "
+                + "syntax error line 1 at position 62 unexpected '*'. | syntax error line 1 at position 81 "
+                + "unexpected 'AS'. | syntax error line 1 at position 87 unexpected ')'."},
+            {"SELECT 1 FROM fz WHERE id > ALL (SELECT id FROM fz WHERE HASH(* REPLACE (1 AS id, 2 AS v)) = 1)",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 33 unexpected 'SELECT'. | "
+                + "syntax error line 1 at position 62 unexpected '*'. | syntax error line 1 at position 75 "
+                + "unexpected 'AS'. | syntax error line 1 at position 84 unexpected 'AS'. | syntax error line 1 at "
+                + "position 89 unexpected ')'."},
+            {"SELECT 1 FROM fz WHERE (SELECT MAX(id) FROM fz WHERE HASH(* REPLACE ((1 + 2) AS id)) = 1) = id",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 24 unexpected 'SELECT'. | "
+                + "syntax error line 1 at position 35 unexpected 'id'. | syntax error line 1 at position 77 "
+                + "unexpected 'AS'. | syntax error line 1 at position 83 unexpected ')'."},
             {"SELECT 1 FROM fz WHERE id = (SELECT HASH(* REPLACE (1 AS id)) FROM fz)",
                 "REFUSED SQL compilation error: | syntax error line 1 at position 29 unexpected 'SELECT'. | syntax "
                 + "error line 1 at position 41 unexpected '*'. | syntax error line 1 at position 54 unexpected 'AS'. "

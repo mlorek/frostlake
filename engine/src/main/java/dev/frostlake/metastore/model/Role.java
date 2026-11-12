@@ -393,14 +393,37 @@ public class Role implements Taggable {
         tags.putAll(source.tags);
     }
 
-    /** Applies a change of recorded names to the privileges held on objects. */
+    /**
+     * Applies a change of recorded names to the privileges held on objects, and to the caller grants on them, which go
+     * with an object as its privileges do. A copy - a clone's, COPY GRANTS - takes no caller grant along.
+     */
     public void remapGrants(final GrantRemap remap) {
         grants.remapGrants(remap);
+        if (remap.copies()) {
+            return;
+        }
+        for (int i = 0; i < callerGrants.size(); i++) {
+            final CallerGrant moved = callerGrants.get(i).remapped(remap);
+            if (moved != null) {
+                callerGrants.set(i, moved);
+            }
+        }
     }
 
-    /** Takes back the privileges held on one object: all of them, or with {@code ownershipOnly} OWNERSHIP alone. */
+    /**
+     * Takes back the privileges held on one object: all of them, or with {@code ownershipOnly} OWNERSHIP alone. All of
+     * them takes back the caller grants on it too, and those inherited where it is the database or schema.
+     */
     public void purgeGrants(final String objectType, final String objectName, final boolean ownershipOnly) {
         grants.purgeGrants(objectType, objectName, ownershipOnly);
+        if (ownershipOnly) {
+            return;
+        }
+        for (int i = callerGrants.size() - 1; i >= 0; i--) {
+            if (callerGrants.get(i).isOn(objectType, objectName)) {
+                callerGrants.remove(i);
+            }
+        }
     }
 
     /**

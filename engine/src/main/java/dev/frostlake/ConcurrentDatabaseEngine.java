@@ -399,6 +399,22 @@ public class ConcurrentDatabaseEngine {
     }
 
     /**
+     * Whether a session's CLIENT_RESULT_COLUMN_CASE_INSENSITIVE is TRUE - its own, its user's or the account's - read
+     * from the session's own settings, as {@link #sessionTimezone} reads its zone.
+     *
+     * @param session the session
+     * @return whether it is
+     */
+    public boolean resultColumnsCaseInsensitive(final SessionContext session) {
+        engine.getSecurityManager().getSessionContext().bindSettings(session.getSettings());
+        try {
+            return engine.getSecurityManager().getSessionContext().resultColumnsCaseInsensitive();
+        } finally {
+            engine.getSecurityManager().getSessionContext().unbindSettings();
+        }
+    }
+
+    /**
      * The user a session's statements run as, as CURRENT_USER() names it: the engine's own, which no session changes.
      *
      * @return the user's name

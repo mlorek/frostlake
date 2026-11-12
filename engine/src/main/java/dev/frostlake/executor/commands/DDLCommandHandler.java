@@ -253,6 +253,9 @@ public class DDLCommandHandler implements CommandHandler {
                 return relationalHandler.handleCreateView(ctx, ifNotExists);
             } else if (ctx.VIEW() != null && ctx.MATERIALIZED() != null) {
                 return relationalHandler.handleCreateMaterializedView(ctx, ifNotExists);
+            } else if (ctx.CLONE() != null && (ctx.TASK() != null || ctx.STAGE() != null
+                    || ctx.FILE() != null && ctx.FORMAT() != null)) {
+                return infraHandler.handleCloneSchemaObject(ctx, ifNotExists);
             } else if (ctx.TASK() != null) {
                 return infraHandler.handleCreateTask(ctx, ifNotExists);
             } else if (ctx.PIPE() != null) {
@@ -382,6 +385,26 @@ public class DDLCommandHandler implements CommandHandler {
      * CREATE STREAM … CLONE: a new stream with the source stream's definition — its source object, its mode
      * and its comment — that inherits the source's current offset, so it holds the same pending changes.
      */
+    /**
+     * The source of a stream clone: one the session does not see is refused as a stream that is not there, and the
+     * clone needs OWNERSHIP of it (documented: "Alerts, Pipes, Streams, Tasks: OWNERSHIP").
+     *
+     * @param source  the stream cloned
+     * @param written its name as the statement wrote it
+     */
+    private void requireOwnedStreamSource(final Stream source, final String written) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        final Schema home = StreamSources.homeOf(catalog, source);
+        if (security == null || home == null) {
+            return;
+        }
+        final String recorded = home.qualifiedName(source.getName());
+        if (!security.sees("STREAM", recorded, source.getOwner())) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Stream", written));
+        }
+        queryExecutor.requireOwnership("STREAM", QualifiedName.parse(recorded).parts(), null);
+    }
+
     private Object handleCloneStream(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String streamQualifiedName = getText(ctx.qualifiedName(0));
         // The name as the parse tree canonicalises it: unquoted folds to upper case, a quoted name keeps its own.
@@ -391,6 +414,7 @@ public class DDLCommandHandler implements CommandHandler {
         if (source == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Stream", sourceQualifiedName));
         }
+        requireOwnedStreamSource(source, sourceQualifiedName);
         try {
             final Schema schema = resolveSchemaFromQualifiedName(streamQualifiedName);
             schema.rejectNameHeldByOtherKind(streamName, RelationKind.STREAM, false);
@@ -1849,9 +1873,11 @@ public class DDLCommandHandler implements CommandHandler {
                 if (storage.hasTable(fqn)) {
                     continue;
                 }
-                // Each table's storage that waited with the version comes back, its time-travel history with it.
+                // Each table's storage that waited with the version comes back, its time-travel history with it, and so
+                // do the changes of a transaction still open that wrote it.
                 final String kept = dropped.keptStorageOf(fqn);
                 if (kept != null && storage.restoreRetired(kept, fqn)) {
+                    queryExecutor.getTransactionManager().tablesMoved(Collections.singletonMap(kept, fqn));
                     continue;
                 }
                 storage.createTable(fqn, table);
@@ -2075,11 +2101,67 @@ public class DDLCommandHandler implements CommandHandler {
             if (source == null) {
                 continue;
             }
-            final List<Row> rows = version == null ? source.scan() : version.getRows();
-            for (final Row row : rows) {
-                storage.getTableStorage(tgtKey).insert(new Row(new ArrayList<>(row.getValues())));
+            final List<Long> ids = new ArrayList<>();
+            final List<Row> rows = version == null ? source.scanWithIds(ids) : version.getRows();
+            // Each row keeps its source identity (see TableStorage#insertCloned).
+            storage.getTableStorage(tgtKey).insertCloned(rows, version == null ? ids : version.getRowIds());
+        }
+        if (point != null) {
+            cloneDroppedTables(sourceDb, sourceSchema, tgt, targetDb, targetSchema, point);
+        }
+    }
+
+    /**
+     * The tables that stood in a schema at a clone's point but were dropped or replaced since, cloned as they stood
+     * then: each from the newest of its dropped versions that stood at the point, its rows read at the point from the
+     * history that version keeps, else the rows it held when dropped. A table of the name the clone already holds - one
+     * that stood at the point and stands still - is not displaced.
+     */
+    private void cloneDroppedTables(final String sourceDb, final String sourceSchema, final Schema tgt,
+                                    final String targetDb, final String targetSchema, final ClonePoint point) {
+        final StorageEngine storage = queryExecutor.getStorageEngine();
+        for (final Map.Entry<String, List<DroppedObject>> entry : catalog.droppedVersions().entrySet()) {
+            if (!entry.getKey().startsWith("TABLE:")) {
+                continue;
+            }
+            final String fqn = entry.getKey().substring("TABLE:".length());
+            final String[] parts = QualifiedName.parse(fqn).parts();
+            if (parts.length != 3 || !parts[0].equals(sourceDb) || !parts[1].equals(sourceSchema)) {
+                continue;
+            }
+            for (int i = entry.getValue().size() - 1; i >= 0; i--) {
+                final DroppedObject version = entry.getValue().get(i);
+                if (!(version.getObject() instanceof Table)) {
+                    continue;
+                }
+                final Table dropped = (Table) version.getObject();
+                if (dropped.isTemporary() || createdAfter(dropped, point) || !droppedAfter(version, point)
+                        || tgt.hasTable(dropped.getName())) {
+                    continue;
+                }
+                final Table copy = dropped.copyAs(dropped.getName(), false, dropped.isTransient());
+                copy.setOwner(dropped.getOwner());
+                tgt.addTable(copy);
+                final String tgtKey = QualifiedName.key(targetDb, targetSchema, copy.getName());
+                storage.createTable(tgtKey, copy);
+                final String kept = version.getStorageSetAside() != null ? version.getStorageSetAside()
+                    : version.keptStorageOf(fqn);
+                final TableStorage history = kept == null ? null : storage.retiredStorage(kept);
+                final TableVersion atPoint = history != null
+                    ? queryExecutor.versionAtClonePoint(dropped, history, point) : null;
+                final List<Row> rows = atPoint != null ? atPoint.getRows() : version.getRows();
+                if (rows != null) {
+                    storage.getTableStorage(tgtKey).insertCloned(rows, atPoint != null ? atPoint.getRowIds() : null);
+                }
+                break;
             }
         }
+    }
+
+    /** Whether a dropped version still stood at a clone's point: it was dropped only after the point. */
+    private static boolean droppedAfter(final DroppedObject version, final ClonePoint point) {
+        final long dropped = version.getDroppedOn().toEpochMilli();
+        return point.isBefore() ? dropped >= point.millis() : dropped > point.millis();
     }
 
     /**

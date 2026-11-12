@@ -42,6 +42,7 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlSyntaxException;
+import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.StorageEngine;
 
 import java.util.ArrayList;
@@ -95,7 +96,11 @@ public class CreateNamespaceHandler implements CommandHandler {
         for (final Table table : schema.getTables()) {
             final String fqn = QualifiedName.key(databaseName, schema.getName(), table.getName());
             if (storage.hasTable(fqn)) {
-                storage.dropTable(fqn);
+                // One another session's open transaction wrote is set aside for it, as a replaced table is: its COMMIT
+                // never reaches the new table of the name, and its lock never holds it.
+                if (queryExecutor.getTransactionManager().setAsideIfWritten(fqn) == null) {
+                    storage.dropTable(fqn);
+                }
                 queryExecutor.getTransactionManager().discardBufferedWritesFor(fqn);
             }
         }
@@ -109,6 +114,9 @@ public class CreateNamespaceHandler implements CommandHandler {
         // The SNOWFLAKE database is neither cloned nor replaced (SystemDatabase).
         if (ctx.CLONE() != null) {
             SystemDatabase.refuseChange(getText(ctx.identifier(1)));
+            final Database source = catalog.databaseExact(getText(ctx.identifier(1)));
+            requireCloneSourceUsage("DATABASE", source.getName(), source.getOwner(),
+                SqlCompilationError.doesNotExist("Database", source.getName()));
         }
         if (ctx.or_replace() != null) {
             SystemDatabase.refuseChange(dbName);
@@ -238,6 +246,29 @@ public class CreateNamespaceHandler implements CommandHandler {
         return point;
     }
 
+    /**
+     * The source of a database or schema clone: one the session does not see is refused as a name no database or
+     * schema carries is, and the clone needs USAGE on it (documented: "To create a clone, your current role must have
+     * the following privilege(s) on the source object: Databases: USAGE"; a schema needs USAGE on it and on its
+     * database, which seeing it already asks).
+     *
+     * @param kind     DATABASE or SCHEMA
+     * @param recorded the source's full name
+     * @param owner    the role that owns it
+     * @param missing  the refusal of a source that is not there
+     */
+    private void requireCloneSourceUsage(final String kind, final String recorded, final String owner,
+                                         final String missing) {
+        final SecurityManager security = queryExecutor.getSecurityManager();
+        if (security == null) {
+            return;
+        }
+        if (!security.sees(kind, recorded, owner)) {
+            throw new RuntimeException(missing);
+        }
+        queryExecutor.requirePrivilege(Privilege.USAGE, kind, recorded);
+    }
+
     /** The schema a CREATE SCHEMA ... CLONE copies: a bare name in the session's database. */
     private Schema cloneSourceSchema(final FrostlakeParser.CreateStatementContext ctx) {
         final String[] sourceParts = qualifiedNameParts(ctx.qualifiedName(1));
@@ -322,6 +353,12 @@ public class CreateNamespaceHandler implements CommandHandler {
         // A schema name has at most two parts (db..s counts three): live refuses a longer one with its
         // generic sentence, IF NOT EXISTS or not, and reads a leading locator of this account.
         final String[] parts = catalog.withoutAccount(qualifiedNameParts(ctx.qualifiedName(0)), 2);
+        if (ctx.CLONE() != null) {
+            final Schema source = cloneSourceSchema(ctx);
+            final String sourceName = QualifiedName.join(source.getDatabaseName(), source.getName());
+            requireCloneSourceUsage("SCHEMA", sourceName, source.getOwner(),
+                SqlCompilationError.doesNotExist("Schema", sourceName));
+        }
         // AT | BEFORE is resolved before anything changes, as a database clone's is.
         final ClonePoint point = ctx.CLONE() != null && ctx.timeTravelClause() != null
             ? clonePoint(ctx, cloneSourceSchema(ctx)) : null;

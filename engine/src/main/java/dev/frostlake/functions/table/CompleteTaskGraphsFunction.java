@@ -34,9 +34,23 @@ public class CompleteTaskGraphsFunction extends TableFunction {
 
     private final Catalog catalog;
 
+    /** Which tasks the session may read about (see TaskSight); null reads about every one. */
+    private final TaskSight sight;
+
     public CompleteTaskGraphsFunction(final Catalog catalog) {
+        this(catalog, null);
+    }
+
+    /**
+     * The function reading only about the tasks the session sees.
+     *
+     * @param catalog the catalog
+     * @param sight   which tasks the session sees, or null for every one
+     */
+    public CompleteTaskGraphsFunction(final Catalog catalog, final TaskSight sight) {
         super("COMPLETE_TASK_GRAPHS");
         this.catalog = catalog;
+        this.sight = sight;
     }
 
     @Override
@@ -58,6 +72,6 @@ public class CompleteTaskGraphsFunction extends TableFunction {
         final String rootTaskName = TaskGraphRuns.text(namedArgs.get("ROOT_TASK_NAME"));
         final boolean errorOnly = TaskGraphRuns.flag(namedArgs.get("ERROR_ONLY"), false);
         return new ResultSet(TaskGraphRuns.columns(true),
-            TaskGraphRuns.complete(catalog, rootTaskName, errorOnly, limit));
+            TaskGraphRuns.complete(catalog, rootTaskName, errorOnly, limit, sight));
     }
 }

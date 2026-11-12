@@ -21,6 +21,9 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.IntegerResultWidths;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
@@ -28,6 +31,9 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 public class DateDiff extends BuiltInFunction {
+    /** A second in nanoseconds. */
+    private static final BigInteger NANOS_PER_SECOND = BigInteger.valueOf(1_000_000_000L);
+
     public DateDiff() { this("DATEDIFF"); }
 
     /**
@@ -107,9 +113,20 @@ public class DateDiff extends BuiltInFunction {
             case "MICROSECOND": case "US":
                 return ChronoUnit.MICROS.between(startAt.truncatedTo(ChronoUnit.MICROS), endAt.truncatedTo(ChronoUnit.MICROS));
             case "NANOSECOND":
-                return ChronoUnit.NANOS.between(startAt, endAt);
+                return nanosBetween(startAt, endAt);
             default: throw SharedFunctionHelpers.notADateTimeComponent(args.get(0), getName());
         }
+    }
+
+    /**
+     * The nanoseconds between two instants, exactly: a span of more than about 292 years overflows a long, while the
+     * count is a NUMBER(38,0) that holds it.
+     */
+    private static Object nanosBetween(final LocalDateTime start, final LocalDateTime end) {
+        final Duration span = Duration.between(start, end);
+        final BigInteger nanos = BigInteger.valueOf(span.getSeconds()).multiply(NANOS_PER_SECOND)
+            .add(BigInteger.valueOf(span.getNano()));
+        return nanos.bitLength() < Long.SIZE ? (Object) Long.valueOf(nanos.longValue()) : new BigDecimal(nanos);
     }
 
     @Override

@@ -21,9 +21,11 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.WholeNumbers;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.LobSize;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.node.ArrayNode;
 
+import java.math.BigInteger;
 import java.util.List;
 
 /**
@@ -31,6 +33,17 @@ import java.util.List;
  * (EXCLUSIVE). step defaults to 1 and may be negative. Returns an empty array when the range is empty.
  */
 public class ArrayGenerateRange extends BuiltInFunction {
+
+    /**
+     * The most numbers a range may hold: an array's values together take at most 128 MB, a number at least a byte, so
+     * no array holds more than 134,217,728 of them (Semi-structured data types). A longer range is refused before
+     * any of it is made.
+     */
+    private static final long MOST_ELEMENTS = LobSize.MAX_TEXT_BYTES;
+
+    /** The longest range held a node per number; a longer one is read where it stands (see RangeArrayElements). */
+    private static final long LONGEST_HELD = 1_000_000L;
+
     public ArrayGenerateRange() { super("ARRAY_GENERATE_RANGE", ArrayType.ARRAY); }
 
     @Override
@@ -45,13 +58,33 @@ public class ArrayGenerateRange extends BuiltInFunction {
             if (args.get(2) == null) return null;
             step = WholeNumbers.wholeLong(args.get(2));
         }
+        final long count = elements(start, stop, step);
+        if (count > MOST_ELEMENTS) {
+            throw new RuntimeException("Result array of " + getName() + " is too large");
+        }
+        if (count > LONGEST_HELD) {
+            return VariantValue.ofNodeLazily(new ArrayNode(ArrayFunctionHelper.MAPPER.getNodeFactory(),
+                new RangeArrayElements(start, step, (int) count)));
+        }
         final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
-        if (step > 0) {
-            for (long i = start; i < stop; i += step) result.add(i);
-        } else if (step < 0) {
-            for (long i = start; i > stop; i += step) result.add(i);
+        for (long k = 0; k < count; k++) {
+            result.add(start + k * step);
         }
         return VariantValue.ofNode(result);
+    }
+
+    /**
+     * How many numbers a range holds: none for a step of 0 or a step away from the stop, else the steps from the
+     * start that stay short of it, saturated past Long.MAX_VALUE.
+     */
+    private static long elements(final long start, final long stop, final long step) {
+        if (step == 0 || (step > 0 ? start >= stop : start <= stop)) {
+            return 0;
+        }
+        final BigInteger span = BigInteger.valueOf(stop).subtract(BigInteger.valueOf(start)).abs();
+        final BigInteger[] steps = span.divideAndRemainder(BigInteger.valueOf(step).abs());
+        final BigInteger count = steps[1].signum() == 0 ? steps[0] : steps[0].add(BigInteger.ONE);
+        return count.bitLength() < Long.SIZE - 1 ? count.longValue() : Long.MAX_VALUE;
     }
 
     @Override

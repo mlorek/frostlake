@@ -345,8 +345,14 @@ public class SecurityManager {
             return true;
         }
         if (restricted()) {
-            return callerGranted(privilege.name(), objectType, objectName)
-                && callerHolds(privilege, objectType, objectName, owner);
+            // A view's own query reads with its owner's rights there too: the caller grants govern only the caller's
+            // privileges the body uses.
+            final Set<String> bodyOwner = bodyOwnerRights();
+            return !bodyOwner.isEmpty() && (bodyOwner.contains(catalog.resolveRoleName(owner))
+                    || holdsOwningDatabaseRole(bodyOwner, owner) || holdsExactly(holdersUnder(bodyOwner), objectType,
+                        GrantNames.of(catalog, objectType, objectName), privilege))
+                || callerGranted(privilege.name(), objectType, objectName)
+                    && callerHolds(privilege, objectType, objectName, owner);
         }
         final Set<String> roles = askedRoles();
         return roles.contains(catalog.resolveRoleName(owner)) || holdsOwningDatabaseRole(roles, owner)
@@ -414,11 +420,27 @@ public class SecurityManager {
             return true;
         }
         if (restricted()) {
-            return callerGranted(null, objectType, objectName)
-                && ("SYSTEM".equals(sessionContext.getCurrentUser()) || holdAny(callerRights(), objectType,
-                    objectName, owner));
+            final Set<String> bodyOwner = bodyOwnerRights();
+            return !bodyOwner.isEmpty() && holdAny(bodyOwner, objectType, objectName, owner)
+                || callerGranted(null, objectType, objectName)
+                    && ("SYSTEM".equals(sessionContext.getCurrentUser()) || holdAny(callerRights(), objectType,
+                        objectName, owner));
         }
         return holdAny(askedRoles(), objectType, objectName, owner);
+    }
+
+    /**
+     * The roles a view's, a dynamic table's or a policy's own query is checked with inside a restricted body: its
+     * owner's, with PUBLIC, as outside one (see {@link #askedRoles}); none outside such a query.
+     */
+    private Set<String> bodyOwnerRights() {
+        final String rightsOwner = ownerRights.get();
+        if (rightsOwner == null) {
+            return new HashSet<>();
+        }
+        final Set<String> roles = rolesUnder(rightsOwner);
+        roles.add("PUBLIC");
+        return roles;
     }
 
     /** The roles the caller of a restricted body holds its own privileges through: the session's, with PUBLIC. */
@@ -465,6 +487,26 @@ public class SecurityManager {
         final Set<String> roles = reachingRoles();
         return holdAny(roles, objectType, objectName, owner) && usesContainers(roles, objectType, objectName)
             || managesGrants(roles);
+    }
+
+    /**
+     * Whether the rights a statement runs with see a role, which SHOW GRANTS lists the grants of: a role they hold,
+     * directly or through another, one they own or hold a privilege on, or any role under MANAGE GRANTS (see
+     * {@link #sees}).
+     *
+     * @param roleName the role's name, as a listing spells it
+     * @return whether the role is one the rights see
+     */
+    public boolean seesRole(final String roleName) {
+        if (!sessionContext.isSecurityEnabled()) {
+            return true;
+        }
+        final String canonical = catalog.resolveRoleName(roleName);
+        if (reachingRoles().contains(canonical)) {
+            return true;
+        }
+        final String owner = catalog.roleExists(canonical) ? catalog.getRoleExact(canonical).getOwner() : null;
+        return owner == null || sees("ROLE", canonical, owner);
     }
 
     /**
@@ -604,6 +646,47 @@ public class SecurityManager {
             return managesGrants(roles);
         }
         return holds(holdersUnder(roles), "ACCOUNT", "ACCOUNT", privilege);
+    }
+
+    /**
+     * Whether a role holds a privilege on the account by its own rights, as resuming a task asks of the task's owner:
+     * it or a role under it was granted it on the account, or it is ACCOUNTADMIN or above it, which holds every one
+     * from the start (see {@link #holdsAccountPrivilege}).
+     *
+     * @param roleName  the role
+     * @param privilege the privilege
+     * @return whether the role holds it
+     */
+    public boolean roleHoldsAccountPrivilege(final String roleName, final Privilege privilege) {
+        if (!sessionContext.isSecurityEnabled() || roleName == null) {
+            return true;
+        }
+        final Set<String> roles = rolesUnder(catalog.resolveRoleName(roleName));
+        roles.add("PUBLIC");
+        return roles.contains("ACCOUNTADMIN") || holds(holdersUnder(roles), "ACCOUNT", "ACCOUNT", privilege);
+    }
+
+    /**
+     * Whether a role holds a privilege on an object by its own rights: it or a role under it owns the object or was
+     * granted the privilege, PUBLIC's grants included.
+     *
+     * @param roleName   the role
+     * @param privilege  the privilege
+     * @param objectType the object's kind as privileges record it
+     * @param objectName the object's name in full
+     * @param owner      the role that owns the object, or null when none is recorded
+     * @return whether the role holds it
+     */
+    public boolean roleHoldsPrivilege(final String roleName, final Privilege privilege, final String objectType,
+                                      final String objectName, final String owner) {
+        if (!sessionContext.isSecurityEnabled() || roleName == null || owner == null) {
+            return true;
+        }
+        final Set<String> roles = rolesUnder(catalog.resolveRoleName(roleName));
+        roles.add("PUBLIC");
+        return roles.contains(catalog.resolveRoleName(owner)) || holdsOwningDatabaseRole(roles, owner)
+            || holdsExactly(holdersUnder(roles), objectType, GrantNames.of(catalog, objectType, objectName),
+                privilege);
     }
 
     /**
@@ -825,6 +908,35 @@ public class SecurityManager {
         }
         sessionContext.enterBodyOwner(ownerRole);
         return previous;
+    }
+
+    /**
+     * Enters the privileges a masking or row access policy's body is checked with, its owner's, as a view's body is
+     * checked with its owner's. Nothing else changes: the body is no object executing of its own, so INVOKER_ROLE() and
+     * CURRENT_ROLE() answer as they did.
+     *
+     * @param ownerRole the policy's owner
+     * @return the rights in force before, for {@link #leavePolicyOwnerRights}
+     */
+    public String enterPolicyOwnerRights(final String ownerRole) {
+        final String previous = ownerRights.get();
+        if (ownerRole != null && catalog.roleExists(catalog.resolveRoleName(ownerRole))) {
+            ownerRights.set(catalog.resolveRoleName(ownerRole));
+        }
+        return previous;
+    }
+
+    /**
+     * Returns to the rights in force before {@link #enterPolicyOwnerRights}.
+     *
+     * @param previous what {@link #enterPolicyOwnerRights} answered
+     */
+    public void leavePolicyOwnerRights(final String previous) {
+        if (previous == null) {
+            ownerRights.remove();
+        } else {
+            ownerRights.set(previous);
+        }
     }
 
     /**

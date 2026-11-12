@@ -145,4 +145,29 @@ public class TaskClauseSyntaxPlacesTest extends MeasuredCellsTestSupport {
                 "REFUSED SQL compilation error: | syntax error line 1 at position 52 unexpected 'COMMENT'."},
         });
     }
+
+    /** A property's name inside a list value may be a string, as the account takes it (live-verified). */
+    @Test
+    public void aStringNamesAPropertyInAListValue() {
+        engine.execute("CREATE OR REPLACE TASK tq998 SCHEDULE = '60 MINUTE' AS SELECT 1");
+        final String done = "Statement executed successfully.";
+        final String tag = "SHOW PARAMETERS LIKE 'QUERY_TAG' IN TASK tq998 ->> SELECT \"key\", \"value\", \"level\" "
+            + "FROM $1";
+        assertCells(new String[][] {
+            {"ALTER TASK tq998 SET QUERY_TAG = (('a' = 'x'))", done},
+            {tag, "QUERY_TAG|TOK_LIST|TASK"},
+            {"ALTER TASK tq998 SET QUERY_TAG = ('a' = 'x')", done},
+            {"ALTER TASK tq998 SET QUERY_TAG = (('a' = 'x', 'b' = 'y'))", done},
+            {tag, "QUERY_TAG|TOK_LIST|TASK"},
+            {"ALTER TASK tq998 SET QUERY_TAG = (('a' = 1))", done},
+            {"ALTER TASK nosuch998 SET QUERY_TAG = (('a' = 'x'))",
+                "REFUSED SQL compilation error: | Task 'TEST_DB.TEST_SCHEMA.NOSUCH998' does not exist or not "
+                + "authorized. Your primary role <ROLE> must have at least one privilege granted on TASK "
+                + "TEST_DB.TEST_SCHEMA.NOSUCH998."},
+            {"ALTER SESSION SET QUERY_TAG = (('a' = 'x'))", done},
+            {"SHOW PARAMETERS LIKE 'QUERY_TAG' IN SESSION ->> SELECT \"key\", \"value\", \"level\" FROM $1",
+                "QUERY_TAG|TOK_LIST|SESSION"},
+        });
+        engine.execute("ALTER SESSION UNSET QUERY_TAG");
+    }
 }

@@ -401,6 +401,12 @@ public final class AccessControlHandler {
                 throw new RuntimeException(SqlCompilationError.of("Cannot grant database role '"
                     + shown(role.getDatabase(), role.getName()) + "' to itself."));
             }
+            if (!holder.getDatabase().equals(role.getDatabase())) {
+                // A database role is granted to "another database role ... in the same database" alone (documented,
+                // GRANT DATABASE ROLE); the refusal's wording is the engine's own.
+                throw new RuntimeException(SqlCompilationError.of("Database role " + role.getQualifiedName()
+                    + " cannot be granted to database role " + holder.getQualifiedName() + " of another database."));
+            }
             if (holdsDatabaseRole(role, holder.getQualifiedName(), new HashSet<String>())) {
                 // A grant that closes a loop is refused, the two roles named with their database (live-verified).
                 throw new RuntimeException(RoleCycle.refusal(shown(role.getDatabase(), role.getName()),

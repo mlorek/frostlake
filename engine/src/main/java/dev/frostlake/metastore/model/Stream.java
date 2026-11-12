@@ -59,6 +59,8 @@ public class Stream implements Named, Taggable {
     private final boolean showInitialRows;
     private final List<StreamRecord> records;
     private LocalDateTime createdAt;
+    /** When a consuming statement last moved the offset, or null before any did (see stale_after). */
+    private LocalDateTime lastConsumedAt;
     private long currentOffset;
     private boolean stale;
     /** Whether the stream is a table stream cloned with its schema or database after its table went. */
@@ -390,6 +392,7 @@ public class Stream implements Named, Taggable {
     }
 
     public void consume() {
+        lastConsumedAt = StatementClock.hostLocal();
         // Consuming the initial rows leaves the offset at the starting point.
         if (initialRecords != null) {
             initialRecords = null;
@@ -458,6 +461,7 @@ public class Stream implements Named, Taggable {
      * @param sequence the snapshot number the transaction began at, where the offset now falls among the snapshots
      */
     public void consumeTo(final long cut, final long sequence) {
+        lastConsumedAt = StatementClock.hostLocal();
         if (initialRecords != null) {
             initialRecords = null;
             return;
@@ -646,6 +650,20 @@ public class Stream implements Named, Taggable {
         return createdAt;
     }
 
+    /** When a consuming statement last moved the stream's offset, or null before any did. */
+    public LocalDateTime getLastConsumedAt() {
+        return lastConsumedAt;
+    }
+
+    /**
+     * Put back when the stream was last consumed, as a snapshot recorded it; a null keeps none.
+     *
+     * @param consumed the recorded time, or null
+     */
+    public void restoreLastConsumedAt(final LocalDateTime consumed) {
+        lastConsumedAt = consumed;
+    }
+
     /**
      * Put back when this object was created, as a snapshot recorded it, so an engine clone or a restore reports the
      * original creation time. A null, from a snapshot that never recorded it, keeps the time it was rebuilt.
@@ -802,6 +820,7 @@ public class Stream implements Named, Taggable {
         initialRecords = source.initialRecords == null ? null : new ArrayList<>(source.initialRecords);
         refreshImage = source.refreshImage == null ? null : new ArrayList<>(source.refreshImage);
         refreshImageIds = source.refreshImageIds == null ? null : new ArrayList<>(source.refreshImageIds);
+        lastConsumedAt = source.lastConsumedAt;
     }
 
     /** Object tags applied via ALTER ... SET TAG (canonical upper-cased tag name -&gt; value). */

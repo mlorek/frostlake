@@ -245,13 +245,14 @@ public class DatabaseEngine {
 
             @Override
             public void runInOwnSession(final Runnable run, final Map<String, String> parameters) {
+                runAsOwner(run, parameters, null);
+            }
+
+            @Override
+            public void runAsOwner(final Runnable run, final Map<String, String> parameters, final String owner) {
                 ownSessionDepth.set(Integer.valueOf(ownSessionDepth.get().intValue() + 1));
                 try {
-                    if (parameters == null) {
-                        queryExecutor.runInOwnSession(run);
-                    } else {
-                        queryExecutor.runInOwnSession(run, parameters);
-                    }
+                    queryExecutor.runInOwnSession(run, parameters, owner);
                 } finally {
                     ownSessionDepth.set(Integer.valueOf(ownSessionDepth.get().intValue() - 1));
                     if (ownSessionDepth.get().intValue() == 0) {
@@ -1876,6 +1877,17 @@ public class DatabaseEngine {
         if (user == null) {
             return;
         }
+        dropRolesTheUserMayNotUse();
+        catalog.useSecondaryRoles(user.getDefaultSecondaryRoles().contains("\"ALL\"")
+            ? null : Collections.singletonList("NONE"));
+    }
+
+    /**
+     * Puts down every role in force that the session's user may not use, the primary role included, which gives way to
+     * PUBLIC: what a switch of user does to the roles of the session in force - the engine's own, or a JDBC
+     * connection's while its statement runs (see {@link #setCurrentUser}).
+     */
+    public void dropRolesTheUserMayNotUse() {
         final String former = sessionContext.getCurrentRole();
         for (final String role : new ArrayList<>(sessionContext.getActiveRoles())) {
             if (!catalog.mayActivate(role)) {
@@ -1885,8 +1897,6 @@ public class DatabaseEngine {
         if (former != null && !catalog.mayActivate(former)) {
             sessionContext.setCurrentRole("PUBLIC");
         }
-        catalog.useSecondaryRoles(user.getDefaultSecondaryRoles().contains("\"ALL\"")
-            ? null : Collections.singletonList("NONE"));
     }
 
     /**

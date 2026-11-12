@@ -74,8 +74,8 @@ public final class TableLockWait extends RuntimeException {
      *
      * @param transactions   the engine's transactions
      * @param timeoutSeconds the session's LOCK_TIMEOUT
-     * @param waitingSince   when the statement first waited ({@link System#nanoTime()}), which bounds its waits
-     *                       however often it runs again
+     * @param waitingSince   when this wait began ({@link System#nanoTime()}): each lock a statement meets is waited for
+     *                       LOCK_TIMEOUT seconds on its own, as the parameter's description says
      * @param stop           what ends the statement before the holder does
      */
     public void await(final TransactionManager transactions, final long timeoutSeconds, final long waitingSince,
@@ -100,6 +100,11 @@ public final class TableLockWait extends RuntimeException {
                 stop.check();
                 release.pause(Math.max(1L, Math.min(POLL_MILLIS,
                     TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()))));
+            }
+            // What came while the statement waited ends it although the lock is free by now: an abort of its session
+            // that the holder's end overtook ends it as one that came first does.
+            if (!stillHeld(transactions)) {
+                stop.check();
             }
         } catch (final InterruptedException interruption) {
             Thread.currentThread().interrupt();

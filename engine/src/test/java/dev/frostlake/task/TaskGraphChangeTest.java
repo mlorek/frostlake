@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
@@ -108,6 +109,54 @@ public class TaskGraphChangeTest extends BaseDatabaseTest {
         engine.execute("CREATE OR ALTER TASK gc_c AFTER gc_b AS SELECT 98");
         engine.execute("CREATE OR REPLACE TASK gc_b AFTER gc_r AS SELECT 97");
         assertEquals("SELECT97", taskCell("GC_B", "definition"));
+    }
+
+    @Test
+    public void aFinalizerIsNotAttachedToARunningRoot() {
+        engine.execute("CREATE TASK gc_r SCHEDULE = '60 MINUTE' AS SELECT 0");
+        engine.execute("CREATE TASK gc_b AFTER gc_r AS SELECT 2");
+        engine.execute("CREATE TASK gc_o SCHEDULE = '60 MINUTE' AS SELECT 0");
+        engine.execute("CREATE TASK gc_f AS SELECT 5");
+        engine.execute("ALTER TASK gc_r RESUME");
+        engine.execute("ALTER TASK gc_o RESUME");
+        try {
+            assertEquals(RUNNING, refusalOf("ALTER TASK gc_f SET FINALIZE = gc_r"));
+            assertEquals(RUNNING, refusalOf("CREATE TASK gc_g FINALIZE = gc_r AS SELECT 9"));
+            // A root that runs alone takes no finalizer either, as it takes no child.
+            final String alone = "Unable to update graph with root task " + PREFIX
+                + "GC_O since that root task is not suspended.";
+            assertEquals(alone, refusalOf("ALTER TASK gc_f SET FINALIZE = gc_o"));
+            assertEquals(alone, refusalOf("CREATE OR REPLACE TASK gc_g FINALIZE = gc_o AS SELECT 9"));
+            assertFalse(taskCell("GC_R", "task_relations").contains("FinalizerTask"));
+            assertFalse(taskCell("GC_O", "task_relations").contains("FinalizerTask"));
+            assertTrue(engine.executeQuery("SHOW TASKS LIKE 'GC_G'").getRows().isEmpty());
+        } finally {
+            engine.execute("ALTER TASK gc_r SUSPEND");
+            engine.execute("ALTER TASK gc_o SUSPEND");
+        }
+        // Suspended, each root takes its finalizer.
+        engine.execute("ALTER TASK gc_f SET FINALIZE = gc_r");
+        engine.execute("CREATE TASK gc_g FINALIZE = gc_o AS SELECT 9");
+        assertTrue(taskCell("GC_R", "task_relations").contains("\"FinalizerTask\":\"" + PREFIX + "GC_F\""));
+        assertTrue(taskCell("GC_O", "task_relations").contains("\"FinalizerTask\":\"" + PREFIX + "GC_G\""));
+    }
+
+    @Test
+    public void droppingATaskSuspendsTheTasksAfterIt() {
+        engine.execute("CREATE TASK gc_r SCHEDULE = '60 MINUTE' AS SELECT 0");
+        engine.execute("CREATE TASK gc_b AFTER gc_r AS SELECT 2");
+        engine.execute("CREATE TASK gc_c AFTER gc_b AS SELECT 3");
+        engine.execute("CREATE TASK gc_d AFTER gc_r, gc_b AS SELECT 4");
+        engine.execute("SELECT SYSTEM$TASK_DEPENDENTS_ENABLE('gc_r')");
+        engine.execute("ALTER TASK gc_r SUSPEND");
+        assertEquals("started", taskCell("GC_C", "state"));
+        assertEquals("started", taskCell("GC_D", "state"));
+        engine.execute("DROP TASK gc_b");
+        // C now stands alone and D runs after R alone; both are suspended until resumed by hand.
+        assertEquals("suspended", taskCell("GC_C", "state"));
+        assertEquals("[]", taskCell("GC_C", "predecessors"));
+        assertEquals("suspended", taskCell("GC_D", "state"));
+        assertEquals("[\"" + PREFIX + "GC_R\"]", taskCell("GC_D", "predecessors"));
     }
 
     @Test

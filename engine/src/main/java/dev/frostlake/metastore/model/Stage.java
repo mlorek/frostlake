@@ -99,7 +99,17 @@ public class Stage extends SqlObject implements SessionScoped {
      * @return the copy
      */
     public Stage copy() {
-        final Stage copy = new Stage(getName(), type, url, fileFormat, encryption, getComment(), s3Resolver);
+        return copyAs(getName());
+    }
+
+    /**
+     * {@link #copy()} under another name: a stage cloned on its own.
+     *
+     * @param copyName the copy's name
+     * @return the copy
+     */
+    public Stage copyAs(final String copyName) {
+        final Stage copy = new Stage(copyName, type, url, fileFormat, encryption, getComment(), s3Resolver);
         copy.encryptionType = encryptionType;
         copy.fileFormatOptions.putAll(fileFormatOptions);
         copy.copyOptions.putAll(copyOptions);

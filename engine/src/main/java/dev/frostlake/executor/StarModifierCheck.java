@@ -42,7 +42,7 @@ final class StarModifierCheck {
     }
 
     /**
-     * Whether a column is one a star expands to. A staged file's METADATA$FILENAME and METADATA$FILE_ROW_NUMBER
+     * Whether a column is one a star expands to. A staged file's metadata columns (see {@link StagedFileMetadata})
      * resolve by name but never expand from a star, and neither does the right-hand copy of a USING or NATURAL
      * join's key; a stream's metadata columns do.
      *
@@ -51,8 +51,7 @@ final class StarModifierCheck {
      */
     static boolean starVisible(final TableColumn column) {
         final String key = column.getName().toUpperCase(Locale.ROOT);
-        return !key.equals("METADATA$FILENAME") && !key.equals("METADATA$FILE_ROW_NUMBER")
-            && !column.isHiddenFromStar();
+        return !StagedFileMetadata.isMetadataColumn(key) && !column.isHiddenFromStar();
     }
 
     /**

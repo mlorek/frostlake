@@ -18,10 +18,11 @@ package dev.frostlake.metastore.model;
 
 /**
  * The outcome of a single {@link TaskExecution} run — {@link #SUCCEEDED} or {@link #FAILED} — or {@link #EXECUTING}
- * for a run that has not ended. Distinct from {@link TaskState} (the task's STARTED/SUSPENDED lifecycle). The enum
- * name is the value shown in TASK_HISTORY, so it must match Snowflake's states exactly (harnesses poll for the literal
- * 'SUCCEEDED').
+ * for a run that has not ended, or {@link #SKIPPED} for one that began but whose WHEN condition was not TRUE, so its
+ * statement did not run (documented). Distinct from {@link TaskState} (the task's STARTED/SUSPENDED lifecycle). The
+ * enum name is the value shown in TASK_HISTORY, so it must match Snowflake's states exactly (harnesses poll for the
+ * literal 'SUCCEEDED').
  */
 public enum TaskExecutionState {
-    SUCCEEDED, FAILED, EXECUTING
+    SUCCEEDED, FAILED, EXECUTING, SKIPPED
 }

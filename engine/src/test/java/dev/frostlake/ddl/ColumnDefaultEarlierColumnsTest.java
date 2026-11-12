@@ -90,4 +90,36 @@ public class ColumnDefaultEarlierColumnsTest extends MeasuredCellsTestSupport {
                 "Table DE904V successfully created."},
         });
     }
+
+    /**
+     * A MERGE's matched branch refuses SET c = DEFAULT over such a column as an UPDATE does, while an insert branch's
+     * DEFAULT is computed over its row; ALTER TABLE ADD COLUMN refuses a bare column read as it does a computed one;
+     * the table's own name may qualify a read with its schema and its database too (all live-verified).
+     */
+    @Test
+    public void mergesAnAddedColumnAndQualifiedReads() {
+        engine.execute("CREATE OR REPLACE TABLE de999 (c1 INT, c2 INT DEFAULT 5, c3 INT DEFAULT c2 + 1)");
+        engine.execute("INSERT INTO de999 (c1) VALUES (1)");
+        assertCells(new String[][] {
+            {"MERGE INTO de999 t USING (SELECT 1 AS k) s ON t.c1 = s.k WHEN MATCHED THEN UPDATE SET c3 = DEFAULT",
+                "REFUSED SQL compilation error: | Unsupported use of DEFAULT in UPDATE SET clause: C3=DEFAULT needs "
+                + "non-updated value of column C2"},
+            {"MERGE INTO de999 t USING (SELECT 2 AS k) s ON t.c1 = s.k WHEN NOT MATCHED THEN INSERT (c1, c3) "
+                + "VALUES (2, DEFAULT)", "1"},
+            {"SELECT c1, c2, c3 FROM de999 ORDER BY c1", "1|5|6 ;; 2|5|6"},
+            {"ALTER TABLE de999 ADD COLUMN e INT DEFAULT c2",
+                "REFUSED SQL compilation error: | Invalid column default expression [DE999.C2]"},
+            {"CREATE OR REPLACE TABLE dq1000 (c1 INT, c2 INT DEFAULT test_schema.dq1000.c1 + 1, "
+                + "c3 INT DEFAULT test_db.test_schema.dq1000.c1)", "Table DQ1000 successfully created."},
+            {"INSERT INTO dq1000 (c1) VALUES (4)", "1"},
+            {"SELECT c1, c2, c3 FROM dq1000", "4|5|4"},
+            {"DESCRIBE TABLE dq1000 ->> SELECT \"name\", \"default\" FROM $1",
+                "C1|null ;; C2|TEST_SCHEMA.DQ1000.C1 + 1 ;; C3|TEST_DB.TEST_SCHEMA.DQ1000.C1"},
+            {"CREATE OR REPLACE TABLE dq1000b (c1 INT, c2 INT DEFAULT nosuch.dq1000b.c1)",
+                "REFUSED SQL compilation error: error line 1 at position 56 | invalid identifier 'NOSUCH.DQ1000B.C1'"},
+            {"CREATE OR REPLACE TABLE dq1000b (c1 INT, c2 INT DEFAULT nosuch.test_schema.dq1000b.c1)",
+                "REFUSED SQL compilation error: error line 1 at position 56 | invalid identifier "
+                + "'NOSUCH.TEST_SCHEMA.DQ1000B.C1'"},
+        });
+    }
 }

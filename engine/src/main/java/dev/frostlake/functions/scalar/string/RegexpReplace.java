@@ -21,6 +21,7 @@ import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.functions.scalar.WholeNumberArgument;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.BoundedText;
 import dev.frostlake.values.CodePointText;
 
 import java.util.List;
@@ -71,23 +72,30 @@ public class RegexpReplace extends TextArgumentFunction {
         final String region = subject.substring(prefix.length());
         final String javaReplacement = RegexpHelper.translateReplacement(replacement);
         final Matcher matcher = RegexpHelper.compile(pattern, parameters).matcher(region);
-        final StringBuilder sb = new StringBuilder();
+        // The result is built a replacement at a time and refused once it would be longer than a text can be, before
+        // the piece that would carry it past is appended.
+        final BoundedText out = BoundedText.named(subject.length(), "regexp_replace result");
+        out.append(prefix);
+        final StringBuilder piece = new StringBuilder();
         int count = 0;
         while (matcher.find()) {
             count++;
             if (occurrence == 0 || count == occurrence) {
+                piece.setLength(0);
                 try {
-                    matcher.appendReplacement(sb, javaReplacement);
+                    matcher.appendReplacement(piece, javaReplacement);
                 } catch (final IndexOutOfBoundsException noSuchGroup) {
                     throw RegexpHelper.missingReplacementGroup(pattern, replacement);
                 }
+                out.append(piece);
                 if (occurrence != 0) {
                     break;
                 }
             }
         }
-        matcher.appendTail(sb);
-        return prefix + sb;
+        piece.setLength(0);
+        matcher.appendTail(piece);
+        return out.append(piece).toString();
     }
 
     @Override

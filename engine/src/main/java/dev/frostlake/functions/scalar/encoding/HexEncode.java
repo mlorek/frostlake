@@ -20,6 +20,7 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.LobSize;
 
 import java.util.List;
 
@@ -51,6 +52,13 @@ public class HexEncode extends BuiltInFunction {
         final char[] digits = args.size() > 1 && args.get(1) != null
             ? digitsFor(args.get(1)) : HEX_UPPER;
         final byte[] bytes = SharedFunctionHelpers.toUtf8(args.get(0));
+        if (2L * bytes.length > LobSize.MAX_TEXT_BYTES) {
+            // Two digits a byte: a text past what a text holds is refused before it is built, showing the argument
+            // and naming the function (live-verified).
+            final String argument = SharedFunctionHelpers.textOf(args.get(0));
+            throw LobSize.tooLongIn(argument.substring(0, Math.min(argument.length(), LobSize.shownBeginning())),
+                "HEX_ENCODE");
+        }
         final StringBuilder sb = new StringBuilder(bytes.length * 2);
         for (final byte b : bytes) {
             sb.append(digits[(b >> 4) & 0xF]).append(digits[b & 0xF]);

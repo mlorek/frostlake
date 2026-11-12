@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.context;
 
+import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.Alert;
@@ -98,7 +99,8 @@ final class SchemaDdl {
         out.append(";\n");
         final Map<String, Schema> schemas = new TreeMap<String, Schema>();
         for (final Schema schema : database.getAllSchemas()) {
-            if (!INFORMATION_SCHEMA.equals(schema.getName())) {
+            // A schema the session does not see is left out, with all it holds.
+            if (!INFORMATION_SCHEMA.equals(schema.getName()) && relations.seesSchema(schema)) {
                 schemas.put(schema.getName(), schema);
             }
         }
@@ -147,30 +149,44 @@ final class SchemaDdl {
 
         final Map<String, List<String>> tags = new TreeMap<String, List<String>>();
         for (final Tag tag : schema.getTags()) {
-            add(tags, tag.getName(), ObjectDdl.tag(tag, names.object(schema, tag.getName())));
+            // A member the session does not see is left out, here and below (see GetDdl#seesMember).
+            if (relations.seesMember("TAG", schema, tag.getName(), tag.getOwner())) {
+                add(tags, tag.getName(), ObjectDdl.tag(tag, names.object(schema, tag.getName())));
+            }
         }
         appendAll(out, tags);
 
         final Map<String, List<String>> sequences = new TreeMap<String, List<String>>();
         for (final Sequence sequence : schema.getSequences()) {
-            add(sequences, sequence.getName(), relations.sequenceDdl(sequence, names.object(schema, sequence.getName())));
+            if (relations.seesMember("SEQUENCE", schema, sequence.getName(), sequence.getOwner())) {
+                add(sequences, sequence.getName(),
+                    relations.sequenceDdl(sequence, names.object(schema, sequence.getName())));
+            }
         }
         appendAll(out, sequences);
 
         final Map<String, List<String>> temporary = new TreeMap<String, List<String>>();
         final Map<String, List<String>> tables = new TreeMap<String, List<String>>();
         for (final Table table : schema.getTables()) {
-            add(table.isTemporary() ? temporary : tables, table.getName(), relations.tableDdl(table, schema, names));
+            if (relations.seesMember("TABLE", schema, table.getName(), table.getOwner())) {
+                add(table.isTemporary() ? temporary : tables, table.getName(),
+                    relations.tableDdl(table, schema, names));
+            }
         }
         for (final Table table : schema.getShadowedTables()) {
-            add(tables, table.getName(), relations.tableDdl(table, schema, names));
+            if (relations.seesMember("TABLE", schema, table.getName(), table.getOwner())) {
+                add(tables, table.getName(), relations.tableDdl(table, schema, names));
+            }
         }
         for (final DynamicTable table : schema.getDynamicTables()) {
-            add(tables, table.getName(), relations.dynamicTableDdl(table, schema, names));
+            if (relations.seesMember("DYNAMIC_TABLE", schema, table.getName(), table.getOwner())) {
+                add(tables, table.getName(), relations.dynamicTableDdl(table, schema, names));
+            }
         }
         for (final MaterializedView view : schema.getMaterializedViews()) {
             // A SECURE object another role owns is left out of the listing, here and below.
-            if (!(view.isSecure() && relations.isAnothers(view.getOwner()))) {
+            if (!(view.isSecure() && relations.isAnothers(view.getOwner()))
+                    && relations.seesMember("MATERIALIZED_VIEW", schema, view.getName(), view.getOwner())) {
                 add(tables, view.getName(), relations.materializedViewDdl(view, schema, names));
             }
         }
@@ -179,7 +195,8 @@ final class SchemaDdl {
 
         final Map<String, List<String>> views = new TreeMap<String, List<String>>();
         for (final View view : schema.getViews()) {
-            if (!(view.isSecure() && relations.isAnothers(view.getOwner()))) {
+            if (!(view.isSecure() && relations.isAnothers(view.getOwner()))
+                    && relations.seesMember("VIEW", schema, view.getName(), view.getOwner())) {
                 add(views, view.getName(), relations.viewDdl(view, schema, names));
             }
         }
@@ -187,19 +204,23 @@ final class SchemaDdl {
 
         final Map<String, List<String>> formats = new TreeMap<String, List<String>>();
         for (final FileFormat format : schema.getFileFormats()) {
-            add(formats, format.getName(), ObjectDdl.fileFormat(format, names.object(schema, format.getName())));
+            if (relations.seesMember("FILE_FORMAT", schema, format.getName(), format.getOwner())) {
+                add(formats, format.getName(), ObjectDdl.fileFormat(format, names.object(schema, format.getName())));
+            }
         }
         appendAll(out, formats);
 
         final Map<String, List<String>> routines = new TreeMap<String, List<String>>();
         for (final Function function : schema.getFunctions()) {
-            if (!(function.isSecure() && relations.isAnothers(function.getOwner()))) {
+            if (!(function.isSecure() && relations.isAnothers(function.getOwner()))
+                    && relations.seesRoutine(QueryExecutor.functionGrant(schema, function))) {
                 add(routines, routineKey(function.getName(), function.getParameters()),
                     relations.functionDdl(function, schema, names));
             }
         }
         for (final Procedure procedure : schema.getProcedures()) {
-            if (!(procedure.isSecure() && relations.isAnothers(procedure.getOwner()))) {
+            if (!(procedure.isSecure() && relations.isAnothers(procedure.getOwner()))
+                    && relations.seesRoutine(QueryExecutor.procedureGrant(schema, procedure))) {
                 add(routines, routineKey(procedure.getName(), procedure.getParameters()),
                     relations.procedureDdl(procedure, schema, names));
             }
@@ -208,20 +229,26 @@ final class SchemaDdl {
 
         final Map<String, List<String>> streams = new TreeMap<String, List<String>>();
         for (final Stream stream : schema.getStreams()) {
-            add(streams, stream.getName(), ObjectDdl.stream(stream, names.object(schema, stream.getName())));
+            if (relations.seesMember("STREAM", schema, stream.getName(), stream.getOwner())) {
+                add(streams, stream.getName(), ObjectDdl.stream(stream, names.object(schema, stream.getName())));
+            }
         }
         appendAll(out, streams);
 
         final Map<String, List<String>> pipes = new TreeMap<String, List<String>>();
         for (final Pipe pipe : schema.getPipes()) {
-            add(pipes, pipe.getName(), ObjectDdl.pipe(pipe, names.object(schema, pipe.getName())));
+            if (relations.seesMember("PIPE", schema, pipe.getName(), pipe.getOwner())) {
+                add(pipes, pipe.getName(), ObjectDdl.pipe(pipe, names.object(schema, pipe.getName())));
+            }
         }
         appendAll(out, pipes);
 
         final Map<String, List<String>> tasks = new TreeMap<String, List<String>>();
         for (final Task task : schema.getTasks()) {
-            add(tasks, task.getName(), ObjectDdl.task(task, schema, names.object(schema, task.getName()),
-                relations.tagAssignments(task, schema)));
+            if (relations.seesMember("TASK", schema, task.getName(), task.getOwner())) {
+                add(tasks, task.getName(), ObjectDdl.task(task, schema, names.object(schema, task.getName()),
+                    relations.tagAssignments(task, schema)));
+            }
         }
         appendAll(out, tasks);
 
@@ -229,19 +256,25 @@ final class SchemaDdl {
 
         final Map<String, List<String>> contacts = new TreeMap<String, List<String>>();
         for (final Contact contact : schema.getContacts()) {
-            add(contacts, contact.getName(), ObjectDdl.contact(contact, names.object(schema, contact.getName())));
+            if (relations.seesMember("CONTACT", schema, contact.getName(), contact.getOwner())) {
+                add(contacts, contact.getName(), ObjectDdl.contact(contact, names.object(schema, contact.getName())));
+            }
         }
         appendAll(out, contacts);
 
         final Map<String, List<String>> streamlits = new TreeMap<String, List<String>>();
         for (final AppObject app : schema.getAppObjects().all(AppObjectKind.STREAMLIT)) {
-            add(streamlits, app.getName(), ObjectDdl.streamlit(app, names.object(schema, app.getName())));
+            if (relations.seesMember("STREAMLIT", schema, app.getName(), app.getOwner())) {
+                add(streamlits, app.getName(), ObjectDdl.streamlit(app, names.object(schema, app.getName())));
+            }
         }
         appendAll(out, streamlits);
 
         final Map<String, List<String>> alerts = new TreeMap<String, List<String>>();
         for (final Alert alert : schema.getAlerts()) {
-            add(alerts, alert.getName(), ObjectDdl.alert(alert, names.object(schema, alert.getName())));
+            if (relations.seesMember("ALERT", schema, alert.getName(), alert.getOwner())) {
+                add(alerts, alert.getName(), ObjectDdl.alert(alert, names.object(schema, alert.getName())));
+            }
         }
         appendAll(out, alerts);
         return out;
@@ -251,34 +284,51 @@ final class SchemaDdl {
     private Map<String, List<String>> policies(final Schema schema, final DdlNames names) {
         final Map<String, List<String>> policies = new TreeMap<String, List<String>>();
         for (final MaskingPolicy policy : schema.getMaskingPolicies()) {
-            add(policies, policy.getName(), ObjectDdl.maskingPolicy(policy, names.object(schema, policy.getName())));
+            if (relations.seesMember("MASKING_POLICY", schema, policy.getName(), policy.getOwner())) {
+                add(policies, policy.getName(),
+                    ObjectDdl.maskingPolicy(policy, names.object(schema, policy.getName())));
+            }
         }
         for (final RowAccessPolicy policy : schema.getRowAccessPolicies()) {
-            add(policies, policy.getName(),
-                ObjectDdl.rowAccessPolicy(policy, names.object(schema, policy.getName())));
+            if (relations.seesMember("ROW_ACCESS_POLICY", schema, policy.getName(), policy.getOwner())) {
+                add(policies, policy.getName(),
+                    ObjectDdl.rowAccessPolicy(policy, names.object(schema, policy.getName())));
+            }
         }
         for (final AggregationPolicy policy : schema.getAggregationPolicies()) {
-            add(policies, policy.getName(),
-                ObjectDdl.aggregationPolicy(policy, names.object(schema, policy.getName())));
+            if (relations.seesMember("AGGREGATION_POLICY", schema, policy.getName(), policy.getOwner())) {
+                add(policies, policy.getName(),
+                    ObjectDdl.aggregationPolicy(policy, names.object(schema, policy.getName())));
+            }
         }
         for (final ProjectionPolicy policy : schema.getProjectionPolicies()) {
-            add(policies, policy.getName(),
-                ObjectDdl.projectionPolicy(policy, names.object(schema, policy.getName())));
+            if (relations.seesMember("PROJECTION_POLICY", schema, policy.getName(), policy.getOwner())) {
+                add(policies, policy.getName(),
+                    ObjectDdl.projectionPolicy(policy, names.object(schema, policy.getName())));
+            }
         }
         for (final JoinPolicy policy : schema.getJoinPolicies()) {
-            add(policies, policy.getName(), ObjectDdl.joinPolicy(policy, names.object(schema, policy.getName())));
+            if (relations.seesMember("JOIN_POLICY", schema, policy.getName(), policy.getOwner())) {
+                add(policies, policy.getName(), ObjectDdl.joinPolicy(policy, names.object(schema, policy.getName())));
+            }
         }
         for (final PrivacyPolicy policy : schema.getPrivacyPolicies()) {
-            add(policies, policy.getName(),
-                ObjectDdl.privacyPolicy(policy, names.object(schema, policy.getName())));
+            if (relations.seesMember("PRIVACY_POLICY", schema, policy.getName(), policy.getOwner())) {
+                add(policies, policy.getName(),
+                    ObjectDdl.privacyPolicy(policy, names.object(schema, policy.getName())));
+            }
         }
         for (final StorageLifecyclePolicy policy : schema.getStorageLifecyclePolicies()) {
-            add(policies, policy.getName(),
-                ObjectDdl.storageLifecyclePolicy(policy, names.object(schema, policy.getName())));
+            if (relations.seesMember("STORAGE_LIFECYCLE_POLICY", schema, policy.getName(), policy.getOwner())) {
+                add(policies, policy.getName(),
+                    ObjectDdl.storageLifecyclePolicy(policy, names.object(schema, policy.getName())));
+            }
         }
         for (final SecurityObject policy : schema.getSecurityObjects().list(SecurityObjectKind.PASSWORD_POLICY)) {
-            add(policies, policy.getName(),
-                ObjectDdl.passwordPolicy(policy, names.object(schema, policy.getName())));
+            if (relations.seesMember("PASSWORD_POLICY", schema, policy.getName(), policy.getOwner())) {
+                add(policies, policy.getName(),
+                    ObjectDdl.passwordPolicy(policy, names.object(schema, policy.getName())));
+            }
         }
         return policies;
     }

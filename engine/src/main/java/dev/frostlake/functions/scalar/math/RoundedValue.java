@@ -54,6 +54,9 @@ final class RoundedValue {
     /** The greatest power of ten a double holds exactly: 1E22. */
     private static final int EXACT_POWERS = 22;
 
+    /** The magnitude from which every double is a whole number: 2^52. */
+    private static final double WHOLE_DOUBLES = 4_503_599_627_370_496.0;
+
     private RoundedValue() {
     }
 
@@ -157,6 +160,12 @@ final class RoundedValue {
         final double power = Math.pow(10, Math.abs(scale));
         final double factor = Math.pow(10, -scale);
         final double shifted = !exact ? value / factor : scale >= 0 ? value * power : value / power;
+        if (!Double.isInfinite(shifted) && Math.abs(shifted) >= WHOLE_DOUBLES) {
+            // A shifted value this large has no fraction left to round, so the scale is past the value's digits and
+            // the call has no effect (documented: the FLOAT 135.135 rounded to 50 places is 135.135). Shifting it
+            // back by an inexact power of ten answered a neighbour of the value instead.
+            return Double.valueOf(mode == RoundingMode.FLOOR ? value : value + 0.0);
+        }
         final double rounded;
         if (mode == RoundingMode.CEILING) {
             rounded = Math.ceil(shifted);

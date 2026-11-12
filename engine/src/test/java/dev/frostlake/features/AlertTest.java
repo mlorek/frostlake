@@ -120,15 +120,22 @@ public class AlertTest extends BaseDatabaseTest {
         engine.executeQuery("CREATE OR REPLACE ALERT a2" + hourly + " IF (EXISTS (SELECT 3)) THEN SELECT 3");
         assertEquals("SELECT 3", show("A2", "condition"));
         engine.executeQuery("ALTER ALERT a2 RESUME");
+        // A started alert takes the statement only where it changes nothing.
+        assertTrue(refusal("CREATE OR ALTER ALERT a2 COMMENT = 'altered'" + hourly
+            + " IF (EXISTS (SELECT 4)) THEN SELECT 5")
+            .contains("Unable to alter property for alert A2 since it is not suspended."));
+        assertEquals("Statement executed successfully.",
+            status("CREATE OR ALTER ALERT a2" + hourly + " IF (EXISTS (SELECT 3)) THEN SELECT 3"));
+        assertEquals("started", show("A2", "state"), "CREATE OR ALTER keeps the state");
+        engine.executeQuery("ALTER ALERT a2 SUSPEND");
         engine.executeQuery("CREATE OR ALTER ALERT a2 COMMENT = 'altered'" + hourly
             + " IF (EXISTS (SELECT 4)) THEN SELECT 5");
         assertEquals("SELECT 4", show("A2", "condition"));
         assertEquals("SELECT 5", show("A2", "action"));
         assertEquals("altered", show("A2", "comment"));
-        assertEquals("started", show("A2", "state"), "CREATE OR ALTER keeps the state");
+        assertEquals("suspended", show("A2", "state"));
         engine.executeQuery("CREATE OR ALTER ALERT a2" + hourly + " IF (EXISTS (SELECT 4)) THEN SELECT 5");
         assertEquals("", show("A2", "comment"), "a property the statement leaves out is unset");
-        engine.executeQuery("ALTER ALERT a2 SUSPEND");
         engine.executeQuery("CREATE OR ALTER ALERT a2b" + hourly + " IF (EXISTS (SELECT 1)) THEN SELECT 1");
         assertEquals("suspended", show("A2B", "state"));
     }
@@ -154,7 +161,14 @@ public class AlertTest extends BaseDatabaseTest {
     public void alterSetsUnsetsAndModifies() {
         engine.executeQuery("CREATE ALERT a4 WAREHOUSE = compute_wh SCHEDULE = '60 MINUTE' COMMENT = 'c'"
             + " IF (EXISTS (SELECT 1)) THEN SELECT 1");
-        engine.executeQuery("ALTER ALERT a4 SET SCHEDULE = 'USING CRON 0 9 * * * UTC' RUNBOOK = 'rb' CONFIG = 'x'");
+        // A CONFIG spells a JSON object.
+        final String invalidConfig = "Invalid config. Must be a string representation of a valid JSON Object.";
+        assertTrue(refusal("ALTER ALERT a4 SET CONFIG = 'x'").contains(invalidConfig));
+        assertTrue(refusal("CREATE ALERT a4b SCHEDULE = '60 MINUTE' CONFIG = '[1]' IF (EXISTS (SELECT 1)) "
+            + "THEN SELECT 1").contains(invalidConfig));
+        engine.executeQuery("ALTER ALERT a4 SET SCHEDULE = 'USING CRON 0 9 * * * UTC' RUNBOOK = 'rb' "
+            + "CONFIG = '{\"k\": 2}'");
+        assertEquals("{\"k\": 2}", show("A4", "config"));
         assertEquals("USING CRON 0 9 * * * UTC", show("A4", "schedule"));
         assertEquals("rb", show("A4", "runbook"));
         engine.executeQuery("ALTER ALERT a4 UNSET COMMENT, WAREHOUSE, CONFIG, RUNBOOK");
@@ -266,8 +280,12 @@ public class AlertTest extends BaseDatabaseTest {
             "SELECT TAG_NAME, TAG_VALUE, LEVEL, APPLY_METHOD FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('t1', "
                 + "'ALERT'))");
         assertEquals(1, refs.getRows().size());
-        assertEquals(Arrays.<Object>asList("SEV", "high", "ALERT", "MANUAL"), refs.getRows().get(0).getValues());
+        assertEquals(Arrays.<Object>asList("SEV", "high", "ALERT"), refs.getRows().get(0).getValues().subList(0, 3));
         engine.executeQuery("ALTER ALERT t1 SET TAG sev = 'low'");
+        refs = engine.executeQuery(
+            "SELECT TAG_NAME, TAG_VALUE, LEVEL, APPLY_METHOD FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('t1', "
+                + "'ALERT'))");
+        assertEquals(Arrays.<Object>asList("SEV", "low", "ALERT", "MANUAL"), refs.getRows().get(0).getValues());
         assertEquals("low", status("SELECT TAG_VALUE FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('t1', 'ALERT'))"));
         assertEquals("low", status("SELECT SYSTEM$GET_TAG('sev', 't1', 'ALERT')"));
         engine.executeQuery("ALTER ALERT t1 UNSET TAG sev");

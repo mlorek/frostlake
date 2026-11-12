@@ -242,6 +242,18 @@ final class PlanBuilder {
     }
 
     /**
+     * The plan of a CALL of a procedure the statement defines for itself: a Result naming the call over an empty
+     * ValuesClause (live-verified).
+     *
+     * @param call the call as the plan names it, {@code P()}
+     * @return the Result
+     */
+    static PlanNode anonymousCall(final String call) {
+        return new PlanNode("Result", NONE, null, Arrays.asList(call))
+            .over(new PlanNode("ValuesClause", NONE, null, Arrays.asList("()")));
+    }
+
+    /**
      * The plan of a statement that reads nothing: a Result with no expressions.
      *
      * @return the Result
@@ -1230,6 +1242,9 @@ final class PlanBuilder {
             return plan == null ? read : plan;
         }
         final FrostlakeParser.JoinTypeContext type = join.joinType();
+        if (join.ASOF() != null) {
+            return asof(plan, read, join, scope);
+        }
         if (join.CROSS() != null || join.ON() == null && join.USING() == null && join.NATURAL() == null) {
             return unconditioned(plan, read, conditions, scope);
         }
@@ -1255,6 +1270,50 @@ final class PlanBuilder {
                 .over(leftFirst ? plan : read).over(leftFirst ? read : plan).named(both(plan, read));
         }
         return keyed ? inner(plan, read, keys) : cartesian(plan, read, keys);
+    }
+
+    /**
+     * An ASOF JOIN: an operator of its own, which matches each left row to its closest right row by the
+     * MATCH_CONDITION under the ON or USING keys and keeps the left side whole, so no JoinFilter prunes it (documented:
+     * "->ASOF Join  joinKey: (S.LOCATION = R.LOCATION) AND (S.STATE = R.STATE), matchCondition: (S.OBSERVED &gt;=
+     * R.OBSERVED)"), each key ANDed to the last (live-verified).
+     */
+    private PlanNode asof(final PlanNode left, final PlanNode right, final FrostlakeParser.JoinClauseContext join,
+                          final PlanScope scope) {
+        final PlanJoinKeys keys = new PlanJoinKeys(left, right);
+        if (join.ON() != null) {
+            final List<FrostlakeParser.BooleanExprContext> on = new ArrayList<>();
+            conjuncts(join.booleanExpr(), on);
+            keyedBy(takeKeys(on, left.getNames(), right.getNames()), on, left, right, keys, scope);
+        } else if (join.USING() != null) {
+            sharedKeys(join, left, right, keys, scope);
+        }
+        final List<String> texts = new ArrayList<>(keys.texts(left));
+        // With no key of its own the join is planned on a constant one, and filtered by a constant condition after the
+        // match: joinKey: (1 = EXPR1(1)), matchCondition: (…), joinFilter: 1 = 1 (live-verified).
+        final boolean keyless = texts.isEmpty();
+        if (keyless) {
+            texts.add("joinKey: (1 = EXPR1(1))");
+        }
+        if (join.asofMatchCondition() != null) {
+            texts.add("matchCondition: " + matchConditionText(join.asofMatchCondition().booleanExpr(), scope));
+        }
+        if (keyless) {
+            texts.add("joinFilter: 1 = 1");
+        }
+        return operator("ASOF Join").expressed(texts).over(left).over(right).named(both(left, right));
+    }
+
+    /** An ASOF JOIN's MATCH_CONDITION as the plan spells it, in brackets, the columns it reads recorded. */
+    private String matchConditionText(final FrostlakeParser.BooleanExprContext condition, final PlanScope scope) {
+        final Expression expression = scope == null ? null : parsed(condition);
+        if (expression == null) {
+            return "(" + ParseTreeText.getOriginalText(condition) + ")";
+        }
+        final PlanExpressionText printer = printer(scope);
+        final String text = printer.spell(expression);
+        markReads(printer.getReads());
+        return text.startsWith("(") && text.endsWith(")") ? text : "(" + text + ")";
     }
 
     /**

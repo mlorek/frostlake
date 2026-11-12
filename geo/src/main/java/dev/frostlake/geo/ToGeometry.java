@@ -31,6 +31,9 @@ public class ToGeometry extends BuiltInFunction {
         if (args.get(0) == null) return null;
         if (args.get(0) instanceof GeoValue) return args.get(0);
         final GeoValue parsed = GeoShapes.parse(args.get(0).toString(), false);
+        if (parsed == null) {
+            return null;
+        }
         if (args.size() > 1 && args.get(1) instanceof Number) {
             return GeoValue.ofNode(parsed.node(), false, ((Number) args.get(1)).intValue());
         }

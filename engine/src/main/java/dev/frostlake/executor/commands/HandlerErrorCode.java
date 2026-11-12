@@ -111,6 +111,45 @@ final class HandlerErrorCode {
     }
 
     /**
+     * The families a running object's state, an overflowing sum or a property's value is refused with
+     * (live-verified): a non-root task's own retry parameter 91449 / 55000, a graph changed under a root that is not
+     * suspended 91421 / 22000, a triggered serverless task without its completion interval 91865 / 55000, an alert's
+     * CONFIG that spells no JSON object 91461 / 42601 and a change to a started alert 392005 / 55000; a SUM's raw
+     * total past its carrier 100058 / 22000 and an ordered window's intermediate result past it 100045 / 22003; a
+     * retention past 90 days 1048 / 22023.
+     *
+     * @param message the refusal's sentence
+     * @return the pair, or null for a sentence of none of these families
+     */
+    private static HandlerErrorCode stateRefusal(final String message) {
+        if (message.contains("Cannot set parameter ") && message.contains(" on non-root task ")) {
+            return new HandlerErrorCode(91449, "55000");
+        }
+        if (message.contains("Unable to update graph with root task ")) {
+            return new HandlerErrorCode(91421, "22000");
+        }
+        if (message.contains("TARGET_COMPLETION_INTERVAL must be set for serverless triggered task ")) {
+            return new HandlerErrorCode(91865, "55000");
+        }
+        if (message.contains("Invalid config. Must be a string representation of a valid JSON Object.")) {
+            return new HandlerErrorCode(91461, "42601");
+        }
+        if (message.contains("Unable to alter property for alert ")) {
+            return new HandlerErrorCode(392005, "55000");
+        }
+        if (message.contains("Value overflow in a SUM aggregate")) {
+            return new HandlerErrorCode(100058, "22000");
+        }
+        if (message.contains("Numeric value is out of range, error: Window function intermediate result too large")) {
+            return new HandlerErrorCode(100045, "22003");
+        }
+        if (message.contains("Exceeds maximum allowable retention time (")) {
+            return new HandlerErrorCode(1048, "22023");
+        }
+        return null;
+    }
+
+    /**
      * The code and state of a refusal's sentence, or null for a sentence of no known family.
      *
      * @param message the refusal's sentence
@@ -153,6 +192,10 @@ final class HandlerErrorCode {
         }
         if (message.contains("Division by zero")) {
             return new HandlerErrorCode(100051, "22012");
+        }
+        final HandlerErrorCode stateRefusal = stateRefusal(message);
+        if (stateRefusal != null) {
+            return stateRefusal;
         }
         if (message.contains("This session does not have a current schema.")) {
             // Every statement refused for want of a current schema (live-verified).

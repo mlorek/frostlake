@@ -58,6 +58,7 @@ import java.util.Calendar;
 import java.util.Collections;
 import java.util.GregorianCalendar;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -74,6 +75,9 @@ import org.antlr.v4.runtime.Token;
  * both the live objects and their string renderings.
  */
 public final class JdbcMarshaling {
+
+    /** The refusal of a placeholder no value was set for, placed in the text as written. */
+    private static final String UNSET_BIND = "Bind variable ? not set.";
 
     /** How a bound Timestamp, Date and Time are written for their explicit formats (see {@link #formatLiteral}). */
     private static final DateTimeFormatter BOUND_TIMESTAMP =
@@ -624,8 +628,13 @@ public final class JdbcMarshaling {
         if (x instanceof BigInteger) {
             return new BigDecimal((BigInteger) x);
         }
-        if (x instanceof Double || x instanceof Float) {
-            return BigDecimal.valueOf(((Number) x).doubleValue());
+        if (x instanceof Float) {
+            // Its shortest decimal text, as the account's driver binds String.valueOf(x): widened to a double first,
+            // 1.21f would bind the 1.2100000381469727 that double holds.
+            return new BigDecimal(Float.toString((Float) x));
+        }
+        if (x instanceof Double) {
+            return BigDecimal.valueOf((Double) x);
         }
         if (x instanceof Number) {
             return BigDecimal.valueOf(((Number) x).longValue());
@@ -943,7 +952,7 @@ public final class JdbcMarshaling {
         for (int i = 0; i < values.size(); i++) {
             params.put(i + 1, values.get(i));
         }
-        return substitute(sql, params, unbound, false, new ArrayList<int[]>());
+        return substitute(sql, params, unbound, false, new ArrayList<int[]>(), false);
     }
 
     /**
@@ -978,7 +987,7 @@ public final class JdbcMarshaling {
         for (int i = 0; i < values.size(); i++) {
             params.put(i + 1, values.get(i));
         }
-        return substitute(sql, params, unbound, true, written);
+        return substitute(sql, params, unbound, true, written, true);
     }
 
     /**
@@ -997,9 +1006,30 @@ public final class JdbcMarshaling {
      * @throws SQLException where a value is refused
      */
     public static String bindPrepared(final String sql, final Map<Integer, Object> params) throws SQLException {
+        return bindPrepared(sql, params, true);
+    }
+
+    /**
+     * {@link #bindPrepared(String, Map)}, refusing a placeholder no value was set for, NULL included, where asked:
+     * {@code SELECT ? AS x, (?) y} with only the first value set is {@code Bind variable ? not set.} at the second
+     * placeholder's place in the text as written, 2049 / 42601 (live-verified). A callable statement's OUT parameter
+     * takes no value and is not refused.
+     *
+     * @param sql         the statement
+     * @param params      its values, by 1-based placeholder number
+     * @param refuseUnset whether a placeholder no value was set for is refused
+     * @return the text to run
+     * @throws SQLException where a value is refused, or a placeholder was left unset
+     */
+    public static String bindPrepared(final String sql, final Map<Integer, Object> params,
+                                      final boolean refuseUnset) throws SQLException {
         try {
-            return substitutePlaceholders(sql, params);
+            final Set<Integer> unset = refuseUnset ? unsetPlaceholders(sql, params) : Collections.<Integer>emptySet();
+            return substitute(sql, params, unset, false, new ArrayList<int[]>(), refuseUnset);
         } catch (final RuntimeException refused) {
+            if (refuseUnset && String.valueOf(refused.getMessage()).endsWith(UNSET_BIND)) {
+                throw new SQLException(refused.getMessage(), "42601", 2049, refused);
+            }
             // A refusal the binding raises carries the code and the state the account's driver reads for it: a row
             // count bound as a text or a FLOAT is 2010 / 2201W in a LIMIT, 2011 / 2201X in an OFFSET (live-verified).
             final FailureCode family = FailureCode.ofClient(refused);
@@ -1009,11 +1039,23 @@ public final class JdbcMarshaling {
     }
 
     public static String substitutePlaceholders(final String sql, final Map<Integer, Object> params) {
-        return substitute(sql, params, Collections.<Integer>emptySet(), false, new ArrayList<int[]>());
+        return substitute(sql, params, Collections.<Integer>emptySet(), false, new ArrayList<int[]>(), false);
+    }
+
+    /** The 1-based numbers of the {@code ?} placeholders of a text that no value was set for, NULL aside. */
+    private static Set<Integer> unsetPlaceholders(final String sql, final Map<Integer, Object> params) {
+        final Set<Integer> unset = new HashSet<>();
+        final int count = countPlaceholders(sql);
+        for (int i = 1; i <= count; i++) {
+            if (!params.containsKey(Integer.valueOf(i))) {
+                unset.add(Integer.valueOf(i));
+            }
+        }
+        return unset;
     }
 
     private static String substitute(final String sql, final Map<Integer, Object> params, final Set<Integer> unbound,
-                                     final boolean numbered, final List<int[]> written) {
+                                     final boolean numbered, final List<int[]> written, final boolean refuseUnset) {
         final List<Token> tokens = lex(sql).getTokens();
         // A number bound as a whole sort or grouping key is a constant there (see BoundKeyPlaces).
         final Set<Integer> keyPlaces = numbered ? Collections.<Integer>emptySet() : keyPlaces(sql, tokens, params);
@@ -1022,11 +1064,11 @@ public final class JdbcMarshaling {
         int cursor = 0;
         for (int i = 0; i < tokens.size(); i++) {
             final Token t = tokens.get(i);
-            if (numbered && t.getType() == FrostlakeLexer.QUESTION && unbound.contains(param + 1)) {
-                // A placeholder the USING list leaves unset is refused where it stands in the text as written,
-                // whatever the values before it were bound as.
+            if (refuseUnset && t.getType() == FrostlakeLexer.QUESTION && unbound.contains(param + 1)) {
+                // A placeholder the USING list or a prepared statement leaves unset is refused where it stands in the
+                // text as written, whatever the values before it were bound as.
                 throw new RuntimeException(SqlCompilationError.inline("error line " + t.getLine() + " at position "
-                    + t.getCharPositionInLine() + "\nBind variable ? not set."));
+                    + t.getCharPositionInLine() + "\n" + UNSET_BIND));
             }
             if (t.getType() == FrostlakeLexer.QUESTION && !unbound.contains(++param)) {
                 if (numbered && params.get(param) != null) {
@@ -1044,7 +1086,7 @@ public final class JdbcMarshaling {
                 cursor = t.getStopIndex() + 1;
                 written.add(new int[] {t.getLine(), t.getCharPositionInLine(), 1, literal.length()});
             } else if (t.getType() == FrostlakeLexer.COLON && i + 1 < tokens.size()
-                    && tokens.get(i + 1).getType() == FrostlakeLexer.INTEGER_LITERAL) {
+                    && tokens.get(i + 1).getType() == FrostlakeLexer.INTEGER_LITERAL && !objectKeyColon(tokens, i)) {
                 // A numbered bind takes the value of its number, in a prepared statement as in a USING list:
                 // CALL p(:1) binds the first parameter set (live-verified through the account's driver).
                 final Token digits = tokens.get(i + 1);
@@ -1064,6 +1106,18 @@ public final class JdbcMarshaling {
         }
         out.append(sql, cursor, sql.length());
         return out.toString();
+    }
+
+    /**
+     * Whether a colon parts an object constant's key from its value, {@code {'k': 1}}: its key, a quoted text, stands
+     * right before it. A numbered bind never follows a text, so such a colon and the number after it stay as written.
+     *
+     * @param tokens the statement's tokens
+     * @param colon  the colon's index among them
+     * @return true for an object constant's colon
+     */
+    private static boolean objectKeyColon(final List<Token> tokens, final int colon) {
+        return colon > 0 && tokens.get(colon - 1).getType() == FrostlakeLexer.STRING_LITERAL;
     }
 
     /**
@@ -1127,6 +1181,11 @@ public final class JdbcMarshaling {
      * @return its text
      */
     static String preparedLiteral(final Object value, final List<Token> tokens, final int placeholder) {
+        if (tokenBefore(tokens, placeholder) == FrostlakeLexer.OFFSET && !rowCountPlace(tokens, placeholder)) {
+            // An OFFSET that is no clause is refused by the parse where the statement goes on, whatever is bound
+            // there, so the place keeps the one character it was written with (see rowCountPlace).
+            return "0";
+        }
         if ((value instanceof Double || value instanceof Float) && !NonFiniteDoubles.isNonFinite((Number) value)) {
             requireNoRowCount(tokens, placeholder);
             return "CAST('" + value + "' AS FLOAT)";
@@ -1295,23 +1354,65 @@ public final class JdbcMarshaling {
         if (rowCountPlace(tokens, placeholder)) {
             final int type = tokenBefore(tokens, placeholder);
             throw new RuntimeException(SqlCompilationError.of("Invalid row count '?' in "
-                + (type == FrostlakeLexer.LIMIT ? "limit clause" : "result offset clause")));
+                + (type == FrostlakeLexer.OFFSET ? "result offset clause" : "limit clause")));
         }
     }
 
-    /** Whether a placeholder stands where a LIMIT's or an OFFSET's row count belongs. */
+    /**
+     * Whether a placeholder stands where a row count belongs: a LIMIT's, a FETCH's ({@code FETCH [FIRST | NEXT] ?},
+     * read as a limit), or an OFFSET's the statement can hold, after a LIMIT or before a FETCH. An OFFSET standing
+     * alone is no clause, so its placeholder is left to the parse, which refuses the statement at its end
+     * (live-verified: {@code SELECT 1 OFFSET ?} is {@code syntax error line 1 at position 17 unexpected '<EOF>'.}
+     * whatever is bound).
+     */
     private static boolean rowCountPlace(final List<Token> tokens, final int placeholder) {
-        final int type = tokenBefore(tokens, placeholder);
-        return type == FrostlakeLexer.LIMIT || type == FrostlakeLexer.OFFSET;
+        final int before = defaultTokenBefore(tokens, placeholder);
+        final int type = before < 0 ? Token.EOF : tokens.get(before).getType();
+        if (type == FrostlakeLexer.LIMIT || type == FrostlakeLexer.FETCH) {
+            return true;
+        }
+        if (type == FrostlakeLexer.FIRST || type == FrostlakeLexer.NEXT) {
+            final int fetch = defaultTokenBefore(tokens, before);
+            return fetch >= 0 && tokens.get(fetch).getType() == FrostlakeLexer.FETCH;
+        }
+        if (type != FrostlakeLexer.OFFSET) {
+            return false;
+        }
+        final int count = defaultTokenBefore(tokens, before);
+        final int limit = count < 0 ? -1 : defaultTokenBefore(tokens, count);
+        if (limit >= 0 && tokens.get(limit).getType() == FrostlakeLexer.LIMIT) {
+            return true;
+        }
+        int after = defaultTokenAfter(tokens, placeholder);
+        if (after >= 0 && (tokens.get(after).getType() == FrostlakeLexer.ROW
+                || tokens.get(after).getType() == FrostlakeLexer.ROWS)) {
+            after = defaultTokenAfter(tokens, after);
+        }
+        return after >= 0 && tokens.get(after).getType() == FrostlakeLexer.FETCH;
     }
 
     /** The type of the token before a placeholder on the default channel, or EOF where none is. */
     private static int tokenBefore(final List<Token> tokens, final int placeholder) {
-        int before = placeholder - 1;
+        final int before = defaultTokenBefore(tokens, placeholder);
+        return before < 0 ? Token.EOF : tokens.get(before).getType();
+    }
+
+    /** The index of the nearest default-channel token before {@code index}, or -1. */
+    private static int defaultTokenBefore(final List<Token> tokens, final int index) {
+        int before = index - 1;
         while (before >= 0 && tokens.get(before).getChannel() != Token.DEFAULT_CHANNEL) {
             before--;
         }
-        return before < 0 ? Token.EOF : tokens.get(before).getType();
+        return before;
+    }
+
+    /** The index of the nearest default-channel token after {@code index}, or -1 at the end. */
+    private static int defaultTokenAfter(final List<Token> tokens, final int index) {
+        int after = index + 1;
+        while (after < tokens.size() && tokens.get(after).getChannel() != Token.DEFAULT_CHANNEL) {
+            after++;
+        }
+        return after < tokens.size() && tokens.get(after).getType() != Token.EOF ? after : -1;
     }
 
     /**

@@ -60,6 +60,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -1129,20 +1130,22 @@ final class InsertExecutor {
             final boolean first = ctx.FIRST() != null;
             final boolean conditional = !ctx.multiInsertWhen().isEmpty();
 
-            // OVERWRITE: truncate each distinct target table once, before inserting.
+            // OVERWRITE: truncate each distinct target table once, before inserting. Each target that loses rows waits
+            // for a transaction holding it, as INSERT OVERWRITE does - every one before any is emptied, so that a wait
+            // on a later target runs the statement again over the targets as they were, not over its own half-done
+            // truncation.
             if (overwrite) {
-                final Set<String> truncated = new HashSet<>();
+                final Set<String> truncated = new LinkedHashSet<>();
                 for (final FrostlakeParser.MultiInsertIntoContext into : allMultiInsertIntos(ctx)) {
                     final String tableName = executor.getQualifiedName(into.qualifiedName());
                     final String fqn = executor.getFullyQualifiedTableName(tableName);
-                    if (truncated.add(fqn)) {
-                        // Each target that loses rows waits for a transaction holding it, as INSERT OVERWRITE does.
-                        if (executor.getStorageEngine().getTableStorage(fqn).getRowCount() > 0) {
-                            executor.requireTableUnlocked(fqn,
-                                executor.getCatalog().resolveTableAsWritten(tableName, "Table").getName());
-                        }
-                        executor.emptyTableContents(fqn);
+                    if (truncated.add(fqn) && executor.getStorageEngine().getTableStorage(fqn).getRowCount() > 0) {
+                        executor.requireTableUnlocked(fqn,
+                            executor.getCatalog().resolveTableAsWritten(tableName, "Table").getName());
                     }
+                }
+                for (final String fqn : truncated) {
+                    executor.emptyTableContents(fqn);
                 }
             }
 

@@ -29,7 +29,8 @@ import org.junit.jupiter.api.function.Executable;
 /**
  * A prepared statement's bound value the compile cannot read carries the account driver's code and state
  * (live-verified): a value no conversion takes to the type its place expects is 1038 / 22023, a row count bound as a
- * FLOAT or a text is 2010 / 2201W in a LIMIT and 2011 / 2201X in an OFFSET.
+ * FLOAT or a text is 2010 / 2201W in a LIMIT or a FETCH and 2011 / 2201X in an OFFSET. An OFFSET standing alone is
+ * no clause, so its statement is the parse's syntax error at its end, whatever is bound.
  */
 public class BoundRefusalCodesTest extends BaseJdbcTest {
 
@@ -71,5 +72,9 @@ public class BoundRefusalCodesTest extends BaseJdbcTest {
             refusal("SELECT 1 LIMIT ?", 4));
         assertEquals("2011|2201X|SQL compilation error:\nInvalid row count '?' in result offset clause",
             refusal("SELECT 1 LIMIT 1 OFFSET ?", 4));
+        assertEquals("2010|2201W|SQL compilation error:\nInvalid row count '?' in limit clause",
+            refusal("SELECT 1 FETCH FIRST ? ROWS ONLY", 3));
+        assertEquals("1003|42000|SQL compilation error:\nsyntax error line 1 at position 17 unexpected '<EOF>'.",
+            refusal("SELECT 1 OFFSET ?", 3));
     }
 }

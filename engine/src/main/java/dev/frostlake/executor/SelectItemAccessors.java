@@ -177,6 +177,15 @@ public final class SelectItemAccessors {
         return query.selectOperand(0).selectClause();
     }
 
+    /** The one SELECT a query is, with no WITH or set operation around it; null for any other. */
+    private static FrostlakeParser.SelectClauseContext limitedSelect(
+            final FrostlakeParser.SelectStatementContext query) {
+        if (query == null || query.withClause() != null || query.selectOperand().size() != 1) {
+            return null;
+        }
+        return query.selectOperand(0).selectClause();
+    }
+
     /**
      * The select list of the one SELECT a query is, as written; null for any other query.
      *
@@ -229,7 +238,19 @@ public final class SelectItemAccessors {
      * @return the query's text with the ROW's members for items, or null
      */
     public static String rowMembersQuery(final FrostlakeParser.SelectStatementContext query) {
-        final FrostlakeParser.SelectClauseContext select = soleSelect(query);
+        return rowMembersQuery(query, false);
+    }
+
+    /**
+     * {@link #rowMembersQuery(FrostlakeParser.SelectStatementContext)}, taking an ORDER BY, a LIMIT or a FETCH around
+     * the one SELECT too when asked: they leave the members' types as they are.
+     *
+     * @param query  the query, or null
+     * @param limits whether an ORDER BY, a LIMIT or a FETCH may stand around the SELECT
+     * @return the query's text with the ROW's members for items, or null
+     */
+    public static String rowMembersQuery(final FrostlakeParser.SelectStatementContext query, final boolean limits) {
+        final FrostlakeParser.SelectClauseContext select = limits ? limitedSelect(query) : soleSelect(query);
         if (select == null || select.selectList().selectItem().size() != 1
                 || !(select.selectList().selectItem(0) instanceof FrostlakeParser.ExprItemContext)) {
             return null;

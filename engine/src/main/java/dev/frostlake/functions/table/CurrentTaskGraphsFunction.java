@@ -34,9 +34,23 @@ public class CurrentTaskGraphsFunction extends TableFunction {
 
     private final Catalog catalog;
 
+    /** Which tasks the session may read about (see TaskSight); null reads about every one. */
+    private final TaskSight sight;
+
     public CurrentTaskGraphsFunction(final Catalog catalog) {
+        this(catalog, null);
+    }
+
+    /**
+     * The function reading only about the tasks the session sees.
+     *
+     * @param catalog the catalog
+     * @param sight   which tasks the session sees, or null for every one
+     */
+    public CurrentTaskGraphsFunction(final Catalog catalog, final TaskSight sight) {
         super("CURRENT_TASK_GRAPHS");
         this.catalog = catalog;
+        this.sight = sight;
     }
 
     @Override
@@ -54,6 +68,6 @@ public class CurrentTaskGraphsFunction extends TableFunction {
     public ResultSet execute(final Map<String, Object> namedArgs) {
         final int limit = TaskGraphRuns.limit(namedArgs.get("RESULT_LIMIT"), TaskGraphRuns.DEFAULT_LIMIT);
         final String rootTaskName = TaskGraphRuns.text(namedArgs.get("ROOT_TASK_NAME"));
-        return new ResultSet(TaskGraphRuns.columns(false), TaskGraphRuns.current(catalog, rootTaskName, limit));
+        return new ResultSet(TaskGraphRuns.columns(false), TaskGraphRuns.current(catalog, rootTaskName, limit, sight));
     }
 }

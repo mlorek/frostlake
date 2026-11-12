@@ -159,12 +159,24 @@ public class LastQueryIdArgumentTest extends BaseDatabaseTest {
                 "1e17::FLOAT", "10000.5::FLOAT", "TO_NUMBER(1e20::FLOAT)", "1e20::FLOAT::INT"}) {
             assertEquals(exceeds, refusal("SELECT LAST_QUERY_ID(" + index + ")"), index);
         }
-        // Each reads the query its rounded index names, which a session of 10,000 statements holds.
-        final String[][] rounded = {{"TO_DOUBLE('1e-300')", "0"}, {"TO_DOUBLE('-0')", "0"},
-            {"10000.4::FLOAT", "10000"}, {"'-10000.4'::FLOAT", "-10000"}};
+        // Each reads the query its rounded index names, half away from zero.
+        final String[][] rounded = {{"'1.4'::FLOAT", "1"}, {"TO_DOUBLE('-1.4')", "-1"}, {"TO_DOUBLE('1.6')", "2"},
+            {"0.5::FLOAT", "1"}};
+        answer("SELECT 1");
+        answer("SELECT 2");
         for (final String[] index : rounded) {
-            assertEquals("yes", answer("SELECT IFF(EQUAL_NULL(LAST_QUERY_ID(" + index[0] + "), LAST_QUERY_ID("
-                + index[1] + ")), 'yes', 'no')"), index[0]);
+            assertEquals("yes", answer("SELECT IFF(LAST_QUERY_ID(" + index[0] + ") = LAST_QUERY_ID(" + index[1]
+                + "), 'yes', 'no')"), index[0]);
+        }
+        // One rounded to 0 names none.
+        for (final String index : new String[] {"TO_DOUBLE('1e-300')", "TO_DOUBLE('-0')", "0.4::FLOAT",
+                "1e-5::FLOAT"}) {
+            assertEquals("true", answer("SELECT LAST_QUERY_ID(" + index + ") IS NULL"), index);
+        }
+        // A far one reads what its rounded number does: none in a short session, a query in a long one.
+        for (final String[] index : new String[][] {{"10000.4::FLOAT", "10000"}, {"'-10000.4'::FLOAT", "-10000"}}) {
+            assertEquals("yes", answer("SELECT IFF(COALESCE(LAST_QUERY_ID(" + index[0] + "), 'none') = "
+                + "COALESCE(LAST_QUERY_ID(" + index[1] + "), 'none'), 'yes', 'no')"), index[0]);
         }
     }
 

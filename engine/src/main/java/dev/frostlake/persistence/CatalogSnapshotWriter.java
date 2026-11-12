@@ -501,6 +501,7 @@ final class CatalogSnapshotWriter {
             streamSnapshot.owner = stream.getOwner();
             streamSnapshot.createdAt = stream.getCreatedAt();
             streamSnapshot.offsetSequence = stream.getOffsetSequence();
+            streamSnapshot.lastConsumedAt = stream.getLastConsumedAt();
             streamSnapshot.versions = new ArrayList<>();
             for (final StreamVersion version : stream.getPendingVersions()) {
                 final StreamVersionSnapshot saved = new StreamVersionSnapshot();

@@ -620,6 +620,25 @@ public class ColumnDefinitionParser implements CommandHandler {
     /**
      * The canonical name of the table a CREATE TABLE's column list defines, or null where the list stands elsewhere.
      */
+    /** The created table's canonical names, database, schema and table, or null outside a CREATE. */
+    private String[] createdTableParts(final FrostlakeParser.ColumnListContext ctx) {
+        if (!(ctx.getParent() instanceof FrostlakeParser.CreateStatementContext)) {
+            return null;
+        }
+        final FrostlakeParser.ObjectNameContext name = ((FrostlakeParser.CreateStatementContext) ctx.getParent())
+            .objectName();
+        if (name == null) {
+            return null;
+        }
+        // A name written short is filled out with the session's current database and schema.
+        final String[] written = queryExecutor.resolveObjectNameParts(name);
+        final String[] full = new String[3];
+        full[2] = written[written.length - 1];
+        full[1] = written.length >= 2 ? written[written.length - 2] : queryExecutor.getCatalog().getCurrentSchema();
+        full[0] = written.length >= 3 ? written[written.length - 3] : queryExecutor.getCatalog().getCurrentDatabase();
+        return full;
+    }
+
     private String createdTableName(final FrostlakeParser.ColumnListContext ctx) {
         if (!(ctx.getParent() instanceof FrostlakeParser.CreateStatementContext)) {
             return null;
@@ -949,7 +968,8 @@ public class ColumnDefinitionParser implements CommandHandler {
         for (final FrostlakeParser.ColumnOrConstraintContext item : ctx.columnOrConstraint()) {
             if (item.columnDef() != null) {
                 final TableColumn parsed = parseSingleColumnDef(item.columnDef(), false, iceberg, earlier, table);
-                DefaultExpressionCalls.requireEarlierColumns(item.columnDef(), parsed.getName(), earlier, table);
+                DefaultExpressionCalls.requireEarlierColumns(item.columnDef(), parsed.getName(), earlier,
+                    createdTableParts(ctx));
                 earlier.add(parsed.getName());
                 columns.add(parsed);
             } else if (item.tableConstraint() != null) {

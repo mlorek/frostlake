@@ -198,6 +198,41 @@ public class GetDdl extends BuiltInFunction {
         return ownership == null || ownership.sees(grantKind, schema.qualifiedName(name), objectOwner);
     }
 
+    /**
+     * Whether the session sees a member of a schema, which the schema's DDL, and its database's, list only then: a
+     * container's text holds what the session could ask GET_DDL for one by one, and no more.
+     *
+     * @param grantKind   the member's kind as privileges record it
+     * @param schema      its schema
+     * @param name        its name
+     * @param objectOwner the role that owns it
+     * @return whether the session sees it
+     */
+    boolean seesMember(final String grantKind, final Schema schema, final String name, final String objectOwner) {
+        return sees(grantKind, schema, name, objectOwner);
+    }
+
+    /**
+     * Whether the session sees a routine of a schema, which the schema's DDL lists only then.
+     *
+     * @param routine the routine as privileges record it
+     * @return whether the session sees it
+     */
+    boolean seesRoutine(final GrantedObject routine) {
+        return ownership == null || ownership.sees(routine.getKind(), routine.getRecordedName(), routine.getOwner());
+    }
+
+    /**
+     * Whether the session sees a schema, which its database's DDL lists only then.
+     *
+     * @param schema the schema
+     * @return whether the session sees it
+     */
+    boolean seesSchema(final Schema schema) {
+        return ownership == null || SystemDatabase.is(schema.getDatabaseName()) || ownership.sees("SCHEMA",
+            QualifiedName.join(schema.getDatabaseName(), schema.getName()), schema.getOwner());
+    }
+
     @Override
     public Object evaluate(final List<Object> args) {
         // A definition compiled to be kept computes nothing: the lookup waits for whoever runs it.
@@ -779,7 +814,7 @@ public class GetDdl extends BuiltInFunction {
     private String tableTail(final Table table, final Schema schema) {
         final List<String> attachments = new ArrayList<String>();
         if (table.hasAggregationPolicy()) {
-            attachments.add("WITH AGGREGATION POLICY " + table.getAggregationPolicyName()
+            attachments.add("WITH AGGREGATION POLICY " + policyName(table.getAggregationPolicyName())
                 + (table.getAggregationEntityKey().isEmpty() ? ""
                     : " ENTITY KEY (" + String.join(", ", table.getAggregationEntityKey()) + ")"));
         }
@@ -788,10 +823,10 @@ public class GetDdl extends BuiltInFunction {
                 columnNames(table.getColumns()), schema));
         }
         if (table.hasJoinPolicy()) {
-            attachments.add("WITH JOIN POLICY " + table.getJoinPolicyName());
+            attachments.add("WITH JOIN POLICY " + policyName(table.getJoinPolicyName()));
         }
         if (table.hasPrivacyPolicy()) {
-            attachments.add("WITH PRIVACY POLICY " + table.getPrivacyPolicyName() + " ENTITY KEY ("
+            attachments.add("WITH PRIVACY POLICY " + policyName(table.getPrivacyPolicyName()) + " ENTITY KEY ("
                 + String.join(", ", table.getPrivacyEntityKey()) + ")");
         }
         if (table.hasStorageLifecyclePolicy()) {
@@ -853,6 +888,15 @@ public class GetDdl extends BuiltInFunction {
                 .append(SqlIdentifiers.spellCanonicalEscaped(relationColumn(relationColumns, columns.get(i))));
         }
         return clause.append(')').toString();
+    }
+
+    /**
+     * An attached policy's recorded name spelled as SQL that reads back to it: each part bare where it could be written
+     * so, quoted otherwise, so a quoted lower-case {@code "lq"} stays {@code D1.PUBLIC."lq"} and replaying the DDL
+     * attaches it rather than the upper-case {@code LQ}.
+     */
+    private static String policyName(final String recorded) {
+        return SqlIdentifiers.spellAlreadyCanonicalPathEscaped(recorded);
     }
 
     /** The schema of the relation's database that holds the row access policy, or the relation's own schema. */
@@ -969,13 +1013,13 @@ public class GetDdl extends BuiltInFunction {
         }
         // A projection policy renders before a masking one when a column carries both (live-verified).
         if (col.hasProjectionPolicy()) {
-            c.append(" WITH PROJECTION POLICY ").append(col.getProjectionPolicyName());
+            c.append(" WITH PROJECTION POLICY ").append(policyName(col.getProjectionPolicyName()));
         }
         // A masked column carries its policy here, fully qualified, and always spelled WITH MASKING
         // POLICY even when the column was declared without the WITH. Live puts it after DEFAULT and
         // before COMMENT — and refuses that order reversed, so the position is the measured one.
         if (col.getMaskingPolicyName() != null && !col.getMaskingPolicyName().isEmpty()) {
-            c.append(" WITH MASKING POLICY ").append(col.getMaskingPolicyName());
+            c.append(" WITH MASKING POLICY ").append(policyName(col.getMaskingPolicyName()));
             // A conditional policy's USING columns, as the attachment named them.
             final List<String> using = col.getMaskingPolicyArguments();
             if (!using.isEmpty()) {
@@ -1054,7 +1098,7 @@ public class GetDdl extends BuiltInFunction {
         }
         sb.append("\n)");
         if (view.hasAggregationPolicy()) {
-            sb.append(" WITH AGGREGATION POLICY ").append(view.getAggregationPolicyName())
+            sb.append(" WITH AGGREGATION POLICY ").append(policyName(view.getAggregationPolicyName()))
               .append(view.getAggregationEntityKey().isEmpty() ? ""
                   : " ENTITY KEY (" + String.join(", ", view.getAggregationEntityKey()) + ")").append('\n');
         }
@@ -1063,7 +1107,7 @@ public class GetDdl extends BuiltInFunction {
                 columns, schema)).append('\n');
         }
         if (view.hasJoinPolicy()) {
-            sb.append(" WITH JOIN POLICY ").append(view.getJoinPolicyName()).append('\n');
+            sb.append(" WITH JOIN POLICY ").append(policyName(view.getJoinPolicyName())).append('\n');
         }
         final String viewTags = tagAssignments(view, schema);
         if (!viewTags.isEmpty()) {
@@ -1088,10 +1132,10 @@ public class GetDdl extends BuiltInFunction {
             }
             final StringBuilder clauses = new StringBuilder();
             if (candidate.hasProjectionPolicy()) {
-                clauses.append(" WITH PROJECTION POLICY ").append(candidate.getProjectionPolicyName());
+                clauses.append(" WITH PROJECTION POLICY ").append(policyName(candidate.getProjectionPolicyName()));
             }
             if (candidate.hasMaskingPolicy()) {
-                clauses.append(" WITH MASKING POLICY ").append(candidate.getMaskingPolicyName());
+                clauses.append(" WITH MASKING POLICY ").append(policyName(candidate.getMaskingPolicyName()));
                 final List<String> using = candidate.getMaskingPolicyArguments();
                 if (!using.isEmpty()) {
                     clauses.append(" USING (");
@@ -1274,7 +1318,7 @@ public class GetDdl extends BuiltInFunction {
             list.append(i == 0 ? "\n\t" : ",\n\t").append(SqlIdentifiers.spellCanonicalEscaped(columns.get(i).getName()));
             final TableColumn column = resolvedColumn(resolved, columns.get(i).getName());
             if (column != null && column.getMaskingPolicyName() != null && !column.getMaskingPolicyName().isEmpty()) {
-                list.append(" WITH MASKING POLICY ").append(column.getMaskingPolicyName());
+                list.append(" WITH MASKING POLICY ").append(policyName(column.getMaskingPolicyName()));
                 final List<String> using = column.getMaskingPolicyArguments();
                 if (!using.isEmpty()) {
                     list.append(" USING (");

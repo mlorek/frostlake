@@ -424,6 +424,9 @@ public final class SharedFunctionHelpers {
      * built-in rendering reads it.
      */
     private static String sessionFormatted(final Object value) {
+        if (value instanceof BinaryValue) {
+            return SessionOutputFormats.binaryBase64() ? ((BinaryValue) value).toBase64() : null;
+        }
         if (value instanceof LocalDate) {
             return formattedOrNull(value, SessionOutputFormats.date());
         }

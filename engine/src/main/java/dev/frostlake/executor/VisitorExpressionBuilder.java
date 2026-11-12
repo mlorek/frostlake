@@ -763,7 +763,7 @@ public class VisitorExpressionBuilder {
             // ── Stream ─────────────────────────────────────────────────────────
             case "SYSTEM$STREAM_GET_TABLE_TIMESTAMP": {
                 return ChangeTimes.streamTableTimestamp(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(),
-                    args.isEmpty() ? null : args.get(0));
+                    queryExecutor.definitionOwnership(), args.isEmpty() ? null : args.get(0));
             }
 
             // ── Session / transaction ──────────────────────────────────────────
@@ -776,17 +776,18 @@ public class VisitorExpressionBuilder {
 
             // ── Clustering ─────────────────────────────────────────────────────
             case "SYSTEM$CLUSTERING_DEPTH":
-                return ClusteringStatistics.depth(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(), args,
-                    queryExecutor.getFunctionRegistry().getQueryRunner());
+                return ClusteringStatistics.depth(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(),
+                    queryExecutor.definitionOwnership(), args, queryExecutor.getFunctionRegistry().getQueryRunner());
             case "SYSTEM$CLUSTERING_INFORMATION":
                 return ClusteringStatistics.information(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(),
-                    args);
+                    queryExecutor.definitionOwnership(), args);
             case "SYSTEM$CLUSTERING_RATIO":
-                return ClusteringStatistics.ratio(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(), args);
+                return ClusteringStatistics.ratio(queryExecutor.getCatalog(), queryExecutor.getStorageEngine(),
+                    queryExecutor.definitionOwnership(), args);
 
             // ── Tags ───────────────────────────────────────────────────────────
             case "SYSTEM$GET_TAG":
-                return TagReferencesFunction.systemGetTag(queryExecutor.getCatalog(), args);
+                return queryExecutor.evaluateSystemFunction(rawName, args);
             case "SYSTEM$GET_TAG_ALLOWED_VALUES":
                 return TagReferencesFunction.systemGetTagAllowedValues(queryExecutor.getCatalog(), args);
             case "SYSTEM$GET_TAG_ON_CURRENT_COLUMN":
@@ -802,7 +803,8 @@ public class VisitorExpressionBuilder {
                 return "[]";
 
             case "SYSTEM$LAST_CHANGE_COMMIT_TIME":
-                return ChangeTimes.lastChangeCommitTime(queryExecutor.getCatalog(), args.isEmpty() ? null : args.get(0));
+                return ChangeTimes.lastChangeCommitTime(queryExecutor.getCatalog(), queryExecutor.definitionOwnership(),
+                    args.isEmpty() ? null : args.get(0));
 
             case "SYSTEM$GENERATE_SCIM_ACCESS_TOKEN":
                 return "{\"token\": \"" + UUID.randomUUID() + "\", \"expires_at\": null}";

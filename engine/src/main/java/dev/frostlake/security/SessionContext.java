@@ -451,10 +451,13 @@ public class SessionContext {
     }
 
     /**
-     * @return whether this thread's session has set CLIENT_RESULT_COLUMN_CASE_INSENSITIVE to TRUE
+     * @return whether this thread's session's CLIENT_RESULT_COLUMN_CASE_INSENSITIVE is TRUE: its own, or what its user
+     *         or the account set, as SHOW PARAMETERS answers it
      */
     public boolean resultColumnsCaseInsensitive() {
-        return settings().resultColumnsCaseInsensitive();
+        final Object value = getSessionParameter("CLIENT_RESULT_COLUMN_CASE_INSENSITIVE");
+        return value instanceof Boolean ? ((Boolean) value).booleanValue()
+            : value != null && "TRUE".equalsIgnoreCase(value.toString().trim());
     }
 
     public void setSessionParameter(final String name, final Object value) {

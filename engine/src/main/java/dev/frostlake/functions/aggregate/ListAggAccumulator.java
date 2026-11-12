@@ -19,6 +19,7 @@ package dev.frostlake.functions.aggregate;
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.values.Decfloats;
+import dev.frostlake.values.LobSize;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -57,6 +58,15 @@ public class ListAggAccumulator implements AggregateFunction.Accumulator, Decflo
 
     @Override
     public Object getResult() {
+        long units = (long) delimiter.length() * Math.max(0, values.size() - 1);
+        for (final String value : values) {
+            units += value.length();
+        }
+        if (units > LobSize.MAX_TEXT_BYTES) {
+            // A text holds at most 134,217,728 characters, so a longer one is refused before it is joined, named as
+            // the aggregate's result (see LobSize.tooLongNamed).
+            throw LobSize.tooLongNamed("LISTAGG result");
+        }
         return String.join(delimiter, values);
     }
 

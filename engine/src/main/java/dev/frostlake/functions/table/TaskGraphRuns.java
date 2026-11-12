@@ -159,13 +159,15 @@ public final class TaskGraphRuns {
      * The graph runs scheduled within the next eight days: one per resumed root task with a schedule, newest
      * scheduled time first. The engine runs a graph to completion when it starts, so none is ever executing.
      */
-    static List<Row> current(final Catalog catalog, final String rootTaskName, final int limit) {
+    static List<Row> current(final Catalog catalog, final String rootTaskName, final int limit,
+                             final TaskSight sight) {
         final List<Row> rows = new ArrayList<>();
         final Instant horizon = Instant.now().plus(Duration.ofDays(LOOK_AHEAD_DAYS));
         for (final Database database : catalog.getAllDatabases()) {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final Task root : schema.getTasks()) {
                     if (!TaskGraphs.isRoot(root) || !named(root, rootTaskName) || !root.isActive()
+                            || sight != null && !sight.sees(schema, root)
                             || root.getSchedule() == null || root.getNextRunTime() == null
                             || root.getNextRunTime().isAfter(horizon)) {
                         continue;
@@ -181,12 +183,14 @@ public final class TaskGraphRuns {
 
     /** The graph runs that completed, newest completion first; {@code errorOnly} keeps the failed ones. */
     static List<Row> complete(final Catalog catalog, final String rootTaskName, final boolean errorOnly,
-                              final int limit) {
+                              final int limit, final TaskSight sight) {
         final List<Row> rows = new ArrayList<>();
         for (final Database database : catalog.getAllDatabases()) {
             for (final Schema schema : database.getAllSchemas()) {
                 for (final Task root : schema.getTasks()) {
-                    if (TaskGraphs.isRoot(root) && named(root, rootTaskName)) {
+                    // A graph is read about through its root (see TaskSight).
+                    if (TaskGraphs.isRoot(root) && named(root, rootTaskName)
+                            && (sight == null || sight.sees(schema, root))) {
                         addCompleted(rows, root, schema, errorOnly);
                     }
                 }
@@ -198,10 +202,10 @@ public final class TaskGraphRuns {
     /**
      * One row per attempt of each graph run of the root: its first attempt, then one more for each retry, as the
      * account counts them (live-verified). An attempt is told from its own task runs — its state, first error and
-     * completion — and a retry's SCHEDULED_TIME is its first run's, scheduled from MANUAL RETRY; every attempt keeps
-     * the graph run's RUN_ID and GRAPH_RUN_GROUP_ID. A retry's QUERY_START_TIME is when the root's run in it
-     * started, or, when the retry does not run the root, when its first run started if that run succeeded: a retry
-     * whose first run failed tells none.
+     * completion — and a retry's SCHEDULED_TIME is its first run's, scheduled from what started it, MANUAL RETRY or
+     * AUTOMATIC RETRY; every attempt keeps the graph run's RUN_ID and GRAPH_RUN_GROUP_ID. A retry's QUERY_START_TIME
+     * is when the root's run in it started, or, when the retry does not run the root, when its first run started if
+     * that run succeeded: a retry whose first run failed tells none.
      */
     private static void addCompleted(final List<Row> rows, final Task root, final Schema schema,
                                      final boolean errorOnly) {
@@ -261,7 +265,7 @@ public final class TaskGraphRuns {
             queryStart = FAILED.equals(first.getState()) ? null : first.getStartTime();
         }
         rows.add(row(true, root, schema, state,
-            retry ? TaskTrigger.MANUAL_RETRY.reported() : graphRun.getScheduledFrom(), firstErrorTask,
+            retry ? first.getScheduledFrom() : graphRun.getScheduledFrom(), firstErrorTask,
             firstError == null ? null : firstError.getErrorCode(),
             firstError == null ? null : firstError.getErrorMessage(),
             ShowResultHelpers.createdOn(retry ? first.getScheduledTime() : graphRun.getScheduledTime()),
