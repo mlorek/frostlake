@@ -288,6 +288,7 @@ final class CatalogSnapshotReader {
                 userSnapshot.rsaPublicKeyLastSetTime);
             user.setRsaPublicKey2(userSnapshot.rsaPublicKey2, userSnapshot.rsaPublicKey2Fp,
                 userSnapshot.rsaPublicKey2LastSetTime);
+            user.restorePasswordHistory(userSnapshot.previousPasswords, userSnapshot.passwordSetAt);
             // Privileges granted directly to the user (object- and column-level). The referenced objects were
             // loaded above; grant* only records the entry, so this is order-independent for the grant itself.
             if (userSnapshot.privileges != null) {

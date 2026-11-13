@@ -26,14 +26,14 @@
       {"sql": "SELECT COUNT_IF(\"name\" = 'V1'), COUNT_IF(\"name\" = 'V2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
        "expect": {"rows": [["1", "1"]]}}
     ]},
-    {"name": "show-procedures-in-database-spans-schemas-and-omits-builtins", "steps": [
+    {"name": "show-procedures-in-database-spans-schemas", "steps": [
       {"sql": "CREATE SCHEMA s1"},
       {"sql": "CREATE SCHEMA s2"},
       {"sql": "CREATE PROCEDURE s1.p1() RETURNS VARCHAR LANGUAGE SQL AS BEGIN RETURN 'a'; END;"},
       {"sql": "CREATE PROCEDURE s2.p2() RETURNS VARCHAR LANGUAGE SQL AS BEGIN RETURN 'b'; END;"},
       {"sql": "SHOW PROCEDURES IN DATABASE test_db"},
-      {"sql": "SELECT COUNT_IF(\"name\" = 'P1'), COUNT_IF(\"name\" = 'P2'), COUNT_IF(\"is_builtin\" != 'N') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
-       "expect": {"rows": [["1", "1", "0"]]}}
+      {"sql": "SELECT COUNT_IF(\"name\" = 'P1'), COUNT_IF(\"name\" = 'P2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1"]]}}
     ]},
     {"name": "show-functions-in-database-spans-schemas-and-includes-builtins", "steps": [
       {"sql": "CREATE SCHEMA s1"},

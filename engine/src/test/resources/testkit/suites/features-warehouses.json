@@ -149,7 +149,9 @@
        "expect": {"value": "true"}},
       {"sql": "DROP WAREHOUSE test_wh"}
     ]},
-    {"name": "a-resume-suspend-cycle", "steps": [
+    {"name": "a-resume-suspend-cycle",
+     "skip": {"backends": ["snowflake"], "reason": "a SUSPEND completes in the background on the account: the warehouse is SUSPENDING when the RESUME comes, which refuses it as not suspended; Frostlake suspends at once"},
+     "steps": [
       {"sql": "DROP WAREHOUSE IF EXISTS test_wh"},
       {"sql": "CREATE WAREHOUSE test_wh WITH WAREHOUSE_SIZE = 'SMALL'"},
       {"sql": "SHOW WAREHOUSES LIKE 'test_wh'"},

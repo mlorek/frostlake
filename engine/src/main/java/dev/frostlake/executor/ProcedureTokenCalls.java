@@ -16,6 +16,10 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.FunctionCallExpression;
+import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Parameter;
@@ -109,6 +113,34 @@ public final class ProcedureTokenCalls {
      * @param node     the select list
      * @return true where it holds one
      */
+    /**
+     * Whether a part of a FROM-less query holds a call of a procedure's token as the plan reads it: in the part
+     * itself, or in a FROM-less scalar subquery the plan writes in its place (live-verified).
+     *
+     * @param executor the executor that resolves the calls' IDENTIFIERs
+     * @param node     the part
+     * @return whether a call is held
+     */
+    static boolean holdsPlannedCall(final QueryExecutor executor, final ParseTree node) {
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            final FrostlakeParser.SelectStatementContext query = (FrostlakeParser.SelectStatementContext) node;
+            return query.setOperator().isEmpty() && query.selectOperand().size() == 1
+                && query.selectOperand(0).selectClause() != null
+                && query.selectOperand(0).selectClause().tableExpression() == null
+                && holdsPlannedCall(executor, query.selectOperand(0).selectClause().selectList());
+        }
+        if (node instanceof FrostlakeParser.FunctionNameContext
+                && token(executor, (FrostlakeParser.FunctionNameContext) node) != null) {
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (holdsPlannedCall(executor, node.getChild(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     static boolean holdsCall(final QueryExecutor executor, final ParseTree node) {
         if (node instanceof FrostlakeParser.SelectStatementContext) {
             return false;
@@ -343,6 +375,139 @@ public final class ProcedureTokenCalls {
     static String planText(final QueryExecutor executor, final String text, final int arguments) {
         final ObjectReference token = procedureToken(text);
         return token == null ? null : planText(executor, token, arguments);
+    }
+
+    /**
+     * Refuses, while a plan is written, a call of a procedure's token with arguments its procedure does not take, as
+     * the statement itself refuses the call (live-verified): more arguments than parameters as {@code too many
+     * arguments for function [PR(E.N, E.N)] expected 1, got 2}, the arguments as the plan writes them; fewer, leaving
+     * a parameter with no default, as {@code Invalid argument types for function 'PR': (NUMBER(1,0))}, the types of
+     * the literals given; and a name no parameter has as {@code named arguments [Y] do not match any signature for
+     * function <token>}. Placed at the call. A token of an overloaded procedure, fewer arguments that are not all
+     * number literals, and any other shape, are planned as written.
+     *
+     * @param executor      the executor whose catalog holds the procedure
+     * @param text          the text the call's IDENTIFIER resolved to
+     * @param call          the call
+     * @param argumentTexts its arguments as the plan writes them
+     */
+    static void requirePlannedArguments(final QueryExecutor executor, final String text,
+                                        final FunctionCallExpression call, final List<String> argumentTexts) {
+        final ObjectReference token = procedureToken(text);
+        final List<Procedure> overloads = token == null ? Collections.<Procedure>emptyList()
+            : overloads(executor, token);
+        if (overloads.size() != 1) {
+            return;
+        }
+        final List<Parameter> params = overloads.get(0).getParameters();
+        final String[] parts = token.getParts();
+        final String name = SqlIdentifiers.spellCanonical(parts[parts.length - 1]);
+        final List<String> names = call.getArgumentNames();
+        String refusal = null;
+        if (names != null && !names.isEmpty()) {
+            final List<String> written = new ArrayList<>();
+            boolean fits = true;
+            for (final String given : names) {
+                if (given == null) {
+                    return;
+                }
+                written.add(given);
+                fits &= namesParameter(params, given);
+            }
+            if (!fits) {
+                refusal = "named arguments [" + NamedArguments.listed(params, written)
+                    + "] do not match any signature for function " + text;
+            }
+        } else if (argumentTexts.size() > params.size() && !declaresADefault(params)) {
+            refusal = "too many arguments for function [" + name + "(" + String.join(", ", argumentTexts)
+                + ")] expected " + params.size() + ", got " + argumentTexts.size();
+        } else if (leavesARequiredParameter(params, argumentTexts.size())) {
+            final List<String> types = literalTypes(call.getArguments());
+            if (types != null) {
+                refusal = "Invalid argument types for function '" + name + "': (" + String.join(", ", types) + ")";
+            }
+        }
+        if (refusal == null) {
+            return;
+        }
+        final SourcePosition at = ExpressionSource.resolve(call.getPosition());
+        throw new RuntimeException(at == null ? SqlCompilationError.of(refusal)
+            : SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(), refusal));
+    }
+
+    /**
+     * Refuses a call of a procedure's token given more arguments than its one procedure has parameters, none with a
+     * default, before any argument is read: {@code too many arguments for function [PR(E.N, E.N)] expected 1, got 2},
+     * the arguments as the plan writes them (live-verified).
+     *
+     * @param executor      the executor whose catalog holds the procedure
+     * @param text          the text the call's IDENTIFIER resolved to
+     * @param argumentTexts the arguments as the plan writes them
+     * @param at            where the call is written, or null
+     */
+    public static void requireCalledArgumentCount(final QueryExecutor executor, final String text,
+                                                  final List<String> argumentTexts, final SourcePosition at) {
+        final ObjectReference token = procedureToken(text);
+        final List<Procedure> overloads = token == null ? Collections.<Procedure>emptyList()
+            : overloads(executor, token);
+        if (overloads.size() != 1) {
+            return;
+        }
+        final List<Parameter> params = overloads.get(0).getParameters();
+        if (argumentTexts.size() <= params.size() || declaresADefault(params)) {
+            return;
+        }
+        final String[] parts = token.getParts();
+        final String refusal = "too many arguments for function [" + SqlIdentifiers.spellCanonical(parts[parts.length
+            - 1]) + "(" + String.join(", ", argumentTexts) + ")] expected " + params.size() + ", got "
+            + argumentTexts.size();
+        throw new RuntimeException(at == null ? SqlCompilationError.of(refusal)
+            : SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(), refusal));
+    }
+
+    /** Whether a call of {@code given} arguments leaves a parameter with no default unfilled. */
+    private static boolean leavesARequiredParameter(final List<Parameter> params, final int given) {
+        for (int i = given; i < params.size(); i++) {
+            if (!params.get(i).hasDefault()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Each argument's type as a refusal spells it, where every one is a number literal; null otherwise. */
+    private static List<String> literalTypes(final List<Expression> arguments) {
+        final List<String> types = new ArrayList<>();
+        for (final Expression argument : arguments) {
+            if (!(argument instanceof LiteralExpression)
+                    || !(((LiteralExpression) argument).getValue() instanceof Number)) {
+                return null;
+            }
+            final BigDecimal value = DecimalText.parse(((LiteralExpression) argument).getValue().toString());
+            final int scale = Math.max(value.scale(), 0);
+            types.add("NUMBER(" + Math.max(value.precision(), scale) + "," + scale + ")");
+        }
+        return types;
+    }
+
+    /** Whether a parameter is named so, case aside. */
+    private static boolean namesParameter(final List<Parameter> params, final String name) {
+        for (final Parameter param : params) {
+            if (param.getName().equalsIgnoreCase(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a parameter declares a default. */
+    private static boolean declaresADefault(final List<Parameter> params) {
+        for (final Parameter param : params) {
+            if (param.hasDefault()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String planText(final QueryExecutor executor, final ObjectReference token, final int written) {

@@ -710,10 +710,10 @@ style); a specification from a staged file is recorded by stage and path, not re
 
 ### Network policies, network rules, password policies and secrets
 
-`network-policy.yaml`, `network-rule.yaml`, `password-policy.yaml`, `secret.yaml`. The four objects are recorded
-and never enforced: a network policy blocks no one and a password policy checks no password (`docs/scope.md`,
-"HTTP AUTHENTICATION"). Paths below are relative to `/api/v2/databases/{database}/schemas/{schema}` for the three
-schema-level kinds.
+`network-policy.yaml`, `network-rule.yaml`, `password-policy.yaml`, `secret.yaml`. The four objects are recorded,
+and a network policy blocks no one. A password policy judges the password an `ALTER USER … SET PASSWORD` gives, but
+no login is checked (`docs/scope.md`, "HTTP AUTHENTICATION"). Paths below are relative to
+`/api/v2/databases/{database}/schemas/{schema}` for the three schema-level kinds.
 
 | endpoint | runs |
 |---|---|

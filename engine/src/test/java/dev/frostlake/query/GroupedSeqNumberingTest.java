@@ -18,14 +18,53 @@ package dev.frostlake.query;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 /**
  * A SEQ1, SEQ2, SEQ4 or SEQ8 call in a grouped select's item, outside an aggregate, numbers the rows the query
  * answers in the order it answers them - after the ORDER BY, a DISTINCT and a LIMIT with its OFFSET, a window
  * beside it or not - unless the ORDER BY reads the item, by its alias, its position or its text: then it numbers
  * the groups the HAVING kept in the order they were formed, before the sort. A SEQ inside an aggregate still
- * numbers the scan the grouping read (all live-verified).
+ * numbers the scan the grouping read (all live-verified). The order the groups are formed in is the order the
+ * grouping first meets them in here, as the account answers it most of the time; nothing fixes it there, where the
+ * same statement can number the groups 3, 1, 4, 2 as well, so the cells resting on it hold the account only to the
+ * groups and the numbers they answer.
  */
 public class GroupedSeqNumberingTest extends MeasuredCellsTestSupport {
+
+    /**
+     * Asserts a statement whose numbers follow the order the groups were formed in: exactly here, and on the
+     * account, which fixes no such order, each column's values whatever row they stand in.
+     */
+    private void assertFormedOrder(final String expected, final String sql) {
+        if (!isLiveSnowflake()) {
+            assertAnswer(expected, sql);
+            return;
+        }
+        assertEquals(columnValues(expected), columnValues(answer(sql)), sql);
+    }
+
+    /** Each column's cells of an answer, sorted. */
+    private static List<List<String>> columnValues(final String answer) {
+        final List<List<String>> columns = new ArrayList<>();
+        for (final String row : answer.split(" ;; ")) {
+            final String[] cells = row.split("\\|");
+            for (int c = 0; c < cells.length; c++) {
+                while (columns.size() <= c) {
+                    columns.add(new ArrayList<String>());
+                }
+                columns.get(c).add(cells[c]);
+            }
+        }
+        for (final List<String> column : columns) {
+            Collections.sort(column);
+        }
+        return columns;
+    }
 
     @Test
     public void theAnsweredRows() {
@@ -36,7 +75,7 @@ public class GroupedSeqNumberingTest extends MeasuredCellsTestSupport {
             "SELECT a, COUNT(*) AS n, SEQ4() AS s FROM gs678 GROUP BY a ORDER BY a");
         assertAnswer("1|0|4 ;; 2|1|4 ;; 3|2|4 ;; 4|3|4",
             "SELECT a, SEQ4() AS s, COUNT(*) OVER () AS c FROM gs678 GROUP BY a ORDER BY a");
-        assertAnswer("3|0|4 ;; 1|1|4 ;; 2|2|4 ;; 4|3|4",
+        assertFormedOrder("3|0|4 ;; 1|1|4 ;; 2|2|4 ;; 4|3|4",
             "SELECT a, SEQ4() AS s, COUNT(*) OVER () AS c FROM gs678 GROUP BY a ORDER BY s");
         assertAnswer("1|10|4 ;; 2|11|4 ;; 3|12|4 ;; 4|13|4",
             "SELECT a, SEQ4() + 10 AS s, COUNT(*) OVER () AS c FROM gs678 GROUP BY a ORDER BY a");
@@ -68,19 +107,19 @@ public class GroupedSeqNumberingTest extends MeasuredCellsTestSupport {
             "SELECT a, MAX(a) OVER () AS m, SEQ4() AS s FROM gs679 ORDER BY a, s");
         assertAnswer("2|0 ;; 3|1", "SELECT a, SEQ4() AS s FROM gs679 GROUP BY a ORDER BY a LIMIT 2 OFFSET 1");
         assertAnswer("4|0 ;; 3|1 ;; 2|2 ;; 1|3", "SELECT a, SEQ4() AS s FROM gs679 GROUP BY a ORDER BY a DESC");
-        assertAnswer("1|0 ;; 2|1", "SELECT a, SEQ4() AS s FROM gs679 GROUP BY a HAVING COUNT(*) > 1 ORDER BY s");
-        assertAnswer("4|3 ;; 2|2 ;; 1|1 ;; 3|0", "SELECT a, SEQ4() AS s FROM gs679 GROUP BY a ORDER BY s DESC");
+        assertFormedOrder("1|0 ;; 2|1", "SELECT a, SEQ4() AS s FROM gs679 GROUP BY a HAVING COUNT(*) > 1 ORDER BY s");
+        assertFormedOrder("4|3 ;; 2|2 ;; 1|1 ;; 3|0", "SELECT a, SEQ4() AS s FROM gs679 GROUP BY a ORDER BY s DESC");
         assertAnswer("1|2 ;; 2|102 ;; 3|201 ;; 4|301",
             "SELECT a, SEQ4() * 100 + COUNT(*) AS s FROM gs679 GROUP BY a ORDER BY a");
-        assertAnswer("1|1 ;; 2|2 ;; 3|0 ;; 4|3",
+        assertFormedOrder("1|1 ;; 2|2 ;; 3|0 ;; 4|3",
             "SELECT a, s FROM (SELECT a, SEQ4() AS s FROM gs679 GROUP BY a) ORDER BY a");
-        assertAnswer("1|1 ;; 2|2 ;; 3|0 ;; 4|3", "SELECT a, SEQ4() AS s FROM gs679 GROUP BY a ORDER BY a, s");
+        assertFormedOrder("1|1 ;; 2|2 ;; 3|0 ;; 4|3", "SELECT a, SEQ4() AS s FROM gs679 GROUP BY a ORDER BY a, s");
         assertAnswer("1|0 ;; 2|1 ;; 3|2 ;; 4|3", "SELECT DISTINCT a, SEQ4() AS s FROM gs679 GROUP BY a ORDER BY a");
         assertAnswer("1|0 ;; 2|1 ;; 3|2 ;; 4|3", "SELECT a, SEQ4() AS s FROM gs679 GROUP BY a ORDER BY 1");
-        assertAnswer("3|0 ;; 1|1 ;; 2|2 ;; 4|3", "SELECT a, SEQ4() AS s FROM gs679 GROUP BY a ORDER BY 2");
-        assertAnswer("4|0|3 ;; 2|1|2 ;; 1|2|1 ;; 3|3|0",
+        assertFormedOrder("3|0 ;; 1|1 ;; 2|2 ;; 4|3", "SELECT a, SEQ4() AS s FROM gs679 GROUP BY a ORDER BY 2");
+        assertFormedOrder("4|0|3 ;; 2|1|2 ;; 1|2|1 ;; 3|3|0",
             "SELECT a, SEQ4() AS s, SEQ8() AS t FROM gs679 GROUP BY a ORDER BY t DESC");
-        assertAnswer("1|0 ;; 1|3 ;; 2|1 ;; 2|2",
+        assertFormedOrder("1|0 ;; 1|3 ;; 2|1 ;; 2|2",
             "SELECT COUNT(*) AS n, SEQ4() AS s FROM gs679 GROUP BY a ORDER BY n, s");
     }
 }

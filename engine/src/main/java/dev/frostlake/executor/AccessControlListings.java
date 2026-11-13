@@ -68,6 +68,12 @@ public final class AccessControlListings {
     /** How a database role is named as a grantee. */
     public static final String DATABASE_ROLE = "DATABASE_ROLE";
 
+    /** How a grantee that is an application's role is kinded. */
+    private static final String APPLICATION_ROLE = "APPLICATION_ROLE";
+
+    /** The SNOWFLAKE application's role that holds what PUBLIC holds of the SNOWFLAKE database's roles. */
+    private static final String APP_PUBLIC = "APP_PUBLIC";
+
     private final Catalog catalog;
 
     /**
@@ -366,7 +372,14 @@ public final class AccessControlListings {
         final String qualified = role.getQualifiedName();
         final String shown = SqlIdentifiers.spellAlreadyCanonicalPath(qualified);
         final List<Row> rows = new ArrayList<>();
+        final boolean system = SystemDatabase.is(role.getDatabase());
         for (final Role holder : catalog.getAllRoles()) {
+            if (system && "PUBLIC".equals(holder.getName()) && holder.getDatabaseRoleGrants().containsKey(qualified)) {
+                // A SNOWFLAKE database role PUBLIC holds is granted to the SNOWFLAKE application's APP_PUBLIC role
+                // too, by no role, listed before PUBLIC (live-verified).
+                rows.add(new Row(Arrays.<Object>asList(ShowResultHelpers.createdOn(role.getCreatedTime()), shown,
+                    APPLICATION_ROLE, APP_PUBLIC, "")));
+            }
             addHolder(rows, holder, qualified, shown, "ROLE", holder.getName());
         }
         final Database database = catalog.getDatabase(role.getDatabase());
@@ -384,7 +397,7 @@ public final class AccessControlListings {
                     shown, "USER", user.getName(), grantor)));
             }
         }
-        if (SystemDatabase.is(role.getDatabase())) {
+        if (system) {
             // Each of the SNOWFLAKE database's roles is granted to the SNOWFLAKE application too, by no role, listed
             // after the account's grantees (live-verified).
             rows.add(new Row(Arrays.<Object>asList(ShowResultHelpers.createdOn(role.getCreatedTime()), shown,
@@ -440,6 +453,13 @@ public final class AccessControlListings {
             for (final Role holder : catalog.getAllRoles()) {
                 addUsage(rows, holder.getDatabaseRoleGrants().get(name), holder.getDatabaseRoleGrantTime(name),
                     holder, kind, shown, "ROLE");
+                if (SystemDatabase.is(((DatabaseRole) role).getDatabase()) && "PUBLIC".equals(holder.getName())
+                        && holder.getDatabaseRoleGrants().containsKey(name)) {
+                    // The SNOWFLAKE application's APP_PUBLIC holds it beside PUBLIC, granted by no role (see
+                    // grantsOfDatabaseRole).
+                    rows.add(new Row(Arrays.<Object>asList(ShowResultHelpers.createdOn(role.getCreatedTime()), "USAGE",
+                        kind, shown, APPLICATION_ROLE, APP_PUBLIC, "false", "", "")));
+                }
             }
             final Database database = catalog.getDatabase(((DatabaseRole) role).getDatabase());
             if (database != null) {

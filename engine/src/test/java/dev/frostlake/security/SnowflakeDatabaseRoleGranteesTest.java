@@ -34,12 +34,12 @@ public class SnowflakeDatabaseRoleGranteesTest extends MeasuredCellsTestSupport 
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
         engine.execute("SHOW GRANTS OF DATABASE ROLE SNOWFLAKE.ALERT_VIEWER");
-        assertAnswer("APPLICATION:SNOWFLAKE,ROLE:PUBLIC",
+        assertAnswer("APPLICATION:SNOWFLAKE,APPLICATION_ROLE:APP_PUBLIC,ROLE:PUBLIC",
             "SELECT LISTAGG(\"granted_to\" || ':' || \"grantee_name\", ',') WITHIN GROUP (ORDER BY \"granted_to\") "
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
         engine.execute("SHOW GRANTS OF DATABASE ROLE SNOWFLAKE.ANACONDA_REPOSITORY_USER");
-        assertAnswer("APPLICATION:SNOWFLAKE,ROLE:PUBLIC",
+        assertAnswer("APPLICATION:SNOWFLAKE,APPLICATION_ROLE:APP_PUBLIC,ROLE:PUBLIC",
             "SELECT LISTAGG(\"granted_to\" || ':' || \"grantee_name\", ',') WITHIN GROUP (ORDER BY \"granted_to\") "
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
@@ -54,17 +54,17 @@ public class SnowflakeDatabaseRoleGranteesTest extends MeasuredCellsTestSupport 
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
         engine.execute("SHOW GRANTS OF DATABASE ROLE SNOWFLAKE.CLASSIFICATION_VIEWER");
-        assertAnswer("APPLICATION:SNOWFLAKE,ROLE:PUBLIC",
+        assertAnswer("APPLICATION:SNOWFLAKE,APPLICATION_ROLE:APP_PUBLIC,ROLE:PUBLIC",
             "SELECT LISTAGG(\"granted_to\" || ':' || \"grantee_name\", ',') WITHIN GROUP (ORDER BY \"granted_to\") "
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
         engine.execute("SHOW GRANTS OF DATABASE ROLE SNOWFLAKE.COPILOT_USER");
-        assertAnswer("APPLICATION:SNOWFLAKE,ROLE:PUBLIC",
+        assertAnswer("APPLICATION:SNOWFLAKE,APPLICATION_ROLE:APP_PUBLIC,ROLE:PUBLIC",
             "SELECT LISTAGG(\"granted_to\" || ':' || \"grantee_name\", ',') WITHIN GROUP (ORDER BY \"granted_to\") "
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
         engine.execute("SHOW GRANTS OF DATABASE ROLE SNOWFLAKE.CORE_VIEWER");
-        assertAnswer("APPLICATION:SNOWFLAKE,ROLE:PUBLIC",
+        assertAnswer("APPLICATION:SNOWFLAKE,APPLICATION_ROLE:APP_PUBLIC,ROLE:PUBLIC",
             "SELECT LISTAGG(\"granted_to\" || ':' || \"grantee_name\", ',') WITHIN GROUP (ORDER BY \"granted_to\") "
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
@@ -99,17 +99,17 @@ public class SnowflakeDatabaseRoleGranteesTest extends MeasuredCellsTestSupport 
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
         engine.execute("SHOW GRANTS OF DATABASE ROLE SNOWFLAKE.CORTEX_USER");
-        assertAnswer("APPLICATION:SNOWFLAKE,ROLE:PUBLIC",
+        assertAnswer("APPLICATION:SNOWFLAKE,APPLICATION_ROLE:APP_PUBLIC,ROLE:PUBLIC",
             "SELECT LISTAGG(\"granted_to\" || ':' || \"grantee_name\", ',') WITHIN GROUP (ORDER BY \"granted_to\") "
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
         engine.execute("SHOW GRANTS OF DATABASE ROLE SNOWFLAKE.DATA_METRIC_USER");
-        assertAnswer("APPLICATION:SNOWFLAKE,ROLE:PUBLIC",
+        assertAnswer("APPLICATION:SNOWFLAKE,APPLICATION_ROLE:APP_PUBLIC,ROLE:PUBLIC",
             "SELECT LISTAGG(\"granted_to\" || ':' || \"grantee_name\", ',') WITHIN GROUP (ORDER BY \"granted_to\") "
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
         engine.execute("SHOW GRANTS OF DATABASE ROLE SNOWFLAKE.DATA_PRIVACY_VIEWER");
-        assertAnswer("APPLICATION:SNOWFLAKE,ROLE:PUBLIC",
+        assertAnswer("APPLICATION:SNOWFLAKE,APPLICATION_ROLE:APP_PUBLIC,ROLE:PUBLIC",
             "SELECT LISTAGG(\"granted_to\" || ':' || \"grantee_name\", ',') WITHIN GROUP (ORDER BY \"granted_to\") "
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
@@ -129,7 +129,7 @@ public class SnowflakeDatabaseRoleGranteesTest extends MeasuredCellsTestSupport 
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
         engine.execute("SHOW GRANTS OF DATABASE ROLE SNOWFLAKE.ML_USER");
-        assertAnswer("APPLICATION:SNOWFLAKE,ROLE:PUBLIC",
+        assertAnswer("APPLICATION:SNOWFLAKE,APPLICATION_ROLE:APP_PUBLIC,ROLE:PUBLIC",
             "SELECT LISTAGG(\"granted_to\" || ':' || \"grantee_name\", ',') WITHIN GROUP (ORDER BY \"granted_to\") "
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
@@ -139,7 +139,7 @@ public class SnowflakeDatabaseRoleGranteesTest extends MeasuredCellsTestSupport 
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
         engine.execute("SHOW GRANTS OF DATABASE ROLE SNOWFLAKE.NOTIFICATION_VIEWER");
-        assertAnswer("APPLICATION:SNOWFLAKE,ROLE:PUBLIC",
+        assertAnswer("APPLICATION:SNOWFLAKE,APPLICATION_ROLE:APP_PUBLIC,ROLE:PUBLIC",
             "SELECT LISTAGG(\"granted_to\" || ':' || \"grantee_name\", ',') WITHIN GROUP (ORDER BY \"granted_to\") "
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
@@ -174,7 +174,7 @@ public class SnowflakeDatabaseRoleGranteesTest extends MeasuredCellsTestSupport 
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
         engine.execute("SHOW GRANTS OF DATABASE ROLE SNOWFLAKE.PYPI_REPOSITORY_USER");
-        assertAnswer("APPLICATION:SNOWFLAKE,ROLE:PUBLIC",
+        assertAnswer("APPLICATION:SNOWFLAKE,APPLICATION_ROLE:APP_PUBLIC,ROLE:PUBLIC",
             "SELECT LISTAGG(\"granted_to\" || ':' || \"grantee_name\", ',') WITHIN GROUP (ORDER BY \"granted_to\") "
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
@@ -214,12 +214,12 @@ public class SnowflakeDatabaseRoleGranteesTest extends MeasuredCellsTestSupport 
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
         engine.execute("SHOW GRANTS OF DATABASE ROLE SNOWFLAKE.SPCS_REGISTRY_VIEWER");
-        assertAnswer("APPLICATION:SNOWFLAKE,ROLE:PUBLIC",
+        assertAnswer("APPLICATION:SNOWFLAKE,APPLICATION_ROLE:APP_PUBLIC,ROLE:PUBLIC",
             "SELECT LISTAGG(\"granted_to\" || ':' || \"grantee_name\", ',') WITHIN GROUP (ORDER BY \"granted_to\") "
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");
         engine.execute("SHOW GRANTS OF DATABASE ROLE SNOWFLAKE.SPCS_VIEWER");
-        assertAnswer("APPLICATION:SNOWFLAKE,ROLE:PUBLIC",
+        assertAnswer("APPLICATION:SNOWFLAKE,APPLICATION_ROLE:APP_PUBLIC,ROLE:PUBLIC",
             "SELECT LISTAGG(\"granted_to\" || ':' || \"grantee_name\", ',') WITHIN GROUP (ORDER BY \"granted_to\") "
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_to\" <> 'ROLE' OR \"grantee_name\" = "
                 + "'PUBLIC'");

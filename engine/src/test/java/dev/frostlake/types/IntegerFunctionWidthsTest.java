@@ -81,7 +81,7 @@ public class IntegerFunctionWidthsTest extends BaseDatabaseTest {
         assertEquals("NUMBER(4,0)", typeOf("YEAROFWEEKISO(d)"));
     }
 
-    /** The whole bit family is the widest NUMBER, whatever it is given. */
+    /** Over an INT the bit family is the widest NUMBER, and BITCOUNT a count's eighteen digits. */
     @Test
     public void theBitFamilyIsTheWidestNumber() {
         assertEquals("NUMBER(38,0)", typeOf("BITAND(i, 3)"));
@@ -90,7 +90,7 @@ public class IntegerFunctionWidthsTest extends BaseDatabaseTest {
         assertEquals("NUMBER(38,0)", typeOf("BITNOT(i)"));
         assertEquals("NUMBER(38,0)", typeOf("BITSHIFTLEFT(i, 1)"));
         assertEquals("NUMBER(38,0)", typeOf("BITSHIFTRIGHT(i, 1)"));
-        assertEquals("NUMBER(38,0)", typeOf("BITCOUNT(i)"));
+        assertEquals("NUMBER(18,0)", typeOf("BITCOUNT(i)"), "a count of bits, as a length is");
         assertEquals("NUMBER(38,0)", typeOf("GETBIT(i, 0)"));
     }
 

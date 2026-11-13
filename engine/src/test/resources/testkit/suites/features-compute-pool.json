@@ -177,7 +177,7 @@
       {"sql": "CREATE COMPUTE POOL P1 MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = CPU_X64_XS INITIALLY_SUSPENDED = TRUE AUTO_SUSPEND_SECS = 60 COMMENT = 'probe pool'"},
       {"sql": "DROP COMPUTE POOL P1"},
       {"sql": "SHOW COMPUTE POOLS"},
-      {"sql": "SELECT COUNT_IF(\"name\" = 'P1') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}}
+      {"sql": "SELECT COUNT(CASE WHEN \"name\" = 'P1' THEN 1 END) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}}
     ]},
     {"name": "unset-takes-a-comma-separated-list",
      "skip": {"backends": ["snowflake"], "reason": "compute pools are SPCS/account-tier-gated on live"},

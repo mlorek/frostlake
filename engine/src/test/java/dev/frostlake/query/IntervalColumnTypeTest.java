@@ -307,19 +307,40 @@ public class IntervalColumnTypeTest extends BaseDatabaseTest {
             refusal("INSERT INTO ict_v (h) VALUES (INTERVAL '2' HOUR)"));
     }
 
-    /** RESULT_SCAN over a result with an interval column answers only the bare star. */
+    /** RESULT_SCAN over a result with an interval column answers only the bare star, naming the column's place. */
     @Test
     public void resultScanRefusesAnIntervalColumn() {
         engine.executeQuery("SELECT ts - ts2 AS iv, 1 AS n FROM ict_src");
         final String refused = refusal("SELECT n FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))");
-        assertEquals("SQL compilation error:\ninvalid type [CAST(STRIP_NULL_VALUE(GET(RESULT_SCAN_RESULT_SCAN.$1, 'IV'))"
+        assertEquals("SQL compilation error:\ninvalid type [CAST(STRIP_NULL_VALUE(GET(RESULT_SCAN_RESULT_SCAN.$1, 0))"
             + " AS INTERVAL DAY(9) TO SECOND(9))] for parameter 'TO_INTERVAL_DAY_TIME'", refused);
+        final String[][] places = {
+            {"SELECT 1 AS n, ts - ts2 AS iv FROM ict_src", "1"},
+            {"SELECT 1 AS n, 2 AS m, ts - ts2 AS iv FROM ict_src", "2"},
+            {"SELECT ts - ts2 AS \"iv\", 1 AS n FROM ict_src", "0"},
+            {"SELECT ts - ts2 AS iv, ts - ts2 AS jv, 1 AS n FROM ict_src", "0"},
+            {"SELECT ts - ts2, 1 AS n FROM ict_src", "0"},
+        };
+        for (final String[] place : places) {
+            engine.executeQuery(place[0]);
+            assertEquals("SQL compilation error:\ninvalid type [CAST(STRIP_NULL_VALUE(GET(RESULT_SCAN_RESULT_SCAN.$1, "
+                + place[1] + ")) AS INTERVAL DAY(9) TO SECOND(9))] for parameter 'TO_INTERVAL_DAY_TIME'",
+                refusal("SELECT n FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))"), place[0]);
+        }
+        engine.executeQuery("SELECT ts - ts2 AS iv, 1 AS n FROM ict_src");
+        assertEquals("SQL compilation error:\ninvalid type [CAST(STRIP_NULL_VALUE(GET(RESULT_SCAN_RESULT_SCAN.$1, 0))"
+            + " AS INTERVAL DAY(9) TO SECOND(9))] for parameter 'TO_INTERVAL_DAY_TIME'",
+            refusal("SELECT iv FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))"));
         engine.executeQuery("SELECT ts - ts2 AS iv, 1 AS n FROM ict_src");
         assertEquals("1", column("SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) r", 1));
         engine.executeQuery("SELECT ts - ts2 AS iv, 1 AS n FROM ict_src");
         final String aliased = refusal("SELECT r.* FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) r");
-        assertEquals("SQL compilation error:\ninvalid type [CAST(STRIP_NULL_VALUE(GET(RESULT_SCAN_R.$1, 'IV'))"
+        assertEquals("SQL compilation error:\ninvalid type [CAST(STRIP_NULL_VALUE(GET(RESULT_SCAN_R.$1, 0))"
             + " AS INTERVAL DAY(9) TO SECOND(9))] for parameter 'TO_INTERVAL_DAY_TIME'", aliased);
+        engine.executeQuery("SELECT 1 AS n, ts - ts2 AS iv FROM ict_src");
+        assertEquals("SQL compilation error:\ninvalid type [CAST(STRIP_NULL_VALUE(GET(RESULT_SCAN_R.$1, 1))"
+            + " AS INTERVAL DAY(9) TO SECOND(9))] for parameter 'TO_INTERVAL_DAY_TIME'",
+            refusal("SELECT r.* FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) r"));
     }
 
     /**

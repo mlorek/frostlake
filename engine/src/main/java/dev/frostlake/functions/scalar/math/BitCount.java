@@ -23,7 +23,7 @@ import java.util.List;
 
 /** BITCOUNT(n) — the number of set bits in the integer value. */
 public class BitCount extends BuiltInFunction {
-    public BitCount() { super("BITCOUNT", IntegerResultWidths.WIDEST); }
+    public BitCount() { super("BITCOUNT", IntegerResultWidths.COUNTER); }
 
     @Override
     public Object evaluate(final List<Object> args) {

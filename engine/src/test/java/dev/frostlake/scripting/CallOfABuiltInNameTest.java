@@ -28,6 +28,12 @@ import org.junit.jupiter.api.Test;
  */
 public class CallOfABuiltInNameTest extends MeasuredCellsTestSupport {
 
+    /** Every FLOAT here is read whole, as the account's driver reads it by default. */
+    @Override
+    protected void setupTest() {
+        readDefaultResults();
+    }
+
     @Test
     public void aProcedureNamedAsABuiltIn() {
         try {

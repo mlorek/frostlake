@@ -47,7 +47,8 @@ public class ScalaTableFunctionRefusalTest extends MeasuredCellsTestSupport {
                 + "= classOf[R679]\n  def process(k: Int): java.util.stream.Stream[R679] =\n    "
                 + "java.util.stream.Stream.builder[R679]().add(new R679(k)).build()\n}\n$$");
         assertAnswer("REFUSED Optional endPartition() method must be public, non-static, and return a "
-                + "java.util.stream.Stream in function SC679C with handler H679c",
+                + "java.util.stream.Stream; if it takes an argument it must be "
+                + "java.util.Iterator<org.apache.arrow.vector.VectorSchemaRoot> in function SC679C with handler H679c",
             "CREATE OR REPLACE FUNCTION sc679c(k INT) RETURNS TABLE (x INT, y INT) LANGUAGE SCALA RUNTIME_VERSION = "
                 + "'2.12' HANDLER = 'H679c' AS $$\nobject H679c {\n  def getOutputClass(): Class[_] = "
                 + "classOf[java.awt.Point]\n  def process(k: Int): java.util.stream.Stream[java.awt.Point] = "

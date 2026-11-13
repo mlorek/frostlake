@@ -22,6 +22,7 @@ import dev.frostlake.types.DataType;
 import dev.frostlake.types.MapType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+import org.junit.jupiter.api.AfterEach;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -31,6 +32,30 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * message on one line. A statement's shape reads as its columns, each a name and its type.
  */
 public abstract class MeasuredCellsTestSupport extends BaseDatabaseTest {
+
+    /** Whether the test reads its results the driver's default way, which its teardown undoes. */
+    private boolean defaultResults;
+
+    /**
+     * Reads the session's results the way the account's driver reads them by default, ARROW, which carries every
+     * FLOAT whole: the live harness's session asks for JSON results, on which the account's driver reads a FLOAT by
+     * the server's text of it, cut to nine decimals ({@code 1.25992105} for {@code 1.2599210498948734}). Frostlake's
+     * own drivers read every result the default way, so on Frostlake the setting changes no read. The test's
+     * teardown puts the session back on JSON results.
+     */
+    protected void readDefaultResults() {
+        engine.execute("ALTER SESSION SET JDBC_QUERY_RESULT_FORMAT = 'ARROW'");
+        defaultResults = true;
+    }
+
+    /** Puts a session that {@link #readDefaultResults} moved back on the JSON results the live harness reads. */
+    @AfterEach
+    public void restoreResultFormat() {
+        if (defaultResults) {
+            defaultResults = false;
+            engine.execute("ALTER SESSION SET JDBC_QUERY_RESULT_FORMAT = 'JSON'");
+        }
+    }
 
     /** How the refusal of a correlated subquery the account cannot evaluate reads with no place given. */
     protected static final String UNSUPPORTED =

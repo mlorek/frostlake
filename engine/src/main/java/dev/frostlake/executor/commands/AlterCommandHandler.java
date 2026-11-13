@@ -17,6 +17,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.config.EngineConfig;
 import dev.frostlake.executor.ChangeTrackedQuery;
 import dev.frostlake.executor.ClusteringKeySpelling;
 import dev.frostlake.executor.ConditionalDdlOutcome;
@@ -132,6 +133,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -1500,7 +1502,13 @@ public class AlterCommandHandler implements CommandHandler {
                                 table.getStageCopyOptions().putAll(written);
                             } else if ("STAGE_FILE_FORMAT".equalsIgnoreCase(rawKey)
                                     && property.parenOptionList() != null) {
-                                TableStageOptions.judgeFormat(property.parenOptionList());
+                                // The list REPLACES the table's stage format: an option it leaves out is back at
+                                // its default, TYPE at CSV, so SKIP_HEADER = 1 alone forgets an earlier delimiter
+                                // and STRIP_OUTER_ARRAY alone is a CSV option refused (live-verified).
+                                final Map<String, String> replaced = new LinkedHashMap<String, String>();
+                                TableStageOptions.keepFormat(property.parenOptionList(), replaced, catalog);
+                                table.getStageFileFormat().clear();
+                                table.getStageFileFormat().putAll(replaced);
                             } else if (!ParameterRegistry.isTableParameter(ParameterRegistry.canonical(rawKey))) {
                                 // A known parameter is accepted and inert; an unknown one refuses (live-verified).
                                 throw ParameterRegistry.invalidProperty(ParameterRegistry.spell(rawKey), "TABLE");
@@ -1988,7 +1996,10 @@ public class AlterCommandHandler implements CommandHandler {
 
             } else if (ctx.USER() != null) {
                 branchHandlesIfExists = true;
-                alterUser(ctx.identifier(), ctx.userAction(), ifExists);
+                final ResultSet reset = alterUser(ctx.identifier(), ctx.userAction(), ifExists);
+                if (reset != null) {
+                    return reset;
+                }
 
             } else if (ctx.ROLE() != null) {
                 final String roleName = visitor.getText(ctx.identifier());
@@ -3840,8 +3851,8 @@ public class AlterCommandHandler implements CommandHandler {
      * statement compiles for is judged before the user is looked up, so IF EXISTS forgives the user's absence alone;
      * a tag, though, is looked up after a user the statement must find and before one it need not (live-verified).
      */
-    private void alterUser(final FrostlakeParser.IdentifierContext written,
-                           final FrostlakeParser.UserActionContext action, final boolean ifExists) {
+    private ResultSet alterUser(final FrostlakeParser.IdentifierContext written,
+                                final FrostlakeParser.UserActionContext action, final boolean ifExists) {
         if (written == null && ifExists) {
             throw new RuntimeException(SqlCompilationError.of(IF_EXISTS_WITHOUT_NAME));
         }
@@ -3869,9 +3880,10 @@ public class AlterCommandHandler implements CommandHandler {
                 }
             }
         }
-        if (ifExists && !catalog.hasUserExact(userName)) {
+        // IF EXISTS forgives every action but RESET PASSWORD, which looks the user up all the same (live-verified).
+        if (ifExists && action.RESET_PASSWORD() == null && !catalog.hasUserExact(userName)) {
             logger.debug("ALTER USER IF EXISTS: user {} not found", userName);
-            return;
+            return null;
         }
         final User user = catalog.getUserExact(userName);
         if (action.tagSet() == null && action.tagUnset() == null) {
@@ -3890,6 +3902,14 @@ public class AlterCommandHandler implements CommandHandler {
         if (parameters != null) {
             parameters.requireTaken(catalog);
         }
+        if (action.RESET_PASSWORD() != null) {
+            return passwordResetLink(user);
+        }
+        if (action.ABORT_ALL_QUERIES() != null) {
+            // The engine keeps no query of a user's running beyond the statement that asks, so none is aborted.
+            logger.trace("Aborted the queries of user {}", user.getName());
+            return null;
+        }
         if (action.tagSet() != null) {
             applyTagSet(user, action.tagSet());
         } else if (action.tagUnset() != null) {
@@ -3906,6 +3926,10 @@ public class AlterCommandHandler implements CommandHandler {
         } else if (!action.userProperty().isEmpty() || parameters != null) {
             // A network policy the list names has to exist before any of the list is applied.
             final String policy = UserNetworkPolicy.named(catalog, action.userProperty());
+            // A new password the governing policy does not take refuses the whole statement (live-verified).
+            final String password = parameters != null && parameters.writtenPassword() != null
+                ? parameters.writtenPassword() : UserProperties.writtenPassword(action.userProperty());
+            PasswordPolicyCheck.requireAccepted(catalog, user, password);
             UserProperties.apply(user, action.userProperty());
             if (UserNetworkPolicy.clears(action.userProperty())) {
                 UserNetworkPolicy.detach(catalog, user);
@@ -3923,6 +3947,22 @@ public class AlterCommandHandler implements CommandHandler {
             user.setComment(visitor.extractStringLiteral(action.STRING_LITERAL()));
             logger.trace("Set comment on user: {}", userName);
         }
+        return null;
+    }
+
+    /**
+     * ALTER USER … RESET PASSWORD answers the link the user sets a new password through, in one {@code status} column:
+     * the account's URL, its organization and account names joined, then the console's login page and a one-time
+     * token (live-verified in shape; the token is the engine's own and opens nothing).
+     */
+    private ResultSet passwordResetLink(final User user) {
+        final EngineConfig config = queryExecutor.getEngineConfig();
+        final String link = "https://" + config.getOrganizationName().toLowerCase(Locale.ROOT) + "-"
+            + config.getAccountName().toLowerCase(Locale.ROOT) + ".snowflakecomputing.com/console/login?"
+            + "resetPasswordToken=ver%3A3-hint%3A" + UUID.randomUUID().toString().replace("-", "") + "%3D%3D";
+        logger.trace("Reset the password of user {}", user.getName());
+        return new ResultSet(Arrays.asList(new ResultSetColumn("status", StringType.VARCHAR)),
+            new ArrayList<Row>(Arrays.asList(new Row(Arrays.<Object>asList(link)))));
     }
 
     /** The tags a SET TAG names, in the order written. */
@@ -5098,8 +5138,8 @@ public class AlterCommandHandler implements CommandHandler {
         for (final FrostlakeParser.PropertyNameContext key : keys) {
             final String canonical = ParameterRegistry.canonical(key.getText());
             names.add(key.getText());
-            taken.add(Boolean.valueOf(TABLE_UNSET_PROPERTIES.contains(canonical)
-                || ParameterRegistry.isTableParameter(canonical)));
+            taken.add(Boolean.valueOf(!TABLE_STAGE_PROPERTIES.contains(canonical)
+                && (TABLE_UNSET_PROPERTIES.contains(canonical) || ParameterRegistry.isTableParameter(canonical))));
         }
         ParameterLevels.judgeAlter(names, taken, "TABLE", privilegeKind(table), table.getName());
     }
@@ -5107,7 +5147,14 @@ public class AlterCommandHandler implements CommandHandler {
     /** What an ALTER TABLE … UNSET takes besides the table's parameters. */
     private static final Set<String> TABLE_UNSET_PROPERTIES = new HashSet<>(Arrays.asList("CHANGE_TRACKING",
         "DATA_RETENTION_TIME_IN_DAYS", "MAX_DATA_EXTENSION_TIME_IN_DAYS", "DEFAULT_DDL_COLLATION",
-        "ENABLE_SCHEMA_EVOLUTION", "DATA_METRIC_SCHEDULE", "COMMENT", "STAGE_FILE_FORMAT", "STAGE_COPY_OPTIONS"));
+        "ENABLE_SCHEMA_EVOLUTION", "DATA_METRIC_SCHEDULE", "COMMENT"));
+
+    /**
+     * A table's stage file format and copy options: its SET writes them, and its UNSET names either as an invalid
+     * property (live-verified).
+     */
+    private static final Set<String> TABLE_STAGE_PROPERTIES = new HashSet<>(Arrays.asList("STAGE_FILE_FORMAT",
+        "STAGE_COPY_OPTIONS"));
 
     /** Judges what an ALTER DATABASE or ALTER SCHEMA … UNSET names (see {@link ParameterLevels}). */
     private static void judgeContainerUnset(final List<FrostlakeParser.PropertyNameContext> keys, final String kind,

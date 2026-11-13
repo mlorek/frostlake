@@ -30,7 +30,7 @@ import java.util.Locale;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * INFORMATION_SCHEMA's own views are listed as a real account lists them: 63 of them, APPLICATION_SERVICES
+ * INFORMATION_SCHEMA's own views are listed as a real account lists them: 64 of them, APPLICATION_SERVICES
  * among them and queryable with its column shape and no rows. None was ever created, so SHOW VIEWS and SHOW
  * OBJECTS give each the epoch as its creation time, no owner and the account's fixed description as its
  * comment, SHOW VIEWS gives it no text, and INFORMATION_SCHEMA.TABLES and VIEWS give it no times and no
@@ -73,7 +73,7 @@ public class InformationSchemaOwnViewsTest extends BaseDatabaseTest {
             firstRow("SELECT DATE_PART(EPOCH_SECOND, \"created_on\"), \"name\", \"kind\", \"comment\", \"owner\" "
                 + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))"));
         engine.executeQuery("SHOW TERSE VIEWS IN SCHEMA test_db.INFORMATION_SCHEMA");
-        assertEquals("63, 0, 0",
+        assertEquals("64, 0, 0",
             firstRow("SELECT COUNT(*), MIN(DATE_PART(EPOCH_SECOND, \"created_on\")), "
                 + "MAX(DATE_PART(EPOCH_SECOND, \"created_on\")) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))"));
     }
@@ -88,7 +88,7 @@ public class InformationSchemaOwnViewsTest extends BaseDatabaseTest {
             firstRow("SELECT VIEW_DEFINITION, CREATED, LAST_ALTERED, LAST_DDL, CHECK_OPTION, COMMENT "
                 + "FROM test_db.INFORMATION_SCHEMA.VIEWS "
                 + "WHERE TABLE_SCHEMA = 'INFORMATION_SCHEMA' AND TABLE_NAME = 'TABLES'"));
-        assertEquals("63",
+        assertEquals("64",
             firstRow("SELECT COUNT(*) FROM test_db.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'INFORMATION_SCHEMA'"));
     }
 

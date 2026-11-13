@@ -29,10 +29,10 @@ import org.antlr.v4.runtime.ParserRuleContext;
  * conversion to its type, and the interval conversions take no cached value, so any query over such a
  * scan is refused while it compiles, naming the first interval column whatever the query reads —
  * {@code SELECT n}, {@code COUNT(*)}, a WHERE, an ORDER BY, a LIMIT, {@code SELECT r.*}, a CTAS and a UNION
- * alike: "invalid type [CAST(STRIP_NULL_VALUE(GET(RESULT_SCAN_RESULT_SCAN.$1, 'IV')) AS
- * INTERVAL DAY(9) TO SECOND(9))] for parameter 'TO_INTERVAL_DAY_TIME'". The relation is named RESULT_SCAN_ and
- * its alias when it has one (RESULT_SCAN_R), and a column that cannot hold NULL is read without
- * STRIP_NULL_VALUE. Only the bare
+ * alike: "invalid type [CAST(STRIP_NULL_VALUE(GET(RESULT_SCAN_RESULT_SCAN.$1, 0)) AS
+ * INTERVAL DAY(9) TO SECOND(9))] for parameter 'TO_INTERVAL_DAY_TIME'". The column is read by its place in the
+ * result, counted from 0, whatever its name; the relation is named RESULT_SCAN_ and its alias when it has one
+ * (RESULT_SCAN_R), and a column that cannot hold NULL is read without STRIP_NULL_VALUE. Only the bare
  * {@code SELECT * FROM TABLE(RESULT_SCAN(…))}, with or without an alias, hands the result back as it is
  * (live-verified).
  */
@@ -55,18 +55,19 @@ final class IntervalResultScan {
             return;
         }
         ResultSetColumn interval = null;
+        int place = 0;
         for (final ResultSetColumn column : cached.getColumns()) {
             if (IntervalCasts.isIntervalType(declared(column))) {
                 interval = column;
                 break;
             }
+            place++;
         }
         if (interval == null || bareStar(call)) {
             return;
         }
         final boolean nullable = interval.isNullable() || !interval.isNullabilityKnown();
-        final String read = "GET(RESULT_SCAN_" + (alias == null ? "RESULT_SCAN" : alias) + ".$1, '"
-            + interval.getName() + "')";
+        final String read = "GET(RESULT_SCAN_" + (alias == null ? "RESULT_SCAN" : alias) + ".$1, " + place + ")";
         final DataType type = declared(interval);
         throw new RuntimeException(SqlCompilationError.of("invalid type [CAST("
             + (nullable ? "STRIP_NULL_VALUE(" + read + ")" : read) + " AS " + type.getName()

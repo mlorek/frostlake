@@ -52,6 +52,8 @@ final class CsvSchemaScanner {
         List<String> header = null;
         final List<InferredType> types = new ArrayList<InferredType>();
         long records = 0;
+        // Under KIND => 'ICEBERG' the first conflict of types refuses the call once the file is read.
+        InferenceConflict conflict = null;
         try (BufferedReader source = StagedFileIo.reader(file.path())) {
             final CsvRecordReader reader = new CsvRecordReader(source, file.relativeName(), options.format(), false);
             final List<Boolean> enclosed = new ArrayList<Boolean>();
@@ -82,10 +84,19 @@ final class CsvSchemaScanner {
                         types.add(null);
                     }
                     final String field = fields.get(i);
-                    types.set(i, InferredType.absorb(types.get(i), StagedValueKinds.ofCsvField(field), field,
-                        options.iceberg()));
+                    try {
+                        types.set(i, InferredType.absorb(types.get(i), StagedValueKinds.ofCsvField(field), field,
+                            options.iceberg()));
+                    } catch (final InferenceConflict refused) {
+                        if (conflict == null) {
+                            conflict = refused;
+                        }
+                    }
                 }
             }
+        }
+        if (conflict != null) {
+            throw conflict;
         }
         final List<FileColumn> columns = new ArrayList<FileColumn>();
         if (records == 0) {

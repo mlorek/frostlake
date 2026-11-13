@@ -196,18 +196,21 @@ public class GrantsByExactNameTest extends BaseDatabaseTest {
 
         engine.execute("GRANT USAGE ON PROCEDURE \"p775\"() TO ROLE " + ROLE);
         engine.execute("GRANT ALL ON PROCEDURE p775(VARCHAR) TO ROLE " + ROLE);
-        assertEquals("USAGE|PROCEDURE|TEST_DB.TEST_SCHEMA.\"p775\"() ; MONITOR|PROCEDURE|TEST_DB.TEST_SCHEMA.P775(VARCHAR)"
-            + " ; USAGE|PROCEDURE|TEST_DB.TEST_SCHEMA.P775(VARCHAR)", held());
+        assertEquals("USAGE|PROCEDURE|TEST_DB.TEST_SCHEMA.\"p775\"() ; APPLY COMMENT|PROCEDURE|TEST_DB.TEST_SCHEMA."
+            + "P775(VARCHAR) ; MONITOR|PROCEDURE|TEST_DB.TEST_SCHEMA.P775(VARCHAR) ; USAGE|PROCEDURE|TEST_DB."
+            + "TEST_SCHEMA.P775(VARCHAR)", held());
         assertEquals("Statement executed successfully. 3 objects affected.",
             status("GRANT USAGE ON ALL PROCEDURES IN SCHEMA test_db.test_schema TO ROLE " + ROLE));
         assertEquals("USAGE|PROCEDURE|TEST_DB.TEST_SCHEMA.\"p775\"() ; USAGE|PROCEDURE|TEST_DB.TEST_SCHEMA.P775(NUMBER)"
-            + " ; MONITOR|PROCEDURE|TEST_DB.TEST_SCHEMA.P775(VARCHAR) ; USAGE|PROCEDURE|TEST_DB.TEST_SCHEMA.P775(VARCHAR)",
-            held());
+            + " ; APPLY COMMENT|PROCEDURE|TEST_DB.TEST_SCHEMA.P775(VARCHAR) ; MONITOR|PROCEDURE|TEST_DB.TEST_SCHEMA."
+            + "P775(VARCHAR) ; USAGE|PROCEDURE|TEST_DB.TEST_SCHEMA.P775(VARCHAR)", held());
         assertEquals("Statement executed successfully. 3 objects affected.",
             status("REVOKE USAGE ON ALL PROCEDURES IN SCHEMA test_db.test_schema FROM ROLE " + ROLE));
-        assertEquals("MONITOR|PROCEDURE|TEST_DB.TEST_SCHEMA.P775(VARCHAR)", held());
+        assertEquals("APPLY COMMENT|PROCEDURE|TEST_DB.TEST_SCHEMA.P775(VARCHAR) ; MONITOR|PROCEDURE|TEST_DB."
+            + "TEST_SCHEMA.P775(VARCHAR)", held());
         engine.execute("ALTER PROCEDURE p775(VARCHAR) RENAME TO p775b");
-        assertEquals("MONITOR|PROCEDURE|TEST_DB.TEST_SCHEMA.P775B(VARCHAR)", held());
+        assertEquals("APPLY COMMENT|PROCEDURE|TEST_DB.TEST_SCHEMA.P775B(VARCHAR) ; MONITOR|PROCEDURE|TEST_DB."
+            + "TEST_SCHEMA.P775B(VARCHAR)", held());
         engine.execute("DROP PROCEDURE p775b(VARCHAR)");
         assertEquals("", held());
     }

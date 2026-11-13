@@ -445,7 +445,7 @@ public class BeginEndBlockHandler implements CommandHandler {
 
         // Enter a new scope for this block; also snapshot cursors so inner-declared
         // cursors are cleaned up when the block exits.
-        proceduralExecutor().enterScope();
+        proceduralExecutor().enterBlockScope();
         proceduralExecutor().enterBlock();
         // A handler names the exceptions this block sees: its own and an enclosing block's (see matchesException).
         final int exceptionDepth = proceduralExecutor().exceptionScopeDepth();

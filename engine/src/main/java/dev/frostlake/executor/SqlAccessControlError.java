@@ -121,19 +121,13 @@ public final class SqlAccessControlError {
 
     /**
      * The refusal of the listing of the organization's accounts, which only the organization account answers: what the
-     * session may not operate on is the account's own system, named with no kind, and what it lacks is the
-     * organization's MANAGE ACCOUNTS on the current account (live-verified, the two spaces before the name included).
+     * session may not operate on is the account's own system, named with no kind, and no privilege is named, whatever
+     * the role (live-verified, the two spaces before the name included).
      *
-     * @param primaryRole the session's primary role
-     * @param secondary   whether the session asked for secondary roles
-     * @param locator     the current account's locator
      * @return the refusal
      */
-    public static String manageAccountsRequired(final String primaryRole, final boolean secondary,
-                                                final String locator) {
-        return insufficientPrivileges("", "SYSTEM") + " Your primary role " + primaryRole
-            + (secondary ? " or one of your secondary roles" : "") + " must have MANAGE ACCOUNTS granted on ACCOUNT "
-            + locator + ".";
+    public static String organizationListingRefused() {
+        return insufficientPrivileges("", "SYSTEM");
     }
 
     /**

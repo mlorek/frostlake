@@ -76,6 +76,7 @@ import dev.frostlake.functions.SystemFunctionArity;
 import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.jdbc.JdbcMarshaling;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.HiddenDatabases;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.QueryHistory;
@@ -279,7 +280,18 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 SideEffectFunctions.rejectInCreate(ctx);
                 rejectWhileTransactionAborted(ctx);
                 CompiledTransactionAborts.carryOut(ctx, queryExecutor);
-                return visitChildren(ctx);
+                // A database the statement names but does not see is missing to it (see WrittenDatabases); a
+                // statement it runs in turn keeps its outermost statement's.
+                final boolean names = !HiddenDatabases.installed();
+                final Set<String> displaced = names
+                    ? HiddenDatabases.begin(WrittenDatabases.hiddenIn(ctx, queryExecutor)) : null;
+                try {
+                    return visitChildren(ctx);
+                } finally {
+                    if (names) {
+                        HiddenDatabases.end(displaced);
+                    }
+                }
             } finally {
                 PropertyVariables.unbind(boundVariables);
             }
@@ -1283,10 +1295,19 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                     proceduralExecutor.judgeBlockExpression(ctx.booleanExpr(),
                         parseDeclaredType(ctx.dataTypeName(), ctx.typeParameters()));
                 }
-                defaultValue = ctx.dataTypeName() != null
-                    ? declaredInitialValue(ctx.booleanExpr(), parseDeclaredType(ctx.dataTypeName(),
-                        ctx.typeParameters()))
-                    : evaluateExpression(ctx.booleanExpr());
+                // A value that calls a user-defined function or reads a query is a query of its own, which takes a
+                // query ID (see ProceduralExecutor#beginExpressionQuery).
+                final QueryHistory asQuery = proceduralExecutor.beginExpressionQuery(ctx.booleanExpr());
+                try {
+                    defaultValue = ctx.dataTypeName() != null
+                        ? declaredInitialValue(ctx.booleanExpr(), parseDeclaredType(ctx.dataTypeName(),
+                            ctx.typeParameters()))
+                        : evaluateExpression(ctx.booleanExpr());
+                } catch (final RuntimeException failed) {
+                    proceduralExecutor.failExpressionQuery(asQuery, ctx.booleanExpr(), failed);
+                    throw failed;
+                }
+                proceduralExecutor.endExpressionQuery(asQuery, ctx.booleanExpr(), defaultValue);
             }
 
             final DeclareStatement stmt = new DeclareStatement(varName, defaultValue,
@@ -1622,7 +1643,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             // A type and no value declares the variable NULL of its type, as a DECLARE section's item does
             // (live-verified).
             proceduralExecutor.executeStatement(new DeclareStatement(varName, null,
-                parseDeclaredType(ctx.dataTypeName(), ctx.typeParameters())));
+                parseDeclaredType(ctx.dataTypeName(), ctx.typeParameters())).writtenByLet());
             logger.trace("Let variable: {}", varName);
             return null;
         }
@@ -1633,12 +1654,22 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             proceduralExecutor.judgeBlockExpression(ctx.booleanExpr(),
                 parseDeclaredType(ctx.dataTypeName(), ctx.typeParameters()));
         }
-        final Object defaultValue = ctx.dataTypeName() != null
-            ? declaredInitialValue(ctx.booleanExpr(), parseDeclaredType(ctx.dataTypeName(), ctx.typeParameters()))
-            : evaluateExpression(ctx.booleanExpr());
+        // A value that calls a user-defined function or reads a query is a query of its own, which takes a query ID
+        // (see ProceduralExecutor#beginExpressionQuery).
+        final QueryHistory asQuery = proceduralExecutor.beginExpressionQuery(ctx.booleanExpr());
+        final Object defaultValue;
+        try {
+            defaultValue = ctx.dataTypeName() != null
+                ? declaredInitialValue(ctx.booleanExpr(), parseDeclaredType(ctx.dataTypeName(), ctx.typeParameters()))
+                : evaluateExpression(ctx.booleanExpr());
+        } catch (final RuntimeException failed) {
+            proceduralExecutor.failExpressionQuery(asQuery, ctx.booleanExpr(), failed);
+            throw failed;
+        }
+        proceduralExecutor.endExpressionQuery(asQuery, ctx.booleanExpr(), defaultValue);
         final DeclareStatement stmt = new DeclareStatement(varName, defaultValue,
             ctx.dataTypeName() != null ? parseDeclaredType(ctx.dataTypeName(), ctx.typeParameters())
-                : inferredDeclarationType(ctx.booleanExpr()));
+                : inferredDeclarationType(ctx.booleanExpr())).writtenByLet();
         if (ctx.dataTypeName() == null) {
             stmt.setInitialiserType(initialiserOwnType(ctx.booleanExpr()));
         }
@@ -2751,8 +2782,12 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 sawNamed |= CallArgumentTypes.isNamed(argCtx);
             }
             // The names that fit no signature are refused under the procedure's name as the CALL writes it,
-            // test_schema.p as TEST_SCHEMA.P (live-verified).
-            final String namedName = parts.length > 1 ? spelledRoutineName(parts) : procName;
+            // test_schema.p as TEST_SCHEMA.P, and a procedure's SYSTEM$REFERENCE token as the token itself
+            // (live-verified).
+            final String token = ctx.callReference() == null ? null
+                : queryExecutor.identifierArgumentText(ctx.callReference().identifierArgument());
+            final String namedName = token != null && ProcedureTokenCalls.namesProcedure(token) ? token
+                : parts.length > 1 ? spelledRoutineName(parts) : procName;
             CallArgumentTypes.refuseNamedShape(procName, params, ctx.callArguments().callArgument());
             CallArgumentTypes.refuseRows(namedName, params, ctx.callArguments().callArgument());
             CallArgumentTypes.refuseMisnamed(namedName, params, ctx.callArguments().callArgument());
@@ -4034,6 +4069,14 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         // stands in the function's text, whatever statement called the function (live-verified).
         final SourcePosition callersOrigin = LeadingCommentOffset.begin(null);
         proceduralExecutor.enterFunctionBody();
+        // The body's own block judges its direct RETURNs against the declared return type, as a procedure's does
+        // (see DeclaredReturnJudge): RETURNS TIME over RETURN 1 is refused when the call compiles (live-verified).
+        final Set<String> parameterNames = new HashSet<>();
+        for (final Parameter param : function.getParameters()) {
+            parameterNames.add(param.getName());
+        }
+        final DeclaredReturnFrame outerReturn = proceduralExecutor.pushDeclaredReturn(function.getReturnType(), false,
+            parameterNames);
         try {
             final List<Parameter> params = function.getParameters();
             for (int i = 0; i < params.size() && i < args.size(); i++) {
@@ -4096,6 +4139,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             }
             throw failed;
         } finally {
+            proceduralExecutor.restoreDeclaredReturn(outerReturn);
             proceduralExecutor.exitFunctionBody();
             LeadingCommentOffset.end(callersOrigin);
             queryExecutor.getTransactionManager().endAtomicSection();

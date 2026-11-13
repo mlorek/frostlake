@@ -50,7 +50,7 @@
     ]},
     {"name": "org-admin-stands-outside-the-hierarchy", "steps": [
       {"sql": "SHOW GRANTS TO ROLE ORGADMIN"},
-      {"sql": "SELECT COUNT_IF(UPPER(\"granted_on\") = 'ROLE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"granted_on\") = 'ROLE'",
        "expect": {"value": "0"}}
     ]},
     {"name": "cannot-drop-org-admin", "steps": [
@@ -96,7 +96,7 @@
       {"sql": "CREATE ROLE test_role"},
       {"sql": "DROP ROLE test_role"},
       {"sql": "SHOW ROLES LIKE 'test_role'"},
-      {"sql": "SELECT COUNT_IF(\"name\" = 'TEST_ROLE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_ROLE'",
        "expect": {"value": "0"}}
     ]},
     {"name": "a-custom-role-may-carry-a-system-role-like-name", "steps": [

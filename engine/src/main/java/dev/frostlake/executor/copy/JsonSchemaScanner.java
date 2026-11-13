@@ -64,6 +64,9 @@ final class JsonSchemaScanner {
     /** The records read so far, which is the current one's row. */
     private long records;
 
+    /** The first conflict of types under {@code KIND => 'ICEBERG'}, which refuses the call once the file is read. */
+    private InferenceConflict conflict;
+
     /** The line the current record starts on. */
     private int startLine = 1;
 
@@ -98,7 +101,7 @@ final class JsonSchemaScanner {
                 token = next();
                 while (token != null && token != JsonToken.END_ARRAY) {
                     if (!options.readsAllRecords() && records >= options.maxRecordsPerFile()) {
-                        return new ArrayList<FileColumn>(columns.values());
+                        return readColumns();
                     }
                     readRecord(token);
                     token = next();
@@ -110,6 +113,14 @@ final class JsonSchemaScanner {
                 readRecord(token);
             }
             token = next();
+        }
+        return readColumns();
+    }
+
+    /** The columns the file gave, once it is read: its first conflict of types, if any, refuses the call. */
+    private List<FileColumn> readColumns() {
+        if (conflict != null) {
+            throw conflict;
         }
         return new ArrayList<FileColumn>(columns.values());
     }
@@ -134,6 +145,9 @@ final class JsonSchemaScanner {
             }
             field = next();
         }
+        if (options.iceberg()) {
+            requireIcebergColumns(types);
+        }
         int position = 0;
         for (final Map.Entry<String, InferredType> entry : types.entrySet()) {
             final String name = options.reportedName(entry.getKey());
@@ -142,14 +156,33 @@ final class JsonSchemaScanner {
                 column = new FileColumn(name, position, null, true);
                 columns.put(name, column);
             }
-            column.setType(InferredType.absorb(column.type(), entry.getValue(), texts.get(entry.getKey()),
-                options.iceberg()));
+            try {
+                column.setType(InferredType.absorb(column.type(), entry.getValue(), texts.get(entry.getKey()),
+                    options.iceberg()));
+            } catch (final InferenceConflict refused) {
+                if (conflict == null) {
+                    conflict = refused;
+                }
+            }
             position++;
         }
         final TokenStreamLocation end = parser.currentTokenLocation();
         startLine = end.getLineNr();
         text.discardBefore(end.getCharOffset());
         records++;
+    }
+
+    /**
+     * Refuse a record's array or object under {@code KIND => 'ICEBERG'}, which no Iceberg column definition holds:
+     * the first in the record's sorted keys, as soon as its record is read.
+     */
+    private static void requireIcebergColumns(final Map<String, InferredType> types) {
+        for (final InferredType type : types.values()) {
+            if (type != null && (type.kind() == InferredKind.ARRAY || type.kind() == InferredKind.OBJECT)) {
+                throw new RuntimeException("INFER_SCHEMA cannot produce an Iceberg column definition for type '"
+                    + type.typeText() + "' when KIND => 'ICEBERG'.");
+            }
+        }
     }
 
     /** Step over a nested object or array, which only its first level types, still judging its keys. */

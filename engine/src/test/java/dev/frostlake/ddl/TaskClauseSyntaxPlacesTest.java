@@ -170,4 +170,63 @@ public class TaskClauseSyntaxPlacesTest extends MeasuredCellsTestSupport {
         });
         engine.execute("ALTER SESSION UNSET QUERY_TAG");
     }
+
+    /**
+     * A list value holds properties, constants or lists of properties, never constants and lists together: one that
+     * opens with a constant is refused at a '(' after a comma, then at the first token after the next ')' that is
+     * neither a comma nor a constant; one that opens with a list is refused at a constant after a comma (all
+     * live-verified).
+     */
+    @Test
+    public void aListValueMixesNoConstantsAndLists() {
+        assertCells(new String[][] {
+            {"ALTER SESSION SET QUERY_TAG = (x, ('a'))",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 34 unexpected '('. | "
+                + "syntax error line 1 at position 39 unexpected ')'."},
+            {"ALTER SESSION SET QUERY_TAG = (x, ('a' = 'b'))",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 34 unexpected '('. | "
+                + "syntax error line 1 at position 45 unexpected ')'."},
+            {"ALTER SESSION SET QUERY_TAG = (x, ('a'), y)",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 34 unexpected '('. | "
+                + "syntax error line 1 at position 42 unexpected ')'."},
+            {"ALTER SESSION SET QUERY_TAG = (1, 2, ('a'))",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 37 unexpected '('. | "
+                + "syntax error line 1 at position 42 unexpected ')'."},
+            {"ALTER SESSION SET QUERY_TAG = (x, ())",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 34 unexpected '('. | "
+                + "syntax error line 1 at position 36 unexpected ')'."},
+            {"ALTER SESSION SET QUERY_TAG = (x, ('a', 'b'))",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 34 unexpected '('. | "
+                + "syntax error line 1 at position 44 unexpected ')'."},
+            {"ALTER SESSION SET QUERY_TAG = (('a' = 'b'), x)",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 44 unexpected 'x'."},
+            {"ALTER SESSION SET QUERY_TAG = (('a' = 'b'), ('c'))",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 48 unexpected ')'."},
+            {"ALTER SESSION SET QUERY_TAG = (x, (('a')))",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 34 unexpected '('. | "
+                + "syntax error line 1 at position 40 unexpected ')'."},
+            {"ALTER SESSION SET QUERY_TAG = ('s', ('a'))",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 36 unexpected '('. | "
+                + "syntax error line 1 at position 41 unexpected ')'."},
+            {"ALTER SESSION SET QUERY_TAG = (TRUE, ('a'))",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 37 unexpected '('. | "
+                + "syntax error line 1 at position 42 unexpected ')'."},
+            {"ALTER SESSION SET QUERY_TAG = (x, ('a' = 1, 'b'))",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 34 unexpected '('. | "
+                + "syntax error line 1 at position 48 unexpected ')'."},
+            {"ALTER SESSION SET QUERY_TAG = (x, ('a')) ROWS_PER_RESULTSET = 0",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 34 unexpected '('. | "
+                + "syntax error line 1 at position 39 unexpected ')'."},
+            {"ALTER TASK nosuch1001 SET QUERY_TAG = (1, ('a'))",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 42 unexpected '('. | "
+                + "syntax error line 1 at position 47 unexpected ')'."},
+            {"ALTER SESSION SET QUERY_TAG = (x, ('a') ('b'))",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 34 unexpected '('. | "
+                + "syntax error line 1 at position 40 unexpected '('."},
+            {"ALTER SESSION SET QUERY_TAG = (x, (1))",
+                "REFUSED SQL compilation error: | syntax error line 1 at position 34 unexpected '('. | "
+                + "syntax error line 1 at position 37 unexpected ')'."},
+        });
+        engine.execute("ALTER SESSION UNSET QUERY_TAG");
+    }
 }

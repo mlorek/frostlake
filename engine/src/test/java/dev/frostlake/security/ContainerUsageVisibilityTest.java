@@ -86,7 +86,7 @@ public class ContainerUsageVisibilityTest extends BaseDatabaseTest {
             assertFalse(names("SHOW TABLES IN ACCOUNT").contains("T"));
             assertFalse(names("SHOW VIEWS IN ACCOUNT").contains("V"));
             assertTrue(refusal("SELECT GET_DDL('VIEW', 'cu_db.public.v')")
-                .contains("'CU_DB.PUBLIC.V' does not exist or not authorized."));
+                .contains("Database 'CU_DB' does not exist or not authorized."));
             assertTrue(refusal("DESCRIBE TABLE cu_db.public.t").contains("does not exist or not authorized."));
             assertTrue(refusal("SELECT * FROM cu_db.public.t").contains("does not exist or not authorized."));
         } finally {

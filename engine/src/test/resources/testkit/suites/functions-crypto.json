@@ -60,8 +60,8 @@
       {"sql": "SELECT TO_VARCHAR(ENCRYPT('secret', 'key')) = 'secret'", "expect": {"value": "false"}}
     ]},
     {"name": "encrypt-is-non-deterministic", "steps": [
-      {"sql": "SELECT TO_VARCHAR(ENCRYPT('msg', 'key')) = TO_VARCHAR(ENCRYPT('msg', 'key'))",
-       "expect": {"value": "false"}}
+      {"sql": "SELECT COUNT(DISTINCT TO_VARCHAR(ENCRYPT('msg', 'key'))) FROM TABLE(GENERATOR(ROWCOUNT => 5))",
+       "expect": {"value": "5"}}
     ]},
     {"name": "decrypting-with-the-wrong-key-fails", "steps": [
       {"sql": "CREATE TABLE enc_test (c VARCHAR)"},

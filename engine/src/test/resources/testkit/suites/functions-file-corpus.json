@@ -4,7 +4,8 @@
   "tags": ["functions", "file", "converted"],
   "tests": [
     {"name": "the-corpus-classifies-exactly-as-the-account-did", "steps": [
-      {"sql": "CREATE STAGE st"},
+      {"sql": "ALTER SESSION SET USE_CACHED_RESULT = FALSE"},
+      {"sql": "CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
       {"sql": "CREATE TABLE src (a VARCHAR)"},
       {"sql": "INSERT INTO src VALUES ('corpus payload')"},
       {"sql": "COPY INTO @st/c.png FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
@@ -35,7 +36,8 @@
       {"sql": "SELECT FL_GET_CONTENT_TYPE(TO_FILE('@st/sp ace nai\u00EFve.txt')) || '|' || FL_GET_FILE_TYPE(TO_FILE('@st/sp ace nai\u00EFve.txt')) || '|' || UPPER(FL_IS_IMAGE(TO_FILE('@st/sp ace nai\u00EFve.txt'))) || '|' || UPPER(FL_IS_VIDEO(TO_FILE('@st/sp ace nai\u00EFve.txt'))) || '|' || UPPER(FL_IS_AUDIO(TO_FILE('@st/sp ace nai\u00EFve.txt'))) || '|' || UPPER(FL_IS_DOCUMENT(TO_FILE('@st/sp ace nai\u00EFve.txt'))) || '|' || UPPER(FL_IS_COMPRESSED(TO_FILE('@st/sp ace nai\u00EFve.txt')))", "expect": {"value": "text/plain|document|FALSE|FALSE|FALSE|TRUE|FALSE"}}
     ]},
     {"name": "gz-and-zip-both-classify-compressed", "steps": [
-      {"sql": "CREATE STAGE st"},
+      {"sql": "ALTER SESSION SET USE_CACHED_RESULT = FALSE"},
+      {"sql": "CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
       {"sql": "CREATE TABLE src (a VARCHAR)"},
       {"sql": "INSERT INTO src VALUES ('corpus payload')"},
       {"sql": "COPY INTO @st/c.png FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
@@ -59,7 +61,8 @@
       {"sql": "SELECT UPPER(FL_IS_COMPRESSED(TRY_TO_FILE(OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'x.dat', 'SIZE', 1, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'application/x-gzip', 'ETAG', 'e1'))))", "expect": {"value": "FALSE"}}
     ]},
     {"name": "an-avi-is-video-and-audio-from-a-real-staged-file", "steps": [
-      {"sql": "CREATE STAGE st"},
+      {"sql": "ALTER SESSION SET USE_CACHED_RESULT = FALSE"},
+      {"sql": "CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
       {"sql": "CREATE TABLE src (a VARCHAR)"},
       {"sql": "INSERT INTO src VALUES ('corpus payload')"},
       {"sql": "COPY INTO @st/c.png FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
@@ -81,7 +84,8 @@
       {"sql": "SELECT UPPER(FL_IS_VIDEO(TO_FILE('@st/c.mp3')))", "expect": {"value": "FALSE"}}
     ]},
     {"name": "identical-bytes-classify-by-name-alone-yet-share-size-and-digest", "steps": [
-      {"sql": "CREATE STAGE st"},
+      {"sql": "ALTER SESSION SET USE_CACHED_RESULT = FALSE"},
+      {"sql": "CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
       {"sql": "CREATE TABLE src (a VARCHAR)"},
       {"sql": "INSERT INTO src VALUES ('corpus payload')"},
       {"sql": "COPY INTO @st/c.png FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
@@ -108,7 +112,8 @@
       {"sql": "SELECT FL_GET_ETAG(TO_FILE('@st/c.png')) = MD5('corpus payload' || CHR(10))", "expect": {"value": "true"}}
     ]},
     {"name": "one-shared-payload-keeps-size-and-etag-constant-across-every-extension", "steps": [
-      {"sql": "CREATE STAGE st"},
+      {"sql": "ALTER SESSION SET USE_CACHED_RESULT = FALSE"},
+      {"sql": "CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
       {"sql": "CREATE TABLE src (a VARCHAR)"},
       {"sql": "INSERT INTO src VALUES ('corpus payload')"},
       {"sql": "COPY INTO @st/c.png FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
@@ -146,7 +151,8 @@
       {"sql": "SELECT FL_GET_SIZE(TO_FILE('@st/sp ace nai\u00EFve.txt'))", "expect": {"value": "15"}}
     ]},
     {"name": "sub-directories-and-awkward-names-round-trip", "steps": [
-      {"sql": "CREATE STAGE st"},
+      {"sql": "ALTER SESSION SET USE_CACHED_RESULT = FALSE"},
+      {"sql": "CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
       {"sql": "CREATE TABLE src (a VARCHAR)"},
       {"sql": "INSERT INTO src VALUES ('corpus payload')"},
       {"sql": "COPY INTO @st/c.png FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
@@ -168,7 +174,8 @@
       {"sql": "SELECT FL_GET_CONTENT_TYPE(TO_FILE('@st/sp ace nai\u00EFve.txt'))", "expect": {"value": "text/plain"}}
     ]},
     {"name": "every-fixture-carries-a-well-formed-last-modified", "steps": [
-      {"sql": "CREATE STAGE st"},
+      {"sql": "ALTER SESSION SET USE_CACHED_RESULT = FALSE"},
+      {"sql": "CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
       {"sql": "CREATE TABLE src (a VARCHAR)"},
       {"sql": "INSERT INTO src VALUES ('corpus payload')"},
       {"sql": "COPY INTO @st/c.png FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
@@ -192,7 +199,8 @@
       {"sql": "SELECT LENGTH(TO_VARCHAR(FL_GET_LAST_MODIFIED(TO_FILE('@st/sp ace nai\u00EFve.txt')), 'YYYY-MM-DD HH24:MI:SS'))", "expect": {"value": "19"}}
     ]},
     {"name": "every-fixture-reports-the-stage-it-lives-on", "steps": [
-      {"sql": "CREATE STAGE st"},
+      {"sql": "ALTER SESSION SET USE_CACHED_RESULT = FALSE"},
+      {"sql": "CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
       {"sql": "CREATE TABLE src (a VARCHAR)"},
       {"sql": "INSERT INTO src VALUES ('corpus payload')"},
       {"sql": "COPY INTO @st/c.png FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},

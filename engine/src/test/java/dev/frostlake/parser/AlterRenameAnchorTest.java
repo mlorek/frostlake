@@ -26,7 +26,8 @@ import org.junit.jupiter.api.function.Executable;
 /**
  * Where live refuses a fault in an ALTER statement it gives up on as a whole (live-verified): after the RENAME of a
  * table, a view, a schema, a database, a warehouse, a user, a tag, a stage or a policy at that RENAME, after a
- * sequence's RENAME TO at the TO, and anywhere in a role's, a stream's or a file format's statement at its kind,
+ * sequence's RENAME TO at the TO and then at the first word after it, and anywhere in a role's, a stream's or a file
+ * format's statement at its kind,
  * then the token after it — where Frostlake refused the token that failed.
  */
 public class AlterRenameAnchorTest extends BaseDatabaseTest {
@@ -90,10 +91,47 @@ public class AlterRenameAnchorTest extends BaseDatabaseTest {
         assertEquals(refused(line(30, "TO")), refusal("ALTER SEQUENCE renamed RENAME TO"));
         assertEquals(refused(line(35, "TO")), refusal("ALTER SEQUENCE IF EXISTS s1 RENAME TO"));
         assertEquals(refused(line(25, "TO")), refusal("ALTER SEQUENCE s1 RENAME TO 1"));
-        assertEquals(refused(line(25, "TO"), line(30, "y")), refusal("ALTER SEQUENCE s1 RENAME TO x y"));
-        assertEquals(refused(line(25, "TO"), line(30, "(")), refusal("ALTER SEQUENCE s1 RENAME TO x (1)"));
+        assertEquals(refused(line(25, "TO"), line(28, "x")), refusal("ALTER SEQUENCE s1 RENAME TO x y"));
+        assertEquals(refused(line(25, "TO"), line(28, "x")), refusal("ALTER SEQUENCE s1 RENAME TO x (1)"));
         assertEquals(refused(line(25, "x")), refusal("ALTER SEQUENCE s1 RENAME x"));
         assertEquals(refused(line(24, "<EOF>")), refusal("ALTER SEQUENCE s1 RENAME"));
+    }
+
+    @Test
+    public void aSequenceRenameThenNamesTheFirstWordAfterItsTo() {
+        assertEquals(refused(line(25, "TO"), line(28, "x")), refusal("ALTER SEQUENCE s1 RENAME TO x y z"));
+        assertEquals(refused(line(25, "TO"), line(28, "x")), refusal("ALTER SEQUENCE s1 RENAME TO x.y z"));
+        assertEquals(refused(line(25, "TO"), line(28, "x")), refusal("ALTER SEQUENCE s1 RENAME TO x.y.z w"));
+        assertEquals(refused(line(25, "TO"), line(28, "x")), refusal("ALTER SEQUENCE s1 RENAME TO x , y"));
+        assertEquals(refused(line(25, "TO"), line(28, "x")), refusal("ALTER SEQUENCE s1 RENAME TO x 1"));
+        assertEquals(refused(line(25, "TO"), line(28, "x")), refusal("ALTER SEQUENCE s1 RENAME TO x 'y'"));
+        assertEquals(refused(line(25, "TO"), line(28, "x")), refusal("ALTER SEQUENCE s1 RENAME TO x ()"));
+        assertEquals(refused(line(25, "TO"), line(28, "x")), refusal("ALTER SEQUENCE s1 RENAME TO x.y (1)"));
+        assertEquals(refused(line(25, "TO"), line(28, "x")), refusal("ALTER SEQUENCE s1 RENAME TO x SELECT"));
+        assertEquals(refused(line(25, "TO"), line(28, "x")), refusal("ALTER SEQUENCE s1 RENAME TO x x"));
+        assertEquals(refused(line(25, "TO"), line(28, "x")), refusal("ALTER SEQUENCE s1 RENAME TO x AS"));
+        assertEquals(refused(line(25, "TO"), line(28, "x")),
+            refusal("ALTER SEQUENCE s1 RENAME TO x SET INCREMENT = 2"));
+        assertEquals(refused(line(25, "TO"), line(28, "\"x\"")), refusal("ALTER SEQUENCE s1 RENAME TO \"x\" y"));
+        assertEquals(refused(line(25, "TO"), line(28, "IDENTIFIER")),
+            refusal("ALTER SEQUENCE s1 RENAME TO IDENTIFIER('x') y"));
+        assertEquals(refused(line(35, "TO"), line(38, "x")), refusal("ALTER SEQUENCE IF EXISTS s1 RENAME TO x y"));
+        // What is no word is passed over, a reserved one too.
+        assertEquals(refused(line(25, "TO"), line(32, "y")), refusal("ALTER SEQUENCE s1 RENAME TO 'x' y"));
+        assertEquals(refused(line(25, "TO"), line(30, "y")), refusal("ALTER SEQUENCE s1 RENAME TO 1 y"));
+        assertEquals(refused(line(25, "TO"), line(29, "x")), refusal("ALTER SEQUENCE s1 RENAME TO (x)"));
+        assertEquals(refused(line(25, "TO"), line(31, "y")), refusal("ALTER SEQUENCE s1 RENAME TO $x y"));
+        assertEquals(refused(line(25, "TO"), line(32, "x")), refusal("ALTER SEQUENCE s1 RENAME TO SET x"));
+        assertEquals(refused(line(25, "TO")), refusal("ALTER SEQUENCE s1 RENAME TO SET"));
+        assertEquals(refused(line(25, "TO")), refusal("ALTER SEQUENCE s1 RENAME TO TO"));
+        assertEquals(refused(line(25, "TO")), refusal("ALTER SEQUENCE s1 RENAME TO 1 2"));
+        assertEquals(refused(line(25, "TO")), refusal("ALTER SEQUENCE s1 RENAME TO 'x'"));
+        // A word an '=' follows is not named.
+        assertEquals(refused(line(25, "TO")), refusal("ALTER SEQUENCE s1 RENAME TO x = 1"));
+        // The later statements are read on.
+        assertEquals(refused(line(25, "TO"), line(28, "x"), line(44, "y")),
+            refusal("ALTER SEQUENCE s1 RENAME TO x y; SELECT 1 x y"));
+        assertEquals(refused(line(42, "y")), refusal("ALTER SEQUENCE s1 RENAME TO x; SELECT 1 x y"));
     }
 
     @Test

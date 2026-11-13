@@ -122,4 +122,87 @@ public class ColumnDefaultEarlierColumnsTest extends MeasuredCellsTestSupport {
                 + "'NOSUCH.TEST_SCHEMA.DQ1000B.C1'"},
         });
     }
+
+    /**
+     * A default is told back with the conversions the plan makes: a number, a date or a FLOAT read as text is
+     * {@code CAST(… AS VARCHAR(134217728))}, bracketed beside {@code ||}; a written cast keeps its own type; a number
+     * beside a FLOAT is cast to FLOAT (all live-verified).
+     */
+    @Test
+    public void aDefaultIsToldWithItsConversions() {
+        assertCells(new String[][] {
+            {"CREATE OR REPLACE TABLE dt1001 (c2 INT, d DATE, s VARCHAR, f FLOAT, n NUMBER(10,2), t VARCHAR"
+                + " DEFAULT 'x' || c2)",
+                "Table DT1001 successfully created."},
+            {"DESCRIBE TABLE dt1001 ->> SELECT \"default\" FROM $1 WHERE \"name\" = 'T'",
+                "'x' || (CAST(DT1001.C2 AS VARCHAR(134217728)))"},
+            {"CREATE OR REPLACE TABLE dt1001 (c2 INT, d DATE, s VARCHAR, f FLOAT, n NUMBER(10,2), t VARCHAR"
+                + " DEFAULT c2 || 'x')",
+                "Table DT1001 successfully created."},
+            {"DESCRIBE TABLE dt1001 ->> SELECT \"default\" FROM $1 WHERE \"name\" = 'T'",
+                "(CAST(DT1001.C2 AS VARCHAR(134217728))) || 'x'"},
+            {"CREATE OR REPLACE TABLE dt1001 (c2 INT, d DATE, s VARCHAR, f FLOAT, n NUMBER(10,2), t VARCHAR"
+                + " DEFAULT CONCAT(c2, 'x'))",
+                "Table DT1001 successfully created."},
+            {"DESCRIBE TABLE dt1001 ->> SELECT \"default\" FROM $1 WHERE \"name\" = 'T'",
+                "CONCAT(CAST(DT1001.C2 AS VARCHAR(134217728)), 'x')"},
+            {"CREATE OR REPLACE TABLE dt1001 (c2 INT, d DATE, s VARCHAR, f FLOAT, n NUMBER(10,2), t VARCHAR"
+                + " DEFAULT UPPER(c2))",
+                "Table DT1001 successfully created."},
+            {"DESCRIBE TABLE dt1001 ->> SELECT \"default\" FROM $1 WHERE \"name\" = 'T'",
+                "UPPER(CAST(DT1001.C2 AS VARCHAR(134217728)))"},
+            {"CREATE OR REPLACE TABLE dt1001 (c2 INT, d DATE, s VARCHAR, f FLOAT, n NUMBER(10,2), t VARCHAR"
+                + " DEFAULT 'x' || d)",
+                "Table DT1001 successfully created."},
+            {"DESCRIBE TABLE dt1001 ->> SELECT \"default\" FROM $1 WHERE \"name\" = 'T'",
+                "'x' || (CAST(DT1001.D AS VARCHAR(134217728)))"},
+            {"CREATE OR REPLACE TABLE dt1001 (c2 INT, d DATE, s VARCHAR, f FLOAT, n NUMBER(10,2), t VARCHAR"
+                + " DEFAULT c2::VARCHAR || 'x')",
+                "Table DT1001 successfully created."},
+            {"DESCRIBE TABLE dt1001 ->> SELECT \"default\" FROM $1 WHERE \"name\" = 'T'",
+                "(CAST(DT1001.C2 AS VARCHAR)) || 'x'"},
+            {"CREATE OR REPLACE TABLE dt1001 (c2 INT, d DATE, s VARCHAR, f FLOAT, n NUMBER(10,2), t VARCHAR"
+                + " DEFAULT s || c2)",
+                "Table DT1001 successfully created."},
+            {"DESCRIBE TABLE dt1001 ->> SELECT \"default\" FROM $1 WHERE \"name\" = 'T'",
+                "DT1001.S || (CAST(DT1001.C2 AS VARCHAR(134217728)))"},
+            {"CREATE OR REPLACE TABLE dt1001 (c2 INT, d DATE, s VARCHAR, f FLOAT, n NUMBER(10,2), t VARCHAR"
+                + " DEFAULT 'x' || (c2 + 1))",
+                "Table DT1001 successfully created."},
+            {"DESCRIBE TABLE dt1001 ->> SELECT \"default\" FROM $1 WHERE \"name\" = 'T'",
+                "'x' || (CAST(DT1001.C2 + 1 AS VARCHAR(134217728)))"},
+            {"CREATE OR REPLACE TABLE dt1001 (c2 INT, d DATE, s VARCHAR, f FLOAT, n NUMBER(10,2), t INT DEFAULT"
+                + " LENGTH(c2))",
+                "Table DT1001 successfully created."},
+            {"DESCRIBE TABLE dt1001 ->> SELECT \"default\" FROM $1 WHERE \"name\" = 'T'",
+                "LENGTH(CAST(DT1001.C2 AS VARCHAR(134217728)))"},
+            {"CREATE OR REPLACE TABLE dt1001 (c2 INT, d DATE, s VARCHAR, f FLOAT, n NUMBER(10,2), t VARCHAR"
+                + " DEFAULT 'x' || f)",
+                "Table DT1001 successfully created."},
+            {"DESCRIBE TABLE dt1001 ->> SELECT \"default\" FROM $1 WHERE \"name\" = 'T'",
+                "'x' || (CAST(DT1001.F AS VARCHAR(134217728)))"},
+            {"CREATE OR REPLACE TABLE dt1001 (c2 INT, d DATE, s VARCHAR, f FLOAT, n NUMBER(10,2), t VARCHAR"
+                + " DEFAULT 'x' || n)",
+                "Table DT1001 successfully created."},
+            {"DESCRIBE TABLE dt1001 ->> SELECT \"default\" FROM $1 WHERE \"name\" = 'T'",
+                "'x' || (CAST(DT1001.N AS VARCHAR(134217728)))"},
+            {"CREATE OR REPLACE TABLE dr1003 (a INT, s VARCHAR, n NUMBER(10,2), f FLOAT, t NUMBER(38,1) DEFAULT a"
+                + " + 1.5)",
+                "Table DR1003 successfully created."},
+            {"DESCRIBE TABLE dr1003 ->> SELECT \"default\" FROM $1 WHERE \"name\" = 'T'",
+                "(CAST(DR1003.A AS NUMBER(38,1))) + 1.5"},
+            {"CREATE OR REPLACE TABLE dr1003 (a INT, s VARCHAR, n NUMBER(10,2), f FLOAT, t NUMBER(38,6) DEFAULT a / 3)",
+                "Table DR1003 successfully created."},
+            {"DESCRIBE TABLE dr1003 ->> SELECT \"default\" FROM $1 WHERE \"name\" = 'T'",
+                "SCALED_ROUND_INT_DIVIDE(DR1003.A, 3)"},
+            {"CREATE OR REPLACE TABLE dr1003 (a INT, s VARCHAR, n NUMBER(10,2), f FLOAT, t FLOAT DEFAULT a + f)",
+                "Table DR1003 successfully created."},
+            {"DESCRIBE TABLE dr1003 ->> SELECT \"default\" FROM $1 WHERE \"name\" = 'T'",
+                "(CAST(DR1003.A AS FLOAT)) + DR1003.F"},
+            {"CREATE OR REPLACE TABLE dr1003 (a INT, s VARCHAR, n NUMBER(10,2), f FLOAT, t NUMBER(38,6) DEFAULT s / 2)",
+                "Table DR1003 successfully created."},
+            {"DESCRIBE TABLE dr1003 ->> SELECT \"default\" FROM $1 WHERE \"name\" = 'T'",
+                "(CAST(TO_NUMBER(DR1003.S, 18, 5) AS NUMBER(24,11))) / 2"},
+        });
+    }
 }

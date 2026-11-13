@@ -25,6 +25,11 @@ import java.util.List;
  * a.id AND b.k = a.v AND b.n > 3)}. Every other part of the subquery reads its own relations alone, so what it keeps
  * for an outer row is what it keeps for every outer row with equal keys, and the subquery can be computed once for all
  * of them (see {@link CorrelatedSubqueryRule#equalityCorrelation}).
+ *
+ * <p>A correlation may also carry a residual: conjuncts that read the outer row other than through the equalities,
+ * {@code b.k > a.v} beside {@code b.id = a.id}. The rows the subquery keeps are then computed once with the columns
+ * the residual reads, and an outer row tests the residual over the rows of its own keys alone (see
+ * {@link CorrelatedSubqueryRule#residualCorrelation}).
  */
 public final class EqualityCorrelation {
 
@@ -35,6 +40,8 @@ public final class EqualityCorrelation {
     private final String aggregateItem;
     private final boolean rowPerKeptRow;
     private final String memberItem;
+    private final List<String> residual = new ArrayList<>();
+    private final List<String> residualItems = new ArrayList<>();
 
     /**
      * @param innerKeys      each equality's side over the subquery's relations, as written
@@ -56,6 +63,54 @@ public final class EqualityCorrelation {
         this.aggregateItem = aggregateItem;
         this.rowPerKeptRow = rowPerKeptRow;
         this.memberItem = memberItem;
+    }
+
+    /**
+     * @param conjuncts the conjuncts reading the outer row other than the equalities, each over the columns
+     *                  {@code "$R<n>"} of the items
+     * @param items     each column's expression over the subquery's relations, as written, in column order
+     * @return this correlation with those conjuncts as its residual
+     */
+    public EqualityCorrelation withResidual(final List<String> conjuncts, final List<String> items) {
+        final EqualityCorrelation copy = new EqualityCorrelation(innerKeys, outerKeys, from, otherConjuncts,
+            aggregateItem, rowPerKeptRow, memberItem);
+        copy.residual.addAll(conjuncts);
+        copy.residualItems.addAll(items);
+        return copy;
+    }
+
+    /**
+     * @return the conjuncts reading the outer row other than the equalities, joined by AND, each part reading the
+     *         subquery's relations alone written as the column {@code "$R<n>"} of {@link #residualRowsQuery}'s rows
+     *         after the keys; null where the equalities are the subquery's only reading of the outer row
+     */
+    public String getResidual() {
+        if (residual.isEmpty()) {
+            return null;
+        }
+        final StringBuilder text = new StringBuilder();
+        for (int i = 0; i < residual.size(); i++) {
+            text.append(i > 0 ? " AND (" : "(").append(residual.get(i)).append(')');
+        }
+        return text.toString();
+    }
+
+    /** @return how many columns the residual reads */
+    public int residualItemCount() {
+        return residualItems.size();
+    }
+
+    /**
+     * @param heldKeys a conjunct read ahead of the other conjuncts, or null for none
+     * @return the query of the inner keys and the residual's columns of each row the other conjuncts keep, the keys
+     *         first
+     */
+    public String residualRowsQuery(final String heldKeys) {
+        final StringBuilder items = new StringBuilder();
+        for (int i = 0; i < residualItems.size(); i++) {
+            items.append(", ").append(residualItems.get(i)).append(" AS \"$R").append(i).append('"');
+        }
+        return "SELECT " + String.join(", ", innerKeys) + items + " FROM " + from + filter(heldKeys);
     }
 
     /** @return the select list's one item an IN compares with, or null when the select list is anything else */
@@ -107,10 +162,14 @@ public final class EqualityCorrelation {
         return aggregateItem;
     }
 
-    /** @return every text the subquery computes over its own relations: the inner keys and the other conjuncts */
+    /**
+     * @return every text the subquery computes over its own relations: the inner keys, the other conjuncts and the
+     *         residual's columns
+     */
     public List<String> innerTexts() {
         final List<String> texts = new ArrayList<>(otherConjuncts);
         texts.addAll(innerKeys);
+        texts.addAll(residualItems);
         return texts;
     }
 

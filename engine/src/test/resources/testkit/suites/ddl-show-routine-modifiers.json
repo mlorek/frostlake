@@ -99,7 +99,7 @@
       {"sql": "SELECT COUNT(*) = $b0 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
       {"sql": "CREATE OR REPLACE PROCEDURE split_proc() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'x'; END $$"},
       {"sql": "SHOW BUILTIN PROCEDURES"},
-      {"sql": "SELECT COUNT(*) = $b0, COUNT_IF(UPPER(\"name\") = 'SPLIT_PROC') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+      {"sql": "SELECT COUNT(*) = $b0, COUNT(CASE WHEN UPPER(\"name\") = 'SPLIT_PROC' THEN 1 END) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
        "expect": {"rows": [["true", "0"]]}},
       {"sql": "SHOW USER PROCEDURES", "expect": {"rowCount": 1}},
       {"sql": "SELECT COUNT_IF(UPPER(\"name\") = 'SPLIT_PROC') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}},
@@ -110,9 +110,9 @@
     {"name": "builtin-procedures-are-all-flagged-builtin", "steps": [
       {"sql": "CREATE OR REPLACE PROCEDURE flag_proc() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'x'; END $$"},
       {"sql": "SHOW BUILTIN PROCEDURES"},
-      {"sql": "SELECT COUNT_IF(\"is_builtin\" != 'Y') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}},
+      {"sql": "SELECT COUNT(CASE WHEN \"is_builtin\" != 'Y' THEN 1 END) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}},
       {"sql": "SHOW USER PROCEDURES"},
-      {"sql": "SELECT COUNT_IF(\"is_builtin\" != 'N') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}}
+      {"sql": "SELECT COUNT(CASE WHEN \"is_builtin\" != 'N' THEN 1 END) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}}
     ]},
     {"name": "like-filters-the-terse-function-listing", "steps": [
       {"sql": "SHOW TERSE FUNCTIONS LIKE 'ABS'",
@@ -125,7 +125,7 @@
       {"sql": "SET b = (SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())))"},
       {"sql": "SHOW BUILTIN PROCEDURES LIKE 'SYSTEM%'",
        "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations"]}},
-      {"sql": "SELECT COUNT(*) <= $b, COUNT_IF(NOT STARTSWITH(UPPER(\"name\"), 'SYSTEM')) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+      {"sql": "SELECT COUNT(*) <= $b, COUNT(CASE WHEN NOT STARTSWITH(UPPER(\"name\"), 'SYSTEM') THEN 1 END) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
        "expect": {"rows": [["true", "0"]]}}
     ]},
     {"name": "like-filters-the-terse-procedure-listing", "steps": [
@@ -149,7 +149,7 @@
       {"sql": "SELECT COUNT(*) = $n FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
       {"sql": "SHOW BUILTIN PROCEDURES IN SCHEMA test_schema",
        "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations"]}},
-      {"sql": "SELECT COUNT_IF(UPPER(\"name\") = 'SCOPED_PROC') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}}
+      {"sql": "SELECT COUNT(CASE WHEN UPPER(\"name\") = 'SCOPED_PROC' THEN 1 END) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "0"}}
     ]},
     {"name": "builtin-and-user-cannot-be-combined", "steps": [
       {"sql": "SHOW BUILTIN USER FUNCTIONS", "expect": {"error": {}}},

@@ -88,10 +88,28 @@ public class FunctionCallExpression implements Expression {
         this.nameExpression = null;
     }
 
+    /**
+     * A dynamically named call with named arguments, {@code IDENTIFIER($tok)(x => 1)}.
+     *
+     * @param displayName    the call's name as written
+     * @param nameExpression the expression the function's name is read from
+     * @param arguments      the arguments' values
+     * @param argumentNames  each argument's name, as written
+     */
+    public FunctionCallExpression(final String displayName, final Expression nameExpression,
+                                  final List<Expression> arguments, final List<String> argumentNames) {
+        this.functionName = displayName;
+        this.arguments = arguments;
+        this.distinct = false;
+        this.star = false;
+        this.argumentNames = argumentNames;
+        this.nameExpression = nameExpression;
+    }
+
     /** This call with another argument list and everything else as written — a star spliced in place. */
     public FunctionCallExpression withArguments(final List<Expression> spliced) {
         final FunctionCallExpression copy = nameExpression != null
-            ? new FunctionCallExpression(functionName, nameExpression, spliced)
+            ? new FunctionCallExpression(functionName, nameExpression, spliced, argumentNames)
             : argumentNames != null ? new FunctionCallExpression(functionName, spliced, argumentNames)
             : new FunctionCallExpression(functionName, spliced, distinct, star);
         copy.position = position;

@@ -231,13 +231,15 @@ public final class JavaTableFunctions {
             throw new RuntimeException("The return type of the \"process\" method is \""
                 + process.getReturnType().getName() + "\" but must be java.util.stream.Stream" + where);
         }
-        // An endPartition the class has is an instance's, public, and answers a Stream (live-verified).
+        // An endPartition the class has is an instance's, public, and answers a Stream; the refusal also names the
+        // argument a vectorized one takes (live-verified).
         final Method endPartition = endPartitionOf(handled);
         if (endPartition != null && (!Modifier.isPublic(endPartition.getModifiers())
                 || Modifier.isStatic(endPartition.getModifiers())
                 || endPartition.getReturnType() != java.util.stream.Stream.class)) {
             throw new RuntimeException("Optional endPartition() method must be public, non-static, and return a"
-                + " java.util.stream.Stream" + where);
+                + " java.util.stream.Stream; if it takes an argument it must be"
+                + " java.util.Iterator<org.apache.arrow.vector.VectorSchemaRoot>" + where);
         }
         final Class<?> output = (Class<?>) invoke(handled, outputClass, null, where);
         final List<Parameter> declared = function.getReturnColumns();

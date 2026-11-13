@@ -83,7 +83,8 @@ public final class SchemaInference {
         final boolean positional = "CSV".equals(options.formatType());
         final List<InferredColumn> columns = new ArrayList<InferredColumn>();
         for (final MergedColumn column : ordered) {
-            final String type = column.type() == null ? InferredKind.TEXT.name() : column.type().typeText();
+            final String type = column.type() == null ? InferredKind.TEXT.name()
+                : column.type().typeText(options.iceberg());
             final boolean nullable = !selfDescribing || column.nullable()
                 || filesWithColumn.get(column.name()).intValue() < files.size();
             final String expression;

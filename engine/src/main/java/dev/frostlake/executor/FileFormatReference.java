@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.FileFormat;
 
 /**
  * A FILE_FORMAT that names a file format. Every spelling that gives a NAME rather than a TYPE reaches
@@ -58,5 +59,17 @@ public final class FileFormatReference {
             // the account reports the FORMAT, naming it as the statement wrote it.
         }
         throw new RuntimeException(SqlCompilationError.doesNotExist("File format", writtenName));
+    }
+
+    /**
+     * The file format a name holds, refused as {@link #require} refuses it when none does.
+     *
+     * @param catalog     the catalog to resolve against
+     * @param writtenName the name as the statement spells it
+     * @return the format
+     */
+    public static FileFormat resolve(final Catalog catalog, final String writtenName) {
+        require(catalog, writtenName);
+        return catalog.getFileFormatExact(writtenName);
     }
 }

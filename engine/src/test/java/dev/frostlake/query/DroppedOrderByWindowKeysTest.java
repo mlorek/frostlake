@@ -75,8 +75,8 @@ public class DroppedOrderByWindowKeysTest extends MeasuredCellsTestSupport {
             "REFUSED SQL compilation error: | [FZ.ID] is not a valid group by expression",
             "SELECT MAX(id) FROM fz ORDER BY MAX(id) OVER (PARTITION BY MAX(b))");
         assertAnswer(
-            "REFUSED SQL compilation error: | [FZ.ID + (CAST(FZ.B AS NUMBER(2,0)))] is not a valid group by "
-                + "expression",
+            "REFUSED SQL compilation error: | [FZ.ID + (CAST(CAST(FZ.B AS NUMBER(2,0)) AS NUMBER(38,0)))] is not a "
+                + "valid group by expression",
             "SELECT MAX(id) FROM fz ORDER BY MAX(id + b::INT) OVER ()");
         assertAnswer(
             "REFUSED SQL compilation error: | [FZ.ID] is not a valid group by expression",

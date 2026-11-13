@@ -21,8 +21,8 @@ import org.junit.jupiter.api.Test;
 
 /**
  * SHOW ORGANIZATION ACCOUNTS is answered by the organization account alone, which this account is not: the listing is
- * refused as an operation on the account's own system, by the organization's MANAGE ACCOUNTS on the current account,
- * with a LIKE as without one (live-verified).
+ * refused as an operation on the account's own system, naming no privilege, with a LIKE as without one
+ * (live-verified).
  */
 public class OrganizationAccountsRefusalTest extends MeasuredCellsTestSupport {
 
@@ -32,11 +32,9 @@ public class OrganizationAccountsRefusalTest extends MeasuredCellsTestSupport {
         engine.execute("ALTER SESSION SET USE_CACHED_RESULT = FALSE");
         assertCells(new String[][] {
             {"SHOW ORGANIZATION ACCOUNTS",
-                "REFUSED SQL access control error: | Insufficient privileges to operate on  'SYSTEM'. Your primary "
-                + "role <ROLE> must have MANAGE ACCOUNTS granted on ACCOUNT <ACCOUNT>."},
+                "REFUSED SQL access control error: | Insufficient privileges to operate on  'SYSTEM'."},
             {"SHOW ORGANIZATION ACCOUNTS LIKE 'X%'",
-                "REFUSED SQL access control error: | Insufficient privileges to operate on  'SYSTEM'. Your primary "
-                + "role <ROLE> must have MANAGE ACCOUNTS granted on ACCOUNT <ACCOUNT>."},
+                "REFUSED SQL access control error: | Insufficient privileges to operate on  'SYSTEM'."},
         });
     }
 }

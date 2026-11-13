@@ -34,7 +34,8 @@
       {"sql": "SELECT FL_GET_RELATIVE_PATH(TO_FILE(OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'x.txt', 'SIZE', 1, 'LAST_MODIFIED', 'not a date', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1')))", "expect": {"value": "x.txt"}}
     ]},
     {"name": "it-resolves-a-staged-file-and-nulls-a-missing-one", "steps": [
-      {"sql": "CREATE STAGE st"},
+      {"sql": "ALTER SESSION SET USE_CACHED_RESULT = FALSE"},
+      {"sql": "CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
       {"sql": "CREATE TABLE src (a VARCHAR)"},
       {"sql": "INSERT INTO src VALUES ('hello world'),('second line')"},
       {"sql": "COPY INTO @st/hello.txt FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},

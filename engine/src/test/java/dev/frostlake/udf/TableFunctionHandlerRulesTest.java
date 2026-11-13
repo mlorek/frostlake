@@ -45,7 +45,8 @@ public class TableFunctionHandlerRulesTest extends MeasuredCellsTestSupport {
                 + "public static Stream<R680> process(int k) { return Stream.of(new R680(k)); }\n}\n$$");
         assertAnswer("2", "SELECT * FROM TABLE(jt680b(2))");
         assertAnswer("REFUSED Optional endPartition() method must be public, non-static, and return a "
-                + "java.util.stream.Stream in function JT680C with handler J680c",
+                + "java.util.stream.Stream; if it takes an argument it must be "
+                + "java.util.Iterator<org.apache.arrow.vector.VectorSchemaRoot> in function JT680C with handler J680c",
             "CREATE OR REPLACE FUNCTION jt680c(k INT) RETURNS TABLE (n INT) LANGUAGE JAVA HANDLER = 'J680c' AS "
                 + "$$\nimport java.util.stream.Stream;\nclass R680 { public int n; public R680(int n) { this.n = n; "
                 + "} }\npublic class J680c {\n  public static Class getOutputClass() { return R680.class; }\n  "
@@ -61,7 +62,8 @@ public class TableFunctionHandlerRulesTest extends MeasuredCellsTestSupport {
                 + "endPartition() { return Stream.of(new R680(-1)); }\n}\n$$");
         assertAnswer("-1 ;; 4", "SELECT * FROM TABLE(jt680d(4)) ORDER BY 1");
         assertAnswer("REFUSED Optional endPartition() method must be public, non-static, and return a "
-                + "java.util.stream.Stream in function JT680E with handler J680e",
+                + "java.util.stream.Stream; if it takes an argument it must be "
+                + "java.util.Iterator<org.apache.arrow.vector.VectorSchemaRoot> in function JT680E with handler J680e",
             "CREATE OR REPLACE FUNCTION jt680e(k INT) RETURNS TABLE (n INT) LANGUAGE JAVA HANDLER = 'J680e' AS "
                 + "$$\nimport java.util.stream.Stream;\nclass R680 { public int n; public R680(int n) { this.n = n; "
                 + "} }\npublic class J680e {\n  public static Class getOutputClass() { return R680.class; }\n  "

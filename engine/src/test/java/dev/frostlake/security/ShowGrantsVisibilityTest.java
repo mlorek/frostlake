@@ -102,7 +102,7 @@ public class ShowGrantsVisibilityTest {
     public void aRoleWithNoPrivilegeSeesNoneOfTheGrants() {
         as("ULOW", "LOW");
         assertTrue(refusal("SHOW GRANTS ON TABLE hrdb.public.pay").startsWith(
-            "SQL compilation error:\nTable 'HRDB.PUBLIC.PAY' does not exist or not authorized."));
+            "SQL compilation error:\nDatabase 'HRDB' does not exist or not authorized."));
         assertEquals(List.of(), shown("SHOW GRANTS TO ROLE hr", 1, 2, 3));
         assertEquals(List.of(), shown("SHOW GRANTS OF ROLE hr", 1, 3));
         assertEquals(List.of(), shown("SHOW GRANTS TO USER boss", 1, 2, 3));

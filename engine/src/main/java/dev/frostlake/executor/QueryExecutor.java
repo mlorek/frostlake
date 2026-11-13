@@ -632,29 +632,29 @@ public class QueryExecutor implements ImportLocalizer {
             @Override
             public boolean entersSchema(final Database database, final Schema schema) {
                 return securityManager == null
-                    || securityManager.reaches("DATABASE", database.getName(), database.getOwner())
-                        && securityManager.reaches("SCHEMA", QualifiedName.join(database.getName(), schema.getName()),
-                            schema.getOwner());
+                    || securityManager.listsInInformationSchema("DATABASE", database.getName(), database.getOwner())
+                        && securityManager.listsInInformationSchema("SCHEMA",
+                            QualifiedName.join(database.getName(), schema.getName()), schema.getOwner());
             }
 
             @Override
             public boolean lists(final String objectType, final Schema schema, final String name, final String owner) {
                 return securityManager == null
-                    || securityManager.reaches(objectType, schema.qualifiedName(name), owner);
+                    || securityManager.listsInInformationSchema(objectType, schema.qualifiedName(name), owner);
             }
 
             @Override
             public boolean listsFunction(final Schema schema, final Function function) {
                 final GrantedObject granted = functionGrant(schema, function);
-                return securityManager == null
-                    || securityManager.reaches(granted.getKind(), granted.getRecordedName(), granted.getOwner());
+                return securityManager == null || securityManager.listsInInformationSchema(granted.getKind(),
+                    granted.getRecordedName(), granted.getOwner());
             }
 
             @Override
             public boolean listsProcedure(final Schema schema, final Procedure procedure) {
                 final GrantedObject granted = procedureGrant(schema, procedure);
-                return securityManager == null
-                    || securityManager.reaches(granted.getKind(), granted.getRecordedName(), granted.getOwner());
+                return securityManager == null || securityManager.listsInInformationSchema(granted.getKind(),
+                    granted.getRecordedName(), granted.getOwner());
             }
         });
         this.visitor = new SQLCommandVisitor(catalog, this);
@@ -15401,6 +15401,7 @@ public class QueryExecutor implements ImportLocalizer {
                                                           final Table table, final Map<String, Table> aliasToTable,
                                                           final List<Table> allTables) {
         ExpressionEvaluator scope = null;
+        Boolean inputOpen = null;
         for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
             final ParserRuleContext value = SelectItemAccessors.getItemExpression(item);
             if (value == null || !holdsSubquery(value)) {
@@ -15421,7 +15422,10 @@ public class QueryExecutor implements ImportLocalizer {
             final SourcePosition displaced = ExpressionSource.beginNested(new SourcePosition(
                 value.getStart().getLine(), value.getStart().getCharPositionInLine()));
             try {
-                final RuntimeException refused = scope.openingOuterAggregateRefusal(parsed);
+                if (inputOpen == null) {
+                    inputOpen = Boolean.valueOf(inputOpen(ctx, scope, table, allTables));
+                }
+                final RuntimeException refused = scope.openingOuterAggregateRefusal(parsed, inputOpen.booleanValue());
                 if (refused != null) {
                     return refused;
                 }
@@ -15430,6 +15434,32 @@ public class QueryExecutor implements ImportLocalizer {
             }
         }
         return null;
+    }
+
+    /**
+     * Whether a query's input is open to its statistics, which then settle no condition: a catalog table it reads
+     * holds no row, or its WHERE is settled against every row (live-verified: over an empty table, or under WHERE
+     * FALSE, only a constant drops a branch).
+     */
+    private boolean inputOpen(final FrostlakeParser.SelectClauseContext ctx, final ExpressionEvaluator scope,
+                              final Table table, final List<Table> allTables) {
+        final List<Table> read = allTables != null && !allTables.isEmpty() ? allTables
+            : table == null ? Collections.<Table>emptyList() : Collections.singletonList(table);
+        for (final Table relation : read) {
+            final Long rows = relation != null && relation.isCatalogResident() ? baseTableRowCount(relation) : null;
+            if (rows != null && rows.longValue() == 0L) {
+                return true;
+            }
+        }
+        if (ctx.whereClause() == null) {
+            return false;
+        }
+        try {
+            final Expression where = ExpressionEvaluator.parse(getOriginalText(ctx.whereClause().booleanExpr()));
+            return Boolean.FALSE.equals(scope.settledCondition(where));
+        } catch (final RuntimeException unsettled) {
+            return false;
+        }
     }
 
     /**

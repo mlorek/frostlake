@@ -938,14 +938,17 @@ public class CreateInfrastructureHandler implements CommandHandler {
                             // format keeps its own.
                             final FileFormatClause written = FileFormatClause.read(option.parenOptionList(),
                                 new FileFormat("WRITTEN", "CSV"), true);
+                            if (written.writtenType() != null) {
+                                // Listed as written, beside a FORMAT_NAME too (live-verified).
+                                formatOptions.put("TYPE", written.writtenType());
+                            }
                             if (written.formatName() != null) {
-                                FileFormatReference.require(catalog,
-                                    SqlIdentifiers.canonicalText(written.formatName()));
+                                written.judgeBesideName(FileFormatReference.resolve(catalog,
+                                    SqlIdentifiers.canonicalText(written.formatName())).getType());
                                 fileFormat = written.formatName();
                                 formatOptions.put("FORMAT_NAME", written.formatNameWritten());
                             } else if (written.writtenType() != null) {
                                 fileFormat = written.writtenType();
-                                formatOptions.put("TYPE", written.writtenType());
                             }
                             formatOptions.putAll(written.format().getOptions());
                         }

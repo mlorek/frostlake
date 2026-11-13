@@ -157,7 +157,7 @@ public class InformationSchemaViewsAreFixedTest extends BaseDatabaseTest {
         final ResultSet listed = engine.executeQuery("SELECT TABLE_NAME FROM test_db.INFORMATION_SCHEMA.VIEWS"
             + " WHERE TABLE_SCHEMA = 'INFORMATION_SCHEMA' ORDER BY 1");
         final List<Row> names = listed.getRows();
-        assertEquals(63, names.size());
+        assertEquals(64, names.size());
         final String first = String.valueOf(names.get(0).getValue(0));
         final String last = String.valueOf(names.get(names.size() - 1).getValue(0));
         assertTrue(!described("DESCRIBE VIEW test_db.INFORMATION_SCHEMA." + first).isEmpty(), first);

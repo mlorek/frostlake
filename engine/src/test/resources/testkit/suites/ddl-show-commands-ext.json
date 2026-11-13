@@ -127,7 +127,7 @@
     ]},
     {"name": "show-organization-accounts-is-the-organization-accounts-own", "steps": [
       {"sql": "SHOW ORGANIZATION ACCOUNTS",
-       "expect": {"error": {"messageContains": "must have MANAGE ACCOUNTS granted on ACCOUNT"}}}
+       "expect": {"error": {"messageContains": "Insufficient privileges to operate on  'SYSTEM'."}}}
     ]},
     {"name": "unset-text-cells-are-empty-not-null", "steps": [
       {"sql": "CREATE TABLE uc_t (\n    plain NUMBER,\n    withdefault NUMBER DEFAULT 7,\n    commented NUMBER COMMENT 'a comment',\n    autocol NUMBER AUTOINCREMENT)"},

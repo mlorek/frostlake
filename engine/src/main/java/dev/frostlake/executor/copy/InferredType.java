@@ -33,12 +33,18 @@ package dev.frostlake.executor.copy;
  * A self-describing format (Parquet, Avro, ORC) falls to VARIANT instead.
  *
  * <p>Under {@code KIND => 'ICEBERG'} nothing falls anywhere: a value or a file a column cannot take in is
- * refused, {@code Incompatible data types detected: TEXT and FIXED.}, the newcomer named first.
+ * refused, {@code Incompatible data types detected: TEXT and FIXED.}, the newcomer named first. The column types
+ * are the Iceberg table's: an integer of at most eighteen digits is a LONG and any other NUMBER a decimal, so two
+ * NUMBERs meet only when both are LONGs or both decimals ({@code Incompatible data types detected: decimal and
+ * long.}); a REAL is a DOUBLE, a timestamp a TIMESTAMP_NTZ(6) and a time a TIME(6).
  */
 public final class InferredType {
 
     /** The widest NUMBER. */
     private static final int MAX_PRECISION = 38;
+
+    /** The most digits of an integer an Iceberg LONG column takes; a wider one is a decimal. */
+    private static final int ICEBERG_LONG_DIGITS = 18;
 
     private final InferredKind kind;
 
@@ -121,6 +127,32 @@ public final class InferredType {
     }
 
     /**
+     * The type as the TYPE column spells it for the call's kind: under {@code KIND => 'ICEBERG'} an integer of at
+     * most eighteen digits is a {@code LONG}, a REAL a {@code DOUBLE}, a timestamp a {@code TIMESTAMP_NTZ(6)} and a
+     * time a {@code TIME(6)}; every other type is spelled as {@link #typeText()} spells it.
+     *
+     * @param iceberg whether the call asked for the types an Iceberg table takes
+     * @return the spelling
+     */
+    public String typeText(final boolean iceberg) {
+        if (!iceberg) {
+            return typeText();
+        }
+        switch (kind) {
+            case NUMBER:
+                return icebergLong() ? "LONG" : typeText();
+            case REAL:
+                return "DOUBLE";
+            case TIMESTAMP:
+                return "TIMESTAMP_NTZ(6)";
+            case TIME:
+                return "TIME(6)";
+            default:
+                return typeText();
+        }
+    }
+
+    /**
      * The name a refusal gives the type: its family's, or a declared type's own spelling.
      *
      * @return the name
@@ -150,13 +182,13 @@ public final class InferredType {
             return current;
         }
         if (current.kind == value.kind) {
-            return current.kind == InferredKind.NUMBER ? current.widenedWith(value) : current;
+            return current.kind == InferredKind.NUMBER ? current.widenedWith(value, iceberg) : current;
         }
         if (text != null && readsText(current, value, text)) {
             return current;
         }
         if (iceberg) {
-            throw incompatible(value, current);
+            throw new InferenceConflict(value.internalName(), current.internalName());
         }
         return of(InferredKind.TEXT);
     }
@@ -179,13 +211,13 @@ public final class InferredType {
             return first;
         }
         if (first.kind == next.kind && first.kind == InferredKind.NUMBER) {
-            return first.widenedWith(next);
+            return first.widenedWith(next, iceberg);
         }
         if (first.kind == next.kind && (first.kind != InferredKind.DECLARED || first.declared.equals(next.declared))) {
             return first;
         }
         if (iceberg) {
-            throw incompatible(next, first);
+            throw new InferenceConflict(next.internalName(), first.internalName());
         }
         return of(selfDescribing ? InferredKind.VARIANT : InferredKind.TEXT);
     }
@@ -206,14 +238,24 @@ public final class InferredType {
         }
     }
 
-    /** The NUMBER both of two NUMBERs fit: the larger integer part and the larger scale. */
-    private InferredType widenedWith(final InferredType other) {
+    /**
+     * The NUMBER both of two NUMBERs fit: the larger integer part and the larger scale. Under
+     * {@code KIND => 'ICEBERG'} a LONG and a decimal are refused, the other one named first.
+     */
+    private InferredType widenedWith(final InferredType other, final boolean iceberg) {
+        if (iceberg && icebergLong() != other.icebergLong()) {
+            throw new InferenceConflict(other.icebergNumberName(), icebergNumberName());
+        }
         return number(Math.max(integerDigits, other.integerDigits), Math.max(scale, other.scale));
     }
 
-    /** The refusal of a type a column cannot take in, the newcomer named first. */
-    private static RuntimeException incompatible(final InferredType newcomer, final InferredType held) {
-        return new RuntimeException("Incompatible data types detected: " + newcomer.internalName() + " and "
-            + held.internalName() + ".");
+    /** Whether the type is a NUMBER an Iceberg table holds as a LONG: an integer of at most eighteen digits. */
+    private boolean icebergLong() {
+        return kind == InferredKind.NUMBER && scale == 0 && integerDigits <= ICEBERG_LONG_DIGITS;
+    }
+
+    /** The name a NUMBER takes in a conflict of Iceberg numbers: {@code long} or {@code decimal}. */
+    private String icebergNumberName() {
+        return icebergLong() ? "long" : "decimal";
     }
 }

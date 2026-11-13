@@ -125,7 +125,8 @@ public final class TaskGraphRuns {
 
     /**
      * The output columns, as the account orders them; {@code completed} adds COMPLETED_TIME after
-     * NEXT_SCHEDULED_TIME. SCHEDULED_FROM follows ATTEMPT_NUMBER, and SCHEDULED_BY_USER ends the row.
+     * NEXT_SCHEDULED_TIME. SCHEDULED_FROM follows ATTEMPT_NUMBER, and GRAPH_ID and GRAPH_NAME follow
+     * SCHEDULED_BY_USER at the end of the row.
      */
     static List<ResultSetColumn> columns(final boolean completed) {
         final List<ResultSetColumn> columns = new ArrayList<>(Arrays.asList(
@@ -151,7 +152,9 @@ public final class TaskGraphRuns {
             new ResultSetColumn("CONFIG", TEXT),
             new ResultSetColumn("GRAPH_RUN_GROUP_ID", TEXT),
             new ResultSetColumn("BACKFILL_INFO", new ObjectType()),
-            new ResultSetColumn("SCHEDULED_BY_USER", TEXT)));
+            new ResultSetColumn("SCHEDULED_BY_USER", TEXT),
+            new ResultSetColumn("GRAPH_ID", TEXT),
+            new ResultSetColumn("GRAPH_NAME", TEXT)));
         return DeclaredColumnTypes.typed(columns);
     }
 
@@ -293,7 +296,8 @@ public final class TaskGraphRuns {
 
     /**
      * One graph run's row. A completed one tells the code of its first error and the user it was scheduled by; a
-     * scheduled one tells the user who resumed the root and the fire after its own (live-verified).
+     * scheduled one tells the user who resumed the root and the fire after its own. A graph of tasks names no graph
+     * object, so GRAPH_ID and GRAPH_NAME are NULL.
      */
     private static Row row(final boolean completedShape, final Task root, final Schema schema, final String state,
                            final String scheduledFrom, final String firstErrorTask, final String firstErrorCode,
@@ -311,7 +315,7 @@ public final class TaskGraphRuns {
             cells.add(completed);
         }
         cells.addAll(Arrays.<Object>asList(root.getId(), Long.valueOf(1L), runId, Long.valueOf(attempt), scheduledFrom,
-            null, group, null, scheduledBy));
+            null, group, null, scheduledBy, null, null));
         return new Row(cells);
     }
 

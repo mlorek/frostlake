@@ -847,6 +847,7 @@ public final class AccessControlHandler {
         }
         String adminName = null;
         boolean password = false;
+        String adminPassword = null;
         String type = null;
         String comment = null;
         for (final FrostlakeParser.ManagedAccountPropertyContext property : ctx.managedAccountProperty()) {
@@ -855,6 +856,7 @@ public final class AccessControlHandler {
                     : visitor.getText(property.identifier());
             } else if (property.ADMIN_PASSWORD() != null) {
                 password = true;
+                adminPassword = visitor.extractStringLiteral(property.STRING_LITERAL());
             } else if (property.TYPE() != null) {
                 type = visitor.getText(property.identifier());
             } else {
@@ -877,6 +879,8 @@ public final class AccessControlHandler {
         if (!"READER".equals(type)) {
             throw new RuntimeException(SqlCompilationError.of("invalid value '" + type + "' for property 'TYPE'"));
         }
+        // The new account's administrator is held to the built-in password policy (live-verified).
+        PasswordPolicyCheck.requireAcceptedForNewAccount(adminPassword);
         final ManagedAccount account = new ManagedAccount(name, adminName, comment, directory.nextLocator());
         directory.putManagedAccount(account);
         final ResultSet own = queryExecutor.getShowExecutor().showAccounts();

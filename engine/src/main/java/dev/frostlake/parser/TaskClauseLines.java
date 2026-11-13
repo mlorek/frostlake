@@ -66,6 +66,10 @@ final class TaskClauseLines {
         if (fault < 2) {
             return lines;
         }
+        final List<String> listed = mixedListLines(spoken, fault);
+        if (listed != null) {
+            return listed;
+        }
         final List<String> inner = innerListNames(spoken, faults, lines);
         if (inner != null) {
             return inner;
@@ -234,6 +238,81 @@ final class TaskClauseLines {
 
     private static List<String> one(final Token token) {
         return Collections.singletonList(SyntaxErrorListener.sentence(token));
+    }
+
+    /**
+     * The lines for a list value that mixes constants and lists (all live-verified). A list that opens with a constant
+     * refuses a '(' after a comma, and then the first token after the next ')' that is neither a comma nor a constant:
+     * {@code (x, ('a'))} is '(' then the outer ')', {@code (x, (('a')))} the inner list's ')', {@code (x, ('a') ('b'))}
+     * the second '('. A list that opens with a list of properties refuses a constant after a comma, a line alone:
+     * {@code (('a' = 'b'), x)}. Null for any other fault.
+     */
+    private static List<String> mixedListLines(final List<Token> spoken, final int fault) {
+        if (fault < 3 || spoken.get(fault - 1).getType() != FrostlakeLexer.COMMA) {
+            return null;
+        }
+        final int open = listOpening(spoken, fault - 1);
+        // A property's value: a name, '=', then the list.
+        if (open < 2 || open + 1 >= fault || spoken.get(open - 1).getType() != FrostlakeLexer.EQ
+                || !SyntaxErrorListener.isNameLike(spoken.get(open - 2))) {
+            return null;
+        }
+        final boolean opensWithList = spoken.get(open + 1).getType() == FrostlakeLexer.LPAREN;
+        final Token at = spoken.get(fault);
+        if (opensWithList) {
+            return isListedConstant(at) && spoken.get(fault - 2).getType() == FrostlakeLexer.RPAREN ? one(at) : null;
+        }
+        if (at.getType() != FrostlakeLexer.LPAREN) {
+            return null;
+        }
+        for (int i = open + 1; i < fault; i++) {
+            if (spoken.get(i).getType() != FrostlakeLexer.COMMA && !isListedConstant(spoken.get(i))) {
+                return null;
+            }
+        }
+        int next = fault + 1;
+        while (next < spoken.size() && spoken.get(next).getType() != FrostlakeLexer.RPAREN
+                && spoken.get(next).getType() != Token.EOF) {
+            next++;
+        }
+        next++;
+        while (next < spoken.size() && (spoken.get(next).getType() == FrostlakeLexer.COMMA
+                || isListedConstant(spoken.get(next)))) {
+            next++;
+        }
+        if (next >= spoken.size()) {
+            return null;
+        }
+        final List<String> told = new ArrayList<String>();
+        told.add(SyntaxErrorListener.sentence(at));
+        told.add(SyntaxErrorListener.sentence(spoken.get(next)));
+        return told;
+    }
+
+    /** The '(' that opens the list a token stands in, or -1. */
+    private static int listOpening(final List<Token> spoken, final int at) {
+        int depth = 0;
+        for (int i = at; i >= 0; i--) {
+            final int type = spoken.get(i).getType();
+            if (type == FrostlakeLexer.RPAREN) {
+                depth++;
+            } else if (type == FrostlakeLexer.LPAREN) {
+                if (depth == 0) {
+                    return i;
+                }
+                depth--;
+            }
+        }
+        return -1;
+    }
+
+    /** Whether a token is one a list of constants holds: a text, a number, a sign, a BOOLEAN or a name. */
+    private static boolean isListedConstant(final Token token) {
+        final int type = token.getType();
+        return type == FrostlakeLexer.STRING_LITERAL || type == FrostlakeLexer.DOLLAR_QUOTED_STRING
+            || type == FrostlakeLexer.INTEGER_LITERAL || type == FrostlakeLexer.FLOAT_LITERAL
+            || type == FrostlakeLexer.MINUS || type == FrostlakeLexer.TRUE || type == FrostlakeLexer.FALSE
+            || type == FrostlakeLexer.DOT || SyntaxErrorListener.isNameLike(token);
     }
 
     /** The index in {@code spoken} of the token with the stream index {@code tokenIndex}; -1 for the end of input. */

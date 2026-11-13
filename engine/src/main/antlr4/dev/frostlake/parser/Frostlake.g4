@@ -2645,7 +2645,9 @@ grantStatement
     // ROLE r` is a syntax error on a real account ("unexpected 'TO'") while `GRANT CREATE DATABASE ON
     // ACCOUNT TO ROLE r` succeeds. Must precede the generic `privilegeList ON ACCOUNT` alternative so
     // two-word privileges (CREATE DATABASE, MONITOR USAGE, APPLY TAG, …) bind as one globalPrivilege.
-    | GRANT globalPrivilegeList ON ACCOUNT TO ROLE? principalName withGrantOption? SEMI?  // GRANT global_privs ON ACCOUNT TO ROLE role_name
+    // A user takes an account privilege too, but none that creates an object (live-verified).
+    | GRANT globalPrivilegeList ON ACCOUNT TO (USER | ROLE)? principalName withGrantOption? SEMI?  // GRANT global_privs ON ACCOUNT TO ROLE role_name
+    | GRANT privilegeList ON ACCOUNT TO (USER | ROLE)? principalName withGrantOption? SEMI?  // GRANT privs ON ACCOUNT TO USER/ROLE target_name
     // The COPY / REVOKE CURRENT GRANTS tail parses after any object grant; the handler refuses it beside a
     // privilege other than OWNERSHIP, in live's own sentence. A share and an application role are grantees too,
     // and ROLE written alone names a role called ROLE (live-verified).
@@ -2656,7 +2658,9 @@ grantStatement
     | GRANT OWNERSHIP ON objectType grantedObjectName TO (USER | ROLE)? principalName currentGrants? SEMI?  // GRANT OWNERSHIP ON type name TO USER/ROLE target_name
     // A role, a user or a database role passes to another owning role too (documented).
     | GRANT OWNERSHIP ON ownedPrincipal TO (USER | ROLE)? principalName currentGrants? SEMI?
-    | GRANT privilegeList ON ACCOUNT TO (USER | ROLE)? principalName withGrantOption? SEMI?  // GRANT privs ON ACCOUNT TO USER/ROLE target_name
+    // A user is an object granted on by privileges of its own: MONITOR, IMPERSONATE, the policy applications and ALL
+    // of them. Its ownership passes as a principal's does, by the alternative above (live-verified).
+    | GRANT privilegeList ON grantedUser TO (USER | ROLE)? principalName withGrantOption? SEMI?
     | GRANT privilegeList ON ALL bulkObjectType IN bulkScope TO ((USER | ROLE)? principalName | databaseRoleGrantee) currentGrants? withGrantOption? SEMI?  // GRANT privs ON ALL <types> IN <scope>
     | GRANT privilegeList ON FUTURE bulkObjectType IN bulkScope TO ((USER | ROLE)? principalName | databaseRoleGrantee) currentGrants? withGrantOption? SEMI?  // GRANT privs ON FUTURE <types> IN <scope>
     ;
@@ -2721,6 +2725,11 @@ databaseRoleGrantee
     ;
 
 // A principal GRANT OWNERSHIP passes to another owner: a role, a user or a database role (documented).
+// A user a GRANT or a REVOKE names as the object of its privileges.
+grantedUser
+    : USER principalName
+    ;
+
 ownedPrincipal
     : ROLE principalName
     | USER principalName
@@ -2824,11 +2833,12 @@ revokeStatement
     | REVOKE ROLE principalName FROM (USER | ROLE) principalName revokeMode? SEMI?  // REVOKE ROLE role_name FROM USER/ROLE target_name
     // Same ACCOUNT scoping as GRANT — live 2026-08-02: `REVOKE CREATE DATABASE FROM ROLE r` is a
     // syntax error ("unexpected 'FROM'"), `REVOKE CREATE DATABASE ON ACCOUNT FROM ROLE r` succeeds.
-    | REVOKE grantOptionFor? globalPrivilegeList ON ACCOUNT FROM ROLE? principalName revokeMode? SEMI?  // REVOKE global_privs ON ACCOUNT FROM ROLE role_name
+    | REVOKE grantOptionFor? globalPrivilegeList ON ACCOUNT FROM (USER | ROLE)? principalName revokeMode? SEMI?  // REVOKE global_privs ON ACCOUNT FROM ROLE role_name
+    | REVOKE grantOptionFor? privilegeList ON ACCOUNT FROM (USER | ROLE)? principalName revokeMode? SEMI?  // REVOKE privs ON ACCOUNT FROM USER/ROLE target_name
     | REVOKE grantOptionFor? privilegeList ON objectType? grantedObjectName (LPAREN identifierList? RPAREN)? FROM ((USER | ROLE)? principalName | databaseRoleGrantee) revokeMode? SEMI?  // REVOKE privs ON type name [(col1, col2)] FROM USER/ROLE target_name
     | REVOKE OWNERSHIP ON objectType grantedObjectName FROM (USER | ROLE)? principalName SEMI?  // REVOKE OWNERSHIP ON type name FROM USER/ROLE target_name
     | REVOKE OWNERSHIP ON ownedPrincipal FROM (USER | ROLE)? principalName SEMI?
-    | REVOKE grantOptionFor? privilegeList ON ACCOUNT FROM (USER | ROLE)? principalName revokeMode? SEMI?  // REVOKE privs ON ACCOUNT FROM USER/ROLE target_name
+    | REVOKE grantOptionFor? privilegeList ON grantedUser FROM (USER | ROLE)? principalName revokeMode? SEMI?
     | REVOKE grantOptionFor? privilegeList ON ALL bulkObjectType IN bulkScope FROM ((USER | ROLE)? principalName | databaseRoleGrantee) revokeMode? SEMI?
     | REVOKE grantOptionFor? privilegeList ON FUTURE bulkObjectType IN bulkScope FROM ((USER | ROLE)? principalName | databaseRoleGrantee) revokeMode? SEMI?
     ;
@@ -2884,14 +2894,15 @@ privilege
 privilegeLead
     : SELECT | INSERT | UPDATE | DELETE | TRUNCATE | CREATE | DROP | ALTER | MODIFY | USAGE
     | OPERATE | MONITOR | READ | WRITE | EXECUTE | REFERENCES | OWNERSHIP | APPLY | APPLYBUDGET
-    | REBUILD | EVOLVE | ADD | VIEW | IMPORTED | USE_ANY_ROLE
+    | REBUILD | EVOLVE | ADD | VIEW | IMPORTED | USE_ANY_ROLE | IMPERSONATE
     ;
 
 // A word a privilege's name may carry after its lead. A word Snowflake spells that this grammar has no
 // token for — AGENT, ZEROCOPY — arrives as IDENTIFIER and is covered by the first alternative.
 privilegeWord
     : IDENTIFIER | ACCESS | ACCOUNT | ADD | AGGREGATION | ALERT | ALTER | ANY | APPLICATION | APPLY
-    | APPLYBUDGET | ARTIFACT | AUTHENTICATION | AUTO | CLASS | CONTACT | CORTEX | CREATE | DATA | DATABASE | DBT
+    | APPLYBUDGET | ARTIFACT | AUTHENTICATION | AUTO | CLASS | COMMENT | CONTACT | CORTEX | CREATE | DATA | DATABASE
+    | DBT
     | DELETE | DROP
     | DYNAMIC | ERROR | EVENT | EVOLVE | EXCHANGE | EXECUTE | EXECUTION | EXTERNAL | FILE | FORMAT | FUNCTION | GIT
     | GRANTS
@@ -3225,9 +3236,16 @@ taskPropertyValue
 // A parenthesized list where one value goes: of properties, name = value, which the account reads as the word
 // TOK_PROPERTY_LIST, or of constants, TOK_CONSTANT_LIST, and TOK_LIST when one of the constants is a list of
 // properties (live-verified).
+// A list holds properties, constants, or lists of properties; it never mixes constants and lists:
+// (x, ('a')) is refused at the inner '(' and (('a' = 'b'), x) at the x (live-verified).
 listValue
     : LPAREN listedProperty (COMMA? listedProperty)* RPAREN
+    | LPAREN listedPropertyList (COMMA listedPropertyList)* RPAREN
     | LPAREN (listedConstant (COMMA listedConstant)*)? RPAREN
+    ;
+
+listedPropertyList
+    : LPAREN listedProperty (COMMA? listedProperty)* RPAREN
     ;
 
 // A property's name may be written as a string: QUERY_TAG = (('a' = 'x')) is taken (live-verified).
@@ -3241,7 +3259,6 @@ listedConstant
     | MINUS? (INTEGER_LITERAL | FLOAT_LITERAL)
     | booleanValue
     | qualifiedName
-    | LPAREN listedProperty (COMMA? listedProperty)* RPAREN
     ;
 
 pipeOptions
@@ -3425,7 +3442,7 @@ warehouseProperty
 
 // A comma may stand between two options, and neither before the first nor after the last (live-verified).
 stageProperties
-    : URL EQ STRING_LITERAL (COMMA? stageOption)*
+    : URL EQ (STRING_LITERAL | SESSION_VAR_REF) (COMMA? stageOption)*
     | stageOption (COMMA? stageOption)*  // internal stage declared by its options alone
     ;
 
@@ -4066,7 +4083,7 @@ stageAction
 
 // One property of ALTER STAGE … SET. A value of the wrong kind is refused by the handler, by the property's name.
 stageSetting
-    : URL EQ STRING_LITERAL
+    : URL EQ (STRING_LITERAL | SESSION_VAR_REF)
     | FILE_FORMAT EQ (STRING_LITERAL | parenOptionList | qualifiedName | SESSION_VAR_REF)
     | COMMENT EQ (STRING_LITERAL | NULL | copyOptionValue)
     | ENCRYPTION EQ parenOptionList
@@ -4240,6 +4257,9 @@ routineUnsetProperty
 
 userAction
     : RENAME TO identifier
+    // Both are single lexer tokens, as a warehouse's ABORT ALL QUERIES is (see warehouseAction).
+    | ABORT_ALL_QUERIES
+    | RESET_PASSWORD
     | tagSet
     | tagUnset
     | SET (userProperty | userPropertyAssignment | sessionAssignment)
@@ -4422,7 +4442,10 @@ hybridIndex
 columnDef
     // columnDefName, not identifier: INNER/JOIN/LEFT/CROSS and CASE are live-legal column names in a
     // column DEFINITION (measured — CREATE TABLE kw (inner INT, join INT, case INT, …) runs).
-    : columnDefName dataTypeName typeParameters? virtualColumnClause? columnConstraint* columnCommentClause?
+    // A virtual column's constraints may be written before its expression too, and are judged as the ones after it:
+    // b INT DEFAULT 1 AS (a + 1) is taken, b INT NOT NULL AS (a + 1) refused for its NOT NULL (live-verified).
+    : columnDefName dataTypeName typeParameters? (columnConstraint* virtualColumnClause)? columnConstraint*
+      columnCommentClause?
     ;
 
 // A virtual column: its values are computed from the expression, which reads the row's other columns. GENERATED
@@ -4684,6 +4707,8 @@ identityWordOption
     | INCREMENT BY? EQ? signedInteger
     | ORDER
     | NOORDER
+    // An INCREMENT that ends the options takes no value: the account's report stops at the word (live-verified).
+    | stray=INCREMENT {refuseStrayToken($stray, $ctx);}
     ;
 
 signedInteger
@@ -7166,6 +7191,7 @@ identifier
     | OWNER         // Allow OWNER as identifier
     | STRICT        // Allow STRICT as identifier
     | IMMUTABLE     // Allow IMMUTABLE as identifier
+    | IMPERSONATE   // Allow IMPERSONATE as identifier: only a grant's privilege on a user reads it
     | MEMOIZABLE    // Allow MEMOIZABLE as identifier
     | VOLATILE      // Allow VOLATILE as identifier
     | SECURE        // Allow SECURE as identifier
@@ -7842,6 +7868,7 @@ INITIALLY_SUSPENDED: I N I T I A L L Y UNDERSCORE S U S P E N D E D;
 // the lexer's longest-match fallback still yields plain RESUME when the tail is absent.
 RESUME_IF_SUSPENDED: R E S U M E TOKEN_WS I F TOKEN_WS S U S P E N D E D;
 ABORT_ALL_QUERIES: A B O R T TOKEN_WS A L L TOKEN_WS Q U E R I E S;
+RESET_PASSWORD: R E S E T TOKEN_WS P A S S W O R D;
 REVOKE_CURRENT_GRANTS: R E V O K E TOKEN_WS C U R R E N T TOKEN_WS G R A N T S;
 fragment TOKEN_WS: [ \t\r\n]+;
 MAX_CONCURRENCY_LEVEL: M A X UNDERSCORE C O N C U R R E N C Y UNDERSCORE L E V E L;
@@ -8002,6 +8029,7 @@ NORELY: N O R E L Y;
 ENFORCED: E N F O R C E D;
 APPLY: A P P L Y;
 IMPORTED: I M P O R T E D;
+IMPERSONATE: I M P E R S O N A T E;
 EXPORTED: E X P O R T E D;
 // The words of the listings of kinds Frostlake models no object of. Each stays a name wherever a name stands.
 MONITORS: M O N I T O R S;

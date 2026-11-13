@@ -21,7 +21,9 @@ import dev.frostlake.metastore.Taggable;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -33,6 +35,10 @@ public class User implements Taggable {
     private String name;
     private final Map<String, String> tags = new HashMap<>();
     private String password;
+    /** The passwords the user held before the current one, oldest first, as a password policy's history reads them. */
+    private final List<String> previousPasswords = new ArrayList<>();
+    /** When the current password was set, as a password policy's minimum age reads it; null when none is. */
+    private Instant passwordSetAt;
     private String defaultRole;
     /** What this user holds: the privileges, roles and database roles granted to it, with what was recorded. */
     private final GrantLedger grants = new GrantLedger();
@@ -85,6 +91,7 @@ public class User implements Taggable {
     public User(final String name, final String password, final String defaultRole) {
         this(name);
         this.password = password;
+        this.passwordSetAt = hasPassword() ? StatementClock.instant() : null;
         // Normalise to upper-case to match how roles are stored (CREATE and ALTER both land here).
         this.defaultRole = defaultRole == null ? null : defaultRole.toUpperCase(Locale.ROOT);
     }
@@ -108,8 +115,47 @@ public class User implements Taggable {
         return password;
     }
 
+    /**
+     * Sets the password, or takes it off with null or an empty one. The password it replaces is remembered among the
+     * previous ones, and the moment a password is set is kept.
+     *
+     * @param password the new password, or null
+     */
     public void setPassword(final String password) {
+        if (hasPassword()) {
+            previousPasswords.add(this.password);
+        }
         this.password = password;
+        passwordSetAt = hasPassword() ? StatementClock.instant() : null;
+    }
+
+    /** Whether the user has a password: one that is set and not empty. */
+    public boolean hasPassword() {
+        return password != null && !password.isEmpty();
+    }
+
+    /** The passwords the user held before the current one, oldest first. */
+    public List<String> getPreviousPasswords() {
+        return new ArrayList<>(previousPasswords);
+    }
+
+    /** When the current password was set, or null when the user has none or the moment is not known. */
+    public Instant getPasswordSetAt() {
+        return passwordSetAt;
+    }
+
+    /**
+     * Restores the password's history as a snapshot kept it.
+     *
+     * @param previous the passwords held before the current one, oldest first; null when not kept
+     * @param setAt    when the current password was set; null when not kept
+     */
+    public void restorePasswordHistory(final List<String> previous, final Instant setAt) {
+        previousPasswords.clear();
+        if (previous != null) {
+            previousPasswords.addAll(previous);
+        }
+        passwordSetAt = setAt;
     }
 
     public String getDefaultRole() {

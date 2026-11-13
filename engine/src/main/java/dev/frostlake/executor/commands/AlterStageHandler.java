@@ -251,18 +251,22 @@ final class AlterStageHandler {
             final FileFormatClause written = FileFormatClause.read(setting.parenOptionList(),
                 new FileFormat("WRITTEN", "CSV"), true);
             if (written.formatName() != null) {
-                FileFormatReference.require(catalog, SqlIdentifiers.canonicalText(written.formatName()));
+                written.judgeBesideName(FileFormatReference.resolve(catalog,
+                    SqlIdentifiers.canonicalText(written.formatName())).getType());
             }
             if (apply) {
                 // A new format replaces the stage's own whole: an option it does not write is back at its
                 // default (live-verified).
                 stage.getFileFormatOptions().clear();
+                if (written.writtenType() != null) {
+                    // Listed as written, beside a FORMAT_NAME too (live-verified).
+                    stage.getFileFormatOptions().put("TYPE", written.writtenType());
+                }
                 if (written.formatName() != null) {
                     stage.setFileFormat(written.formatName());
                     stage.getFileFormatOptions().put("FORMAT_NAME", written.formatNameWritten());
                 } else if (written.writtenType() != null) {
                     stage.setFileFormat(written.writtenType().toUpperCase(Locale.ROOT));
-                    stage.getFileFormatOptions().put("TYPE", written.writtenType());
                 }
                 stage.getFileFormatOptions().putAll(written.format().getOptions());
             }

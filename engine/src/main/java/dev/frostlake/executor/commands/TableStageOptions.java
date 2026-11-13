@@ -17,6 +17,9 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.FileFormatClause;
+import dev.frostlake.executor.FileFormatReference;
+import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
@@ -42,8 +45,9 @@ final class TableStageOptions {
      *
      * @param table the table being created
      * @param tailOptions the statement's tail options
+     * @param catalog the catalog, for the file format a FORMAT_NAME names
      */
-    static void applyFrom(final Table table, final List<? extends ParseTree> tailOptions) {
+    static void applyFrom(final Table table, final List<? extends ParseTree> tailOptions, final Catalog catalog) {
         if (tailOptions == null) {
             return;
         }
@@ -57,7 +61,7 @@ final class TableStageOptions {
             }
             final String key = tail.propertyName().getText().toUpperCase(Locale.ROOT);
             if ("STAGE_FILE_FORMAT".equals(key) && tail.parenOptionList() != null) {
-                keepFormat(tail.parenOptionList(), table.getStageFileFormat());
+                keepFormat(tail.parenOptionList(), table.getStageFileFormat(), catalog);
             } else if ("STAGE_COPY_OPTIONS".equals(key) && tail.stageCopyOptionList() != null) {
                 table.getStageCopyOptions().putAll(StageCopyOptions.read(tail.stageCopyOptionList()));
             }
@@ -65,23 +69,20 @@ final class TableStageOptions {
     }
 
     /**
-     * Judge a format group an ALTER TABLE … SET writes, as a CREATE's is judged.
-     *
-     * @param group the group
-     */
-    static void judgeFormat(final FrostlakeParser.ParenOptionListContext group) {
-        FileFormatClause.read(group, new FileFormat("WRITTEN", "CSV"), true);
-    }
-
-    /**
      * Keep a written format group as a stage keeps one: TYPE as written, FORMAT_NAME as the listing spells it, and
-     * the options as a named format keeps them.
+     * the options as a named format keeps them. A FORMAT_NAME names a format that has to be there (live-verified).
      *
-     * @param group the group
-     * @param into  the map the table keeps its stage file format in
+     * @param group   the group
+     * @param into    the map the table keeps its stage file format in
+     * @param catalog the catalog, for the file format a FORMAT_NAME names
      */
-    static void keepFormat(final FrostlakeParser.ParenOptionListContext group, final Map<String, String> into) {
+    static void keepFormat(final FrostlakeParser.ParenOptionListContext group, final Map<String, String> into,
+                           final Catalog catalog) {
         final FileFormatClause written = FileFormatClause.read(group, new FileFormat("WRITTEN", "CSV"), true);
+        if (written.formatName() != null) {
+            written.judgeBesideName(FileFormatReference.resolve(catalog,
+                SqlIdentifiers.canonicalText(written.formatName())).getType());
+        }
         if (written.writtenType() != null) {
             into.put("TYPE", written.writtenType());
         }

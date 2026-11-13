@@ -58,5 +58,14 @@ enum VariablePropertyKind {
     CHOICE,
 
     /** An item of a security object's list: a text alone. */
-    LIST_ITEM
+    LIST_ITEM,
+
+    /** An external stage's URL: a text alone, any other value refused by the variable's name. */
+    URL,
+
+    /** A stage's STORAGE_INTEGRATION: a text, read as the integration's name; a number is no type of it. */
+    INTEGRATION,
+
+    /** A key among a stage's CREDENTIALS or ENCRYPTION: a text alone, a number refused by its value. */
+    KEY_TEXT
 }

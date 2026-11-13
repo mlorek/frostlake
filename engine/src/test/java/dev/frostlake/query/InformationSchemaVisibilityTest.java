@@ -19,12 +19,13 @@ import org.junit.jupiter.api.Test;
 
 /**
  * The INFORMATION_SCHEMA views list what the rights a statement runs with reach, and need no grant of their
- * own. With a table, a view, a function, a procedure, a sequence, a stage, a file format and a schema given
- * away to a role the session does not hold, TABLES, COLUMNS, VIEWS, TABLE_CONSTRAINTS, FUNCTIONS, PROCEDURES,
- * SEQUENCES, STAGES, FILE_FORMATS and SCHEMATA list none of them - ACCOUNTADMIN is not exempt - while an object
- * the session was granted any privilege on is listed, and so is everything once the owning role is granted to
- * the session's. Inside a stored procedure that runs with owner's rights the views list what the OWNER
- * reaches: nothing until it may use the database and the schema, then what it owns and what it was granted.
+ * own; ACCOUNTADMIN's rights list every object of the account. With a table, a view, a function, a procedure, a
+ * sequence, a stage, a file format and a schema given away to a role the session does not hold, TABLES, COLUMNS,
+ * VIEWS, TABLE_CONSTRAINTS, FUNCTIONS, PROCEDURES, SEQUENCES, STAGES, FILE_FORMATS and SCHEMATA still list them
+ * to ACCOUNTADMIN, as they list an object the session was granted any privilege on, and everything once the
+ * owning role is granted to the session's. Inside a stored procedure that runs with owner's rights the views list
+ * what the OWNER reaches: nothing until it may use the database and the schema, then what it owns and what it was
+ * granted.
  * The SHOW commands list every object all along, and a privilege on a view of INFORMATION_SCHEMA cannot be
  * granted. Every answer is live-verified.
  */
@@ -115,19 +116,19 @@ public class InformationSchemaVisibilityTest extends MeasuredCellsTestSupport {
                 "Statement executed successfully.",
                 "GRANT OWNERSHIP ON FUNCTION is_f() TO ROLE flq_is_r COPY CURRENT GRANTS");
             assertAnswer(
-                "IS_GRANTED ;; IS_KEPT",
+                "IS_GRANTED ;; IS_KEPT ;; IS_OWN ;; IS_V",
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = 'TEST_SCHEMA' AND "
                     + "table_name LIKE 'IS%' ORDER BY 1");
             assertAnswer(
-                "IS_GRANTED|C ;; IS_KEPT|B",
+                "IS_GRANTED|C ;; IS_KEPT|B ;; IS_OWN|A ;; IS_V|B",
                 "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = "
                     + "'TEST_SCHEMA' AND table_name LIKE 'IS%' ORDER BY 1, 2");
             assertAnswer(
-                "",
+                "IS_V",
                 "SELECT table_name FROM information_schema.views WHERE table_schema = 'TEST_SCHEMA' AND "
                     + "table_name LIKE 'IS%' ORDER BY 1");
             assertAnswer(
-                "IS_F_KEPT",
+                "IS_F ;; IS_F_KEPT",
                 "SELECT function_name FROM information_schema.functions WHERE function_schema = 'TEST_SCHEMA' AND "
                     + "function_name LIKE 'IS%' ORDER BY 1");
             assertAnswer(
@@ -138,7 +139,7 @@ public class InformationSchemaVisibilityTest extends MeasuredCellsTestSupport {
                 "1",
                 "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = 'TEST_SCHEMA'");
             assertAnswer(
-                "0",
+                "1",
                 "SELECT COUNT(*) FROM test_db.information_schema.tables WHERE table_name = 'IS_OWN'");
             answer(
                 "SHOW TABLES LIKE 'IS%'");
@@ -349,38 +350,38 @@ public class InformationSchemaVisibilityTest extends MeasuredCellsTestSupport {
                 "Statement executed successfully.",
                 "GRANT OWNERSHIP ON SCHEMA js_s2 TO ROLE flq_js_r COPY CURRENT GRANTS");
             assertAnswer(
-                "JS_P_KEPT",
+                "JS_P ;; JS_P_KEPT",
                 "SELECT procedure_name FROM information_schema.procedures WHERE procedure_schema = 'TEST_SCHEMA' "
                     + "AND procedure_name LIKE 'JS%' ORDER BY 1");
             assertAnswer(
-                "JS_Q_KEPT",
+                "JS_Q ;; JS_Q_KEPT",
                 "SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'TEST_SCHEMA' AND "
                     + "sequence_name LIKE 'JS%' ORDER BY 1");
             assertAnswer(
-                "JS_ST_KEPT",
+                "JS_ST ;; JS_ST_KEPT",
                 "SELECT stage_name FROM information_schema.stages WHERE stage_schema = 'TEST_SCHEMA' AND "
                     + "stage_name LIKE 'JS%' ORDER BY 1");
             assertAnswer(
-                "JS_FF_KEPT",
+                "JS_FF ;; JS_FF_KEPT",
                 "SELECT file_format_name FROM information_schema.file_formats WHERE file_format_schema = "
                     + "'TEST_SCHEMA' AND file_format_name LIKE 'JS%' ORDER BY 1");
             assertAnswer(
-                "",
+                "JS_S2",
                 "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'JS%' ORDER BY 1");
             assertAnswer(
-                "TEST_SCHEMA|JS_INS ;; TEST_SCHEMA|JS_PK_KEPT",
+                "JS_S2|JS_IN ;; TEST_SCHEMA|JS_INS ;; TEST_SCHEMA|JS_PK ;; TEST_SCHEMA|JS_PK_KEPT",
                 "SELECT table_schema, table_name FROM information_schema.tables WHERE table_name LIKE 'JS%' ORDER "
                     + "BY 1, 2");
             assertAnswer(
-                "JS_PK_KEPT|PRIMARY KEY",
+                "JS_PK|PRIMARY KEY ;; JS_PK_KEPT|PRIMARY KEY",
                 "SELECT table_name, constraint_type FROM information_schema.table_constraints WHERE table_name "
                     + "LIKE 'JS%' ORDER BY 1, 2");
             assertAnswer(
-                "JS_F_USAGE",
+                "JS_F ;; JS_F_USAGE",
                 "SELECT function_name FROM information_schema.functions WHERE function_schema = 'TEST_SCHEMA' AND "
                     + "function_name LIKE 'JS%' ORDER BY 1");
             assertAnswer(
-                "JS_INS|A ;; JS_PK_KEPT|A",
+                "JS_IN|A ;; JS_INS|A ;; JS_PK|A ;; JS_PK_KEPT|A",
                 "SELECT table_name, column_name FROM information_schema.columns WHERE table_name LIKE 'JS%' ORDER "
                     + "BY 1, 2");
             answer(

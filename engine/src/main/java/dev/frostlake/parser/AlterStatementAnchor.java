@@ -16,11 +16,13 @@
 
 package dev.frostlake.parser;
 
+import org.antlr.v4.runtime.BufferedTokenStream;
 import org.antlr.v4.runtime.Parser;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Recognizer;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.TokenStream;
+import org.antlr.v4.runtime.misc.IntervalSet;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
@@ -37,8 +39,10 @@ import java.util.List;
  *   ALTER TABLE t1 RENAME COLUMN a       'RENAME' at 15       materialized view, a schema, a database, a
  *   ALTER TABLE t1 RENAME TO t3 x        'RENAME' at 15       warehouse, a user, a tag, a stage, a masking or a
  *                                                            row access policy names the RENAME
- *   ALTER SEQUENCE s1 RENAME TO;         'TO' at 25           a sequence's names the TO, and a fault after the
- *   ALTER SEQUENCE s1 RENAME TO x y      'TO', then 'y'       complete statement still speaks after it
+ *   ALTER SEQUENCE s1 RENAME TO;         'TO' at 25           a sequence's names the TO, then the first word
+ *   ALTER SEQUENCE s1 RENAME TO x y      'TO', then 'x'       after it unless an '=' follows that word:
+ *   ALTER SEQUENCE s1 RENAME TO 'x' y    'TO', then 'y'       anything else is passed over, a reserved word
+ *   ALTER SEQUENCE s1 RENAME TO x = 1    'TO' alone           (SET, TO) too
  *   ALTER DYNAMIC TABLE d RENAME TO x y  'TO' at 30           a dynamic table's names the TO too, and nothing after
  *   ALTER ROLE r RENAME                  'ROLE', then 'r'     any fault at all in a role's, a stream's or a file
  *   ALTER FILE FORMAT ff SET             'FILE', 'FORMAT'     format's statement names its kind, then the token
@@ -60,6 +64,9 @@ import java.util.List;
  * is refused at that word, as this parser already does.
  */
 public final class AlterStatementAnchor {
+
+    private static final IntervalSet WORDS =
+        FrostlakeParser._ATN.nextTokens(FrostlakeParser._ATN.ruleToStartState[FrostlakeParser.RULE_identifier]);
 
     private AlterStatementAnchor() {
     }
@@ -140,9 +147,9 @@ public final class AlterStatementAnchor {
             final Token to = nextSpoken(stream, rename.getTokenIndex());
             if (to != null && to.getType() == FrostlakeLexer.TO && to.getTokenIndex() < reported.getTokenIndex()) {
                 lines.add(to);
-                if (after && !dynamicTable) {
-                    final Token opener = UnseparatedStatementOpener.refused(recognizer, reported, false);
-                    lines.add(opener != null ? opener : reported);
+                final Token word = dynamicTable ? null : wordAfter(stream, to);
+                if (word != null) {
+                    lines.add(word);
                 }
                 return lines;
             }
@@ -304,6 +311,24 @@ public final class AlterStatementAnchor {
     }
 
     /** The next default-channel token after token index {@code after}, or null past the end. */
+    /**
+     * The word a sequence's refused RENAME TO is refused at next: the first word after the TO within its statement,
+     * anything else passed over, unless an '=' follows that word; null when there is none.
+     */
+    private static Token wordAfter(final TokenStream stream, final Token to) {
+        if (stream instanceof BufferedTokenStream) {
+            ((BufferedTokenStream) stream).fill();
+        }
+        for (Token token = nextSpoken(stream, to.getTokenIndex()); token != null && token.getType() != Token.EOF
+                && token.getType() != FrostlakeLexer.SEMI; token = nextSpoken(stream, token.getTokenIndex())) {
+            if (WORDS.contains(token.getType())) {
+                final Token next = nextSpoken(stream, token.getTokenIndex());
+                return next != null && next.getType() == FrostlakeLexer.EQ ? null : token;
+            }
+        }
+        return null;
+    }
+
     private static Token nextSpoken(final TokenStream stream, final int after) {
         for (int i = after + 1; i < stream.size(); i++) {
             if (stream.get(i).getChannel() == Token.DEFAULT_CHANNEL) {

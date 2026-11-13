@@ -20,6 +20,7 @@ import dev.frostlake.executor.AmbiguousColumnException;
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.InvalidQualifierException;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.OuterFilters;
 import dev.frostlake.executor.expressions.RowOrdinal;
 import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.executor.expressions.UnsupportedSubqueryException;
@@ -136,6 +137,7 @@ public class WhereOperator implements Operator {
             final Row row = rows.get(rowIndex);
             // Number the rows the filter reads, so a SEQ1/2/4/8 in the predicate counts them.
             final Long displacedOrdinal = RowOrdinal.begin(rowIndex);
+            final Expression displacedFilter = OuterFilters.begin(parsed);
             try {
                 final Object result = evaluator.evaluate(parsed, row);
                 if (SqlTruth.isTrue(result)) {
@@ -143,6 +145,7 @@ public class WhereOperator implements Operator {
                 }
             } finally {
                 RowOrdinal.end(displacedOrdinal);
+                OuterFilters.end(displacedFilter);
             }
         }
 
@@ -190,6 +193,7 @@ public class WhereOperator implements Operator {
         for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
             final Row row = rows.get(rowIndex);
             final Long displacedOrdinal = RowOrdinal.begin(rowIndex);
+            final Expression displacedFilter = OuterFilters.begin(parsed);
             try {
                 // Try to evaluate with alias support
                 final Object result = evaluateWithAliases(parsed, row, context);
@@ -233,6 +237,7 @@ public class WhereOperator implements Operator {
                 }
             } finally {
                 RowOrdinal.end(displacedOrdinal);
+                OuterFilters.end(displacedFilter);
             }
         }
 
@@ -257,6 +262,7 @@ public class WhereOperator implements Operator {
         for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
             final Row row = rows.get(rowIndex);
             final Long displacedOrdinal = RowOrdinal.begin(rowIndex);
+            final Expression displacedFilter = OuterFilters.begin(parsed);
             try {
                 // For lateral context, we need to evaluate with outer row values
                 // This is a placeholder - full implementation would require QueryExecutor integration
@@ -270,6 +276,7 @@ public class WhereOperator implements Operator {
                 throw invalidQualifier;
             } finally {
                 RowOrdinal.end(displacedOrdinal);
+                OuterFilters.end(displacedFilter);
             }
         }
 

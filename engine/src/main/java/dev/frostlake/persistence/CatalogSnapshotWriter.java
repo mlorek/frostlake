@@ -193,6 +193,8 @@ final class CatalogSnapshotWriter {
             userSnapshot.rsaPublicKey2 = user.getRsaPublicKey2();
             userSnapshot.rsaPublicKey2Fp = user.getRsaPublicKey2Fp();
             userSnapshot.rsaPublicKey2LastSetTime = user.getRsaPublicKey2LastSetTime();
+            userSnapshot.previousPasswords = user.getPreviousPasswords();
+            userSnapshot.passwordSetAt = user.getPasswordSetAt();
             RestCatalogSnapshots.saveUserGrants(user, userSnapshot);
             snapshot.users.add(userSnapshot);
         }

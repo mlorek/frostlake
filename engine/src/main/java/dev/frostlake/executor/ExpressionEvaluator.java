@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
+import dev.frostlake.executor.expressions.AstPrinterVisitor;
 import dev.frostlake.executor.expressions.BindVariableExpression;
 import dev.frostlake.executor.expressions.CallOrdinalWalk;
 import dev.frostlake.executor.expressions.CollationSpec;
@@ -44,6 +45,7 @@ import dev.frostlake.types.DataType;
 import dev.frostlake.values.ValueRange;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -336,6 +338,18 @@ public class ExpressionEvaluator {
         return preparedVisitor().openingOuterAggregateRefusal(item);
     }
 
+    /**
+     * {@link #openingOuterAggregateRefusal(Expression)}, only a constant settling a branch's condition where the input
+     * is open (see {@link ExpressionEvaluatorVisitor#openingOuterAggregateRefusal(Expression, boolean)}).
+     *
+     * @param item      the select item, parsed
+     * @param inputOpen whether only a constant settles a condition
+     * @return the refusal that waits for the statement around the subquery, or null
+     */
+    public RuntimeException openingOuterAggregateRefusal(final Expression item, final boolean inputOpen) {
+        return preparedVisitor().openingOuterAggregateRefusal(item, inputOpen);
+    }
+
     /** Compile one subquery in this evaluator's scope, as {@link #compileSubqueries} compiles each. */
     public RuntimeException compileSubquery(final SubqueryExpression subquery, final Map<String, Object> enclosingNames) {
         return preparedVisitor().compileSubquery(subquery, enclosingNames);
@@ -428,6 +442,28 @@ public class ExpressionEvaluator {
      */
     public void validateCallShapes(final Expression expression) {
         preparedVisitor().validateCallShapesOnly(expression);
+    }
+
+    /**
+     * Whether an expression calls a user-defined function anywhere in it (see {@link #callsUserFunction(List)}).
+     *
+     * @param expression the parsed expression
+     * @return whether one of its calls names a function someone created
+     */
+    public boolean callsUserFunction(final Expression expression) {
+        final boolean[] found = {false};
+        expression.accept(new AstPrinterVisitor() {
+            @Override
+            public String visitFunctionCall(final FunctionCallExpression expr) {
+                if (expr.getNameExpression() == null && expr.getFunctionName() != null
+                        && callsUserFunction(expr.getNameParts() != null ? expr.getNameParts()
+                            : Collections.singletonList(expr.getFunctionName().toUpperCase(Locale.ROOT)))) {
+                    found[0] = true;
+                }
+                return super.visitFunctionCall(expr);
+            }
+        });
+        return found[0];
     }
 
     /**

@@ -24,6 +24,7 @@ public class SubqueryExpression implements Expression {
     private SourcePosition position;
     private SourcePosition queryPosition;
     private boolean existence;
+    private boolean negatedExistence;
     private boolean lateral;
 
     public SubqueryExpression(final String subquery) {
@@ -37,6 +38,16 @@ public class SubqueryExpression implements Expression {
 
     public void setExistence(final boolean existence) {
         this.existence = existence;
+    }
+
+    /** Whether the subquery is the body of an EXISTS written under NOT, {@code NOT EXISTS (…)}. */
+    public boolean isNegatedExistence() {
+        return negatedExistence;
+    }
+
+    /** Marks the subquery as the body of an EXISTS written under NOT. */
+    public void markNegatedExistence() {
+        this.negatedExistence = true;
     }
 
     /** Whether the subquery is a LATERAL derived table, which reads the relations to its left one by one. */

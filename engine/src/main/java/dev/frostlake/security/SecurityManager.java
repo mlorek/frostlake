@@ -471,6 +471,26 @@ public class SecurityManager {
     }
 
     /**
+     * Whether the rights a statement runs with list an object in the INFORMATION_SCHEMA views: they reach it (see
+     * {@link #reaches}), or they are ACCOUNTADMIN's, which lists every object of the account there whoever owns it
+     * and its database and schema (live-verified; MANAGE GRANTS alone does not, nor owning the object's database,
+     * schema or owner role).
+     *
+     * @param objectType the object's kind as privileges record it
+     * @param objectName the object's name in full
+     * @param owner      the role that owns the object, or null when none is recorded
+     * @return whether the views list the object
+     */
+    public boolean listsInInformationSchema(final String objectType, final String objectName, final String owner) {
+        if (!sessionContext.isSecurityEnabled() || owner == null) {
+            return true;
+        }
+        final Set<String> roles = reachingRoles();
+        return roles.contains("ACCOUNTADMIN")
+            || holdAny(roles, objectType, objectName, owner) && usesContainers(roles, objectType, objectName);
+    }
+
+    /**
      * Whether the rights a statement runs with see an object, which is what SHOW lists, and what DESCRIBE and
      * GET_DDL answer: they reach it (see {@link #reaches}), or hold MANAGE GRANTS, which sees every object of the
      * account. ACCOUNTADMIN and SECURITYADMIN hold it from the start (documented).

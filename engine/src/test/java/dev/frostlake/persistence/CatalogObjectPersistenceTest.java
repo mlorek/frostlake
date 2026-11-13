@@ -101,7 +101,7 @@ public class CatalogObjectPersistenceTest {
               EMAIL = 'bob@example.com' EDITION = STANDARD""",
             "DROP ACCOUNT acc_two GRACE_PERIOD_IN_DAYS = 3",
             """
-            CREATE MANAGED ACCOUNT reader_one ADMIN_NAME = admin, ADMIN_PASSWORD = 'Sdfed43da!44', TYPE = READER,
+            CREATE MANAGED ACCOUNT reader_one ADMIN_NAME = admin, ADMIN_PASSWORD = 'Sdfed43da!44Xy', TYPE = READER,
               COMMENT = 'for sharing'""",
             "CREATE COMPUTE POOL p1 MIN_NODES = 1 MAX_NODES = 2 INSTANCE_FAMILY = CPU_X64_XS"
                 + " INITIALLY_SUSPENDED = TRUE AUTO_SUSPEND_SECS = 60 COMMENT = 'pool'"),
@@ -418,7 +418,7 @@ public class CatalogObjectPersistenceTest {
             "ALTER COMPUTE POOL p1 RESUME",
             "CREATE ACCOUNT acc_one ADMIN_NAME = admin ADMIN_PASSWORD = 'TestPassword1'"
                 + " EMAIL = 'a@example.com' EDITION = STANDARD",
-            "CREATE MANAGED ACCOUNT reader_one ADMIN_NAME = admin, ADMIN_PASSWORD = 'Sdfed43da!44', TYPE = READER",
+            "CREATE MANAGED ACCOUNT reader_one ADMIN_NAME = admin, ADMIN_PASSWORD = 'Sdfed43da!44Xy', TYPE = READER",
             "CREATE DATABASE d1",
             "CREATE SCHEMA d1.s1",
             "USE SCHEMA d1.s1",

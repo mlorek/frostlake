@@ -278,12 +278,15 @@ public class ProceduralBlockBuilder {
             if (lCtx.booleanExpr() == null && lCtx.dataTypeName() != null) {
                 // A type and no value declares the variable NULL of its type (live-verified).
                 return new DeclareStatement(varName, null,
-                    visitor.parseDataType(lCtx.dataTypeName(), lCtx.typeParameters()));
+                    visitor.parseDataType(lCtx.dataTypeName(), lCtx.typeParameters())).writtenByLet();
             }
             if (lCtx.booleanExpr() != null) {
                 // An untyped LET's initialiser is judged while the block compiles; a typed one when it is reached.
                 final BaseExpression expr = lCtx.dataTypeName() == null ? visitor.buildExpression(lCtx.booleanExpr())
                     : judged(visitor.buildExpression(lCtx.booleanExpr()), lCtx.booleanExpr());
+                if (expr != null) {
+                    expr.setWrittenFrom(lCtx.booleanExpr());
+                }
                 final SetStatement let = new SetStatement(varName, expr, lCtx.dataTypeName() != null
                     ? visitor.parseDataType(lCtx.dataTypeName(), lCtx.typeParameters()) : null);
                 if (lCtx.dataTypeName() == null) {

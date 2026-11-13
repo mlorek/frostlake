@@ -107,6 +107,34 @@ public final class FileFormatClause {
         }
     }
 
+    /**
+     * Judge the list against the format its FORMAT_NAME names (live-verified, on a table's list and a stage's): with
+     * no TYPE of its own, each option the list writes has to be one the named format's type takes; with a TYPE of
+     * another kind, the named format's options are judged by that TYPE, the first it does not take refused.
+     *
+     * @param namedType the named format's type
+     */
+    public void judgeBesideName(final String namedType) {
+        if (writtenType == null) {
+            for (final String key : format.getOptions().keySet()) {
+                if (!FileFormatSurfaces.isOptionValidFor(namedType, key)) {
+                    throw new RuntimeException(SqlCompilationError.of("Option " + key.toUpperCase(Locale.ROOT)
+                        + " is not valid for file format type " + namedType.toUpperCase(Locale.ROOT) + "."));
+                }
+            }
+            return;
+        }
+        if (writtenType.equalsIgnoreCase(namedType)) {
+            return;
+        }
+        for (final FormatProperty property : FileFormatSurfaces.tree(namedType)) {
+            if (!"TYPE".equals(property.name) && !FileFormatSurfaces.isOptionValidFor(writtenType, property.name)) {
+                throw new RuntimeException(SqlCompilationError.of("Option " + property.name
+                    + " is not valid for file format type " + writtenType + "."));
+            }
+        }
+    }
+
     /** The format the options were applied to. */
     public FileFormat format() {
         return format;

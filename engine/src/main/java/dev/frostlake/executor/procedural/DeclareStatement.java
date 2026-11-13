@@ -26,6 +26,8 @@ public class DeclareStatement extends Statement {
     private int initializerPosition = -1;
     /** The own static type of an untyped declaration's initialiser, or null. */
     private DataType initialiserType;
+    /** Whether a LET wrote the declaration, rather than a DECLARE section. */
+    private boolean writtenByLet;
 
     public DeclareStatement(final String variableName, final Object defaultValue) {
         this(variableName, defaultValue, null);
@@ -72,5 +74,20 @@ public class DeclareStatement extends Statement {
 
     public void setInitialiserType(final DataType initialiserType) {
         this.initialiserType = initialiserType;
+    }
+
+    /** Whether a LET wrote the declaration, rather than a DECLARE section. */
+    public boolean isWrittenByLet() {
+        return writtenByLet;
+    }
+
+    /**
+     * Marks the declaration as a LET's.
+     *
+     * @return this declaration
+     */
+    public DeclareStatement writtenByLet() {
+        this.writtenByLet = true;
+        return this;
     }
 }

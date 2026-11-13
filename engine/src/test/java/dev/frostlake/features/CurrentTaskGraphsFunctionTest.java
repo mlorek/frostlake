@@ -20,6 +20,7 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -47,9 +48,13 @@ public class CurrentTaskGraphsFunctionTest extends BaseDatabaseTest {
             assertEquals("SCHEDULED", rs.getRows().get(0).getValue(rs.getColumnIndex("STATE")));
             assertEquals("SCHEDULE", rs.getRows().get(0).getValue(rs.getColumnIndex("SCHEDULED_FROM")));
             assertTrue(rs.getRows().get(0).getValue(rs.getColumnIndex("SCHEDULED_TIME")) != null);
-            assertEquals(19, rs.getColumns().size());
+            assertEquals(21, rs.getColumns().size());
             assertEquals("SCHEDULED_FROM", rs.getColumns().get(14).getName(), "after ATTEMPT_NUMBER");
             assertEquals("SCHEDULED_BY_USER", rs.getColumns().get(18).getName());
+            assertEquals("GRAPH_ID", rs.getColumns().get(19).getName());
+            assertEquals("GRAPH_NAME", rs.getColumns().get(20).getName());
+            assertNull(rs.getRows().get(0).getValue(rs.getColumnIndex("GRAPH_ID")), "a graph of tasks names no graph");
+            assertNull(rs.getRows().get(0).getValue(rs.getColumnIndex("GRAPH_NAME")));
             assertEquals(1, coming("c_hourly").getRowCount(), "the root's name in any case");
             assertEquals(0, coming("C_MANUAL").getRowCount());
         } finally {

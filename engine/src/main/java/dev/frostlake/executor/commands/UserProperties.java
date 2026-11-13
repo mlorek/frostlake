@@ -135,6 +135,22 @@ final class UserProperties {
         checkFor(DEFAULT_USER_TYPE, properties);
     }
 
+    /**
+     * The password a property list gives, the last written; null when it gives none.
+     *
+     * @param properties the list
+     * @return the password's text, or null
+     */
+    static String writtenPassword(final List<FrostlakeParser.UserPropertyContext> properties) {
+        String password = null;
+        for (final FrostlakeParser.UserPropertyContext property : properties) {
+            if (property.PASSWORD() != null) {
+                password = text(property.STRING_LITERAL());
+            }
+        }
+        return password;
+    }
+
     /** Apply every property in the list to {@code user}, leaving unnamed properties untouched. */
     static void apply(final User user, final List<FrostlakeParser.UserPropertyContext> properties) {
         checkForm(properties);

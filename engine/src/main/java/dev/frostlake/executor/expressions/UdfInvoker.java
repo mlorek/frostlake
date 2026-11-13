@@ -855,6 +855,10 @@ final class UdfInvoker {
                 }
             }
             final Object returned = queryExecutor.executeScriptingFunctionBody(function, bound);
+            if (function.getReturnType() instanceof VectorType) {
+                // A body that compiled answers no VECTOR, whatever it returns (live-verified).
+                throw new RuntimeException("Unsupported return type for Snowscript UDF: vector");
+            }
             // Snowflake casts the RETURNed value to the DECLARED return type: `RETURNS INT` over
             // `RETURN '7'` is 7, `RETURNS VARCHAR` over `RETURN 42` is the string '42', and
             // `RETURNS INT` over `RETURN 'abc'` fails "Numeric value 'abc' is not recognized".

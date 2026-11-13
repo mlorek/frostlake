@@ -2044,6 +2044,28 @@ public final class CorrelatedSubqueryRule {
      * @return its correlation, or null
      */
     public EqualityCorrelation equalityCorrelation(final FrostlakeParser.SelectStatementContext statement) {
+        return correlation(statement, false);
+    }
+
+    /**
+     * How a subquery reads the outer row when it reads it through equalities, as {@link #equalityCorrelation} reads
+     * them, and through other conjuncts of its WHERE as well: {@code EXISTS (SELECT 1 FROM b WHERE b.id = a.id AND
+     * b.k > a.v)}. Each other conjunct is kept as its residual (see {@link EqualityCorrelation#getResidual}), every
+     * part of it that reads the subquery's relations alone standing as a column of the rows the subquery keeps. Null
+     * where {@link #equalityCorrelation} answers, and for a subquery with no equality, or with a conjunct reading a
+     * name it cannot place.
+     *
+     * @param statement the subquery
+     * @return its correlation with a residual, or null
+     */
+    public EqualityCorrelation residualCorrelation(final FrostlakeParser.SelectStatementContext statement) {
+        final EqualityCorrelation correlation = correlation(statement, true);
+        return correlation == null || correlation.getResidual() == null ? null : correlation;
+    }
+
+    /** {@link #equalityCorrelation}, or {@link #residualCorrelation} where {@code residuals} is set. */
+    private EqualityCorrelation correlation(final FrostlakeParser.SelectStatementContext statement,
+                                            final boolean residuals) {
         if (statement == null || !statement.setOperator().isEmpty() || statement.selectOperand().size() != 1
                 || statement.orderByClause() != null || statement.limitClause() != null
                 || statement.fetchClause() != null) {
@@ -2066,30 +2088,30 @@ public final class CorrelatedSubqueryRule {
             final List<String> innerKeys = new ArrayList<>();
             final List<String> outerKeys = new ArrayList<>();
             final List<String> others = new ArrayList<>();
+            final List<String> residual = new ArrayList<>();
+            final List<String> residualItems = new ArrayList<>();
             for (final FrostlakeParser.BooleanExprContext conjunct : conjuncts) {
                 if (!readsBeyondItself(conjunct, scopes)) {
                     others.add(ParseTreeText.getOriginalText(conjunct));
                     continue;
                 }
-                if (!(conjunct instanceof FrostlakeParser.ValueExprContext)
-                        || !(((FrostlakeParser.ValueExprContext) conjunct).expression()
-                            instanceof FrostlakeParser.ComparisonExprContext)) {
-                    return null;
-                }
-                final FrostlakeParser.ComparisonExprContext equality = (FrostlakeParser.ComparisonExprContext)
-                    ((FrostlakeParser.ValueExprContext) conjunct).expression();
-                if (equality.op.getType() != FrostlakeParser.EQ) {
-                    return null;
-                }
-                final FrostlakeParser.ExpressionContext left = equality.expression(0);
-                final FrostlakeParser.ExpressionContext right = equality.expression(1);
-                if (readsOnly(left, CorrelationSide.INNER, scopes) && readsOnly(right, CorrelationSide.OUTER, scopes)) {
+                final FrostlakeParser.ComparisonExprContext equality = equalityOf(conjunct);
+                final FrostlakeParser.ExpressionContext left = equality == null ? null : equality.expression(0);
+                final FrostlakeParser.ExpressionContext right = equality == null ? null : equality.expression(1);
+                if (equality != null && readsOnly(left, CorrelationSide.INNER, scopes)
+                        && readsOnly(right, CorrelationSide.OUTER, scopes)) {
                     innerKeys.add(ParseTreeText.getOriginalText(left));
                     outerKeys.add(ParseTreeText.getOriginalText(right));
-                } else if (readsOnly(left, CorrelationSide.OUTER, scopes)
+                } else if (equality != null && readsOnly(left, CorrelationSide.OUTER, scopes)
                         && readsOnly(right, CorrelationSide.INNER, scopes)) {
                     innerKeys.add(ParseTreeText.getOriginalText(right));
                     outerKeys.add(ParseTreeText.getOriginalText(left));
+                } else if (residuals) {
+                    final String written = residualOf(conjunct, scopes, residualItems);
+                    if (written == null) {
+                        return null;
+                    }
+                    residual.add(written);
                 } else {
                     return null;
                 }
@@ -2098,11 +2120,71 @@ public final class CorrelatedSubqueryRule {
                 return null;
             }
             final boolean rowPerKeptRow = !anyItemAggregates(body);
-            return new EqualityCorrelation(innerKeys, outerKeys, ParseTreeText.getOriginalText(body.tableExpression()),
-                others, aggregateItemOf(body), rowPerKeptRow, rowPerKeptRow ? memberItemOf(body) : null);
+            final EqualityCorrelation correlation = new EqualityCorrelation(innerKeys, outerKeys,
+                ParseTreeText.getOriginalText(body.tableExpression()), others, aggregateItemOf(body), rowPerKeptRow,
+                rowPerKeptRow ? memberItemOf(body) : null);
+            return residual.isEmpty() ? correlation : correlation.withResidual(residual, residualItems);
         } catch (final RuntimeException unplaced) {
             return null;
         }
+    }
+
+    /** A conjunct's comparison when it is an equality of two expressions, or null. */
+    private static FrostlakeParser.ComparisonExprContext equalityOf(final FrostlakeParser.BooleanExprContext conjunct) {
+        if (!(conjunct instanceof FrostlakeParser.ValueExprContext)
+                || !(((FrostlakeParser.ValueExprContext) conjunct).expression()
+                    instanceof FrostlakeParser.ComparisonExprContext)) {
+            return null;
+        }
+        final FrostlakeParser.ComparisonExprContext comparison = (FrostlakeParser.ComparisonExprContext)
+            ((FrostlakeParser.ValueExprContext) conjunct).expression();
+        return comparison.op.getType() == FrostlakeParser.EQ ? comparison : null;
+    }
+
+    /**
+     * A conjunct that reads the outer row as a residual: its text with every widest expression reading the
+     * subquery's relations alone written as the column {@code "$R<n>"} of the rows the subquery keeps, the
+     * expression's text appended to {@code items} as that column's. Null where a part reads a name the rule cannot
+     * place.
+     */
+    private String residualOf(final FrostlakeParser.BooleanExprContext conjunct, final List<CorrelationScope> scopes,
+                              final List<String> items) {
+        final Map<ParserRuleContext, String> written = new HashMap<>();
+        if (readsDirectly(conjunct, CorrelationSide.UNKNOWN, scopes)
+                || !innerPartsOf(conjunct, scopes, items, written)) {
+            return null;
+        }
+        final List<ParserRuleContext> places = new ArrayList<>(written.keySet());
+        Collections.sort(places, new Comparator<ParserRuleContext>() {
+            @Override
+            public int compare(final ParserRuleContext one, final ParserRuleContext other) {
+                return Integer.compare(other.getStart().getStartIndex(), one.getStart().getStartIndex());
+            }
+        });
+        final StringBuilder text = new StringBuilder(ParseTreeText.getOriginalText(conjunct));
+        final int base = conjunct.getStart().getStartIndex();
+        for (final ParserRuleContext place : places) {
+            text.replace(place.getStart().getStartIndex() - base, place.getStop().getStopIndex() - base + 1,
+                written.get(place));
+        }
+        return text.toString();
+    }
+
+    /** Collects the widest expressions under a node that read the subquery's relations alone (see residualOf). */
+    private boolean innerPartsOf(final ParseTree node, final List<CorrelationScope> scopes, final List<String> items,
+                                 final Map<ParserRuleContext, String> written) {
+        if (node instanceof FrostlakeParser.ExpressionContext && readsOnly(node, CorrelationSide.INNER, scopes)) {
+            final ParserRuleContext part = (ParserRuleContext) node;
+            written.put(part, "\"$R" + items.size() + "\"");
+            items.add(ParseTreeText.getOriginalText(part));
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (!innerPartsOf(node.getChild(i), scopes, items, written)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** The select list's one item when it is an aggregate expression with no window, as written, or null. */

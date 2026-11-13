@@ -419,17 +419,11 @@ final class ShowInfraExecutor {
     private static final DateTimeFormatter LAST_REFRESHED = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS xx");
 
     /**
-     * DESC STAGE in live's five-column shape — a property TREE grouped as STAGE_FILE_FORMAT,
-     * STAGE_COPY_OPTIONS, STAGE_LOCATION and DIRECTORY, each row carrying its type, current value
-     * and default. The current value is the stage's declared option where one was given, else the
-     * default; TYPE reflects the stage's format.
-     */
-    /** See {@link ShowCommandExecutor#describeRelationStage}. */
-    /**
      * DESCRIBE … TYPE = STAGE over a relation: the stage file format of the TYPE the table was created
      * with, each option's written value against the format's own default, then the copy options and the
      * (empty) stage location. A relation created with no options of its own reports the CSV tree, whose
-     * values are its defaults (live-verified).
+     * values are its defaults (live-verified). A format that names a file format lists the name alone,
+     * as a named stage's does.
      *
      * @param written the table's stage file format, as written
      * @param copyOptions the table's stage copy options, as written
@@ -437,7 +431,11 @@ final class ShowInfraExecutor {
      */
     ResultSet describeTableStage(final Map<String, String> written, final Map<String, String> copyOptions) {
         final List<Row> rows = new ArrayList<>();
-        for (final FormatProperty property : FileFormatSurfaces.tree(written.get("TYPE"))) {
+        if (written.get("FORMAT_NAME") != null) {
+            addNamedFormatRows(rows, written);
+        }
+        for (final FormatProperty property : written.get("FORMAT_NAME") != null ? new ArrayList<FormatProperty>()
+                : FileFormatSurfaces.tree(written.get("TYPE"))) {
             // A stage's default format is CSV whichever tree is answered, so the TYPE row's default
             // column reads CSV even under a JSON format (live-verified).
             final String shownDefault = "TYPE".equals(property.name) ? "CSV" : property.shownDefault;
@@ -451,6 +449,26 @@ final class ShowInfraExecutor {
         addCopyOptionsWhenSet(rows, copyOptions);
         rows.add(new Row(Arrays.asList("STAGE_LOCATION", "URL", "String", "", "")));
         return new ResultSet(stagePropertyColumns(), rows);
+    }
+
+    /**
+     * The format rows of a stage format that names a file format: TYPE when the statement wrote one, the name as
+     * written, then each other option written, in the order the TYPE's listing keeps (live-verified, a table's and a
+     * stage's alike). The named format's own options are the format's to describe.
+     */
+    private static void addNamedFormatRows(final List<Row> rows, final Map<String, String> written) {
+        final String type = written.get("TYPE");
+        if (type != null) {
+            rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", "TYPE", "String", type, "CSV")));
+        }
+        rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", "FORMAT_NAME", "String",
+            written.get("FORMAT_NAME").replace("\"", "\\\""), "")));
+        for (final FormatProperty property : FileFormatSurfaces.tree(type != null ? type : "CSV")) {
+            if (!"TYPE".equals(property.name) && written.containsKey(property.name)) {
+                rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property.name, property.type,
+                    FileFormatSurfaces.described(property, written.get(property.name)), property.shownDefault)));
+            }
+        }
     }
 
     /** The rows of the copy options listed only once set, each that is. */
@@ -485,6 +503,7 @@ final class ShowInfraExecutor {
             new ResultSetColumn("property_default", StringType.VARCHAR));
     }
 
+    /** See {@link ShowCommandExecutor#describeRelationStage}. */
     ResultSet describeRelationStage(final boolean table) {
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("parent_property", StringType.VARCHAR),
@@ -506,6 +525,15 @@ final class ShowInfraExecutor {
         return new ResultSet(columns, rows);
     }
 
+    /**
+     * DESC STAGE in live's five-column shape — a property TREE grouped as STAGE_FILE_FORMAT,
+     * STAGE_COPY_OPTIONS, STAGE_LOCATION and DIRECTORY, each row carrying its type, current value
+     * and default. The current value is the stage's declared option where one was given, else the
+     * default; TYPE reflects the stage's format.
+     *
+     * @param stageName the stage, as named
+     * @return the property rows
+     */
     public ResultSet describeStage(final String stageName) {
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("parent_property", StringType.VARCHAR),
@@ -525,10 +553,7 @@ final class ShowInfraExecutor {
         final String type = stage.getFileFormat();
         final String formatName = stage.getFileFormatOptions().get("FORMAT_NAME");
         if (formatName != null) {
-            // A stage that names a file format lists the name alone, as the statement wrote it; the format's
-            // own options are the format's to describe.
-            rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", "FORMAT_NAME", "String",
-                formatName.replace("\"", "\\\""), "")));
+            addNamedFormatRows(rows, stage.getFileFormatOptions());
         }
         for (final FormatProperty property : formatName != null ? new ArrayList<FormatProperty>()
                 : FileFormatSurfaces.tree(type)) {
@@ -545,8 +570,10 @@ final class ShowInfraExecutor {
                 spelled(stage.getCopyOptions().get(property[0]), property[1], property[2]), property[2])));
         }
         addCopyOptionsWhenSet(rows, stage.getCopyOptions());
+        // An external stage's location is listed as a JSON array of its one URL, ["s3://b/p/"]; an internal stage's
+        // is empty (live-verified).
         rows.add(new Row(Arrays.asList("STAGE_LOCATION", "URL", "String",
-            stage.getUrl() != null ? stage.getUrl() : "", "")));
+            stage.getUrl() != null ? "[\"" + stage.getUrl() + "\"]" : "", "")));
         if (stage.isDirectoryEnabled()) {
             // Told for a directory table that is on alone: empty until its first refresh, then the moment of
             // the last one at the session's offset (live-verified).

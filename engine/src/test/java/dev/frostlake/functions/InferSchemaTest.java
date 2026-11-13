@@ -341,7 +341,7 @@ public class InferSchemaTest extends BaseDatabaseTest {
         assertEquals(Arrays.asList("x | BOOLEAN"), lines("SELECT COLUMN_NAME, TYPE FROM TABLE(INFER_SCHEMA("
             + "LOCATION => '@st/ic2/', FILE_FORMAT => 'ffh', KIND => 'iceberg'))"));
         stageLocalFile("st/ic3/", "small.csv", "a,b\n1,x\n2,y\n");
-        assertEquals(Arrays.asList("a | NUMBER(1, 0)", "b | TEXT"), lines("SELECT COLUMN_NAME, TYPE FROM"
+        assertEquals(Arrays.asList("a | LONG", "b | TEXT"), lines("SELECT COLUMN_NAME, TYPE FROM"
             + " TABLE(INFER_SCHEMA(LOCATION => '@st/ic3/', FILE_FORMAT => 'ffh', KIND => 'ICEBERG')) ORDER BY ORDER_ID"));
         stageLocalFile("st/ic4/", "ic4.json", "{\"x\":1}\n{\"x\":\"s\"}\n");
         assertRefused("Incompatible data types detected: TEXT and FIXED.",
@@ -614,7 +614,7 @@ public class InferSchemaTest extends BaseDatabaseTest {
             ".5", "2020-01-01 10:00:00.1234567891", "2020-01-01T10:00:00.", "2020-01-01 10:00 PM", "31-JAN-2020 10:00",
             "31-JAN-2020");
         final List<String> types = Arrays.asList("TIME", "TIME", "TIME", "TIME", "TIME", "TEXT", "TEXT", "TEXT", "TEXT",
-            "TIME", "TIME", "TIME", "TIME", "TIME", "TEXT", "TEXT", "TEXT", "TIME", "TEXT", "TEXT", "NUMBER(1, 0)",
+            "TIME", "TIME", "TIME", "TIME", "TIME", "TIME", "TEXT", "TEXT", "TIME", "TEXT", "TEXT", "NUMBER(1, 0)",
             "NUMBER(1, 0)", "NUMBER(1, 0)", "TEXT", "REAL", "REAL", "REAL", "TEXT", "REAL", "NUMBER(2, 1)",
             "TIMESTAMP_NTZ", "TIMESTAMP_NTZ", "TEXT", "TEXT", "DATE");
         final List<String> names = new ArrayList<String>();
@@ -628,8 +628,34 @@ public class InferSchemaTest extends BaseDatabaseTest {
         stageLocalFile("st/vj/", "values.json", "{\"a\":\"10:00 PM\",\"b\":\"23:59:59.1234567891\","
             + "\"c\":\"10:00:00+07:00\",\"d\":\"13:00 PM\",\"e\":\"10:00:00.123+07:00\","
             + "\"f\":\"2020-01-01 10:00:00.1234567891\"}\n");
-        assertEquals(Arrays.asList("a | TIME", "b | TIME", "c | TEXT", "d | TEXT", "e | TIME", "f | TIMESTAMP_NTZ"),
+        assertEquals(Arrays.asList("a | TIME", "b | TIME", "c | TIME", "d | TEXT", "e | TIME", "f | TIMESTAMP_NTZ"),
             columnTypes("vj", "fj"));
+    }
+
+    @Test
+    public void testTimesTakeAZoneAfterTheirSeconds() {
+        final List<String> zoned = Arrays.asList("10:00:00+07:00", "10:00:00 +07:00", "10:00:00Z", "10:00:00 Z",
+            "10:00:00+0700", "10:00:00+07", "10:00:00+7:00", "10:00:00+07:0", "10:00:00.+07:00", "10:00+07:00",
+            "10:00Z", "1:5:7+07:00", "10:00:00-24:00", "10:00:00+25:00", "10:00:00+07:60", "10:00:00.1 +07:00",
+            "10:00:00  Z", "10:00:00z", "10:00:00.1z", "10:00:00+99:99", "10:00:00+07:00 ", "10:00:00 PM+07:00",
+            "10:00:00+07:00:00", "10:00:00-0:0");
+        final List<String> types = Arrays.asList("TIME", "TIME", "TIME", "TIME", "TEXT", "TEXT", "TIME", "TIME",
+            "TIME", "TEXT", "TEXT", "TIME", "TIME", "TIME", "TIME", "TIME", "TIME", "TEXT", "TEXT", "TIME", "TEXT",
+            "TEXT", "TEXT", "TIME");
+        final List<String> names = new ArrayList<String>();
+        final List<String> json = new ArrayList<String>();
+        final List<String> expected = new ArrayList<String>();
+        for (int i = 0; i < zoned.size(); i++) {
+            final String name = String.format(Locale.ROOT, "z%02d", i + 1);
+            names.add(name);
+            json.add("\"" + name + "\":\"" + zoned.get(i) + "\"");
+            expected.add(name + " | " + types.get(i));
+        }
+        stageLocalFile("st/z/", "zones.csv", String.join(",", names) + "\n" + String.join(",", zoned) + "\n");
+        assertEquals(expected, columnTypes("z", "ffh"));
+        // A JSON string reads the same.
+        stageLocalFile("st/zj/", "zones.json", "{" + String.join(",", json) + "}\n");
+        assertEquals(expected, columnTypes("zj", "fj"));
     }
 
     @Test

@@ -175,6 +175,8 @@ public class IdentityOrderTest extends BaseDatabaseTest {
             {"IDENTITY (1, 1) NOORDER (1, 1)", "47", "("}, {"AUTOINCREMENT (1, 1) START 1", "44", "START"},
             {"IDENTITY ()", "33", ")"}, {"AUTOINCREMENT ()", "38", ")"}, {"IDENTITY (x, 1)", "33", "x"},
             {"IDENTITY (1.5, 1)", "33", "1.5"}, {"IDENTITY (, 1)", "33", ","}, {"IDENTITY ORDER ()", "39", ")"},
+            // An INCREMENT with no value after it is no option, and the report ends at the word.
+            {"IDENTITY START 1 INCREMENT", "40", "INCREMENT"},
         };
         for (final String[] cell : cells) {
             assertEquals("SQL compilation error:|syntax error line 1 at position " + cell[1] + " unexpected '" + cell[2]

@@ -34,8 +34,8 @@ import org.junit.jupiter.api.Test;
  */
 public class GrantAllPrivilegesTest extends BaseDatabaseTest {
 
-    private static final List<String> TABLE = List.of("APPLYBUDGET", "DELETE", "DELETE ERROR TABLE", "EVOLVE SCHEMA",
-        "INSERT", "REBUILD", "REFERENCES", "SELECT", "SELECT ERROR TABLE", "TRUNCATE", "UPDATE");
+    private static final List<String> TABLE = List.of("APPLY COMMENT", "APPLYBUDGET", "DELETE", "DELETE ERROR TABLE",
+        "EVOLVE SCHEMA", "INSERT", "REBUILD", "REFERENCES", "SELECT", "SELECT ERROR TABLE", "TRUNCATE", "UPDATE");
 
     private static final List<String> SCHEMA_SAMPLE = List.of("ADD SEARCH OPTIMIZATION", "APPLYBUDGET",
         "CREATE DYNAMIC TABLE", "CREATE FILE FORMAT", "CREATE MATERIALIZED VIEW", "CREATE MULTI PARTY APPROVAL POLICY",
@@ -76,18 +76,18 @@ public class GrantAllPrivilegesTest extends BaseDatabaseTest {
         view.add("VIEW EXPANDED QUERY PROFILE");
         assertEquals(view, publicPrivileges("VIEW V"));
         engine.execute("GRANT ALL ON DATABASE test_db TO ROLE PUBLIC");
-        assertEquals(List.of("APPLYBUDGET", "CREATE DATABASE ROLE", "CREATE SCHEMA", "EXECUTE AUTO CLASSIFICATION",
-            "MODIFY", "MONITOR", "USAGE"), publicPrivileges("DATABASE test_db"));
+        assertEquals(List.of("APPLY COMMENT", "APPLYBUDGET", "CREATE DATABASE ROLE", "CREATE SCHEMA",
+            "EXECUTE AUTO CLASSIFICATION", "MODIFY", "MONITOR", "USAGE"), publicPrivileges("DATABASE test_db"));
         engine.execute("GRANT ALL ON SCHEMA test_db.test_schema TO ROLE PUBLIC");
         final List<String> schema = publicPrivileges("SCHEMA test_db.test_schema");
-        assertTrue(schema.size() >= 84, String.valueOf(schema.size()));
+        assertTrue(schema.size() >= 87, String.valueOf(schema.size()));
         assertTrue(schema.containsAll(SCHEMA_SAMPLE), schema.toString());
         engine.execute("GRANT ALL ON STAGE ST TO ROLE PUBLIC");
         assertEquals(List.of("READ", "WRITE"), publicPrivileges("STAGE ST"));
         engine.execute("GRANT ALL ON SEQUENCE SQ TO ROLE PUBLIC");
         assertEquals(List.of("USAGE"), publicPrivileges("SEQUENCE SQ"));
         engine.execute("GRANT ALL ON FUNCTION F(NUMBER) TO ROLE PUBLIC");
-        assertEquals(List.of("MONITOR", "USAGE"), publicPrivileges("FUNCTION F(NUMBER)"));
+        assertEquals(List.of("APPLY COMMENT", "MONITOR", "USAGE"), publicPrivileges("FUNCTION F(NUMBER)"));
         engine.execute("GRANT ALL ON MASKING POLICY MP TO ROLE PUBLIC");
         assertEquals(List.of("APPLY"), publicPrivileges("MASKING POLICY MP"));
         engine.execute("GRANT ALL ON ROW ACCESS POLICY RAP TO ROLE PUBLIC");

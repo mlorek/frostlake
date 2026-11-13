@@ -120,7 +120,7 @@ public class RevokeCountTest extends MeasuredCellsTestSupport {
                 "Statement executed successfully.",
                 "GRANT ALL ON TABLE rv_s.t2 TO ROLE flq_rv_r");
             assertAnswer(
-                "Statement executed successfully. 11 objects affected.",
+                "Statement executed successfully. 12 objects affected.",
                 "REVOKE ALL ON TABLE rv_s.t2 FROM ROLE flq_rv_r");
             assertAnswer(
                 "Statement executed successfully. 0 objects affected.",
@@ -132,13 +132,13 @@ public class RevokeCountTest extends MeasuredCellsTestSupport {
                 "Statement executed successfully. 1 objects affected.",
                 "REVOKE SELECT ON TABLE rv_s.t2 FROM ROLE flq_rv_r");
             assertAnswer(
-                "Statement executed successfully. 10 objects affected.",
+                "Statement executed successfully. 11 objects affected.",
                 "REVOKE ALL PRIVILEGES ON TABLE rv_s.t2 FROM ROLE flq_rv_r");
             assertAnswer(
                 "Statement executed successfully.",
                 "GRANT ALL ON VIEW rv_s.v1 TO ROLE flq_rv_r");
             assertAnswer(
-                "Statement executed successfully. 12 objects affected.",
+                "Statement executed successfully. 13 objects affected.",
                 "REVOKE ALL ON VIEW rv_s.v1 FROM ROLE flq_rv_r");
             assertAnswer(
                 "Statement executed successfully.",
@@ -150,7 +150,7 @@ public class RevokeCountTest extends MeasuredCellsTestSupport {
                 "Statement executed successfully.",
                 "GRANT ALL ON FUNCTION rv_s.f1() TO ROLE flq_rv_r");
             assertAnswer(
-                "Statement executed successfully. 2 objects affected.",
+                "Statement executed successfully. 3 objects affected.",
                 "REVOKE ALL ON FUNCTION rv_s.f1() FROM ROLE flq_rv_r");
             assertAnswer(
                 "Statement executed successfully.",
@@ -201,36 +201,36 @@ public class RevokeCountTest extends MeasuredCellsTestSupport {
                 "GRANT ALL ON TABLE al_s.t1 TO ROLE flq_al_r");
             engine.execute("SHOW GRANTS ON TABLE al_s.t1");
             assertAnswer(
-                "APPLYBUDGET,DELETE,DELETE ERROR TABLE,EVOLVE SCHEMA,INSERT,REBUILD,REFERENCES,SELECT,SELECT "
-                + "ERROR TABLE,TRUNCATE,UPDATE",
+                "APPLY COMMENT,APPLYBUDGET,DELETE,DELETE ERROR TABLE,EVOLVE SCHEMA,INSERT,REBUILD,REFERENCES,SELECT,"
+                + "SELECT ERROR TABLE,TRUNCATE,UPDATE",
                 "SELECT LISTAGG(\"privilege\", ',') WITHIN GROUP (ORDER BY \"privilege\") FROM "
                 + "TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"grantee_name\" = 'FLQ_AL_R'");
             assertAnswer(
-                "Statement executed successfully. 11 objects affected.",
+                "Statement executed successfully. 12 objects affected.",
                 "REVOKE ALL ON TABLE al_s.t1 FROM ROLE flq_al_r");
             assertAnswer(
                 "Statement executed successfully.",
                 "GRANT ALL ON VIEW al_s.v1 TO ROLE flq_al_r");
             engine.execute("SHOW GRANTS ON VIEW al_s.v1");
             assertAnswer(
-                "APPLYBUDGET,DELETE,DELETE ERROR TABLE,EVOLVE SCHEMA,INSERT,REBUILD,REFERENCES,SELECT,SELECT "
-                + "ERROR TABLE,TRUNCATE,UPDATE,VIEW EXPANDED QUERY PROFILE",
+                "APPLY COMMENT,APPLYBUDGET,DELETE,DELETE ERROR TABLE,EVOLVE SCHEMA,INSERT,REBUILD,REFERENCES,SELECT,"
+                + "SELECT ERROR TABLE,TRUNCATE,UPDATE,VIEW EXPANDED QUERY PROFILE",
                 "SELECT LISTAGG(\"privilege\", ',') WITHIN GROUP (ORDER BY \"privilege\") FROM "
                 + "TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"grantee_name\" = 'FLQ_AL_R'");
             assertAnswer(
-                "Statement executed successfully. 12 objects affected.",
+                "Statement executed successfully. 13 objects affected.",
                 "REVOKE ALL ON VIEW al_s.v1 FROM ROLE flq_al_r");
             assertAnswer(
                 "Statement executed successfully.",
                 "GRANT ALL ON MATERIALIZED VIEW al_s.mv1 TO ROLE flq_al_r");
             engine.execute("SHOW GRANTS ON MATERIALIZED VIEW al_s.mv1");
             assertAnswer(
-                "APPLYBUDGET,DELETE,DELETE ERROR TABLE,EVOLVE SCHEMA,INSERT,REBUILD,REFERENCES,SELECT,SELECT "
-                + "ERROR TABLE,TRUNCATE,UPDATE",
+                "APPLY COMMENT,APPLYBUDGET,DELETE,DELETE ERROR TABLE,EVOLVE SCHEMA,INSERT,REBUILD,REFERENCES,SELECT,"
+                + "SELECT ERROR TABLE,TRUNCATE,UPDATE",
                 "SELECT LISTAGG(\"privilege\", ',') WITHIN GROUP (ORDER BY \"privilege\") FROM "
                 + "TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"grantee_name\" = 'FLQ_AL_R'");
             assertAnswer(
-                "Statement executed successfully. 11 objects affected.",
+                "Statement executed successfully. 12 objects affected.",
                 "REVOKE ALL ON MATERIALIZED VIEW al_s.mv1 FROM ROLE flq_al_r");
             assertAnswer(
                 "Statement executed successfully.",
@@ -248,22 +248,22 @@ public class RevokeCountTest extends MeasuredCellsTestSupport {
                 "GRANT ALL ON FUNCTION al_s.f1() TO ROLE flq_al_r");
             engine.execute("SHOW GRANTS ON FUNCTION al_s.f1()");
             assertAnswer(
-                "MONITOR,USAGE",
+                "APPLY COMMENT,MONITOR,USAGE",
                 "SELECT LISTAGG(\"privilege\", ',') WITHIN GROUP (ORDER BY \"privilege\") FROM "
                 + "TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"grantee_name\" = 'FLQ_AL_R'");
             assertAnswer(
-                "Statement executed successfully. 2 objects affected.",
+                "Statement executed successfully. 3 objects affected.",
                 "REVOKE ALL ON FUNCTION al_s.f1() FROM ROLE flq_al_r");
             assertAnswer(
                 "Statement executed successfully.",
                 "GRANT ALL ON PROCEDURE al_s.p1() TO ROLE flq_al_r");
             engine.execute("SHOW GRANTS ON PROCEDURE al_s.p1()");
             assertAnswer(
-                "MONITOR,USAGE",
+                "APPLY COMMENT,MONITOR,USAGE",
                 "SELECT LISTAGG(\"privilege\", ',') WITHIN GROUP (ORDER BY \"privilege\") FROM "
                 + "TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"grantee_name\" = 'FLQ_AL_R'");
             assertAnswer(
-                "Statement executed successfully. 2 objects affected.",
+                "Statement executed successfully. 3 objects affected.",
                 "REVOKE ALL ON PROCEDURE al_s.p1() FROM ROLE flq_al_r");
             assertAnswer(
                 "Statement executed successfully.",
@@ -303,21 +303,22 @@ public class RevokeCountTest extends MeasuredCellsTestSupport {
                 "GRANT ALL ON SCHEMA al_s TO ROLE flq_al_r");
             engine.execute("SHOW GRANTS ON SCHEMA al_s");
             assertAnswer(
-                "84",
+                "87",
                 "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"grantee_name\" = 'FLQ_AL_R'");
             assertAnswer(
-                "Statement executed successfully. 84 objects affected.",
+                "Statement executed successfully. 87 objects affected.",
                 "REVOKE ALL ON SCHEMA al_s FROM ROLE flq_al_r");
             assertAnswer(
                 "Statement executed successfully.",
                 "GRANT ALL ON DATABASE test_db TO ROLE flq_al_r");
             engine.execute("SHOW GRANTS ON DATABASE test_db");
             assertAnswer(
-                "APPLYBUDGET,CREATE DATABASE ROLE,CREATE SCHEMA,EXECUTE AUTO CLASSIFICATION,MODIFY,MONITOR,USAGE",
+                "APPLY COMMENT,APPLYBUDGET,CREATE DATABASE ROLE,CREATE SCHEMA,EXECUTE AUTO CLASSIFICATION,MODIFY,"
+                    + "MONITOR,USAGE",
                 "SELECT LISTAGG(\"privilege\", ',') WITHIN GROUP (ORDER BY \"privilege\") FROM "
                 + "TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"grantee_name\" = 'FLQ_AL_R'");
             assertAnswer(
-                "Statement executed successfully. 7 objects affected.",
+                "Statement executed successfully. 8 objects affected.",
                 "REVOKE ALL ON DATABASE test_db FROM ROLE flq_al_r");
             assertAnswer(
                 "Statement executed successfully.",

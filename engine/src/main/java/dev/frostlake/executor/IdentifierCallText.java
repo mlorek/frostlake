@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor;
 
+import java.util.List;
+
 import dev.frostlake.executor.expressions.FunctionCallExpression;
 
 /**
@@ -31,4 +33,13 @@ interface IdentifierCallText {
      * @return the text, or null to spell the call as it is written
      */
     String spell(FunctionCallExpression call);
+
+    /**
+     * Refuses a call the statement itself refuses before running it, as the plan is written: a procedure's token
+     * called with arguments its procedure does not take.
+     *
+     * @param call          the call, named by IDENTIFIER, which {@link #spell} spelled
+     * @param argumentTexts its arguments as the plan writes them
+     */
+    void requireArguments(FunctionCallExpression call, List<String> argumentTexts);
 }

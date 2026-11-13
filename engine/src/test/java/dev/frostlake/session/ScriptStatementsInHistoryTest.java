@@ -172,9 +172,31 @@ public class ScriptStatementsInHistoryTest {
         engine.execute("CREATE FUNCTION f() RETURNS NUMBER AS 'SELECT MAX(a) FROM t'");
         engine.executeQuery("SELECT 'mark'");
         first("BEGIN LET x := f(); SELECT f(); RETURN x; END");
-        assertEquals("[SELECT f(), BEGIN LET x := f(); SELECT f(); RETURN x; END]",
+        assertEquals("[SELECT f(), SELECT f(), BEGIN LET x := f(); SELECT f(); RETURN x; END]",
             String.valueOf(rowsAfter("SELECT 'mark'")),
-            "the UDF's body and the LET's evaluation are no statements of the session's");
+            "the UDF's body is no statement of the session's; the LET's value, which calls it, is a query of its own");
+    }
+
+    /**
+     * A block expression that calls a user-defined function or reads a query is recorded as the query it runs:
+     * {@code SELECT} and the expression, and a value given to a variable of a declared type cast to it.
+     */
+    @Test
+    public void anExpressionRunAsAQueryIsRecordedAsOne() {
+        engine.execute("CREATE FUNCTION twice(x NUMBER) RETURNS NUMBER AS $$ x * 2 $$");
+        final String[][] cells = {
+            {"BEGIN LET n NUMBER := 0; n := twice(21); RETURN n; END", "SELECT CAST ( (twice(21)) AS NUMBER(38,0) )"},
+            {"BEGIN LET n NUMBER := 0; IF (twice(1) = 2) THEN n := 1; END IF; RETURN n; END", "SELECT twice(1) = 2"},
+            {"BEGIN LET z := twice(1); RETURN z; END", "SELECT twice(1)"},
+            {"BEGIN LET n NUMBER := 0; n := (SELECT 5); RETURN n; END", "SELECT CAST ( ((SELECT 5)) AS NUMBER(38,0) )"},
+            {"BEGIN LET n NUMBER := 0; n := ABS(-2) + twice(3); RETURN n; END",
+                "SELECT CAST ( (ABS(-2) + twice(3)) AS NUMBER(38,0) )"},
+        };
+        for (final String[] cell : cells) {
+            engine.executeQuery("SELECT 'mark'");
+            first(cell[0]);
+            assertEquals("[" + cell[1] + ", " + cell[0] + "]", String.valueOf(rowsAfter("SELECT 'mark'")), cell[0]);
+        }
     }
 
     @Test

@@ -112,15 +112,19 @@ public class ManualRunPrivilegeTest {
 
     @Test
     public void aRoleThatHoldsNothingOnThemIsToldThereAreNone() {
-        for (final String[] session : new String[][] {{"U_NOBODY", "NOBODY"}, {"U1", "R1"}}) {
-            as(session[0], session[1]);
-            assertEquals("SQL compilation error:\nTask 'P.PUBLIC.C' does not exist or not authorized. Your primary "
-                + "role " + session[1] + " must have at least one privilege granted on TASK P.PUBLIC.C.",
-                refusal("EXECUTE TASK p.public.c"));
-            assertEquals("SQL compilation error:\nAlert 'P.PUBLIC.AL' does not exist or not authorized. Your primary "
-                + "role " + session[1] + " must have at least one privilege granted on ALERT P.PUBLIC.AL.",
-                refusal("EXECUTE ALERT p.public.al"));
-        }
+        // A role that sees no database P is told the database is not there.
+        as("U_NOBODY", "NOBODY");
+        assertEquals("SQL compilation error:\nDatabase 'P' does not exist or not authorized. Your primary role NOBODY "
+            + "must have USAGE or any other privilege granted on DATABASE P.", refusal("EXECUTE TASK p.public.c"));
+        assertEquals("SQL compilation error:\nDatabase 'P' does not exist or not authorized. Your primary role NOBODY "
+            + "must have USAGE or any other privilege granted on DATABASE P.", refusal("EXECUTE ALERT p.public.al"));
+        as("U1", "R1");
+        assertEquals("SQL compilation error:\nTask 'P.PUBLIC.C' does not exist or not authorized. Your primary "
+            + "role R1 must have at least one privilege granted on TASK P.PUBLIC.C.",
+            refusal("EXECUTE TASK p.public.c"));
+        assertEquals("SQL compilation error:\nAlert 'P.PUBLIC.AL' does not exist or not authorized. Your primary "
+            + "role R1 must have at least one privilege granted on ALERT P.PUBLIC.AL.",
+            refusal("EXECUTE ALERT p.public.al"));
         assertEquals(0L, logged());
     }
 

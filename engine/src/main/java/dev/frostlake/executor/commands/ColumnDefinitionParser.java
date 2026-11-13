@@ -614,7 +614,7 @@ public class ColumnDefinitionParser implements CommandHandler {
      */
     public TableColumn parseSingleColumnDef(final FrostlakeParser.ColumnDefContext colDef,
                                             final boolean addColumn, final boolean iceberg) {
-        return parseSingleColumnDef(colDef, addColumn, iceberg, null, null);
+        return parseSingleColumnDef(colDef, addColumn, iceberg, null, null, null);
     }
 
     /**
@@ -658,11 +658,13 @@ public class ColumnDefinitionParser implements CommandHandler {
      * qualified so, {@code DEFAULT c2 + 1} as {@code DE.C2 + 1} (live-verified); which names it may read is judged by
      * {@link DefaultExpressionCalls#requireEarlierColumns}.
      *
-     * @param earlier the canonical names of the columns defined before it, or null outside a column list
-     * @param table   the table's canonical name, or null when not known
+     * @param earlier        the canonical names of the columns defined before it, or null outside a column list
+     * @param table          the table's canonical name, or null when not known
+     * @param earlierColumns the columns defined before it, which type the names its DEFAULT reads; null for none
      */
     TableColumn parseSingleColumnDef(final FrostlakeParser.ColumnDefContext colDef, final boolean addColumn,
-                                     final boolean iceberg, final Set<String> earlier, final String table) {
+                                     final boolean iceberg, final Set<String> earlier, final String table,
+                                     final List<TableColumn> earlierColumns) {
         final String colName = ParseTreeText.namePartText(colDef.columnDefName());
         rejectAnsiReservedColumnName(colName, colDef);
         if (!iceberg) {
@@ -835,7 +837,8 @@ public class ColumnDefinitionParser implements CommandHandler {
             // routine parameter's: a cast written :: is CAST(… AS …), a CASE is CASE_FLATTENED(…) (live-verified).
             final String written = ((DefaultValueExpression) defaultValue).getExpressionText();
             final String told = new DefaultExpressionCalls(queryExecutor)
-                .toldColumnDefault(defaultExpression.booleanExpr(), earlier != null ? table : null);
+                .toldColumnDefault(defaultExpression.booleanExpr(), earlier != null ? table : null,
+                    earlierColumns);
             defaultValue = new DefaultValueExpression(written, told.equals(written) ? null : told);
         }
 
@@ -967,7 +970,8 @@ public class ColumnDefinitionParser implements CommandHandler {
 
         for (final FrostlakeParser.ColumnOrConstraintContext item : ctx.columnOrConstraint()) {
             if (item.columnDef() != null) {
-                final TableColumn parsed = parseSingleColumnDef(item.columnDef(), false, iceberg, earlier, table);
+                final TableColumn parsed = parseSingleColumnDef(item.columnDef(), false, iceberg, earlier, table,
+                    columns);
                 DefaultExpressionCalls.requireEarlierColumns(item.columnDef(), parsed.getName(), earlier,
                     createdTableParts(ctx));
                 earlier.add(parsed.getName());

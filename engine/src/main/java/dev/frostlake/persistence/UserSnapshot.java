@@ -75,6 +75,10 @@ public class UserSnapshot implements Serializable {
     public String rsaPublicKey2;
     public String rsaPublicKey2Fp;
     public Instant rsaPublicKey2LastSetTime;
+    /** The passwords held before the current one, oldest first; null on snapshots that predate it. */
+    public List<String> previousPasswords;
+    /** When the current password was set; null on snapshots that predate it, or when none is. */
+    public Instant passwordSetAt;
 
     // Null on snapshots that predate the field (deserialization bypasses field initializers): restore null-checks.
     /** Who granted each role in grantedRoles, by role name. */

@@ -28,7 +28,8 @@ import org.junit.jupiter.api.function.Executable;
  * word, a comma met as the script's first fault, an opening '(' refused where no signature reads it, and anything after
  * a routine's quoted body. Live reads the later statements on only straight after a DROP's object name (not a stage's),
  * a SHOW's one-word kind, an UNSET's one name and BEGIN WORK or TRANSACTION, and, for a '(', after a membership or null
- * test, a VALUES row or the name of a plain CREATE DATABASE or CREATE SCHEMA (live-verified).
+ * test, a FROM list's VALUES row (not an INSERT's or a MERGE's) or the name of a plain CREATE DATABASE or CREATE SCHEMA
+ * (live-verified).
  */
 public class RunInLaterLinesTest extends BaseDatabaseTest {
 
@@ -178,9 +179,20 @@ public class RunInLaterLinesTest extends BaseDatabaseTest {
             refusal("UPDATE t SET a = 1 WHERE b IS NULL ('x'); SELECT 1 x y"));
         assertEquals(lines(at(29, "("), at(47, "y")), refusal("DELETE FROM t WHERE a IN (1) ('x'); SELECT 1 x y"));
         assertEquals(lines(at(30, "("), at(48, "y")), refusal("DELETE FROM t WHERE b IS NULL ('x'); SELECT 1 x y"));
-        assertEquals(lines(at(25, "("), at(43, "y")), refusal("INSERT INTO t VALUES (1) ('x'); SELECT 1 x y"));
-        assertEquals(lines(at(30, "("), at(48, "y")), refusal("INSERT INTO t VALUES (1), (2) ('x'); SELECT 1 x y"));
-        assertEquals(lines(at(29, "("), at(47, "y")), refusal("INSERT INTO t (a) VALUES (1) ('x'); SELECT 1 x y"));
+        // A FROM list's VALUES row reads on; an INSERT's or a MERGE's ends the report.
+        assertEquals(lines(at(25, "(")), refusal("INSERT INTO t VALUES (1) ('x'); SELECT 1 x y"));
+        assertEquals(lines(at(30, "(")), refusal("INSERT INTO t VALUES (1), (2) ('x'); SELECT 1 x y"));
+        assertEquals(lines(at(29, "(")), refusal("INSERT INTO t (a) VALUES (1) ('x'); SELECT 1 x y"));
+        assertEquals(lines(at(35, "(")), refusal("INSERT OVERWRITE INTO t VALUES (1) ('x'); SELECT 1 x y"));
+        assertEquals(lines(at(25, "(")), refusal("INSERT INTO t VALUES (1) (2); SELECT 1 x y"));
+        assertEquals(lines(at(25, "(")), refusal("INSERT INTO t VALUES (1) ('x') ('y'); SELECT 1 x y"));
+        assertEquals(lines(at(70, "(")),
+            refusal("MERGE INTO t USING s ON 1 = 1 WHEN NOT MATCHED THEN INSERT VALUES (1) ('x'); SELECT 1 x y"));
+        assertEquals(lines(at(25, "("), at(43, "y")), refusal("SELECT * FROM VALUES (1) ('x'); SELECT 1 x y"));
+        assertEquals(lines(at(30, "("), at(48, "y")), refusal("SELECT * FROM VALUES (1), (2) ('x'); SELECT 1 x y"));
+        assertEquals(lines(at(39, "("), at(57, "y")),
+            refusal("INSERT INTO t SELECT * FROM VALUES (1) ('x'); SELECT 1 x y"));
+        assertEquals(lines(at(27, "("), at(45, "y")), refusal("SELECT * FROM (VALUES (1)) ('x'); SELECT 1 x y"));
         assertEquals(lines(at(12, "("), at(30, "y")), refusal("SHOW TABLES ('x'); SELECT 1 x y"));
         assertEquals(lines(at(18, "("), at(36, "y")), refusal("SHOW TERSE TABLES ('x'); SELECT 1 x y"));
         assertEquals(lines(at(11, "("), at(29, "y")), refusal("BEGIN WORK ('x'); SELECT 1 x y"));

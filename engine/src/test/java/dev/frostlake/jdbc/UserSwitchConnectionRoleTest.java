@@ -73,7 +73,9 @@ public class UserSwitchConnectionRoleTest {
                     cell(statement, "SELECT * FROM usw.public.payroll");
                 }
             });
-            assertTrue(refused.getMessage().contains("PAYROLL"), refused.getMessage());
+            // The clerk sees no database USW, so the query is refused at the database it names.
+            assertTrue(refused.getMessage().contains("Database 'USW' does not exist or not authorized."),
+                refused.getMessage());
             statement.execute("USE ROLE clerk");
             assertEquals("CLERK", cell(statement, "SELECT CURRENT_ROLE()"));
         }

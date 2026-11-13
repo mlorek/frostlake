@@ -86,7 +86,7 @@ public class BlockVariableScopeTest extends BaseDatabaseTest {
     @Test
     public void anInnerDeclarationGovernsInsideItsBody() {
         assertEquals("Uncaught exception of type 'EXPRESSION_ERROR' on line 1 at position 46 : SQL compilation error: error"
-                + " line 1 at position 13\nInvalid argument types for function '+': (BOOLEAN, NUMBER(1,0))",
+                + " line 1 at position 14\nInvalid argument types for function '+': (BOOLEAN, NUMBER(1,0))",
             refusal(block("BEGIN LET x := 1; BEGIN LET x := TRUE; RETURN x + 1; END; END;")));
     }
 

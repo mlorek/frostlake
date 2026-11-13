@@ -185,4 +185,43 @@ public class VirtualColumnRulesTest extends MeasuredCellsTestSupport {
                 + "supported with ENABLE VALIDATE (you may specify ENABLE NOVALIDATE instead)."},
         });
     }
+
+    /**
+     * A virtual column's constraints may be written before its expression too and are judged alike: a DEFAULT is
+     * kept and listed, its value still the expression's; NOT NULL, a PRIMARY KEY and two DEFAULTs are refused (all
+     * live-verified).
+     */
+    @Test
+    public void constraintsBeforeTheExpression() {
+        assertCells(new String[][] {
+            {"CREATE OR REPLACE TABLE vbad (a INT, b INT NOT NULL AS (a + 1))",
+                "REFUSED SQL compilation error: Cannot set NOT NULL constraint on virtual column B."},
+            {"CREATE OR REPLACE TABLE vbad (a INT, b INT DEFAULT 1 NOT NULL AS (a + 1))",
+                "REFUSED SQL compilation error: Cannot set NOT NULL constraint on virtual column B."},
+            {"CREATE OR REPLACE TABLE vbad (a INT, b INT NULL AS (a + 1))",
+                "Table VBAD successfully created."},
+            {"CREATE OR REPLACE TABLE vbad (a INT, b INT DEFAULT 1 AS (a + 1) NOT NULL)",
+                "REFUSED SQL compilation error: Cannot set NOT NULL constraint on virtual column B."},
+            {"CREATE OR REPLACE TABLE vbad (a INT, b INT PRIMARY KEY AS (a + 1))",
+                "REFUSED SQL compilation error: Cannot set NOT NULL constraint on virtual column B."},
+            {"CREATE OR REPLACE TABLE vbad (a INT, b INT DEFAULT 1 DEFAULT 2 AS (a + 1))",
+                "REFUSED SQL compilation error:  | Multiple DEFAULT or AUTOINCREMENT expressions declared "
+                + "for column B."},
+            {"CREATE OR REPLACE TABLE vc1003d (a INT, b INT DEFAULT 1 AS (a + 1))",
+                "Table VC1003D successfully created."},
+            {"SHOW COLUMNS IN TABLE vc1003d ->> SELECT \"column_name\", \"kind\", \"default\" FROM $1",
+                "A|COLUMN| ;; B|VIRTUAL_COLUMN|1"},
+            {"SELECT GET_DDL('TABLE', 'vc1003d')",
+                "create or replace TABLE VC1003D ( | \tA NUMBER(38,0), | \tB NUMBER(38,0) AS (A + 1) DEFAULT 1 "
+                + "| );"},
+            {"INSERT INTO vc1003d VALUES (3)",
+                "1"},
+            {"SELECT a, b FROM vc1003d",
+                "3|4"},
+            {"CREATE OR REPLACE TABLE vc1003f (a INT, b INT DEFAULT a AS (a + 1))",
+                "Table VC1003F successfully created."},
+            {"CREATE OR REPLACE TABLE vc1003g (a INT, b INT AS (a + 1) DEFAULT 1)",
+                "Table VC1003G successfully created."},
+        });
+    }
 }

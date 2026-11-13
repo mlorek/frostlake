@@ -57,9 +57,11 @@ public class OwnershipTransferPrerequisiteTest extends MeasuredCellsTestSupport 
         engine.execute("GRANT OWNERSHIP ON PROCEDURE p1() TO ROLE flq_vs_r COPY CURRENT GRANTS");
         engine.execute("GRANT OWNERSHIP ON SCHEMA vs_s2 TO ROLE flq_vs_r COPY CURRENT GRANTS");
         assertCells(new String[][] {
-            {"SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'T1'", "0"},
-            {"SELECT table_name FROM information_schema.tables WHERE table_name IN ('T1', 'KEPT') ORDER BY 1", "KEPT"},
-            {"SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = 'VS_S2'", "0"},
+            // ACCOUNTADMIN lists in INFORMATION_SCHEMA what it gave away too.
+            {"SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'T1'", "2"},
+            {"SELECT table_name FROM information_schema.tables WHERE table_name IN ('T1', 'KEPT') ORDER BY 1",
+                "KEPT ;; T1"},
+            {"SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = 'VS_S2'", "1"},
         });
         engine.execute("DESCRIBE PROCEDURE p1()");
         assertCells(new String[][] {

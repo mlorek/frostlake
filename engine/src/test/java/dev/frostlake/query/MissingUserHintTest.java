@@ -48,6 +48,10 @@ public class MissingUserHintTest extends MeasuredCellsTestSupport {
         "SHOW TERSE GRANTS TO USER nosuch_hint_user",
         "SHOW PARAMETERS IN USER nosuch_hint_user",
         "SHOW DELEGATED AUTHORIZATIONS BY USER nosuch_hint_user",
+        "GRANT CREATE DATABASE ON ACCOUNT TO USER nosuch_hint_user",
+        "REVOKE CREATE DATABASE ON ACCOUNT FROM USER nosuch_hint_user",
+        "GRANT MONITOR ON USER nosuch_hint_user TO ROLE PUBLIC",
+        "SHOW GRANTS ON USER nosuch_hint_user",
     };
 
     private static final String[] OVER_TAGS = {
@@ -59,6 +63,8 @@ public class MissingUserHintTest extends MeasuredCellsTestSupport {
         "DROP USER nosuch_hint_user",
         "DESCRIBE USER nosuch_hint_user",
         "COMMENT ON USER nosuch_hint_user IS 'x'",
+        "ALTER USER nosuch_hint_user RESET PASSWORD",
+        "ALTER USER nosuch_hint_user ABORT ALL QUERIES",
         "ALTER USER nosuch_hint_user SET COMMENT = 'x'",
         "ALTER USER nosuch_hint_user SET QUERY_TAG = 'x'",
         "ALTER USER nosuch_hint_user UNSET COMMENT",

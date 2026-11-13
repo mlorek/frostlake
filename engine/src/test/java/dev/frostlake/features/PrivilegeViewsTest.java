@@ -97,8 +97,8 @@ public class PrivilegeViewsTest extends BaseDatabaseTest {
     @Test
     public void grantAllIsARowPerPrivilege() {
         engine.execute("GRANT ALL ON TABLE pv_tr TO ROLE pv_role");
-        assertEquals(rows("APPLYBUDGET", "DELETE", "DELETE ERROR TABLE", "EVOLVE SCHEMA", "INSERT", "REBUILD",
-            "REFERENCES", "SELECT", "SELECT ERROR TABLE", "TRUNCATE", "UPDATE"),
+        assertEquals(rows("APPLY COMMENT", "APPLYBUDGET", "DELETE", "DELETE ERROR TABLE", "EVOLVE SCHEMA", "INSERT",
+            "REBUILD", "REFERENCES", "SELECT", "SELECT ERROR TABLE", "TRUNCATE", "UPDATE"),
             cells("SELECT privilege_type FROM information_schema.table_privileges WHERE table_name = 'PV_TR'"
                 + " AND grantee = 'PV_ROLE' ORDER BY 1"));
     }

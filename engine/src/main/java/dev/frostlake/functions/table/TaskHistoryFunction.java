@@ -148,7 +148,7 @@ public class TaskHistoryFunction extends TableFunction {
 
     /**
      * The output columns, as the account orders and types them: every text unsized, the four times
-     * TIMESTAMP_LTZ, the versions, the run id, the attempt and the job id NUMBER(38,0).
+     * TIMESTAMP_LTZ, the versions, the run id, the attempt and the job id NUMBER(38,0); GRAPH_ID ends the row.
      */
     private static List<ResultSetColumn> columns() {
         return DeclaredColumnTypes.typed(Arrays.asList(
@@ -181,7 +181,8 @@ public class TaskHistoryFunction extends TableFunction {
             new ResultSetColumn("GRAPH_RUN_GROUP_ID", TaskGraphRuns.TEXT),
             new ResultSetColumn("BACKFILL_INFO", new ObjectType()),
             new ResultSetColumn("SPCS_JOB_ID", TaskGraphRuns.WHOLE_NUMBER),
-            new ResultSetColumn("SCHEDULED_BY_USER", TaskGraphRuns.TEXT)));
+            new ResultSetColumn("SCHEDULED_BY_USER", TaskGraphRuns.TEXT),
+            new ResultSetColumn("GRAPH_ID", TaskGraphRuns.TEXT)));
     }
 
     /**
@@ -189,7 +190,8 @@ public class TaskHistoryFunction extends TableFunction {
      * graph functions name it. A run that ran tells the query that ran the task's statement — its id, the code of
      * the error it failed with, and the hashes QUERY_HISTORY gives the statement — and the user it was scheduled by;
      * a scheduled run tells no query, the user who resumed the task, and the fire after its own (live-verified). The
-     * engine keeps one version of a graph and records no configuration or container job, so those cells are NULL.
+     * engine keeps one version of a graph and records no configuration, container job or graph object, so those
+     * cells are NULL.
      */
     private static Row row(final Task task, final Schema schema, final String state, final String errorMessage,
                            final Instant scheduled, final LocalDateTime started, final LocalDateTime ended,
@@ -221,7 +223,7 @@ public class TaskHistoryFunction extends TableFunction {
             null,
             hash, hash == null ? null : Long.valueOf(2L), hash, hash == null ? null : Long.valueOf(1L),
             runId == null ? null : TaskGraphs.graphRunGroupId(root, runId),
-            null, null, scheduledBy));
+            null, null, scheduledBy, null));
     }
 
     /** The root of the graph a task runs in: the task itself when nothing precedes it, or null when none is found. */

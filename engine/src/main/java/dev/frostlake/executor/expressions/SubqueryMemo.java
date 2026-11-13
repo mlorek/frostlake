@@ -53,6 +53,8 @@ public class SubqueryMemo {
     private final Map<String, PreparedKeyedValues> keyedValues = new HashMap<>();
     private final Map<String, PreparedKeySet> keySets = new HashMap<>();
     private final Map<String, PreparedKeyedMembers> keyedMembers = new HashMap<>();
+    private final Map<String, PreparedKeyedRows> keyedRows = new HashMap<>();
+    private final Map<String, ExpressionCollation[]> keyCollations = new HashMap<>();
     private final Set<String> correlated = new HashSet<>();
     private final Set<String> redrawn = new HashSet<>();
 
@@ -145,5 +147,38 @@ public class SubqueryMemo {
      */
     public void recordKeyedMembers(final String subquery, final PreparedKeyedMembers members) {
         keyedMembers.put(subquery, members);
+    }
+
+    /**
+     * @param subquery a residual rows query's text (see
+     *                 {@link dev.frostlake.executor.EqualityCorrelation#residualRowsQuery})
+     * @return its rows by key, or null when not computed in this statement
+     */
+    public PreparedKeyedRows cachedKeyedRows(final String subquery) {
+        return keyedRows.get(subquery);
+    }
+
+    /**
+     * @param subquery a residual rows query's text
+     * @param rows     its rows by key
+     */
+    public void recordKeyedRows(final String subquery, final PreparedKeyedRows rows) {
+        keyedRows.put(subquery, rows);
+    }
+
+    /**
+     * @param subquery a query whose prepared keys are cached here
+     * @return the collation each of its key columns carries, or null when not computed in this statement
+     */
+    public ExpressionCollation[] cachedKeyCollations(final String subquery) {
+        return keyCollations.get(subquery);
+    }
+
+    /**
+     * @param subquery   a query whose prepared keys are cached here
+     * @param collations the collation each of its key columns carries, by which the keys were prepared
+     */
+    public void recordKeyCollations(final String subquery, final ExpressionCollation[] collations) {
+        keyCollations.put(subquery, collations);
     }
 }

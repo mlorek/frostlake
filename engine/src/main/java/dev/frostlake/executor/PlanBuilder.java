@@ -18,9 +18,12 @@ package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
+import dev.frostlake.executor.expressions.SourcePosition;
+import dev.frostlake.executor.expressions.SubqueryExpression;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Parameter;
@@ -397,7 +400,7 @@ final class PlanBuilder {
             return writtenColumn(item, alias);
         }
         final PlanExpressionText printer = printer(state.getScope());
-        final String text = printer.spell(expression);
+        final String text = placedSpelling(printer, expression, item.booleanExpr());
         state.collect(printer);
         String name = alias;
         DataType type = null;
@@ -481,9 +484,29 @@ final class PlanBuilder {
 
     private PlanExpressionText printer(final PlanScope scope) {
         final PlanExpressionText printer = new PlanExpressionText(scope, executor.getFunctionRegistry(),
-            identifierCalls());
+            identifierCalls(), constants());
         printers.add(printer);
         return printer;
+    }
+
+    /** The constant parts of a plan's expressions, folded as the account folds them (see PlanConstantFold). */
+    private PlanConstants constants() {
+        return new PlanConstants() {
+            @Override
+            public String folded(final Expression expression) {
+                return PlanConstantFold.folded(executor, expression);
+            }
+
+            @Override
+            public InlinedFunctionBody inlined(final FunctionCallExpression call) {
+                return PlanConstantFold.inlined(executor, call);
+            }
+
+            @Override
+            public Expression inlinedItem(final SubqueryExpression subquery) {
+                return PlanConstantFold.inlinedItem(executor, subquery);
+            }
+        };
     }
 
     /** A call of a procedure's SYSTEM$REFERENCE token as the plan writes it (see ProcedureTokenCalls). */
@@ -501,7 +524,48 @@ final class PlanBuilder {
                 return name == null ? null
                     : ProcedureTokenCalls.planText(executor, name.toString(), call.getArguments().size());
             }
+
+            @Override
+            public void requireArguments(final FunctionCallExpression call, final List<String> argumentTexts) {
+                final Object name;
+                try {
+                    name = new ExpressionEvaluator(null, executor.getFunctionRegistry(), executor.getCatalog(),
+                        executor).evaluate(call.getNameExpression(), null);
+                } catch (final RuntimeException unresolved) {
+                    return;
+                }
+                if (name != null) {
+                    ProcedureTokenCalls.requirePlannedArguments(executor, name.toString(), call, argumentTexts);
+                }
+            }
         };
+    }
+
+    /**
+     * An expression's plan text, spelled with its tree's place in the statement as the origin of its fragment, so a
+     * call the plan refuses is refused where it is written.
+     */
+    private static String placedSpelling(final PlanExpressionText printer, final Expression expression,
+                                         final ParserRuleContext tree) {
+        final SourcePosition displaced = ExpressionSource.begin(new SourcePosition(tree.getStart().getLine(),
+            tree.getStart().getCharPositionInLine()));
+        try {
+            return printer.spell(expression);
+        } finally {
+            ExpressionSource.end(displaced);
+        }
+    }
+
+    /** {@link #placedSpelling} for a condition's conjuncts. */
+    private static List<String> placedConjuncts(final PlanExpressionText printer, final Expression expression,
+                                                final ParserRuleContext tree) {
+        final SourcePosition displaced = ExpressionSource.begin(new SourcePosition(tree.getStart().getLine(),
+            tree.getStart().getCharPositionInLine()));
+        try {
+            return printer.conjuncts(expression);
+        } finally {
+            ExpressionSource.end(displaced);
+        }
     }
 
     /**
@@ -514,7 +578,7 @@ final class PlanBuilder {
             return ParseTreeText.getOriginalText(tree);
         }
         final PlanExpressionText printer = printer(state.getScope());
-        final String text = printer.spell(expression);
+        final String text = placedSpelling(printer, expression, tree);
         state.collect(printer);
         markReads(printer.getReads());
         markCorrelated(tree, state.getScope());
@@ -534,7 +598,7 @@ final class PlanBuilder {
                 continue;
             }
             final PlanExpressionText printer = printer(state.getScope());
-            texts.addAll(printer.conjuncts(expression));
+            texts.addAll(placedConjuncts(printer, expression, condition));
             state.collect(printer);
             markReads(printer.getReads());
             markCorrelated(condition, state.getScope());
@@ -1047,7 +1111,7 @@ final class PlanBuilder {
                 return nextvals(sequences, new PlanNode("ValuesClause", NONE, null, Arrays.asList("()")))
                     .answering(selected(select, state));
             }
-            if (ProcedureTokenCalls.holdsCall(executor, select.selectList())) {
+            if (ProcedureTokenCalls.holdsPlannedCall(executor, select.selectList())) {
                 return new PlanNode("ValuesClause", NONE, null, Arrays.asList("()")).answering(selected(select, state));
             }
             return new PlanNode("Generator", NONE, null, Arrays.asList("1")).holding(Long.valueOf(1))

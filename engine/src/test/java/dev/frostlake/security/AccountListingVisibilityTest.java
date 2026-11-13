@@ -116,7 +116,9 @@ public class AccountListingVisibilityTest {
         assertEquals("ALV_P | SNOWFLAKE", names("SHOW DATABASES HISTORY"));
         assertEquals("ALV_P.INFORMATION_SCHEMA | ALV_P.SEEN_S", schemas("SHOW SCHEMAS IN DATABASE alv_p"));
         assertEquals("ALV_P.INFORMATION_SCHEMA | ALV_P.SEEN_S", schemas("SHOW SCHEMAS IN ACCOUNT"));
-        assertEquals("", schemas("SHOW SCHEMAS IN DATABASE alv_q"));
+        // A database the role does not see is one that does not exist, for its schemas' listing too.
+        assertEquals("Uncaught exception of type 'STATEMENT_ERROR' on line 1 at position 0 : SQL compilation error:|"
+            + "Object does not exist, or operation cannot be performed.", schemas("SHOW SCHEMAS IN DATABASE alv_q"));
         assertEquals("ALV_W1", names("SHOW WAREHOUSES"));
         assertEquals("", names("SHOW ALERTS IN ACCOUNT"));
         assertEquals("", names("SHOW CORTEX SEARCH SERVICES IN ACCOUNT"));

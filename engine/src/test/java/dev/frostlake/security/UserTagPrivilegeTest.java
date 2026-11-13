@@ -51,6 +51,9 @@ public class UserTagPrivilegeTest {
         engine.execute("CREATE USER victim");
         engine.execute("GRANT ROLE r1 TO USER u1");
         engine.execute("CREATE TAG p.public.t1");
+        // The tag's database and schema are the role's to use, so a refusal is about the tag or the user alone.
+        engine.execute("GRANT USAGE ON DATABASE p TO ROLE r1");
+        engine.execute("GRANT USAGE ON SCHEMA p.public TO ROLE r1");
     }
 
     @AfterEach

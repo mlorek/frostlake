@@ -28,6 +28,7 @@ import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.UserLookup;
 import dev.frostlake.executor.operators.ResultSetProvider;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
@@ -343,12 +344,7 @@ public class ShowCommandHandler implements CommandHandler {
 
     /** Whether a canonical name is exactly a database's. */
     private boolean namesADatabase(final String name) {
-        for (final Database database : catalog.getAllDatabases()) {
-            if (database.getName().equals(name)) {
-                return true;
-            }
-        }
-        return false;
+        return catalog.hasDatabaseExact(name);
     }
 
     /**
@@ -832,11 +828,7 @@ public class ShowCommandHandler implements CommandHandler {
             }
             // Only the organization account lists the organization's accounts, which this account is not: the
             // listing is refused whatever the role, LIKE or no LIKE (live-verified).
-            final SessionContext session = queryExecutor.getSecurityManager() == null ? null
-                : queryExecutor.getSecurityManager().getSessionContext();
-            throw new PrivilegeRefusal(SqlAccessControlError.manageAccountsRequired(
-                session == null ? null : session.getCurrentRole(), session != null && session.isSecondaryRolesInUse(),
-                catalog.getAccountLocator()));
+            throw new PrivilegeRefusal(SqlAccessControlError.organizationListingRefused());
         } else if (ctx.ACCOUNTS() != null) {
             if (ctx.showAccountsScope() != null) {
                 // The listing takes no scope: an IN with nothing after it is unfinished, any other is refused whole.
@@ -1681,6 +1673,11 @@ public class ShowCommandHandler implements CommandHandler {
             if (target.USER() != null && parts.length > 1) {
                 // A user belongs to the account: a qualified name names nothing (live-verified).
                 throw new RuntimeException(SqlCompilationError.objectDoesNotExist());
+            }
+            if (target.USER() != null) {
+                // A user that is not there asks a role without MANAGE GRANTS for it, as a grant naming the user does
+                // (live-verified).
+                UserLookup.asking(catalog, queryExecutor.getSecurityManager(), parts[0], Privilege.MANAGE_GRANTS);
             }
             final String objectType = target.securableKind() != null ? SecurableKinds.of(target.securableKind())
                 : target.VOLUME() != null ? "EXTERNAL_VOLUME" : target.USER() != null ? "USER" : null;

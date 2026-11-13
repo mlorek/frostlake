@@ -392,6 +392,20 @@ final class DefaultExpressionCalls {
      * @return the text
      */
     String toldColumnDefault(final ParserRuleContext written, final String table) {
+        return toldColumnDefault(written, table, null);
+    }
+
+    /**
+     * {@link #toldColumnDefault(ParserRuleContext, String)}, the columns it reads typed by their definitions, so a
+     * conversion the plan makes is told too: {@code 'x' || c2} over a NUMBER c2 is
+     * {@code 'x' || (CAST(DE.C2 AS VARCHAR(134217728)))} (live-verified).
+     *
+     * @param written the default
+     * @param table   the table's canonical name, or null to qualify nothing
+     * @param columns the columns defined before it, or null when not known
+     * @return the text
+     */
+    String toldColumnDefault(final ParserRuleContext written, final String table, final List<TableColumn> columns) {
         if (table == null) {
             return toldColumnDefault(written);
         }
@@ -412,7 +426,16 @@ final class DefaultExpressionCalls {
             cursor = name.getStop().getStopIndex() + 1 - offset;
         }
         qualified.append(original.substring(cursor));
-        return toldText(qualified.toString(), true);
+        if (columns == null || columns.isEmpty()) {
+            return toldText(qualified.toString(), true);
+        }
+        final List<TableColumn> typed = new ArrayList<TableColumn>();
+        for (final TableColumn column : columns) {
+            final TableColumn copy = column.retypedCopy(column.getDataType(), column.isNullable());
+            copy.setStaticallyTyped(true);
+            typed.add(copy);
+        }
+        return toldText(qualified.toString(), true, new Table(table, typed, true));
     }
 
     private String toldDefault(final ParserRuleContext written, final boolean column) {
@@ -420,10 +443,14 @@ final class DefaultExpressionCalls {
     }
 
     private String toldText(final String expression, final boolean column) {
+        return toldText(expression, column, new Table("$DEFAULT", new ArrayList<TableColumn>(), true));
+    }
+
+    /** {@link #toldText(String, boolean)}, the names it reads typed by the columns of {@code scope}. */
+    private String toldText(final String expression, final boolean column, final Table scope) {
         try {
-            final ExpressionEvaluatorVisitor printer = new ExpressionEvaluatorVisitor(
-                new Table("$DEFAULT", new ArrayList<TableColumn>(), true), null, queryExecutor.getFunctionRegistry(),
-                queryExecutor.getCatalog());
+            final ExpressionEvaluatorVisitor printer = new ExpressionEvaluatorVisitor(scope, null,
+                queryExecutor.getFunctionRegistry(), queryExecutor.getCatalog());
             final Expression parsed = AntlrExpressionParser.parse(expression);
             return column ? printer.strictToldColumnDefaultText(parsed) : printer.strictToldDefaultText(parsed);
         } catch (final RuntimeException unprintable) {

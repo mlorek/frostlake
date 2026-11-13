@@ -86,6 +86,9 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
     /** What COUNT declares, the divisor of every plain AVG. */
     private static final NumericType COUNT_TYPE = new NumericType("NUMBER", 18, 0);
     private static final int MAX_PRECISION = 38;
+
+    /** The number a BOOLEAN converts to first on its way to any exact number. */
+    private static final String BOOLEAN_NUMBER = "NUMBER(2,0)";
     /** The most decimals a NUMBER holds. */
     private static final int MAX_SCALE = 37;
     /** The digits and the decimals an average of distinct values adds to its argument's. */
@@ -2139,10 +2142,11 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             // A column default's echo spells a cast to FLOAT as the conversion: (TO_DOUBLE(0.5)) (live-verified).
             return "TO_DOUBLE(" + source.accept(this) + ")";
         }
-        // The plan converts a BOOLEAN to an exact number through NUMBER(2,0), and names that step whatever number the
-        // cast declares: id + CAST(b AS INT) is [FZ.ID + (CAST(FZ.B AS NUMBER(2,0)))] (live-verified).
-        final String target = argumentType(source) instanceof BooleanType && isExactNumber(targetType)
-            && !NumericType.isDecfloat(targetType) ? "NUMBER(2,0)" : typeText(expr);
+        // The plan converts a BOOLEAN to an exact number through NUMBER(2,0) (see booleanNumber); a conversion's
+        // sentence names that step alone.
+        final boolean booleanNumber = argumentType(source) instanceof BooleanType && isExactNumber(targetType)
+            && !NumericType.isDecfloat(targetType);
+        final String target = booleanNumber ? BOOLEAN_NUMBER : typeText(expr);
         final String targetText = tellingDefault && targetType instanceof StringType && expr.getTargetType() != null
             && expr.getTargetType().indexOf('(') < 0 ? "VARCHAR" : target != null ? target : expr.getTargetType();
         if (conversionShaped()) {
@@ -2206,10 +2210,39 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             return "TO_NUMBER(" + source.accept(this)
                 + (defaultWidth ? "" : ", " + number.getPrecision() + ", " + number.getScale()) + ")";
         }
+        if (booleanNumber && !expr.isTryMode()) {
+            final String declared = typeText(expr);
+            return booleanNumber(source, declared != null ? declared : expr.getTargetType());
+        }
         if (isNoOpCast(argumentType(source), targetType)) {
             return source.accept(this);
         }
         return (expr.isTryMode() ? "TRY_CAST(" : "CAST(") + source.accept(this) + " AS " + targetText + ")";
+    }
+
+    /**
+     * A BOOLEAN converted to an exact number as the plan holds it (all live-verified): a predicate — a comparison,
+     * a null test, an IN, a BETWEEN, a LIKE, an EQUAL_NULL, a NOT or a junction over one — as the BOOLEAN it
+     * yields and then NUMBER(2,0), whatever number is asked for, {@code CAST(CAST(FZ.ID > 5 AS BOOLEAN) AS
+     * NUMBER(2,0))}; any other BOOLEAN through NUMBER(2,0) and then the number asked for,
+     * {@code CAST(CAST(FZ.B AS NUMBER(2,0)) AS NUMBER(38,0))}, a NUMBER(2,0) asked for taking the one step alone.
+     */
+    private String booleanNumber(final Expression source, final String declared) {
+        if (isCallNamed(source, "EQUAL_NULL")) {
+            return "CAST(CAST(" + source.accept(this) + " AS BOOLEAN) AS " + BOOLEAN_NUMBER + ")";
+        }
+        if (spellsOutAPredicate(source)) {
+            // A junction's operands are judged as a condition's: (CAST(FZ.B AS BOOLEAN)) OR (FZ.ID > 5).
+            return "CAST(CAST(" + plannedCondition(source) + " AS BOOLEAN) AS " + BOOLEAN_NUMBER + ")";
+        }
+        final String step = "CAST(" + source.accept(this) + " AS " + BOOLEAN_NUMBER + ")";
+        return BOOLEAN_NUMBER.equals(declared) ? step : "CAST(" + step + " AS " + declared + ")";
+    }
+
+    /** Whether the expression is a call of the named function. */
+    private static boolean isCallNamed(final Expression expression, final String name) {
+        return expression instanceof FunctionCallExpression
+            && name.equalsIgnoreCase(((FunctionCallExpression) expression).getFunctionName());
     }
 
     /**
@@ -3217,7 +3250,7 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
             return null;
         }
         final DataType type = argumentType(args.get(0));
-        if (!(type instanceof NumericType)) {
+        if (!(type instanceof NumericType) && !(type instanceof BooleanType)) {
             return null;
         }
         final int[] width = {MAX_PRECISION, 0};
@@ -3228,6 +3261,9 @@ final class StrictMessagePrinter extends AstPrinterVisitor {
                 return null;
             }
             width[i - 1] = ((Number) ((LiteralExpression) written).getValue()).intValue();
+        }
+        if (type instanceof BooleanType) {
+            return booleanNumber(args.get(0), "NUMBER(" + width[0] + "," + width[1] + ")");
         }
         final NumericType number = (NumericType) type;
         if (!NumericType.isApproximate(number) && number.getPrecision() == width[0] && number.getScale() == width[1]) {

@@ -4,7 +4,8 @@
   "tags": ["functions", "file", "converted"],
   "tests": [
     {"name": "it-builds-a-descriptor-from-a-real-staged-file", "steps": [
-      {"sql": "CREATE STAGE st"},
+      {"sql": "ALTER SESSION SET USE_CACHED_RESULT = FALSE"},
+      {"sql": "CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
       {"sql": "CREATE TABLE src (a VARCHAR)"},
       {"sql": "INSERT INTO src VALUES ('hello world'),('second line')"},
       {"sql": "COPY INTO @st/hello.txt FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
@@ -16,7 +17,8 @@
       {"sql": "SELECT FL_GET_STAGE(TO_FILE('@st/hello.txt'))", "expect": {"value": "@TEST_DB.TEST_SCHEMA.ST"}}
     ]},
     {"name": "the-content-type-comes-from-the-extension-not-the-bytes", "steps": [
-      {"sql": "CREATE STAGE st"},
+      {"sql": "ALTER SESSION SET USE_CACHED_RESULT = FALSE"},
+      {"sql": "CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
       {"sql": "CREATE TABLE src (a VARCHAR)"},
       {"sql": "INSERT INTO src VALUES ('this is not a png it is plain text')"},
       {"sql": "COPY INTO @st/png_named.txt FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
@@ -28,7 +30,8 @@
       {"sql": "SELECT FL_GET_ETAG(TO_FILE('@st/png_named.txt')) = FL_GET_ETAG(TO_FILE('@st/text_named.png'))", "expect": {"value": "true"}}
     ]},
     {"name": "a-file-without-an-extension-is-octet-stream", "steps": [
-      {"sql": "CREATE STAGE st"},
+      {"sql": "ALTER SESSION SET USE_CACHED_RESULT = FALSE"},
+      {"sql": "CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
       {"sql": "CREATE TABLE src (a VARCHAR)"},
       {"sql": "INSERT INTO src VALUES ('no extension here')"},
       {"sql": "COPY INTO @st/noext FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
@@ -36,7 +39,8 @@
       {"sql": "SELECT FL_GET_FILE_TYPE(TO_FILE('@st/noext'))", "expect": {"value": "unknown"}}
     ]},
     {"name": "a-sub-directory-is-kept-in-the-relative-path", "steps": [
-      {"sql": "CREATE STAGE st"},
+      {"sql": "ALTER SESSION SET USE_CACHED_RESULT = FALSE"},
+      {"sql": "CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
       {"sql": "CREATE TABLE src (a VARCHAR)"},
       {"sql": "INSERT INTO src VALUES ('nested file')"},
       {"sql": "COPY INTO @st/sub/nested.txt FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
@@ -44,12 +48,14 @@
       {"sql": "SELECT FL_GET_CONTENT_TYPE(TO_FILE('@st/sub/nested.txt'))", "expect": {"value": "text/plain"}}
     ]},
     {"name": "a-missing-file-raises-snowflakes-not-found-error", "steps": [
-      {"sql": "CREATE STAGE st"},
+      {"sql": "ALTER SESSION SET USE_CACHED_RESULT = FALSE"},
+      {"sql": "CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
       {"sql": "SELECT TO_FILE('@st/missing.txt')", "expect": {"error": {"messageContains": "Remote file '@st/missing.txt' was not found."}}},
       {"sql": "SELECT TO_FILE('@st/missing.txt')", "expect": {"error": {"messageContains": "There are several potential causes."}}}
     ]},
     {"name": "a-directory-is-not-a-file", "steps": [
-      {"sql": "CREATE STAGE st"},
+      {"sql": "ALTER SESSION SET USE_CACHED_RESULT = FALSE"},
+      {"sql": "CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
       {"sql": "CREATE TABLE src (a VARCHAR)"},
       {"sql": "INSERT INTO src VALUES ('nested file')"},
       {"sql": "COPY INTO @st/sub/nested.txt FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
@@ -57,7 +63,8 @@
       {"sql": "SELECT TO_FILE('@st/')", "expect": {"error": {"messageContains": "Remote file '@st/' was not found."}}}
     ]},
     {"name": "the-two-argument-form-joins-with-a-slash", "steps": [
-      {"sql": "CREATE STAGE st"},
+      {"sql": "ALTER SESSION SET USE_CACHED_RESULT = FALSE"},
+      {"sql": "CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
       {"sql": "CREATE TABLE src (a VARCHAR)"},
       {"sql": "INSERT INTO src VALUES ('hello world'),('second line')"},
       {"sql": "COPY INTO @st/hello.txt FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
@@ -66,7 +73,8 @@
       {"sql": "SELECT TO_FILE('st', 'hello.txt')", "expect": {"error": {"messageContains": "'st/hello.txt'"}}}
     ]},
     {"name": "a-qualified-stage-name-resolves", "steps": [
-      {"sql": "CREATE STAGE st"},
+      {"sql": "ALTER SESSION SET USE_CACHED_RESULT = FALSE"},
+      {"sql": "CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"},
       {"sql": "CREATE TABLE src (a VARCHAR)"},
       {"sql": "INSERT INTO src VALUES ('hello world'),('second line')"},
       {"sql": "COPY INTO @st/hello.txt FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},

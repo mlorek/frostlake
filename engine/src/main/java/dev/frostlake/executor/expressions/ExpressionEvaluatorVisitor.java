@@ -33,6 +33,7 @@ import dev.frostlake.executor.LateralShapeArguments;
 import dev.frostlake.executor.NamedArguments;
 import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.executor.ParameterReferences;
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.ProceduralExecutor;
 import dev.frostlake.executor.ProcedureTokenCalls;
 import dev.frostlake.executor.QueryExecutor;
@@ -113,6 +114,7 @@ import dev.frostlake.metastore.model.StreamSourceType;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.UdfLanguage;
+import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ColumnSource;
 import dev.frostlake.storage.ResultSet;
@@ -197,6 +199,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 
 /**
@@ -380,6 +383,28 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
     // Package-private live-state accessors for extracted helpers (e.g. SubqueryEvaluator). The row and
     // lateral/subquery context change per outer row, so helpers must read them live, not snapshot them.
+    /**
+     * A call's arguments as a plan writes them, where each is a literal or a column of the relation the row is read
+     * from: {@code 1} as written, a column as {@code RELATION.COLUMN}; null where any is another expression.
+     */
+    private List<String> plannedArgumentTexts(final List<Expression> arguments) {
+        final List<String> texts = new ArrayList<>();
+        for (final Expression argument : arguments) {
+            if (argument instanceof LiteralExpression && ((LiteralExpression) argument).getValue() instanceof Number) {
+                texts.add(((LiteralExpression) argument).getValue() instanceof BigDecimal
+                    ? ((BigDecimal) ((LiteralExpression) argument).getValue()).toPlainString()
+                    : String.valueOf(((LiteralExpression) argument).getValue()));
+            } else if (argument instanceof ColumnReferenceExpression && table != null && table.getName() != null) {
+                final ColumnReferenceExpression column = (ColumnReferenceExpression) argument;
+                final String relation = column.isQualified() ? column.getTableName() : table.getName();
+                texts.add(relation.toUpperCase(Locale.ROOT) + "." + column.getColumnName().toUpperCase(Locale.ROOT));
+            } else {
+                return null;
+            }
+        }
+        return texts;
+    }
+
     Table getTable() {
         return table;
     }
@@ -3896,6 +3921,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 // ProcedureTokenCalls); a read of the relation's shape alone runs nothing, as CREATE VIEW reads it.
                 if (RelationShapeOnly.isActive()) {
                     return null;
+                }
+                // Too many arguments are refused before any is read, each written as the plan writes it.
+                final List<String> argumentTexts = plannedArgumentTexts(expr.getArguments());
+                if (argumentTexts != null && expr.getArgumentNames() == null) {
+                    ProcedureTokenCalls.requireCalledArgumentCount(queryExecutor, resolved.toString(), argumentTexts,
+                        expr.getPosition() == null ? null : ExpressionSource.resolve(expr.getPosition()));
                 }
                 final List<Object> values = new ArrayList<>();
                 for (final Expression argument : expr.getArguments()) {
@@ -17752,18 +17783,78 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * @return the refusal that waits for the statement around the subquery, or null
      */
     public RuntimeException openingOuterAggregateRefusal(final Expression item) {
+        return openingOuterAggregateRefusal(item, false);
+    }
+
+    /**
+     * {@link #openingOuterAggregateRefusal(Expression)}, over an input whose rows are open where asked: an empty one,
+     * or one a WHERE keeps no row of, which the statistics settle no condition of.
+     *
+     * @param item      the select item, parsed
+     * @param inputOpen whether only a constant settles a condition
+     * @return the refusal that waits for the statement around the subquery, or null
+     */
+    public RuntimeException openingOuterAggregateRefusal(final Expression item, final boolean inputOpen) {
         if (queryExecutor == null) {
             return null;
         }
-        final UnguardedSubqueryWalk walk = new UnguardedSubqueryWalk();
+        final UnguardedSubqueryWalk walk = new UnguardedSubqueryWalk(inputOpen ? null : this);
         item.accept(walk);
         for (final SubqueryExpression subquery : walk.subqueries()) {
-            final RuntimeException refused = subqueryEvaluator.openingOuterAggregateRefusal(subquery);
+            RuntimeException refused = subqueryEvaluator.openingOuterAggregateRefusal(subquery);
+            if (refused == null) {
+                refused = fromlessItemRefusal(subquery, inputOpen);
+            }
             if (refused != null) {
                 return refused;
             }
         }
         return null;
+    }
+
+    /**
+     * A scalar subquery reading no table evaluates its one item over the outer row, so the subqueries that item
+     * evaluates are judged as the outer item's own, each at its place: {@code (SELECT (SELECT MAX(o.i) FROM g))} and
+     * {@code (SELECT 1 + (SELECT MAX(e.i) FROM g))} are refused at the inner subquery (live-verified).
+     */
+    private RuntimeException fromlessItemRefusal(final SubqueryExpression subquery, final boolean inputOpen) {
+        if (subquery.isExistence() || subquery.getPosition() == null) {
+            return null;
+        }
+        final FrostlakeParser.SelectStatementContext statement =
+            queryExecutor.subqueryStatement(subquery.getSubquery());
+        FrostlakeParser.SelectStatementContext current = statement;
+        FrostlakeParser.SelectClauseContext clause = null;
+        while (current != null && clause == null && current.selectOperand().size() == 1) {
+            clause = current.selectOperand(0).selectClause();
+            current = current.selectOperand(0).selectStatement();
+        }
+        if (clause == null || clause.tableExpression() != null || clause.selectList() == null
+                || clause.selectList().selectItem().size() != 1) {
+            return null;
+        }
+        final ParserRuleContext value = SelectItemAccessors.getItemExpression(clause.selectList().selectItem(0));
+        if (value == null) {
+            return null;
+        }
+        final Expression inner;
+        try {
+            inner = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(value));
+        } catch (final RuntimeException unparsed) {
+            return null;
+        }
+        final SourcePosition atSubquery = ExpressionSource.beginNested(subquery.getPosition());
+        try {
+            final SourcePosition atItem = ExpressionSource.beginNested(new SourcePosition(value.getStart().getLine(),
+                value.getStart().getCharPositionInLine()));
+            try {
+                return openingOuterAggregateRefusal(inner, inputOpen);
+            } finally {
+                ExpressionSource.end(atItem);
+            }
+        } finally {
+            ExpressionSource.end(atSubquery);
+        }
     }
 
     public RuntimeException compileSubqueries(final Expression expression, final Map<String, Object> enclosingNames) {

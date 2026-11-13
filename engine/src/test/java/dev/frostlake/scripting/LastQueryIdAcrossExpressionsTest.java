@@ -21,15 +21,18 @@ import dev.frostlake.storage.Row;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * A scripting expression is not a statement: LAST_QUERY_ID still names the statement before it. The engine
- * evaluates a function call in an assignment, a condition or a RETURN by running a rebuilt
- * {@code SELECT f(args)}, which used to take a query ID of its own — so after
- * {@code CALL p(); a := ARRAY_APPEND(a, 'x');} RESULT_SCAN(LAST_QUERY_ID()) read the one-column answer of the
- * ARRAY_APPEND and refused "invalid identifier 'ROW_ID'". Snowflake reads the CALL's table there.
+ * A scripting expression of built-in calls and operators is no statement: LAST_QUERY_ID still names the statement
+ * before it, so after {@code CALL p(); a := ARRAY_APPEND(a, 'x');} RESULT_SCAN(LAST_QUERY_ID()) reads the CALL's
+ * table. One that calls a user-defined function or reads a query runs as a query of its own, which LAST_QUERY_ID
+ * then names: RESULT_SCAN reads its one value and refuses "invalid identifier 'ROW_ID'" (live-verified).
  */
 public class LastQueryIdAcrossExpressionsTest extends BaseDatabaseTest {
 
@@ -48,14 +51,14 @@ public class LastQueryIdAcrossExpressionsTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void aFunctionCallAssignmentKeepsTheCallsResult() {
+    public void aBuiltInCallKeepsTheCallsResult() {
         assertEquals("2", scalar("""
             EXECUTE IMMEDIATE $$
             DECLARE cnt INT; a ARRAY DEFAULT ARRAY_CONSTRUCT(); n NUMBER;
             BEGIN
               CALL rows_p();
               a := ARRAY_APPEND(a, 'CALL rows_p()');
-              n := twice(21);
+              n := ABS(-2) + 1;
               IF (ARRAY_SIZE(a) = 1 AND UPPER('x') = 'X') THEN
                 a := ARRAY_APPEND(a, 'SELECT ...');
               END IF;
@@ -63,6 +66,45 @@ public class LastQueryIdAcrossExpressionsTest extends BaseDatabaseTest {
               RETURN cnt;
             END;
             $$"""));
+    }
+
+    @Test
+    public void aUserFunctionOrAQueryTakesAQueryIdOfItsOwn() {
+        final String[][] cells = {
+            {"n := twice(21);", "100"},
+            {"LET z := twice(1);", "103"},
+            {"n := (SELECT 5);", "101"},
+            {"a := ARRAY_APPEND(a, 'x'); n := twice(21);", "127"},
+            {"IF (twice(1) = 2) THEN n := 1; END IF;", "123"},
+        };
+        for (final String[] cell : cells) {
+            assertEquals("Uncaught exception of type 'STATEMENT_ERROR' on line 1 at position " + cell[1]
+                + " : SQL compilation error: error line 1 at position 63\ninvalid identifier 'ROW_ID'",
+                refusal(between(cell[0])), cell[0]);
+        }
+        for (final String kept : new String[] {"", "a := ARRAY_APPEND(a, 'x');",
+            "IF (UPPER('x') = 'X') THEN n := 1; END IF;", "n := ABS(-2);", "n := 1 + 1;",
+            "IF (ARRAY_SIZE(a) = 0) THEN n := 1; END IF;"}) {
+            assertEquals("2", scalar(between(kept)), kept);
+        }
+        assertEquals("false", scalar("EXECUTE IMMEDIATE $$ DECLARE cnt INT; BEGIN CALL rows_p(); "
+            + "RETURN (SELECT LAST_QUERY_ID() IS NULL); END; $$").toLowerCase(Locale.ROOT));
+    }
+
+    /** A block that CALLs rows_p(), runs the given steps, and counts what RESULT_SCAN(LAST_QUERY_ID()) reads. */
+    private static String between(final String steps) {
+        return "EXECUTE IMMEDIATE $$ DECLARE cnt INT; a ARRAY DEFAULT ARRAY_CONSTRUCT(); n NUMBER; BEGIN "
+            + "CALL rows_p(); " + steps + " SELECT COUNT(*) INTO :cnt FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) "
+            + "WHERE row_id IN (1, 2); RETURN cnt; END; $$";
+    }
+
+    private String refusal(final String sql) {
+        return assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery(sql);
+            }
+        }).getMessage();
     }
 
     @Test

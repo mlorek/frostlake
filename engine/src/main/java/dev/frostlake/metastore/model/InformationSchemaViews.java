@@ -79,6 +79,9 @@ public final class InformationSchemaViews {
             "The file formats defined in this database that are accessible to the current user's role."},
         {"FUNCTIONS",
             "The user-defined functions defined in this database that are accessible to the current user's role."},
+        {"FUNCTION_INVERSES",
+            "The function inverse relationships defined in this database that are accessible to the current user's "
+                + "role."},
         {"GIT_REPOSITORIES",
             "Git repositories in this database that are accessible by the current user's role"},
         {"HYBRID_TABLES",

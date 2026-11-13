@@ -13,7 +13,9 @@
       {"sql": "INSERT INTO sales VALUES ('East','A',10), ('East','B',20), ('West','A',30)"},
       {"sql": "SELECT region, GROUPING_ID(region) AS gid FROM sales GROUP BY ROLLUP(region) ORDER BY region NULLS LAST", "expect": {"rows": [["East",0],["West",0],[null,1]], "ordered": true}}
     ]},
-    {"name": "grouping-id-equals-grouping-for-the-same-arguments", "steps": [
+    {"name": "grouping-id-equals-grouping-for-the-same-arguments",
+     "skip": {"backends": ["snowflake"], "reason": "the account answers this statement with an internal error (an incident), which Frostlake records and does not imitate"},
+     "steps": [
       {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount INTEGER)"},
       {"sql": "INSERT INTO sales VALUES ('East','A',10), ('East','B',20), ('West','A',30)"},
       {"sql": "SELECT region, product, GROUPING(region, product) AS g, GROUPING_ID(region, product) AS gid FROM sales GROUP BY ROLLUP(region, product) ORDER BY region NULLS LAST, product NULLS LAST", "expect": {"rows": [["East","A",0,0],["East","B",0,0],["East",null,1,1],["West","A",0,0],["West",null,1,1],[null,null,3,3]], "ordered": true}},

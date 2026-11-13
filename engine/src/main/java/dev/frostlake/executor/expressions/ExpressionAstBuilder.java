@@ -407,6 +407,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             UnaryOperator.NOT, visit(ctx.booleanExpr()));
         negated.setPosition(new SourcePosition(
             ctx.NOT().getSymbol().getLine(), ctx.NOT().getSymbol().getCharPositionInLine()));
+        markNegatedExistence(negated.getOperand());
         return negated;
     }
 
@@ -422,6 +423,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         if (BangOperator.negatesExists(ctx)) {
             final UnaryOperationExpression negated = new UnaryOperationExpression(UnaryOperator.NOT, operand);
             negated.setPosition(at);
+            markNegatedExistence(operand);
             return negated;
         }
         final List<Expression> arguments = new ArrayList<>();
@@ -432,6 +434,15 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         call.setNameParts(name);
         call.setPosition(at);
         return call;
+    }
+
+    /** Marks an EXISTS's body as negated, where the operand of a NOT is an EXISTS (see SubqueryEvaluator). */
+    private static void markNegatedExistence(final Expression operand) {
+        if (operand instanceof UnaryOperationExpression
+                && ((UnaryOperationExpression) operand).getOperator() == UnaryOperator.EXISTS
+                && ((UnaryOperationExpression) operand).getOperand() instanceof SubqueryExpression) {
+            ((SubqueryExpression) ((UnaryOperationExpression) operand).getOperand()).markNegatedExistence();
+        }
     }
 
     /**
@@ -2336,11 +2347,17 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             return namedArgumentWindowCall(ctx, ctx.functionName(), args, ctx.overClause(), ctx.DISTINCT(), ctx.ALL(),
                 ctx.withinGroupClause());
         }
-        final FunctionCallExpression namedCall = new FunctionCallExpression(calledName(ctx.functionName()), args,
-            names);
+        final FunctionCallExpression namedCall;
+        if (ctx.functionName().identifierArgument() != null) {
+            // IDENTIFIER($tok)(x => 1): the function's name read per evaluation, as for a call in order.
+            namedCall = new FunctionCallExpression(originalText(ctx.functionName()),
+                identifierArgument(ctx.functionName().identifierArgument()), args, names);
+        } else {
+            namedCall = new FunctionCallExpression(calledName(ctx.functionName()), args, names);
+            // The parse tree's canonical parts, so a user-defined function resolves by its exact name.
+            nameCall(namedCall, ctx.functionName());
+        }
         namedCall.describeShape(quantifier(ctx.DISTINCT(), ctx.ALL()), withinGroupKeys(ctx.withinGroupClause()));
-        // The parse tree's canonical parts, so a user-defined function resolves by its exact name.
-        nameCall(namedCall, ctx.functionName());
         namedCall.setArgumentPositions(places);
         // Positioned like any other call, so a refusal of its arguments points at it the way live does.
         namedCall.setPosition(new SourcePosition(

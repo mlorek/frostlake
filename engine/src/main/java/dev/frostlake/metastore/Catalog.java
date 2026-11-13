@@ -329,7 +329,7 @@ public class Catalog {
      */
     public Database getDatabase(final String name) {
         final Database db = databases.get(NameKeys.keyFor(databases, name));
-        if (db == null) {
+        if (db == null || HiddenDatabases.hides(db.getName())) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Database", name));
         }
         return db;
@@ -342,7 +342,8 @@ public class Catalog {
      * @return the database, or null when there is none of that name
      */
     public Database findDatabase(final String name) {
-        return name == null ? null : databases.get(NameKeys.keyFor(databases, name));
+        final Database db = name == null ? null : databases.get(NameKeys.keyFor(databases, name));
+        return db == null || HiddenDatabases.hides(db.getName()) ? null : db;
     }
 
     /**
@@ -352,10 +353,14 @@ public class Catalog {
      * must then equal a stored one. Live rejects {@code mixedDb} for a database created as
      * {@code "mixedDb"} with {@code Database 'MIXEDDB' does not exist or not authorized.}, naming the
      * resolved form rather than the spelling; so does this.
+     *
+     * <p>A database the running statement names but does not see is missing to it too (see {@link HiddenDatabases}):
+     * SHOW listings scoped to it, DESCRIBE, a query, GET_DDL and USE all answer as they answer a missing database
+     * (live-verified for a role holding no privilege on it).
      */
     public Database databaseExact(final String name) {
         final Database db = name == null ? null : databases.get(name);
-        if (db == null) {
+        if (db == null || HiddenDatabases.hides(name)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Database", name));
         }
         return db;
@@ -647,7 +652,7 @@ public class Catalog {
 
     /** The database whose stored name is exactly {@code resolvedName}, or null. */
     private Database exactDatabaseOrNull(final String resolvedName) {
-        return resolvedName == null ? null : databases.get(resolvedName);
+        return resolvedName == null || HiddenDatabases.hides(resolvedName) ? null : databases.get(resolvedName);
     }
 
     public String getCurrentDatabase() {
@@ -1603,7 +1608,7 @@ public class Catalog {
      * @return whether it exists
      */
     public boolean hasDatabaseExact(final String name) {
-        return name != null && databases.containsKey(name);
+        return name != null && databases.containsKey(name) && !HiddenDatabases.hides(name);
     }
 
     /** Re-insert a previously-dropped database object (UNDROP DATABASE). */

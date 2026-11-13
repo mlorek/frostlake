@@ -47,12 +47,16 @@ import dev.frostlake.types.TypeCategory;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -95,6 +99,11 @@ final class PlanExpressionText extends AstPrinterVisitor {
     private final PlanScope scope;
     private final FunctionRegistry functions;
     private final IdentifierCallText identifierCalls;
+    private final PlanConstants constants;
+    /** The arguments a SQL function's inlined body reads by its parameters' names, innermost body first. */
+    private final Deque<Map<String, Expression>> boundParameters = new ArrayDeque<>();
+    /** Each constant part's folded text, or the empty text for a part that is no constant, as looked up once. */
+    private final Map<Expression, String> foldedParts = new IdentityHashMap<>();
     private final List<PlanRead> reads = new ArrayList<>();
     private final Set<String> owners = new LinkedHashSet<>();
     private final List<String> aggregateKeys = new ArrayList<>();
@@ -110,10 +119,11 @@ final class PlanExpressionText extends AstPrinterVisitor {
      * @param identifierCalls what a call named by IDENTIFIER is written as
      */
     PlanExpressionText(final PlanScope scope, final FunctionRegistry functions,
-                       final IdentifierCallText identifierCalls) {
+                       final IdentifierCallText identifierCalls, final PlanConstants constants) {
         this.scope = scope;
         this.functions = functions;
         this.identifierCalls = identifierCalls;
+        this.constants = constants;
     }
 
     /**
@@ -123,7 +133,22 @@ final class PlanExpressionText extends AstPrinterVisitor {
      * @return the text
      */
     String spell(final Expression expression) {
-        return expression.accept(this);
+        final String folded = folded(expression);
+        return folded != null ? folded : expression.accept(this);
+    }
+
+    /** A constant part folded to its value's text (see {@link PlanConstantFold}), or null for any other part. */
+    private String folded(final Expression expression) {
+        if (constants == null || expression == null) {
+            return null;
+        }
+        String folded = foldedParts.get(expression);
+        if (folded == null) {
+            final String computed = constants.folded(expression);
+            folded = computed == null ? "" : computed;
+            foldedParts.put(expression, folded);
+        }
+        return folded.isEmpty() ? null : folded;
     }
 
     /**
@@ -173,6 +198,17 @@ final class PlanExpressionText extends AstPrinterVisitor {
 
     @Override
     public String visitColumnReference(final ColumnReferenceExpression expr) {
+        final Expression bound = boundParameters.isEmpty() || expr.isQualified() ? null
+            : boundParameters.peek().get(expr.getColumnName().toUpperCase(Locale.ROOT));
+        if (bound != null) {
+            // The argument is written as the call around the body reads it.
+            final Map<String, Expression> body = boundParameters.pop();
+            try {
+                return spell(bound);
+            } finally {
+                boundParameters.push(body);
+            }
+        }
         final PlanColumn column = scope == null ? null : scope.resolve(expr);
         if (column != null) {
             reads.addAll(column.getReads());
@@ -309,13 +345,31 @@ final class PlanExpressionText extends AstPrinterVisitor {
         final String identified = expr.getNameExpression() == null ? null : identifierCalls.spell(expr);
         if (identified != null) {
             // The arguments are read all the same, their columns the scan's.
+            final List<String> argumentTexts = new ArrayList<>();
             for (final Expression argument : expr.getArguments()) {
-                spell(argument);
+                argumentTexts.add(spell(argument));
             }
+            identifierCalls.requireArguments(expr, argumentTexts);
             return identified;
         }
         if (expr.getFunctionName() == null || expr.getNameExpression() != null) {
             return super.visitFunctionCall(expr);
+        }
+        final InlinedFunctionBody inlined = constants == null ? null : constants.inlined(expr);
+        if (inlined != null) {
+            // A SQL function's call is written as its body, each parameter read as its argument (see
+            // PlanConstantFold).
+            final Map<String, Expression> bound = new HashMap<>();
+            final List<String> parameters = inlined.getParameters();
+            for (int i = 0; i < parameters.size(); i++) {
+                bound.put(parameters.get(i), expr.getArguments().get(i));
+            }
+            boundParameters.push(bound);
+            try {
+                return spell(inlined.getBody());
+            } finally {
+                boundParameters.pop();
+            }
         }
         final String name = expr.getFunctionName().toUpperCase(Locale.ROOT);
         final List<Expression> args = expr.getArguments();
@@ -497,7 +551,8 @@ final class PlanExpressionText extends AstPrinterVisitor {
 
     @Override
     public String visitSubquery(final SubqueryExpression expr) {
-        return "(" + expr.getSubquery() + ")";
+        final Expression item = constants == null ? null : constants.inlinedItem(expr);
+        return item != null ? spell(item) : "(" + expr.getSubquery() + ")";
     }
 
     /** A run of AND, or of OR, listed flat with each operand in parentheses. */
@@ -747,7 +802,7 @@ final class PlanExpressionText extends AstPrinterVisitor {
 
     /** Whether an expression is a value the plan holds as it is: a literal, a negative number, a folded literal. */
     private boolean isLiteral(final Expression expression) {
-        if (expression instanceof LiteralExpression) {
+        if (expression instanceof LiteralExpression || folded(expression) != null) {
             return true;
         }
         if (expression instanceof UnaryOperationExpression) {

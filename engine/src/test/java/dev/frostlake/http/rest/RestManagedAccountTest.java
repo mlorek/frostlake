@@ -28,7 +28,7 @@ public class RestManagedAccountTest extends BaseRestTest {
     @Test
     public void aManagedAccountIsCreatedListedAndDropped() throws Exception {
         final String status = ok(post("/api/v2/managed-accounts", """
-            {"name":"reader_basic","admin_name":"admin","admin_password":"Sdfed43da!44","account_type":"READER",
+            {"name":"reader_basic","admin_name":"admin","admin_password":"Sdfed43da!44Xy","account_type":"READER",
              "comment":"rest"}""")).path("status").asString();
         assertTrue(status.contains("\"accountName\":\"READER_BASIC\""), status);
         final JsonNode accounts = ok(get("/api/v2/managed-accounts?like=reader_%25"));

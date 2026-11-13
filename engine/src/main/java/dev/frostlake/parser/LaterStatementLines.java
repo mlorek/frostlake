@@ -43,7 +43,7 @@ import org.antlr.v4.runtime.misc.IntervalSet;
  *       ('x'); SELECT 1 x y} the '(' alone and {@code CREATE FUNCTION f() RETURNS INT AS '1' x; SELECT 1 x y} the 'x'
  *       alone — except in the places {@code runInReadPast} lists, which read on: after a DROP's name, a SHOW's kind,
  *       an UNSET's name, BEGIN WORK or TRANSACTION, a table's alias in a query's FROM list, and, for a '(', a
- *       membership or null test, a VALUES row and a plain CREATE DATABASE or SCHEMA's name.</li>
+ *       membership or null test, a query's VALUES row and a plain CREATE DATABASE or SCHEMA's name.</li>
  *   <li>A NUMBER OR A STRING RUN IN after a finished statement ends the report or lets it go on by what it
  *       follows: see {@link LiteralRunIn}.</li>
  *   <li>A WORD RUN INTO ANOTHER inside a bracket of a SELECT list — a scalar subquery, a parenthesized expression, a
@@ -386,8 +386,9 @@ final class LaterStatementLines {
      *       on, {@code UNSET x, y} and {@code UNSET (x) y} do not;</li>
      *   <li>any token straight after BEGIN WORK or BEGIN TRANSACTION, where START TRANSACTION and a transaction's NAME
      *       end the report;</li>
-     *   <li>a '(' after a membership test, a null test or a quantified LIKE — not after an EXISTS — after a VALUES
-     *       row, and after the name of a CREATE DATABASE or a CREATE SCHEMA written without OR REPLACE or
+     *   <li>a '(' after a membership test, a null test or a quantified LIKE — not after an EXISTS — after a
+     *       query's VALUES row (not an INSERT's or a MERGE's: {@code INSERT INTO t VALUES (1) ('x')} is the '('
+     *       alone), and after the name of a CREATE DATABASE or a CREATE SCHEMA written without OR REPLACE or
      *       TRANSIENT;</li>
      *   <li>a word after a table's alias in a query's FROM list.</li>
      * </ul>
@@ -461,8 +462,8 @@ final class LaterStatementLines {
 
     /**
      * Whether a '(' at {@code f}, run in after the complete statement opened at {@code s}, still lets the later
-     * statements be read: after IS [NOT] NULL, after the bracket of an IN, ANY, ALL or SOME, after a VALUES row, or
-     * after the name of a plain CREATE DATABASE or CREATE SCHEMA.
+     * statements be read: after IS [NOT] NULL, after the bracket of an IN, ANY, ALL or SOME, after a VALUES row of
+     * a FROM list, or after the name of a plain CREATE DATABASE or CREATE SCHEMA.
      */
     private boolean parenReadPast(final int s, final int f) {
         final int before = type(f - 1);
@@ -486,7 +487,13 @@ final class LaterStatementLines {
                     return false;
                 }
             }
-            return type(open - 1) == FrostlakeLexer.VALUES;
+            if (type(open - 1) != FrostlakeLexer.VALUES) {
+                return false;
+            }
+            // A FROM list's VALUES reads on; an INSERT's or a MERGE's ends the report.
+            final int source = type(open - 2);
+            return source == FrostlakeLexer.FROM || source == FrostlakeLexer.JOIN || source == FrostlakeLexer.COMMA
+                || source == FrostlakeLexer.LPAREN;
         }
         if (type(s) != FrostlakeLexer.CREATE
                 || type(s + 1) != FrostlakeLexer.DATABASE && type(s + 1) != FrostlakeLexer.SCHEMA) {

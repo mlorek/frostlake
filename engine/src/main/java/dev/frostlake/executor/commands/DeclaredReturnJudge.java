@@ -32,6 +32,7 @@ import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.types.VectorType;
 import dev.frostlake.values.CodePointText;
 
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -122,12 +123,29 @@ final class DeclaredReturnJudge {
             return;
         }
         final DataType actual = returnedType(((FrostlakeParser.ValueExprContext) ret.booleanExpr()).expression());
+        if (declared instanceof VectorType && unsupportedForVector(actual) != null) {
+            // A VECTOR takes no such value, which the account names by its family alone (live-verified).
+            throw new RuntimeException(SqlCompilationError.of("Unsupported data type '" + unsupportedForVector(actual)
+                + "'."));
+        }
         if (!incompatible(actual)) {
             return;
         }
         throw new RuntimeException(SqlCompilationError.at(ret.getStart().getLine(),
             ret.getStart().getCharPositionInLine(), " Declared return type '" + spelled(declared)
                 + "' is incompatible with actual return type '" + spelled(actual) + "'"));
+    }
+
+    /** The family a declared VECTOR refuses a value of, as the account names it; null for one it is not told of. */
+    private static String unsupportedForVector(final DataType actual) {
+        if (actual instanceof BooleanType) {
+            return "BOOLEAN";
+        }
+        if (actual instanceof StringType) {
+            return "TEXT";
+        }
+        return actual instanceof NumericType && !NumericType.isApproximate(actual) && !NumericType.isDecfloat(actual)
+            ? "FIXED" : null;
     }
 
     /** Whether no cast carries a value of {@code actual} into the declared type. */

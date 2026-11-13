@@ -452,7 +452,7 @@ public class CreateTableHandler implements CommandHandler {
                 table.setOwner(grantsOfNew.owner());
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
-                TableStageOptions.applyFrom(table, ctx.tableTailOption());
+                TableStageOptions.applyFrom(table, ctx.tableTailOption(), catalog);
                 IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
@@ -504,7 +504,7 @@ public class CreateTableHandler implements CommandHandler {
                 table.setOwner(grantsOfNew.owner());
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
-                TableStageOptions.applyFrom(table, ctx.tableTailOption());
+                TableStageOptions.applyFrom(table, ctx.tableTailOption(), catalog);
                 IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
@@ -594,7 +594,7 @@ public class CreateTableHandler implements CommandHandler {
                 table.setOwner(grantsOfNew.owner());
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
-                TableStageOptions.applyFrom(table, ctx.tableTailOption());
+                TableStageOptions.applyFrom(table, ctx.tableTailOption(), catalog);
                 IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 table.setHybrid(isHybrid);
@@ -703,7 +703,7 @@ public class CreateTableHandler implements CommandHandler {
                 table.setOwner(grantsOfNew.owner());
                 table.setLastDdlBy(catalog.currentUserForDdl());
                 InlineTags.applyFrom(table, ctx.tableTailOption(), queryExecutor);
-                TableStageOptions.applyFrom(table, ctx.tableTailOption());
+                TableStageOptions.applyFrom(table, ctx.tableTailOption(), catalog);
                 IcebergTables.applyAtCreate(ctx, table, copySource, catalog, databaseName, schema);
                 applyChangeTracking(ctx, table);
                 DefaultDdlCollation.apply(table, table.getColumns(), schema, catalog);

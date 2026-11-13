@@ -32,8 +32,23 @@ public abstract class BaseExpression {
      */
     private ParserRuleContext judgedFrom;
 
+    /**
+     * The parse tree of a block's own expression as written, judged or not: what a block expression that runs as a
+     * query of its own is recorded as. Null for any other expression.
+     */
+    private ParserRuleContext writtenFrom;
+
     public ParserRuleContext getJudgedFrom() {
         return judgedFrom;
+    }
+
+    /** @return the parse tree the expression was written as, or null when it is no block's own expression */
+    public ParserRuleContext getWrittenFrom() {
+        return writtenFrom != null ? writtenFrom : judgedFrom;
+    }
+
+    public void setWrittenFrom(final ParserRuleContext writtenFrom) {
+        this.writtenFrom = writtenFrom;
     }
 
     public void setJudgedFrom(final ParserRuleContext judgedFrom) {

@@ -53,9 +53,10 @@ import java.util.Set;
 /**
  * A session variable is a property's value where a DDL statement gives one (live-verified): the COMMENT of every
  * kind, {@code ALTER TABLE t SET COMMENT = $x}, a table's, a schema's and a database's parameters, a task's options
- * and its SCHEDULE, a file format's options, a stage's format, copy and encryption options and a table's
- * STAGE_FILE_FORMAT and STAGE_COPY_OPTIONS, the properties of a password and a session policy, and every property of a
- * network rule, a secret, a packages and an authentication policy, a list's items among them - the name matched
+ * and its SCHEDULE, a file format's options, a stage's URL, format, copy, credential and encryption options and its
+ * STORAGE_INTEGRATION, a table's STAGE_FILE_FORMAT and STAGE_COPY_OPTIONS, the properties of a password and a session
+ * policy, and every property of a network rule, a network policy, a secret, a packages and an authentication policy,
+ * a list's items among them - the name matched
  * without regard to case. Before the statement runs each such variable is read as the literal of what it holds, so
  * the statement takes it as it takes the literal, once the property has judged the value by its type:
  *
@@ -81,6 +82,11 @@ import java.util.Set;
  *       as TRUE or FALSE, and a NULL is {@code invalid parameter '$v'};</li>
  *   <li>a stage's encryption TYPE reads a text or a number as the type's text, and a stage's DIRECTORY takes no
  *       variable for ENABLE, {@code invalid value [$b] for parameter 'ENABLE'};</li>
+ *   <li>an external stage's URL takes a text alone, any other value refused by the variable's name, {@code invalid
+ *       value [$n] for parameter 'URL'}; a key among its CREDENTIALS or ENCRYPTION takes a text, a number refused by
+ *       its value, {@code invalid value [5] for parameter 'KMS_KEY_ID'}; its STORAGE_INTEGRATION reads a text as the
+ *       integration's name, a number being no type of it (the account answers a NULL or a Boolean in these places
+ *       with an internal error, refused here in the nearest measured words);</li>
  *   <li>a password or a session policy takes a variable for its COMMENT and the items of its lists alone: any other
  *       property is {@code invalid type of property '$n' for 'PASSWORD_MIN_LENGTH'}, and a list given to it {@code
  *       Invalid value specified for property 'PASSWORD_MIN_LENGTH'};</li>
@@ -230,6 +236,11 @@ public final class PropertyVariables {
         if (parent instanceof FrostlakeParser.SecurityPropertyValueContext) {
             return securityPlace(variable, (FrostlakeParser.SecurityPropertyValueContext) parent);
         }
+        if (parent instanceof FrostlakeParser.StagePropertiesContext
+                || parent instanceof FrostlakeParser.StageSettingContext
+                    && ((FrostlakeParser.StageSettingContext) parent).URL() != null) {
+            return new VariablePropertyPlace("URL", VariablePropertyKind.URL);
+        }
         final String key = keyBefore(variable);
         if (key == null) {
             return null;
@@ -297,6 +308,13 @@ public final class PropertyVariables {
                 && stageOptionList(owner.getParent(), "DIRECTORY")) {
             return new VariablePropertyPlace(key, VariablePropertyKind.DIRECTORY_SWITCH);
         }
+        if (owner instanceof FrostlakeParser.ParenOptionContext && (stageOptionList(owner.getParent(), "CREDENTIALS")
+                || stageOptionList(owner.getParent(), "ENCRYPTION"))) {
+            return new VariablePropertyPlace(key, VariablePropertyKind.KEY_TEXT);
+        }
+        if (isStage(owner) && "STORAGE_INTEGRATION".equals(key)) {
+            return new VariablePropertyPlace(key, VariablePropertyKind.INTEGRATION);
+        }
         throw unexpected(variable, value);
     }
 
@@ -311,10 +329,7 @@ public final class PropertyVariables {
         return "STAGE_FILE_FORMAT".equals(property) || "STAGE_COPY_OPTIONS".equals(property);
     }
 
-    /**
-     * The property of a variable among a security object's properties (see the class comment). A network policy takes
-     * none where it stands.
-     */
+    /** The property of a variable among a security object's properties (see the class comment). */
     private static VariablePropertyPlace securityPlace(final TerminalNode variable,
                                                        final FrostlakeParser.SecurityPropertyValueContext value) {
         final ParseTree property = value.getParent();
@@ -326,9 +341,6 @@ public final class PropertyVariables {
         }
         final SecurityObjectKind kind =
             SecurityObjectCommandHandler.kindOf((FrostlakeParser.SecurityObjectStatementContext) statement);
-        if (kind == SecurityObjectKind.NETWORK_POLICY) {
-            throw unexpected(variable, value);
-        }
         final String key = upper(((FrostlakeParser.SecurityPropertyContext) property).optionKey());
         final SecurityPropertySpec spec = SecurityPropertySpecs.find(kind, key);
         final boolean list = spec != null && (spec.getType() == SecurityPropertyType.TEXT_LIST
@@ -486,6 +498,23 @@ public final class PropertyVariables {
                     return text(written, text ? (String) value : plain(value));
                 }
                 throw new RuntimeException(SqlCompilationError.invalidValueForParameter(spelled, name));
+            case URL:
+                if (text) {
+                    return text(written, (String) value);
+                }
+                throw new RuntimeException(SqlCompilationError.invalidValueForParameter(spelled, name));
+            case INTEGRATION:
+                if (text) {
+                    // Read as a name written bare: folded to upper case (live-verified).
+                    return token(written, FrostlakeLexer.IDENTIFIER, ((String) value).toUpperCase(Locale.ROOT));
+                }
+                throw invalidType(spelled, name);
+            case KEY_TEXT:
+                if (text) {
+                    return text(written, (String) value);
+                }
+                throw new RuntimeException(SqlCompilationError.invalidValueForParameter(number ? plain(value)
+                    : spelled, name));
             case OPTION:
                 if (nothing) {
                     throw new RuntimeException(SqlCompilationError.invalidValueForParameter(spelled, name));

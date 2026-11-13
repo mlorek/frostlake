@@ -23,6 +23,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -74,12 +76,12 @@ public class SqlUdfBodyIsNoStatementTest {
         assertEquals("10", first("SELECT * FROM TABLE(tf(10)) ORDER BY x"));
         assertEquals("mark", beforeLast(), "a UDTF's query body");
 
-        // Read inside the block: EXECUTE IMMEDIATE takes query IDs of its own, so the statement before it is
-        // further back than LAST_QUERY_ID(-2) outside.
-        assertEquals("mark-if", first("EXECUTE IMMEDIATE $$ DECLARE r VARCHAR DEFAULT ''; BEGIN"
+        // A scripting condition that calls one is a query of its own, though: LAST_QUERY_ID inside the block then
+        // names the condition, whose one value RESULT_SCAN reads.
+        assertEquals("true", first("EXECUTE IMMEDIATE $$ DECLARE r VARCHAR DEFAULT ''; BEGIN"
             + " SELECT 'mark-if' AS c; IF (fq() > 0) THEN r := 'x'; END IF;"
-            + " LET res RESULTSET := (SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))); RETURN TABLE(res); END; $$"),
-            "a scripting condition calling one");
+            + " LET res RESULTSET := (SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))); RETURN TABLE(res); END; $$")
+            .toLowerCase(Locale.ROOT), "a scripting condition calling one");
     }
 
     @Test

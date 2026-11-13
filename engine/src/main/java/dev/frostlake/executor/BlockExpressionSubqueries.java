@@ -29,6 +29,7 @@ import dev.frostlake.executor.procedural.UnaryExpression;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * The subqueries of a block's own expression — a RETURN value, a LET or assignment value, a condition —
@@ -126,6 +127,45 @@ final class BlockExpressionSubqueries {
                 collectUnknownCalls(evaluator, argument, unknown);
             }
         }
+    }
+
+    /**
+     * Whether the account runs a block expression as a query of its own, which takes a query ID that LAST_QUERY_ID
+     * names next: one that reads a query or calls a user-defined function. Built-in calls and operators are worked
+     * in the block itself and take none (live-verified).
+     *
+     * @param evaluator  the evaluator whose functions and catalog resolve the names
+     * @param expression the block expression
+     * @return whether it runs as a query
+     */
+    static boolean runsAsQuery(final ExpressionEvaluator evaluator, final BaseExpression expression) {
+        if (expression instanceof SqlScalarExpression) {
+            final Expression sql = ((SqlScalarExpression) expression).getExpression();
+            return readsQuery(sql) || evaluator.callsUserFunction(sql);
+        }
+        if (expression instanceof dev.frostlake.executor.procedural.SubqueryExpression) {
+            return true;
+        }
+        if (expression instanceof BinaryExpression) {
+            return runsAsQuery(evaluator, ((BinaryExpression) expression).getLeft())
+                || runsAsQuery(evaluator, ((BinaryExpression) expression).getRight());
+        }
+        if (expression instanceof UnaryExpression) {
+            return runsAsQuery(evaluator, ((UnaryExpression) expression).getOperand());
+        }
+        if (expression instanceof FunctionCallExpression) {
+            final FunctionCallExpression call = (FunctionCallExpression) expression;
+            if (call.getFunctionName() != null && evaluator.callsUserFunction(
+                    Collections.singletonList(call.getFunctionName().toUpperCase(Locale.ROOT)))) {
+                return true;
+            }
+            for (final BaseExpression argument : call.getArguments()) {
+                if (runsAsQuery(evaluator, argument)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**

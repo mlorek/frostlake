@@ -90,6 +90,12 @@ public class GrantsFollowEveryKindTest {
             return true;
         } catch (final SecurityException denied) {
             return false;
+        } catch (final RuntimeException unseen) {
+            // A database the reader does not see is refused as one that does not exist.
+            if (String.valueOf(unseen.getMessage()).contains("does not exist or not authorized")) {
+                return false;
+            }
+            throw unseen;
         } finally {
             engine.getSessionContext().clearActiveRoles();
             engine.setCurrentUser(adminUser);
@@ -188,6 +194,9 @@ public class GrantsFollowEveryKindTest {
     public void aCreateAsksForItsPrivilegeOnTheSchemaItLandsIn() {
         engine.execute("CREATE DATABASE g2");
         engine.execute("USE SCHEMA g.PUBLIC");
+        // A role reaches a schema only with USAGE on it and its database, whatever it may create there.
+        engine.execute("GRANT USAGE ON DATABASE g2 TO ROLE reader_role");
+        engine.execute("GRANT USAGE ON SCHEMA g2.PUBLIC TO ROLE reader_role");
         engine.execute("GRANT CREATE TABLE ON SCHEMA g2.PUBLIC TO ROLE reader_role");
         assertTrue(readerMay("CREATE TABLE g2.PUBLIC.made (a INT)"), "granted on G2.PUBLIC");
         assertFalse(readerMay("CREATE TABLE g.PUBLIC.denied (a INT)"), "nothing granted on G.PUBLIC");

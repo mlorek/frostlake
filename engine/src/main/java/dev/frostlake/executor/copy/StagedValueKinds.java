@@ -309,9 +309,10 @@ public final class StagedValueKinds {
     /**
      * A time of day: {@code HH24:MI}, {@code HH24:MI:SS} and a fraction of any length after the point, the point
      * alone too — each part one or two digits — or the same with {@code HH12} and {@code AM} or {@code PM} after
-     * any number of spaces, in any case. A fraction's point may be followed, after any spaces, by a zone: {@code Z}
-     * or a sign, one or two digits, a colon and one or two digits ({@code 10:00:00.1+07:00}); a zone anywhere else
-     * makes it TEXT ({@code 10:00:00+07:00}, {@code 10:00:00.1+07:00 PM}).
+     * any number of spaces, in any case. On a twenty-four-hour clock the seconds, or a fraction's point, may be
+     * followed, after any spaces, by a zone: {@code Z} or a sign, one or two digits, a colon and one or two digits
+     * ({@code 10:00:00+07:00}, {@code 10:00:00.1 Z}); a zone anywhere else makes it TEXT ({@code 10:00+07:00},
+     * {@code 10:00:00+0700}, {@code 10:00:00.1+07:00 PM}).
      */
     private static boolean isTime(final String text) {
         final String upper = text.toUpperCase(Locale.ROOT);
@@ -346,7 +347,7 @@ public final class StagedValueKinds {
         if (second < 0 || second > 59) {
             return false;
         }
-        if (at[0] == text.length()) {
+        if (at[0] == text.length() || !twelveHour && isZone(text, at[0])) {
             return true;
         }
         if (!charAt(text, at, '.')) {

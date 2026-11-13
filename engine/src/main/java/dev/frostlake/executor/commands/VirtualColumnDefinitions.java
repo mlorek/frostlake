@@ -76,7 +76,9 @@ final class VirtualColumnDefinitions {
      */
     static void refuseConstraints(final String name, final FrostlakeParser.ColumnDefContext definition) {
         for (final FrostlakeParser.ColumnConstraintContext constraint : definition.columnConstraint()) {
-            final String kind = constraint.NOT() != null ? "NOT NULL" : constraint.CHECK() != null ? "CHECK" : null;
+            // A PRIMARY KEY makes the column NOT NULL, and is refused as that (live-verified).
+            final String kind = constraint.NOT() != null || constraint.PRIMARY() != null ? "NOT NULL"
+                : constraint.CHECK() != null ? "CHECK" : null;
             if (kind != null) {
                 throw new RuntimeException(SqlCompilationError.inline(
                     "Cannot set " + kind + " constraint on virtual column " + name + "."));

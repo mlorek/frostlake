@@ -338,6 +338,13 @@ final class PivotUnpivotExecutor {
                         final List<Row> cellRows = entry.getValue().getOrDefault(Integer.valueOf(i),
                             new ArrayList<Row>());
                         Object aggResult = executor.aggregateOverRows(aggregateCall, cellRows, table);
+                        if (aggResult == null && cellRows.isEmpty() && "COUNT_IF".equals(aggFuncName)
+                                && (!groupByColIndices.isEmpty() || !rows.isEmpty())) {
+                            // The account reads each of the group's rows into every cell, as a NULL where the row is
+                            // another cell's, so a count no row reaches is zero, though COUNT_IF over no rows at all
+                            // is NULL (live-verified).
+                            aggResult = Long.valueOf(0L);
+                        }
                         if (aggResult != null && widened) {
                             aggResult = atPivotedType(aggResult, pivotedType);
                         }

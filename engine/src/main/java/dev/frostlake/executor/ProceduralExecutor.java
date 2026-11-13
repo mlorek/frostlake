@@ -79,6 +79,7 @@ import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.functions.scalar.semistructured.ParseJson;
 import dev.frostlake.jdbc.JdbcMarshaling;
+import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlCharStream;
@@ -161,6 +162,9 @@ public class ProceduralExecutor {
     private static final Logger logger = LoggerFactory.getLogger(ProceduralExecutor.class);
 
     private final ScopeManager scope = new ScopeManager();
+
+    /** How deep the block expressions run as queries of their own nest (see evaluatedAsQuery). */
+    private int expressionQueryDepth;
     private final CursorManager cursorManager = new CursorManager();
     // Active CONTINUE handlers (innermost on top), pushed while a block with an EXCEPTION section runs;
     // loop executors consult the top so a matching loop-body error resumes at the next iteration.
@@ -621,7 +625,7 @@ public class ProceduralExecutor {
     }
 
     private void executeDeclare(final DeclareStatement stmt) {
-        markDeclaredInCurrentScope(stmt.getVariableName());
+        scope.markDeclaredInCurrentScope(stmt.getVariableName(), !stmt.isWrittenByLet());
         rememberInitialiserType(stmt.getVariableName(), stmt.getInitialiserType());
         final DataType declaredType = stmt.getDeclaredType();
         if (declaredType != null) {
@@ -1391,6 +1395,8 @@ public class ProceduralExecutor {
         if (!handledExceptions.isEmpty()) {
             addHandlerSuppliedNames(types, bound);
         }
+        // A name a nested block or a handler declares, or one shadowing an enclosing name, is written out as a bind.
+        bound.addAll(scope.namesWrittenAsBinds());
         final Map<String, DataType> passed = judgedPasses.get(expression);
         if (passed != null && passed.equals(types) && Objects.equals(judgedPassTargets.get(expression), target)) {
             return;
@@ -2487,6 +2493,11 @@ public class ProceduralExecutor {
                     throw refused;
                 }
             }
+            if (expr != null && expr.getWrittenFrom() != null && queryExecutor != null && expressionQueryDepth == 0
+                    && BlockExpressionSubqueries.runsAsQuery(new ExpressionEvaluator(null,
+                        queryExecutor.getFunctionRegistry(), queryExecutor.getCatalog(), queryExecutor), expr)) {
+                return evaluatedAsQuery(expr, target);
+            }
             return evaluateBuiltExpression(expr);
         } catch (final RuntimeException failed) {
             // Live splits the uncaught kinds by what was RUNNING: a fault raised evaluating an
@@ -2505,6 +2516,105 @@ public class ProceduralExecutor {
             }
             throw failed;
         }
+    }
+
+    /**
+     * A block expression the account runs as a query of its own (see BlockExpressionSubqueries#runsAsQuery): it is a
+     * child statement of the session's, so it takes a query ID that LAST_QUERY_ID names next and RESULT_SCAN reads as
+     * its one value, or a FAILED row when it fails.
+     */
+    private Object evaluatedAsQuery(final BaseExpression expr, final DataType target) {
+        final String text = queryText(expr.getWrittenFrom(), target);
+        expressionQueryDepth++;
+        final QueryHistory row = queryExecutor.beginChildStatement(text, null);
+        final Object value;
+        try {
+            value = evaluateBuiltExpression(expr);
+        } catch (final RuntimeException failed) {
+            expressionQueryDepth--;
+            queryExecutor.failChildStatement(row, text, failed);
+            throw failed;
+        }
+        expressionQueryDepth--;
+        queryExecutor.completeChildStatement(row, text,
+            OneValueResult.of(ParseTreeText.getOriginalText(expr.getWrittenFrom()).toUpperCase(Locale.ROOT), value));
+        return value;
+    }
+
+    /**
+     * The text QUERY_HISTORY records for a block expression run as a query: {@code SELECT f()}, and a value given to a
+     * variable of a declared type cast to it, {@code SELECT CAST ( (twice(21)) AS NUMBER(38,0) )} (live-verified).
+     */
+    private static String queryText(final ParserRuleContext expression, final DataType target) {
+        final String written = ParseTreeText.getOriginalText(expression);
+        return target == null ? "SELECT " + written
+            : "SELECT CAST ( (" + written + ") AS " + SqlTypeNames.refusalSpelling(target) + " )";
+    }
+
+    /**
+     * Begins the child statement of a block expression written in the parse tree that the account runs as a query of
+     * its own (see BlockExpressionSubqueries#runsAsQuery) — a LET's or a DECLARE's value — or answers null for one
+     * that is worked in the block itself.
+     *
+     * @param expression the expression as parsed
+     * @return its history row, which {@link #endExpressionQuery} or {@link #failExpressionQuery} completes, or null
+     */
+    public QueryHistory beginExpressionQuery(final ParserRuleContext expression) {
+        if (expression == null || queryExecutor == null || expressionQueryDepth > 0) {
+            return null;
+        }
+        final Expression parsed;
+        try {
+            parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(expression));
+        } catch (final RuntimeException unparsed) {
+            return null;
+        }
+        final ExpressionEvaluator evaluator = new ExpressionEvaluator(null, queryExecutor.getFunctionRegistry(),
+            queryExecutor.getCatalog(), queryExecutor);
+        if (!BlockExpressionSubqueries.readsQuery(parsed) && !evaluator.callsUserFunction(parsed)) {
+            return null;
+        }
+        return beginRecordedExpression(expression);
+    }
+
+    /** The child statement of an expression known to run as a query, begun. */
+    private QueryHistory beginRecordedExpression(final ParserRuleContext expression) {
+        expressionQueryDepth++;
+        return queryExecutor.beginChildStatement(queryText(expression, null), null);
+    }
+
+    /**
+     * Completes the child statement {@link #beginExpressionQuery} began with the value the expression answered, which
+     * RESULT_SCAN reads as its one row.
+     *
+     * @param row        the row begun, or null when none was
+     * @param expression the expression as parsed
+     * @param value      what it answered
+     */
+    public void endExpressionQuery(final QueryHistory row, final ParserRuleContext expression, final Object value) {
+        if (row == null) {
+            return;
+        }
+        expressionQueryDepth--;
+        final String text = ParseTreeText.getOriginalText(expression);
+        queryExecutor.completeChildStatement(row, "SELECT " + text,
+            OneValueResult.of(text.toUpperCase(Locale.ROOT), value));
+    }
+
+    /**
+     * Records the child statement {@link #beginExpressionQuery} began as failed.
+     *
+     * @param row        the row begun, or null when none was
+     * @param expression the expression as parsed
+     * @param failure    why it failed
+     */
+    public void failExpressionQuery(final QueryHistory row, final ParserRuleContext expression,
+                                    final RuntimeException failure) {
+        if (row == null) {
+            return;
+        }
+        expressionQueryDepth--;
+        queryExecutor.failChildStatement(row, "SELECT " + ParseTreeText.getOriginalText(expression), failure);
     }
 
     /** Where an expression's unknown word is placed: a RETURN's or an IF condition's root, else its start. */
@@ -3154,6 +3264,15 @@ public class ProceduralExecutor {
         typeScopes.enter(variableTypes, initialiserTypes, conversionTypes);
     }
 
+    /**
+     * Enter the scope of a BEGIN … END block, before the block itself is entered (see {@link #enterBlock}): a block
+     * opened inside another block of the same body is a nested one (see {@link ScopeManager#namesWrittenAsBinds}).
+     */
+    public void enterBlockScope() {
+        scope.enterBlockScope(blockDepth > procedureFrameBase);
+        typeScopes.enter(variableTypes, initialiserTypes, conversionTypes);
+    }
+
     public void exitScope() {
         typeScopes.exit(scope.declaredInCurrentScope(), variableTypes, initialiserTypes, conversionTypes);
         scope.exitScope();
@@ -3424,6 +3543,7 @@ public class ProceduralExecutor {
      */
     public void enterHandler(final Set<String> beginSectionLets) {
         handlerLets.enter(beginSectionLets);
+        scope.enterHandlerFrame();
     }
 
     /**
@@ -3438,6 +3558,7 @@ public class ProceduralExecutor {
     /** The handler that started last has ended. */
     public void exitHandler() {
         handlerLets.exit();
+        scope.exitHandlerFrame();
     }
 
     /**

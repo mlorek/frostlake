@@ -85,4 +85,60 @@ public class OuterAggregateNoRowTest extends MeasuredCellsTestSupport {
             {"SELECT CASE WHEN TRUE THEN 1 ELSE (SELECT MAX(o997.i) FROM g997) END FROM o997", "1"},
         });
     }
+
+    /**
+     * A branch the statistics settle against is dropped: over a column holding 1 and 10, {@code m.i = 5} is left open
+     * and {@code m.i > 50} settled; an empty input, or WHERE FALSE, settles nothing but a constant, which IFF(TRUE, …)
+     * and CASE WHEN TRUE … are. A subquery reading no table evaluates its item over the outer row, the subqueries in
+     * it refused at their places; a COALESCE's or an NVL's later argument is judged per row (all live-verified).
+     */
+    @Test
+    public void aGuardTheStatisticsSettleOrANestedItem() {
+        engine.execute("CREATE OR REPLACE TABLE e1001 (i INT)");
+        engine.execute("CREATE OR REPLACE TABLE o1001 (i INT)");
+        engine.execute("INSERT INTO o1001 VALUES (1)");
+        engine.execute("CREATE OR REPLACE TABLE m1001 (i INT)");
+        engine.execute("INSERT INTO m1001 VALUES (1), (10)");
+        engine.execute("CREATE OR REPLACE TABLE g1001 (v INT)");
+        engine.execute("INSERT INTO g1001 VALUES (7)");
+        assertCells(new String[][] {
+            {"SELECT IFF(m1001.i = 5, (SELECT MAX(m1001.i) FROM g1001), NULL) FROM m1001",
+                "REFUSED SQL compilation error: | Unsupported subquery type cannot be evaluated at line 1, "
+                + "position 25"},
+            {"SELECT IFF(m1001.i > 50, (SELECT MAX(m1001.i) FROM g1001), NULL) FROM m1001",
+                "null ;; null"},
+            {"SELECT IFF(o1001.i > 5, (SELECT MAX(o1001.i) FROM g1001), NULL) FROM o1001 WHERE FALSE",
+                "REFUSED SQL compilation error: | Unsupported subquery type cannot be evaluated at line 1, "
+                + "position 25"},
+            {"SELECT IFF(o1001.i < 5, (SELECT MAX(o1001.i) FROM g1001), NULL) FROM o1001 WHERE FALSE",
+                "REFUSED SQL compilation error: | Unsupported subquery type cannot be evaluated at line 1, "
+                + "position 25"},
+            {"SELECT (SELECT (SELECT MAX(o1001.i) FROM g1001)) FROM o1001",
+                "REFUSED SQL compilation error: | Unsupported subquery type cannot be evaluated at line 1, "
+                + "position 16"},
+            {"SELECT (SELECT 1 + (SELECT MAX(e1001.i) FROM g1001)) FROM e1001",
+                "REFUSED SQL compilation error: | Unsupported subquery type cannot be evaluated at line 1, "
+                + "position 20"},
+            {"SELECT (SELECT IFF(FALSE, (SELECT MAX(e1001.i) FROM g1001), 0)) FROM e1001",
+                ""},
+            {"SELECT COALESCE(1, (SELECT MAX(e1001.i) FROM g1001)) FROM e1001",
+                ""},
+            {"SELECT NVL(e1001.i, (SELECT MAX(e1001.i) FROM g1001)) FROM e1001",
+                ""},
+            {"SELECT COALESCE(o1001.i, (SELECT MAX(o1001.i) FROM g1001)) FROM o1001",
+                "1"},
+            {"SELECT CASE WHEN e1001.i > 5 THEN 1 ELSE (SELECT MAX(e1001.i) FROM g1001) END FROM e1001",
+                "REFUSED SQL compilation error: | Unsupported subquery type cannot be evaluated at line 1, "
+                + "position 42"},
+            {"SELECT IFF(e1001.i > 5, 1, (SELECT MAX(e1001.i) FROM g1001)) FROM e1001",
+                "REFUSED SQL compilation error: | Unsupported subquery type cannot be evaluated at line 1, "
+                + "position 28"},
+            {"SELECT IFF(TRUE, (SELECT MAX(e1001.i) FROM g1001), 0) FROM e1001",
+                "REFUSED SQL compilation error: | Unsupported subquery type cannot be evaluated at line 1, "
+                + "position 18"},
+            {"SELECT CASE WHEN TRUE THEN (SELECT MAX(e1001.i) FROM g1001) END FROM e1001",
+                "REFUSED SQL compilation error: | Unsupported subquery type cannot be evaluated at line 1, "
+                + "position 28"},
+        });
+    }
 }

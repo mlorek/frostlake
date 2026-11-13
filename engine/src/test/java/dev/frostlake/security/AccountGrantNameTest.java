@@ -32,8 +32,8 @@ public class AccountGrantNameTest extends MeasuredCellsTestSupport {
 
     @Test
     public void theSystemRolesAccountGrants() {
-        assertAnswer("true", "SHOW GRANTS TO ROLE SYSADMIN ->> SELECT COUNT(*) = COUNT_IF(\"name\" = "
-            + "CURRENT_ACCOUNT()) FROM $1 WHERE \"granted_on\" = 'ACCOUNT'");
+        assertAnswer("true", "SHOW GRANTS TO ROLE SYSADMIN ->> SELECT COUNT(*) = COUNT(CASE WHEN \"name\" = "
+            + "CURRENT_ACCOUNT() THEN 1 END) FROM $1 WHERE \"granted_on\" = 'ACCOUNT'");
     }
 
     @Test

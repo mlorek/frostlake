@@ -21,8 +21,8 @@ import dev.frostlake.parser.FrostlakeParser;
 /**
  * A parenthesized list written where one value goes, read as the account reads it: as the parser's own word for it
  * (live-verified). A list of properties, {@code (a = 'b')}, is {@code TOK_PROPERTY_LIST}; a list of constants,
- * {@code ('a', 'b')} or {@code ()}, is {@code TOK_CONSTANT_LIST}, and {@code TOK_LIST} when one of the constants is a
- * list of properties itself, {@code ((a = 'b'))}.
+ * {@code ('a', 'b')} or {@code ()}, is {@code TOK_CONSTANT_LIST}, and a list of lists of properties,
+ * {@code ((a = 'b'))}, is {@code TOK_LIST}.
  */
 final class ListValues {
 
@@ -48,12 +48,7 @@ final class ListValues {
         if (isPropertyList(list)) {
             return PROPERTY_LIST;
         }
-        for (final FrostlakeParser.ListedConstantContext constant : list.listedConstant()) {
-            if (constant.LPAREN() != null) {
-                return NESTED_LIST;
-            }
-        }
-        return CONSTANT_LIST;
+        return list.listedPropertyList().isEmpty() ? CONSTANT_LIST : NESTED_LIST;
     }
 
     /**

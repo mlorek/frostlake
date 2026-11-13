@@ -153,6 +153,22 @@ final class UserParameterList {
         LeveledParameterSettings.set(user.getParameters(), parameters);
     }
 
+    /**
+     * The password the list gives as a word, the last written; null when it gives none or gives NULL.
+     *
+     * @return the password's text, or null
+     */
+    String writtenPassword() {
+        String password = null;
+        for (int i = 0; i < propertyAssignments.size() && i < propertyValues.size(); i++) {
+            final SessionParameterValue value = propertyValues.get(i);
+            if ("PASSWORD".equals(nameOf(propertyAssignments.get(i))) && value.kind() != SessionValueKind.NULL) {
+                password = value.text();
+            }
+        }
+        return password;
+    }
+
     /** A name written twice among the properties and the parameters, whichever form each is written in. */
     private void requireNoDuplicates() {
         final List<String> names = new ArrayList<String>();

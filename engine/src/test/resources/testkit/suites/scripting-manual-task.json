@@ -17,13 +17,17 @@
       {"sql": "SELECT LISTAGG(\"name\" || '/' || COALESCE(\"schedule\", '~') || '/' || \"state\", ' ') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
        "expect": {"value": "MY_SCHEDULED_TASK/5 MINUTES/suspended"}}
     ]},
-    {"name": "execute-task-runs-a-manual-task", "steps": [
+    {"name": "execute-task-runs-a-manual-task",
+     "skip": {"backends": ["snowflake"], "reason": "EXECUTE TASK starts the run in the background on the account, so what the task writes is not there yet when the next statement reads it; Frostlake runs the task before the statement returns"},
+     "steps": [
       {"sql": "CREATE TABLE task_log (id INTEGER, message VARCHAR)"},
       {"sql": "CREATE TASK my_manual_task WAREHOUSE = 'compute_wh' AS INSERT INTO task_log VALUES (1, 'Manually executed')"},
       {"sql": "EXECUTE TASK my_manual_task"},
       {"sql": "SELECT id, message FROM task_log", "expect": {"rows": [[1,"Manually executed"]]}}
     ]},
-    {"name": "execute-task-runs-once-per-call", "steps": [
+    {"name": "execute-task-runs-once-per-call",
+     "skip": {"backends": ["snowflake"], "reason": "EXECUTE TASK starts the run in the background on the account, so what the task writes is not there yet when the next statement reads it; Frostlake runs the task before the statement returns"},
+     "steps": [
       {"sql": "CREATE TABLE task_log (id INTEGER, message VARCHAR)"},
       {"sql": "CREATE TASK my_manual_task WAREHOUSE = 'compute_wh' AS INSERT INTO task_log VALUES (1, 'Execution')"},
       {"sql": "EXECUTE TASK my_manual_task"},
@@ -31,7 +35,9 @@
       {"sql": "EXECUTE TASK my_manual_task"},
       {"sql": "SELECT COUNT(*) FROM task_log", "expect": {"value": 3}}
     ]},
-    {"name": "execute-task-accepts-a-qualified-name", "steps": [
+    {"name": "execute-task-accepts-a-qualified-name",
+     "skip": {"backends": ["snowflake"], "reason": "EXECUTE TASK starts the run in the background on the account, so what the task writes is not there yet when the next statement reads it; Frostlake runs the task before the statement returns"},
+     "steps": [
       {"sql": "CREATE TABLE task_log (id INTEGER, message VARCHAR)"},
       {"sql": "CREATE TASK my_manual_task WAREHOUSE = 'compute_wh' AS INSERT INTO task_log VALUES (1, 'Qualified execution')"},
       {"sql": "EXECUTE TASK test_schema.my_manual_task"},
@@ -41,7 +47,9 @@
       {"sql": "EXECUTE TASK non_existent_task",
        "expect": {"error": {"messageContains": "Task 'TEST_DB.TEST_SCHEMA.NON_EXISTENT_TASK' does not exist or not authorized."}}}
     ]},
-    {"name": "a-task-body-may-be-an-aggregating-insert-select", "steps": [
+    {"name": "a-task-body-may-be-an-aggregating-insert-select",
+     "skip": {"backends": ["snowflake"], "reason": "EXECUTE TASK starts the run in the background on the account, so what the task writes is not there yet when the next statement reads it; Frostlake runs the task before the statement returns"},
+     "steps": [
       {"sql": "CREATE TABLE source_data (id INTEGER, value VARCHAR)"},
       {"sql": "CREATE TABLE summary (total INTEGER, distinct_count INTEGER)"},
       {"sql": "INSERT INTO source_data VALUES (1, 'A'), (2, 'B'), (3, 'A')"},
@@ -49,7 +57,9 @@
       {"sql": "EXECUTE TASK summarize_task"},
       {"sql": "SELECT total, distinct_count FROM summary", "expect": {"rows": [[3,2]]}}
     ]},
-    {"name": "the-execution-history-records-each-run", "steps": [
+    {"name": "the-execution-history-records-each-run",
+     "skip": {"backends": ["snowflake"], "reason": "EXECUTE TASK starts the run in the background on the account, so what the task writes is not there yet when the next statement reads it; Frostlake runs the task before the statement returns"},
+     "steps": [
       {"sql": "CREATE TABLE task_log (id INTEGER, message VARCHAR)"},
       {"sql": "CREATE TASK my_manual_task WAREHOUSE = 'compute_wh' AS INSERT INTO task_log VALUES (1, 'Execution')"},
       {"sql": "EXECUTE TASK my_manual_task"},
@@ -58,7 +68,9 @@
       {"sql": "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY()) WHERE NAME = 'MY_MANUAL_TASK' AND STATE = 'SUCCEEDED'", "expect": {"value": 2}},
       {"sql": "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY()) WHERE NAME = 'MY_MANUAL_TASK' AND STATE = 'FAILED'", "expect": {"value": 0}}
     ]},
-    {"name": "a-failing-task-records-a-failed-run-and-still-exists", "steps": [
+    {"name": "a-failing-task-records-a-failed-run-and-still-exists",
+     "skip": {"backends": ["snowflake"], "reason": "EXECUTE TASK starts the run in the background on the account, so the task's history rows are not yet what the next statement reads; Frostlake runs the task before the statement returns"},
+     "steps": [
       {"sql": "CREATE TASK failing_task WAREHOUSE = 'compute_wh' AS INSERT INTO non_existent_table VALUES (1)"},
       {"sql": "EXECUTE TASK failing_task"},
       {"sql": "SHOW TASKS"},
@@ -66,7 +78,9 @@
       {"sql": "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY()) WHERE NAME = 'FAILING_TASK'", "expect": {"value": 1}},
       {"sql": "SELECT STATE FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY()) WHERE NAME = 'FAILING_TASK'", "expect": {"value": "FAILED"}}
     ]},
-    {"name": "a-scheduled-task-does-not-run-when-a-manual-one-is-executed", "steps": [
+    {"name": "a-scheduled-task-does-not-run-when-a-manual-one-is-executed",
+     "skip": {"backends": ["snowflake"], "reason": "EXECUTE TASK starts the run in the background on the account, so what the task writes is not there yet when the next statement reads it; Frostlake runs the task before the statement returns"},
+     "steps": [
       {"sql": "CREATE TABLE task_log (id INTEGER, message VARCHAR)"},
       {"sql": "CREATE TASK manual_task WAREHOUSE = 'compute_wh' AS INSERT INTO task_log VALUES (1, 'Manual')"},
       {"sql": "CREATE TASK scheduled_task WAREHOUSE = 'compute_wh' SCHEDULE = '10 MINUTES' AS INSERT INTO task_log VALUES (2, 'Scheduled')"},
